@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN grep -v "emergentintegrations" requirements.txt > requirements_clean.txt && pip install --no-cache-dir -r requirements_clean.txt
 RUN playwright install chromium --with-deps
 
 COPY . .
