@@ -1,0 +1,135 @@
+{
+  "project_name": "The Clip Deal Track",
+  "app_type": "saas_app / dashboard",
+  "design_archetype": "The Performance Pro + Electric & Neon (Hybrid)",
+  "theme_strategy": {
+    "default": "dark",
+    "background_dark": "#0A0A0A",
+    "surface_dark": "#121212",
+    "border_dark": "rgba(255, 255, 255, 0.08)",
+    "text_primary": "#FFFFFF",
+    "text_secondary": "rgba(255, 255, 255, 0.65)"
+  },
+  "roles_and_colors": {
+    "Clippeur": {
+      "color": "#00E5FF",
+      "vibe": "Fast, energetic, creation-focused"
+    },
+    "Agence": {
+      "color": "#FF007F",
+      "vibe": "Creative control, authority"
+    },
+    "Manager": {
+      "color": "#39FF14",
+      "vibe": "Performance, growth, guidance"
+    },
+    "Client": {
+      "color": "#FFB300",
+      "vibe": "Premium, VIP, revenue"
+    },
+    "Alerts_Strikes": {
+      "color": "#FF2A2A",
+      "usage": "Red badges for strikes, reminders, critical alerts"
+    }
+  },
+  "typography": {
+    "primary_font": "Chivo",
+    "primary_usage": "Headings, Hero Text, Dashboard Numbers",
+    "secondary_font": "Inter",
+    "secondary_usage": "Body text, paragraphs, labels",
+    "mono_font": "JetBrains Mono",
+    "mono_usage": "RPM values, financial stats, code/ID snippets",
+    "rules": [
+      "Headings over 32px must use tracking-tighter.",
+      "Overlines and small labels must be uppercase with tracking-[0.2em].",
+      "Use font-black for key numbers, font-light for elegant descriptions."
+    ]
+  },
+  "layouts": {
+    "global": "Mobile-first responsive, Left sidebar + Main content area.",
+    "sidebar": "Fixed, w-64 on desktop, collapsible on mobile. Real-time dynamic updates.",
+    "dashboard_grid": "Bento Grid high density. grid-cols-1 md:grid-cols-4. gap-4 or gap-6.",
+    "landing_page": "Tetris Grid. Wide spacing (gap-12, py-24). Asymmetric arrangements."
+  },
+  "surfaces_and_components": {
+    "cards": "Flat solid background (#121212), 1px subtle border, sharp or max rounded-md. Hover: border color shifts to role's accent color.",
+    "buttons": "Pill-shaped for Landing CTA. Sharp rounded-md for Dashboard actions. Must have hover states increasing brightness.",
+    "glassmorphism": "Use sparingly for sticky headers or modals. bg-black/60 with backdrop-blur-xl and border-white/10.",
+    "chat_interface": "Embedded widget or side-drawer, real-time message bubbles with role-based accent borders.",
+    "badges": "Pill shape, intense glowing border or solid background for strikes (bg-[#FF2A2A] text-white)."
+  },
+  "motion_and_interactions": {
+    "hover_states": "All interactive elements must shift background or border color.",
+    "transitions": "Use specific transitions (e.g., transition-colors duration-200, transition-transform). NO 'transition-all'.",
+    "real_time_updates": "Animate data changes with soft flash/glow using Framer Motion.",
+    "page_load": "Staggered fade-up for dashboard widgets (Framer Motion)."
+  },
+  "libraries": {
+    "charts": "recharts",
+    "icons": "lucide-react",
+    "animations": "framer-motion",
+    "toasts": "sonner"
+  },
+  "image_urls": [
+    {
+      "url": "https://images.pexels.com/photos/1188751/pexels-photo-1188751.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Video editing timeline interface",
+      "category": "landing_hero_bg"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1645225840957-1b789a6c81b0?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "description": "Camera and laptop setup",
+      "category": "landing_features"
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1615276884890-2f2ffdab7b43?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "description": "Man with glasses neon",
+      "category": "avatar_manager"
+    },
+    {
+      "url": "https://images.pexels.com/photos/6836214/pexels-photo-6836214.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Woman in neon lights",
+      "category": "avatar_client"
+    }
+  ],
+  "accessibility": {
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case format based on role (e.g., data-testid='login-submit-button').",
+    "contrast": "Text over backgrounds must meet APCA standards. Provide text-shadow for text over images.",
+    "motion": "Respect prefers-reduced-motion for animations."
+  },
+  "instructions_to_main_agent": [
+    "Use .jsx or .js files for React components. Do NOT use .tsx files.",
+    "Implement Shadcn UI components customized for this dark, neon-accented aesthetic.",
+    "Do NOT center align the app container (.App { text-align: center; } is banned).",
+    "Do NOT use 'transition: all' globally. Use specific transition utilities like transition-colors, transition-opacity.",
+    "Never use generic AI emojis for icons; strictly use standard SVG icons like lucide-react.",
+    "Implement the landing page with custom HTML/Tailwind, and Dashboard with customized Shadcn components.",
+    "Ensure the sidebar dynamically shows active campaigns and unread chat indicators. It must be updated dynamically.",
+    "For the real-time chat, build a sleek sidebar/drawer or in-page chat with distinct user message colors based on role.",
+    "Use 'sonner' for toasts and notifications.",
+    "Make sure all grid items are direct children of the grid container.",
+    "Do NOT use completely transparent backgrounds for elements with content beneath them. Use backdrop blur and slight opacity (e.g., bg-black/80 backdrop-blur-md).",
+    "Ensure the layout is responsive (mobile-first), with collapsible sidebar on smaller screens.",
+    "Implement red pastilles/badges for strikes and reminders as critical alerts."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur).",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file. This disrupts the human natural reading flow of text.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯📚🎭🎬🎪🎉🎊🎁🎀🎂🍰🎈🎨🎰💰💵💳🏦💎🪙💸🤑📊📈📉💹🔢🏆🥇 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Subtle grain textures, noise overlays, custom cursors, selection states, and loading animations: separates good from extraordinary.",
+    "Main agent relies on these image URLs. Missing categories (especially sponsor logos) = main agent will use placeholder text which is FORBIDDEN.",
+    "Prioritize using pre-existing components from src/components/ui when applicable.",
+    "Create new components that match the style and conventions of existing components when needed.",
+    "Components MUST use named exports (export const ComponentName = ...).",
+    "Pages MUST use default exports (export default function PageName() {...}).",
+    "Use `sonner` for toasts. Sonner component are located in /app/src/components/ui/sonner.js or similar."
+  ]
+}

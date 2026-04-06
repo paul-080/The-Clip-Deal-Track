@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "yarn",
+      "runtimeArgs": ["start"],
+      "cwd": "C:\\Users\\paula\\OneDrive\\Attachments\\Clipping\\The-Clip-Deal-main\\frontend",
+      "port": 3000
+    }
+  ]
+}
