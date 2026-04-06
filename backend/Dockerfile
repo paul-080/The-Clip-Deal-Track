@@ -12,8 +12,28 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN grep -v "emergentintegrations" requirements.txt > requirements_clean.txt && pip install --no-cache-dir -r requirements_clean.txt
+# Install core packages with compatible versions (bypasses requirements.txt conflicts)
+RUN pip install --no-cache-dir \
+    fastapi==0.110.1 \
+    "uvicorn[standard]==0.25.0" \
+    "pymongo==4.5.0" \
+    "motor==3.3.2" \
+    "mongomock-motor==0.0.21" \
+    python-dotenv==1.2.1 \
+    "pydantic[email]==2.5.3" \
+    httpx==0.26.0 \
+    "python-jose[cryptography]==3.3.0" \
+    "passlib[bcrypt]==1.7.4" \
+    google-auth==2.27.0 \
+    stripe==7.12.0 \
+    "playwright>=1.40.0" \
+    yt-dlp \
+    instaloader \
+    python-multipart==0.0.9 \
+    websockets \
+    aiohttp \
+    starlette==0.37.2
+
 RUN playwright install chromium --with-deps
 
 COPY . .
