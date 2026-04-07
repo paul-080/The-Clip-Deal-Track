@@ -32,6 +32,7 @@ export default function LandingPage() {
   const [verificationCode, setVerificationCode] = useState("");
   const [emailPending, setEmailPending] = useState(""); // email awaiting verification
   const [emailLoading, setEmailLoading] = useState(false);
+  const [devCode, setDevCode] = useState(""); // shown when SMTP not configured
 
   // Login modal (existing users)
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -183,8 +184,14 @@ export default function LandingPage() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Erreur lors de l'inscription");
       setEmailPending(emailForm.email.trim().toLowerCase());
+      if (data.dev_code) {
+        setDevCode(data.dev_code);
+        setVerificationCode(data.dev_code);
+        toast.info("Mode dev : code pré-rempli (SMTP non configuré)");
+      } else {
+        toast.success(`Code envoyé à ${emailForm.email}`);
+      }
       setStep(3);
-      toast.success(`Code envoyé à ${emailForm.email}`);
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -940,9 +947,15 @@ export default function LandingPage() {
                     </DialogTitle>
                   </div>
                 </DialogHeader>
-                <p className="text-white/50 text-sm mt-3 ml-14 mb-6">
-                  Un code à 6 chiffres a été envoyé à <span className="text-white">{emailPending}</span>
-                </p>
+                {devCode ? (
+                  <div className="mt-3 ml-14 mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-400">
+                    ⚠️ Email non envoyé (SMTP non configuré) — code pré-rempli automatiquement
+                  </div>
+                ) : (
+                  <p className="text-white/50 text-sm mt-3 ml-14 mb-6">
+                    Un code à 6 chiffres a été envoyé à <span className="text-white">{emailPending}</span>
+                  </p>
+                )}
                 <div className="space-y-4">
                   <Input
                     type="text"
