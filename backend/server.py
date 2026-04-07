@@ -702,6 +702,24 @@ async def debug_env():
             if any(x in k.upper() for x in ["RESEND", "SMTP", "RAILWAY", "FRONTEND", "GOOGLE"])}
     return {"env_keys": keys, "resend_api_key_at_runtime": os.environ.get("RESEND_API_KEY", "NOT_FOUND")}
 
+@api_router.get("/auth/test-send-email")
+async def test_send_email(to: str = "paulangloy@gmail.com"):
+    """Actually send a test email via Resend and return raw response."""
+    if not RESEND_API_KEY:
+        return {"status": "error", "error": "RESEND_API_KEY manquant"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": RESEND_FROM,
+                "to": [to],
+                "subject": "Test email The Clip Deal Track",
+                "html": "<p>Test email envoyé depuis Railway ✅</p>",
+            },
+        )
+    return {"status_code": resp.status_code, "response": resp.json()}
+
 @api_router.get("/auth/test-smtp")
 async def test_smtp():
     """Test Resend API config."""
