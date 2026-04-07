@@ -75,12 +75,14 @@ ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
-# SMTP
+# Email via Resend API (HTTP — works on Railway)
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
+RESEND_FROM = os.environ.get('RESEND_FROM', 'The Clip Deal Track <onboarding@resend.dev>').strip()
+# Legacy SMTP (kept for reference but not used — Railway blocks SMTP ports)
 SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
-SMTP_USER = os.environ.get('SMTP_USER', '')
-SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
-SMTP_FROM = os.environ.get('SMTP_FROM', 'The Clip Deal Track <noreply@theclipdealtrack.com>')
+SMTP_USER = os.environ.get('SMTP_USER', '').strip()
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '').strip()
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -539,24 +541,17 @@ def _make_session_response(user: dict, session_token: str) -> Response:
                     secure=os.environ.get("RAILWAY_ENVIRONMENT") == "production", samesite="lax", path="/", max_age=7*24*60*60)
     return resp
 
-def _send_verification_email_sync(to_email: str, code: str):
-    """Send a 6-digit verification code by email (synchronous, runs in executor)."""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        logger.warning(f"SMTP not configured — verification code for {to_email}: {code}")
+async def _send_verification_email(to_email: str, code: str):
+    """Send verification code via Resend HTTP API (works on Railway)."""
+    if not RESEND_API_KEY:
+        logger.warning(f"RESEND_API_KEY not set — verification code for {to_email}: {code}")
         return
-
-    logger.info(f"SMTP sending to={to_email} host={SMTP_HOST}:{SMTP_PORT} user={SMTP_USER}")
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"{code} — Votre code de vérification The Clip Deal Track"
-    msg["From"] = SMTP_USER  # use SMTP_USER directly as From to avoid Gmail rejection
-    msg["To"] = to_email
 
     html = f"""
     <div style="font-family:Inter,Arial,sans-serif;background:#0A0A0A;padding:40px;max-width:480px;margin:0 auto;border-radius:12px;">
       <div style="text-align:center;margin-bottom:32px;">
         <div style="display:inline-block;background:linear-gradient(135deg,#00E5FF,#FF007F);border-radius:10px;padding:12px 20px;">
-          <span style="color:#000;font-weight:bold;font-size:18px;">▶ The Clip Deal Track</span>
+          <span style="color:#000;font-weight:bold;font-size:18px;">&#9654; The Clip Deal Track</span>
         </div>
       </div>
       <h2 style="color:#fff;font-size:22px;font-weight:600;margin-bottom:8px;">Vérification de votre email</h2>
@@ -567,27 +562,25 @@ def _send_verification_email_sync(to_email: str, code: str):
       <p style="color:rgba(255,255,255,0.4);font-size:13px;">Ce code expire dans 15 minutes. Si vous n'avez pas demandé ce code, ignorez cet email.</p>
     </div>
     """
-    msg.attach(MIMEText(html, "html"))
 
-    context = ssl.create_default_context()
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, to_email, msg.as_string())
-            logger.info(f"SMTP email sent successfully to {to_email}")
-    except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP auth failed — check SMTP_USER/SMTP_PASSWORD (App Password required for Gmail): {e}")
-        raise
-    except Exception as e:
-        logger.error(f"SMTP send failed: {type(e).__name__}: {e}")
-        raise
-
-async def _send_verification_email(to_email: str, code: str):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _send_verification_email_sync, to_email, code)
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": RESEND_FROM,
+                "to": [to_email],
+                "subject": f"{code} — Votre code de vérification The Clip Deal Track",
+                "html": html,
+            },
+        )
+    if resp.status_code not in (200, 201):
+        logger.error(f"Resend API error {resp.status_code}: {resp.text}")
+        raise Exception(f"Resend error {resp.status_code}: {resp.text}")
+    logger.info(f"Email sent via Resend to {to_email} — id={resp.json().get('id')}")
 
 @api_router.post("/auth/register")
 async def email_register(req: EmailRegisterRequest):
@@ -703,30 +696,28 @@ async def verify_email(req: VerifyEmailRequest):
 
 @api_router.get("/auth/test-smtp")
 async def test_smtp():
-    """Test SMTP config — returns success or exact error message."""
+    """Test Resend API config."""
     result = {
-        "smtp_host": SMTP_HOST,
-        "smtp_port": SMTP_PORT,
-        "smtp_user": SMTP_USER,
-        "smtp_password_set": bool(SMTP_PASSWORD),
-        "smtp_password_length": len(SMTP_PASSWORD) if SMTP_PASSWORD else 0,
+        "resend_api_key_set": bool(RESEND_API_KEY),
+        "resend_api_key_length": len(RESEND_API_KEY),
+        "resend_from": RESEND_FROM,
     }
-    if not SMTP_USER or not SMTP_PASSWORD:
+    if not RESEND_API_KEY:
         result["status"] = "error"
-        result["error"] = "SMTP_USER ou SMTP_PASSWORD manquant dans les variables Railway"
+        result["error"] = "RESEND_API_KEY manquant — créez un compte sur resend.com et ajoutez la clé dans Railway"
         return result
     try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-        result["status"] = "ok"
-        result["message"] = "Connexion SMTP réussie ✅"
-    except smtplib.SMTPAuthenticationError as e:
-        result["status"] = "error"
-        result["error"] = f"Authentification échouée — mauvais App Password ? ({e})"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.resend.com/domains",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            )
+        if resp.status_code == 200:
+            result["status"] = "ok"
+            result["message"] = "Clé Resend valide ✅"
+        else:
+            result["status"] = "error"
+            result["error"] = f"Resend API returned {resp.status_code}: {resp.text}"
     except Exception as e:
         result["status"] = "error"
         result["error"] = f"{type(e).__name__}: {e}"
