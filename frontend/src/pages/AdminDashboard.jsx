@@ -188,6 +188,8 @@ function UsersTab() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState("newest");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmBan, setConfirmBan] = useState(null);
 
@@ -219,24 +221,50 @@ function UsersTab() {
     } catch (e) { toast.error(e.message); }
   };
 
-  const filtered = users.filter((u) =>
-    !search ||
-    u.email?.toLowerCase().includes(search.toLowerCase()) ||
-    u.name?.toLowerCase().includes(search.toLowerCase()) ||
-    u.display_name?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = users
+    .filter((u) =>
+      (!search ||
+        u.email?.toLowerCase().includes(search.toLowerCase()) ||
+        u.name?.toLowerCase().includes(search.toLowerCase()) ||
+        u.display_name?.toLowerCase().includes(search.toLowerCase())) &&
+      (roleFilter === "all" || u.role === roleFilter)
+    )
+    .sort((a, b) => {
+      if (sortOrder === "newest") return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+      if (sortOrder === "oldest") return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+      return 0;
+    });
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-white">Utilisateurs ({users.length})</h2>
-        <div className="flex gap-3">
+      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
+        <h2 className="text-xl font-semibold text-white">Utilisateurs ({filtered.length}/{users.length})</h2>
+        <div className="flex gap-3 flex-wrap">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Rechercher..."
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-56"
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-48"
           />
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30 cursor-pointer"
+          >
+            <option value="all">Tous les rôles</option>
+            <option value="clipper">Clippeur</option>
+            <option value="agency">Agence</option>
+            <option value="manager">Manager</option>
+            <option value="client">Client</option>
+          </select>
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30 cursor-pointer"
+          >
+            <option value="newest">Plus récents</option>
+            <option value="oldest">Plus anciens</option>
+          </select>
           <button onClick={fetchUsers} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -495,6 +523,209 @@ function ApiStatusTab() {
   );
 }
 
+// ─── PostsTab ────────────────────────────────────────────────────────────────
+
+function PostsTab() {
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [search, setSearch] = useState("");
+
+  const fetchPosts = useCallback(() => {
+    setLoading(true);
+    adminFetch("/admin/posts")
+      .then(setPosts)
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { fetchPosts(); }, [fetchPosts]);
+
+  const handleDelete = async (postId) => {
+    try {
+      await adminFetch(`/admin/posts/${postId}`, { method: "DELETE" });
+      toast.success("Post supprimé");
+      setConfirmDelete(null);
+      fetchPosts();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const filtered = posts.filter(p =>
+    !search ||
+    p.title?.toLowerCase().includes(search.toLowerCase()) ||
+    p.content?.toLowerCase().includes(search.toLowerCase()) ||
+    p.agency_name?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
+        <h2 className="text-xl font-semibold text-white">Tous les posts ({filtered.length}/{posts.length})</h2>
+        <div className="flex gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher..."
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-56"
+          />
+          <button onClick={fetchPosts} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-white/40 text-sm">Chargement...</div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.length === 0 && <p className="text-white/30 text-sm text-center py-12">Aucun post</p>}
+          {filtered.map((post) => (
+            <div key={post.announcement_id} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4 flex items-start gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs text-white/40 bg-white/5 px-2 py-0.5 rounded">{post.agency_name}</span>
+                  <span className="text-xs text-white/30">{formatDate(post.created_at)}</span>
+                </div>
+                <p className="text-white font-semibold text-sm truncate">{post.title || "(sans titre)"}</p>
+                <p className="text-white/50 text-xs mt-1 line-clamp-2">{post.content}</p>
+              </div>
+              <button
+                onClick={() => setConfirmDelete(post)}
+                className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all flex-shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {confirmDelete && (
+        <ConfirmModal
+          title="Supprimer ce post ?"
+          message={`Supprimer le post "${confirmDelete.title || "(sans titre)"}" ?`}
+          confirmLabel="Supprimer"
+          danger
+          onConfirm={() => handleDelete(confirmDelete.announcement_id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── AdminCampaignsTab ────────────────────────────────────────────────────────
+
+function AdminCampaignsTab() {
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [search, setSearch] = useState("");
+
+  const fetchCampaigns = useCallback(() => {
+    setLoading(true);
+    adminFetch("/admin/all-campaigns")
+      .then(setCampaigns)
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
+
+  const handleDelete = async (campaignId) => {
+    try {
+      await adminFetch(`/admin/campaigns/${campaignId}`, { method: "DELETE" });
+      toast.success("Campagne supprimée");
+      setConfirmDelete(null);
+      fetchCampaigns();
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const statusColors = { active: "text-green-400", paused: "text-yellow-400", ended: "text-red-400", draft: "text-white/40" };
+
+  const filtered = campaigns.filter(c =>
+    !search ||
+    c.name?.toLowerCase().includes(search.toLowerCase()) ||
+    c.agency_name?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
+        <h2 className="text-xl font-semibold text-white">Campagnes ({filtered.length}/{campaigns.length})</h2>
+        <div className="flex gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher..."
+            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-56"
+          />
+          <button onClick={fetchCampaigns} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-white/40 text-sm">Chargement...</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
+                <th className="text-left py-3 px-4">Campagne</th>
+                <th className="text-left py-3 px-4">Agence</th>
+                <th className="text-left py-3 px-4">Statut</th>
+                <th className="text-left py-3 px-4">Membres</th>
+                <th className="text-left py-3 px-4">RPM</th>
+                <th className="text-left py-3 px-4">Créée le</th>
+                <th className="text-right py-3 px-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((c) => (
+                <tr key={c.campaign_id} data-campaign-id={c.campaign_id} data-campaign-name={c.name} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                  <td className="py-3 px-4 text-white font-medium">{c.name}</td>
+                  <td className="py-3 px-4 text-white/60">{c.agency_name}</td>
+                  <td className="py-3 px-4">
+                    <span className={`text-xs font-medium ${statusColors[c.status] || "text-white/40"}`}>
+                      {c.status}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 text-white/60">{c.member_count || 0}</td>
+                  <td className="py-3 px-4 text-[#39FF14] font-mono text-xs">€{c.rpm || 0}/1K</td>
+                  <td className="py-3 px-4 text-white/40">{formatDate(c.created_at)}</td>
+                  <td className="py-3 px-4">
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        onClick={() => setConfirmDelete(c)}
+                        className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
+                        title="Supprimer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={7} className="py-12 text-center text-white/30 text-sm">Aucune campagne</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {confirmDelete && (
+        <ConfirmModal
+          title="Supprimer cette campagne ?"
+          message={`Supprimer la campagne "${confirmDelete.name}" et toutes ses données ?`}
+          confirmLabel="Supprimer définitivement"
+          danger
+          onConfirm={() => handleDelete(confirmDelete.campaign_id)}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── SettingsTab ──────────────────────────────────────────────────────────────
 
 function SettingsTab() {
@@ -648,6 +879,8 @@ function AdminSidebar({ active, setActive, onLogout }) {
   const items = [
     { id: "overview", label: "Vue d'ensemble", icon: LayoutDashboard },
     { id: "users", label: "Utilisateurs", icon: Users },
+    { id: "posts", label: "Tous les posts", icon: Eye },
+    { id: "campaigns", label: "Campagnes", icon: Play },
     { id: "preview-clipper", label: "Preview Clippeur", icon: Play },
     { id: "preview-agency", label: "Preview Agence", icon: Building2 },
     { id: "preview-manager", label: "Preview Manager", icon: Briefcase },
@@ -743,6 +976,8 @@ export default function AdminDashboard() {
   const renderContent = () => {
     if (active === "overview") return <OverviewTab />;
     if (active === "users") return <UsersTab />;
+    if (active === "posts") return <PostsTab />;
+    if (active === "campaigns") return <AdminCampaignsTab />;
     if (active === "api-status") return <ApiStatusTab />;
     if (active === "settings") return <SettingsTab />;
     if (previewRoles[active]) {

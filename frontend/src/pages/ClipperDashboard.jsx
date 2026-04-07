@@ -560,6 +560,31 @@ function DiscoverCampaigns({ onJoin }) {
   };
 
   const handleApply = async () => {
+    // If campaign has no application form, instant join with no form required
+    if (!selectedCampaign.application_form_enabled) {
+      setApplying(true);
+      try {
+        const res = await fetch(`${API}/campaigns/${selectedCampaign.campaign_id}/join`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({}),
+        });
+        if (res.ok) {
+          toast.success("Vous avez rejoint la campagne !");
+          setSelectedCampaign(null);
+          if (onJoin) onJoin();
+        } else {
+          const err = await res.json();
+          toast.error(err.detail || "Erreur");
+        }
+      } catch {
+        toast.error("Erreur de connexion");
+      } finally {
+        setApplying(false);
+      }
+      return;
+    }
     if (!applyForm.tiktok && !applyForm.instagram && !applyForm.youtube) {
       toast.error("Renseigne au moins un compte social");
       return;
@@ -613,25 +638,33 @@ function DiscoverCampaigns({ onJoin }) {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <p className="text-sm text-white/60">Renseigne tes comptes sociaux pour postuler. Ils seront trackés automatiquement dès ton acceptation.</p>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-white/50 mb-1">TikTok (@pseudo)</label>
-                <Input value={applyForm.tiktok} onChange={(e) => setApplyForm(p => ({ ...p, tiktok: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+            {selectedCampaign.application_form_enabled === false ? (
+              <p className="text-sm text-[#39FF14]/80 bg-[#39FF14]/10 rounded-lg px-3 py-2">
+                ⚡ Rejoindre instantanément — aucun formulaire requis
+              </p>
+            ) : (
+              <p className="text-sm text-white/60">Renseigne tes comptes sociaux pour postuler. Ils seront trackés automatiquement dès ton acceptation.</p>
+            )}
+            {selectedCampaign.application_form_enabled !== false && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">TikTok (@pseudo)</label>
+                  <Input value={applyForm.tiktok} onChange={(e) => setApplyForm(p => ({ ...p, tiktok: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">Instagram (@pseudo)</label>
+                  <Input value={applyForm.instagram} onChange={(e) => setApplyForm(p => ({ ...p, instagram: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">YouTube (@pseudo)</label>
+                  <Input value={applyForm.youtube} onChange={(e) => setApplyForm(p => ({ ...p, youtube: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">Exemple de clip (URL)</label>
+                  <Input value={applyForm.example_url} onChange={(e) => setApplyForm(p => ({ ...p, example_url: e.target.value }))} placeholder="https://tiktok.com/..." className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs text-white/50 mb-1">Instagram (@pseudo)</label>
-                <Input value={applyForm.instagram} onChange={(e) => setApplyForm(p => ({ ...p, instagram: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-              </div>
-              <div>
-                <label className="block text-xs text-white/50 mb-1">YouTube (@pseudo)</label>
-                <Input value={applyForm.youtube} onChange={(e) => setApplyForm(p => ({ ...p, youtube: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-              </div>
-              <div>
-                <label className="block text-xs text-white/50 mb-1">Exemple de clip (URL)</label>
-                <Input value={applyForm.example_url} onChange={(e) => setApplyForm(p => ({ ...p, example_url: e.target.value }))} placeholder="https://tiktok.com/..." className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-              </div>
-            </div>
+            )}
             <div className="flex gap-3 pt-2">
               <Button variant="ghost" onClick={() => setSelectedCampaign(null)} className="flex-1 text-white/50 hover:text-white">Annuler</Button>
               <Button onClick={handleApply} disabled={applying} className="flex-1 bg-[#FF007F] hover:bg-[#FF007F]/80 text-white">
@@ -734,12 +767,26 @@ function DiscoverCampaigns({ onJoin }) {
                 </div>
 
                 {/* Apply button */}
-                <button
-                  onClick={() => setSelectedCampaign(c)}
-                  className="w-full py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold transition-colors mt-1"
-                >
-                  Postuler
-                </button>
+                {c.user_status === "active" ? (
+                  <div className="w-full py-2 rounded-lg bg-[#39FF14]/10 border border-[#39FF14]/30 text-[#39FF14] text-sm font-semibold text-center mt-1">
+                    ✓ Membre actif
+                  </div>
+                ) : c.user_status === "pending" ? (
+                  <div className="w-full py-2 rounded-lg bg-yellow-400/10 border border-yellow-400/30 text-yellow-400 text-sm font-semibold text-center mt-1">
+                    ⏳ Candidature en attente
+                  </div>
+                ) : c.user_status === "rejected" ? (
+                  <div className="w-full py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-semibold text-center mt-1">
+                    ✗ Candidature refusée
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setSelectedCampaign(c)}
+                    className="w-full py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold transition-colors mt-1"
+                  >
+                    Postuler
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -1029,7 +1076,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                       {account.status === "pending" && (
                         <div className="flex items-center gap-2 mt-1">
                           <div className="w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
-                          <span className="text-yellow-400 text-xs">Vérification en cours...</span>
+                          <span className="text-yellow-400 text-xs">Recherche du compte...</span>
                         </div>
                       )}
                       {account.status === "verified" && (
@@ -1053,7 +1100,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                         <div className="mt-1">
                           <span className="text-red-400 text-xs flex items-center gap-1">
                             <AlertTriangle className="w-3 h-3" />
-                            {account.error_message || "Compte introuvable ou privé"}
+                            Compte introuvable — vérifiez le nom d'utilisateur
                           </span>
                         </div>
                       )}

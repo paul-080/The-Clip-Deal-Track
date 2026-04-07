@@ -870,11 +870,31 @@ async def google_login(login_req: GoogleLoginRequest):
 
 # ================= CAMPAIGN ROUTES =================
 
+def _check_agency_subscription(user: dict):
+    """Raise 403 if agency's trial has expired and they have no active subscription."""
+    if user.get("role") != "agency":
+        return
+    sub_status = user.get("subscription_status", "none")
+    if sub_status == "active":
+        return  # paid — OK
+    if sub_status == "trial":
+        trial_started_at = user.get("trial_started_at")
+        if trial_started_at:
+            trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
+                return  # trial still active
+    if sub_status in (None, "none"):
+        return  # brand new account — allow (trial not yet started)
+    raise HTTPException(
+        status_code=403,
+        detail="subscription_required"
+    )
+
 @api_router.post("/campaigns", response_model=dict)
 async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(get_current_user)):
     if user.get("role") != "agency":
         raise HTTPException(status_code=403, detail="Only agencies can create campaigns")
-    
+    _check_agency_subscription(user)
     campaign_id = f"camp_{uuid.uuid4().hex[:12]}"
     
     campaign = {
@@ -942,13 +962,21 @@ async def discover_campaigns(user: dict = Depends(get_current_user)):
         {"_id": 0, "token_clipper": 0, "token_manager": 0, "token_client": 0}
     ).to_list(100)
     
+    user_id = user.get("user_id")
     for campaign in campaigns:
         agency = await db.users.find_one(
             {"user_id": campaign["agency_id"]},
             {"_id": 0, "display_name": 1, "picture": 1}
         )
         campaign["agency_name"] = agency.get("display_name") if agency else "Unknown"
-    
+        # Add user's membership status for this campaign
+        if user_id:
+            member = await db.campaign_members.find_one(
+                {"campaign_id": campaign["campaign_id"], "user_id": user_id},
+                {"_id": 0, "status": 1}
+            )
+            campaign["user_status"] = member.get("status") if member else None
+
     return {"campaigns": campaigns}
 
 @api_router.get("/campaigns/{campaign_id}")
@@ -1057,7 +1085,7 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
         "campaign_id": campaign_id,
         "user_id": user["user_id"],
         "role": "clipper",
-        "status": "pending",
+        "status": "active" if not campaign.get("application_form_enabled", True) else "pending",
         "joined_at": datetime.now(timezone.utc).isoformat(),
         "strikes": 0,
         "last_post_at": None,
@@ -1077,6 +1105,66 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
     })
 
     return {"message": "Candidature envoyée !", "member": member}
+
+@api_router.post("/campaigns/{campaign_id}/join-as-client")
+async def join_as_client(campaign_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "client":
+        raise HTTPException(status_code=403, detail="Clients uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    existing = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="Demande déjà envoyée")
+    member = {
+        "member_id": f"mem_{uuid.uuid4().hex[:12]}",
+        "campaign_id": campaign_id,
+        "user_id": user["user_id"],
+        "role": "client",
+        "status": "pending",
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+        "strikes": 0,
+        "last_post_at": None,
+    }
+    await db.campaign_members.insert_one(member)
+    member.pop("_id", None)
+    try:
+        agency_id = campaign.get("agency_id")
+        if agency_id:
+            await manager.send_to_user(agency_id, {"type": "new_client_request", "campaign_id": campaign_id, "user_id": user["user_id"], "display_name": user.get("display_name") or user.get("name")})
+    except Exception:
+        pass
+    return {"message": "Demande envoyée à l'agence", "member": member}
+
+@api_router.post("/campaigns/{campaign_id}/join-as-manager")
+async def join_as_manager(campaign_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "manager":
+        raise HTTPException(status_code=403, detail="Managers uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    existing = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="Demande déjà envoyée")
+    member = {
+        "member_id": f"mem_{uuid.uuid4().hex[:12]}",
+        "campaign_id": campaign_id,
+        "user_id": user["user_id"],
+        "role": "manager",
+        "status": "pending",
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+        "strikes": 0,
+        "last_post_at": None,
+    }
+    await db.campaign_members.insert_one(member)
+    member.pop("_id", None)
+    try:
+        agency_id = campaign.get("agency_id")
+        if agency_id:
+            await manager.send_to_user(agency_id, {"type": "new_manager_request", "campaign_id": campaign_id, "user_id": user["user_id"], "display_name": user.get("display_name") or user.get("name")})
+    except Exception:
+        pass
+    return {"message": "Demande envoyée à l'agence", "member": member}
 
 @api_router.get("/campaigns/{campaign_id}/pending-members")
 async def get_pending_members(campaign_id: str, user: dict = Depends(get_current_user)):
@@ -1933,12 +2021,9 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                 }}
             )
         else:
-            msg = str(e)
-            if "introuvable" not in msg and "not found" not in msg.lower():
-                msg = "Compte introuvable ou privé"
             await db.social_accounts.update_one(
                 {"account_id": account_id},
-                {"$set": {"status": "error", "error_message": msg}}
+                {"$set": {"status": "error", "error_message": "Compte introuvable"}}
             )
 
 # ---------- Video fetching ----------
@@ -2344,6 +2429,43 @@ async def refresh_social_account(account_id: str, user: dict = Depends(get_curre
     asyncio.create_task(_verify_and_update_account(account_id, account["platform"], account["username"]))
     return {"message": "Vérification relancée"}
 
+def _generate_simulated_videos(platform: str, username: str, account_id: str, count: int = 4) -> list:
+    """Generate realistic simulated videos when real scraping is unavailable."""
+    import random as _rnd
+    titles_tiktok = [
+        "POV : quand tu découvres ce hack 🔥", "Trend du moment 💀", "Essayez ça chez vous 👀",
+        "On a testé et c'est incroyable", "Tu savais que... ?", "Le clip le plus fou de la semaine",
+        "Réaction honnête 😅", "Challenge accepté !", "Ça m'a pris 5 min pour faire ça",
+    ]
+    titles_ig = [
+        "Reel de la semaine ✨", "Nouvelle tendance 🔥", "Check this out 👀",
+        "Transformation incroyable", "Résultats après 30 jours", "Le secret que personne ne te dit",
+    ]
+    titles_yt = [
+        "Je teste la tendance TikTok", "Vlog de la semaine", "Résultats choquants",
+        "Mon setup 2025", "Tutorial complet", "La vérité sur...",
+    ]
+    titles = titles_tiktok if platform == "tiktok" else (titles_ig if platform == "instagram" else titles_yt)
+    result = []
+    base_views = _rnd.randint(8_000, 250_000)
+    for i in range(count):
+        vid_views = int(base_views * _rnd.uniform(0.4, 2.5))
+        days_ago = _rnd.randint(i * 4 + 1, i * 4 + 10)
+        pub_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        fake_id = f"sim_{uuid.uuid4().hex[:12]}"
+        result.append({
+            "platform_video_id": fake_id,
+            "url": f"https://www.{'tiktok.com/@' if platform=='tiktok' else 'instagram.com/p/' if platform=='instagram' else 'youtube.com/shorts/'}{username}/{fake_id}",
+            "title": _rnd.choice(titles),
+            "thumbnail_url": None,
+            "views": vid_views,
+            "likes": int(vid_views * _rnd.uniform(0.03, 0.10)),
+            "comments": int(vid_views * _rnd.uniform(0.002, 0.008)),
+            "published_at": pub_dt.isoformat(),
+            "simulated": True,
+        })
+    return result
+
 @api_router.post("/social-accounts/{account_id}/scrape-now")
 async def scrape_account_now(account_id: str, user: dict = Depends(get_current_user)):
     """Immediately scrape videos for a verified social account (useful for testing)."""
@@ -2358,7 +2480,15 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
     try:
         videos = await fetch_videos(platform, username, account, since_days=60)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors du scraping: {str(e)}")
+        logger.warning(f"Scraping failed for {platform}/@{username}: {e}")
+        videos = []
+
+    # If real scraping returned nothing (blocked, API unavailable, etc.), use simulated data
+    simulated = False
+    if not videos:
+        videos = _generate_simulated_videos(platform, username, account_id, count=random.randint(3, 6))
+        simulated = True
+
     saved = 0
     for vid in videos:
         if not vid.get("platform_video_id"):
@@ -2390,7 +2520,10 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
         except Exception:
             pass
     await db.social_accounts.update_one({"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}})
-    return {"message": f"{saved} vidéo(s) sauvegardées", "count": saved}
+    msg = f"{saved} vidéo(s) importées"
+    if simulated:
+        msg += " (données simulées — scraping indisponible)"
+    return {"message": msg, "count": saved, "simulated": simulated}
 
 @api_router.get("/social-accounts/{account_id}/videos")
 async def get_account_videos(account_id: str, user: dict = Depends(get_current_user)):
@@ -2573,6 +2706,18 @@ async def get_advices(user: dict = Depends(get_current_user)):
             {"_id": 0}
         ).sort("created_at", -1).to_list(50)
     
+    return {"advices": advices}
+
+@api_router.get("/campaigns/{campaign_id}/received-advices")
+async def get_received_advices(campaign_id: str, user: dict = Depends(get_current_user)):
+    advices = await db.advices.find(
+        {"campaign_id": campaign_id, "recipient_ids": user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(50)
+    for adv in advices:
+        sender_id = adv.get("sender_id") or adv.get("manager_id") or adv.get("agency_id")
+        sender = await db.users.find_one({"user_id": sender_id}, {"_id": 0, "display_name": 1, "picture": 1, "role": 1}) if sender_id else None
+        adv["sender"] = sender or {}
     return {"advices": advices}
 
 @api_router.post("/advices")
@@ -3105,6 +3250,138 @@ async def start_trial(user: dict = Depends(get_current_user)):
     )
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
+SUBSCRIPTION_PLANS = {
+    "plan_small":     {"name": "Petite",       "amount": 7900,  "label": "79€/mois"},
+    "plan_medium":    {"name": "Assez Grosse",  "amount": 19900, "label": "199€/mois"},
+    "plan_unlimited": {"name": "Illimitée",     "amount": 59900, "label": "599€/mois"},
+}
+
+@api_router.post("/subscription/checkout")
+async def create_subscription_checkout(body: dict, user: dict = Depends(get_current_user)):
+    """Create a Stripe Checkout session for agency subscription"""
+    if user.get("role") != "agency":
+        raise HTTPException(status_code=403, detail="Agences uniquement")
+
+    plan_id = body.get("plan_id", "plan_medium")
+    if plan_id not in SUBSCRIPTION_PLANS:
+        raise HTTPException(status_code=400, detail="Plan invalide")
+
+    if STRIPE_API_KEY == "sk_test_placeholder" or not STRIPE_API_KEY:
+        raise HTTPException(status_code=503, detail="Paiement non configuré — ajoutez STRIPE_API_KEY dans Railway")
+
+    plan = SUBSCRIPTION_PLANS[plan_id]
+    stripe.api_key = STRIPE_API_KEY
+
+    try:
+        # Reuse existing customer or create a new one
+        customer_id = user.get("stripe_customer_id")
+        if not customer_id:
+            customer = stripe.Customer.create(
+                email=user.get("email", ""),
+                name=user.get("display_name") or user.get("name", ""),
+                metadata={"user_id": user["user_id"]},
+            )
+            customer_id = customer.id
+            await db.users.update_one(
+                {"user_id": user["user_id"]},
+                {"$set": {"stripe_customer_id": customer_id}}
+            )
+
+        session = stripe.checkout.Session.create(
+            customer=customer_id,
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "eur",
+                    "product_data": {
+                        "name": f"The Clip Deal Track — {plan['name']}",
+                        "description": f"Abonnement mensuel {plan['label']} (HT)",
+                    },
+                    "unit_amount": plan["amount"],
+                    "recurring": {"interval": "month"},
+                },
+                "quantity": 1,
+            }],
+            mode="subscription",
+            success_url=f"{FRONTEND_URL}/agency/settings?sub=success&plan={plan_id}",
+            cancel_url=f"{FRONTEND_URL}/agency/settings?sub=cancelled",
+            metadata={"user_id": user["user_id"], "plan_id": plan_id},
+        )
+        return {"url": session.url, "session_id": session.id}
+    except stripe.error.StripeError as e:
+        msg = getattr(e, "user_message", None) or str(e)
+        raise HTTPException(status_code=400, detail=msg)
+    except Exception as e:
+        logger.error(f"Subscription checkout error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors de la création du paiement")
+
+@api_router.post("/subscription/webhook")
+async def subscription_webhook(request: Request):
+    """Handle Stripe subscription webhook events"""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+
+    if webhook_secret:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        except stripe.error.SignatureVerificationError:
+            raise HTTPException(status_code=400, detail="Signature invalide")
+    else:
+        try:
+            event = json.loads(payload)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Payload invalide")
+
+    event_type = event.get("type", "")
+
+    if event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("metadata", {}).get("user_id")
+        plan_id = session.get("metadata", {}).get("plan_id")
+        stripe_sub_id = session.get("subscription")
+        if user_id and plan_id:
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {
+                    "subscription_status": "active",
+                    "subscription_plan": plan_id,
+                    "stripe_subscription_id": stripe_sub_id,
+                }}
+            )
+            logger.info(f"Subscription activated for {user_id}: {plan_id}")
+
+    elif event_type in ("customer.subscription.deleted", "customer.subscription.paused"):
+        sub = event["data"]["object"]
+        stripe_sub_id = sub.get("id")
+        user = await db.users.find_one({"stripe_subscription_id": stripe_sub_id}, {"_id": 0})
+        if user:
+            await db.users.update_one(
+                {"stripe_subscription_id": stripe_sub_id},
+                {"$set": {"subscription_status": "expired", "subscription_plan": None}}
+            )
+            logger.info(f"Subscription cancelled for {user.get('user_id')}")
+
+    elif event_type == "invoice.payment_succeeded":
+        invoice = event["data"]["object"]
+        stripe_sub_id = invoice.get("subscription")
+        if stripe_sub_id:
+            await db.users.update_one(
+                {"stripe_subscription_id": stripe_sub_id},
+                {"$set": {"subscription_status": "active"}}
+            )
+
+    elif event_type == "invoice.payment_failed":
+        invoice = event["data"]["object"]
+        stripe_sub_id = invoice.get("subscription")
+        if stripe_sub_id:
+            await db.users.update_one(
+                {"stripe_subscription_id": stripe_sub_id},
+                {"$set": {"subscription_status": "past_due"}}
+            )
+
+    return {"received": True}
+
 # ================= SETTINGS =================
 
 @api_router.put("/settings")
@@ -3441,6 +3718,33 @@ async def admin_list_campaigns(request: Request, _: bool = Depends(verify_admin_
 async def admin_list_videos(request: Request, _: bool = Depends(verify_admin_code)):
     videos = await db.tracked_videos.find({}, {"_id": 0}).to_list(2000)
     return videos
+
+@api_router.get("/admin/posts")
+async def admin_get_posts(request: Request):
+    verify_admin_code(request)
+    posts = await db.announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for p in posts:
+        agency = await db.users.find_one({"user_id": p.get("agency_id")}, {"_id": 0, "display_name": 1})
+        p["agency_name"] = agency.get("display_name") if agency else "—"
+    return posts
+
+@api_router.delete("/admin/posts/{post_id}")
+async def admin_delete_post(post_id: str, request: Request):
+    verify_admin_code(request)
+    result = await db.announcements.delete_one({"announcement_id": post_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Post introuvable")
+    return {"message": "Post supprimé"}
+
+@api_router.get("/admin/all-campaigns")
+async def admin_get_all_campaigns(request: Request):
+    verify_admin_code(request)
+    campaigns = await db.campaigns.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    for c in campaigns:
+        agency = await db.users.find_one({"user_id": c.get("agency_id")}, {"_id": 0, "display_name": 1})
+        c["agency_name"] = agency.get("display_name") if agency else "—"
+        c["member_count"] = await db.campaign_members.count_documents({"campaign_id": c["campaign_id"]})
+    return campaigns
 
 # ================= HEALTH & ROOT =================
 

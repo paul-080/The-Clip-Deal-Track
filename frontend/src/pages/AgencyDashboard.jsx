@@ -23,12 +23,24 @@ const ACCENT_COLOR = "#FF007F";
 export default function AgencyDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [campaigns, setCampaigns] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchData();
+    // Auto-start trial and show welcome page for new agencies
+    if (user && !user.trial_started_at && !user.subscription_status) {
+      fetch(`${API}/subscription/start-trial`, { method: "POST", credentials: "include" })
+        .then(r => r.ok ? r.json() : null)
+        .then(() => {
+          if (location.pathname === "/agency" || location.pathname === "/agency/") {
+            navigate("/agency/welcome");
+          }
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const fetchData = async () => {
@@ -89,6 +101,7 @@ export default function AgencyDashboard() {
       <main className="flex-1 ml-64 p-8">
         <Routes>
           <Route index element={<AgencyHome announcements={announcements} onUpdate={fetchData} />} />
+          <Route path="welcome" element={<WelcomePage />} />
           <Route path="discover" element={<DiscoverPage />} />
           <Route path="create" element={<CreateCampaign onCreated={fetchData} />} />
           <Route path="campaign/:campaignId" element={<CampaignDashboard campaigns={campaigns} />} />
@@ -99,6 +112,57 @@ export default function AgencyDashboard() {
         </Routes>
       </main>
     </div>
+  );
+}
+
+// Welcome / Trial Activated Page
+function WelcomePage() {
+  const navigate = useNavigate();
+  const trialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const fmt = (d) => d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex items-center justify-center min-h-[80vh]"
+    >
+      <div className="max-w-lg w-full text-center space-y-8">
+        <div className="w-20 h-20 rounded-2xl bg-[#FF007F]/20 flex items-center justify-center mx-auto">
+          <span className="text-4xl">🎉</span>
+        </div>
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-3">2 semaines gratuites activées !</h1>
+          <p className="text-white/50 text-base leading-relaxed">
+            Votre essai gratuit est actif jusqu'au <span className="text-white font-medium">{fmt(trialEnd)}</span>.
+            Créez vos premières campagnes et invitez vos clippers sans restriction.
+          </p>
+        </div>
+        <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 text-left space-y-3">
+          <p className="text-white font-semibold text-sm mb-2">Inclus dans votre essai :</p>
+          {["Campagnes illimitées pendant 14 jours", "Invitation de clippers sans limite", "Tracking automatique TikTok / Instagram / YouTube", "Chat par campagne", "Tableau de bord analytique"].map(f => (
+            <div key={f} className="flex items-center gap-3 text-sm text-white/70">
+              <span className="text-[#39FF14]">✓</span> {f}
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <Button
+            onClick={() => navigate("/agency/create")}
+            className="bg-[#FF007F] hover:bg-[#FF007F]/80 text-white px-8 py-3 text-base font-semibold"
+          >
+            Créer ma première campagne
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => navigate("/agency/settings")}
+            className="text-white/50 hover:text-white text-sm"
+          >
+            Voir les offres d'abonnement
+          </Button>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -391,7 +455,12 @@ function CreateCampaign({ onCreated }) {
         navigate(`/agency/campaign/${campaign.campaign_id}`);
       } else {
         const error = await res.json();
-        toast.error(error.detail || "Erreur lors de la création");
+        if (error.detail === "subscription_required") {
+          toast.error("Votre essai a expiré — abonnez-vous dans Paramètres pour continuer");
+          navigate("/agency/settings");
+        } else {
+          toast.error(error.detail || "Erreur lors de la création");
+        }
       }
     } catch (error) {
       toast.error("Erreur de connexion");
@@ -1257,6 +1326,55 @@ function SettingsPage() {
   const [picturePreview, setPicturePreview] = useState(user?.picture || null);
   const [pictureBase64, setPictureBase64] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [subStatus, setSubStatus] = useState(null);
+  const [subLoading, setSubLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/subscription/status`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && setSubStatus(d))
+      .catch(() => {});
+  }, []);
+
+  // Handle return from Stripe
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("sub") === "success") {
+      toast.success("Abonnement activé avec succès !");
+      window.history.replaceState({}, "", window.location.pathname);
+      fetch(`${API}/subscription/status`, { credentials: "include" })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => d && setSubStatus(d));
+    } else if (params.get("sub") === "cancelled") {
+      toast.info("Paiement annulé");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  const handleSubscribe = async (planId) => {
+    setCheckoutLoading(planId);
+    try {
+      const r = await fetch(`${API}/subscription/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ plan_id: planId }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Erreur");
+      window.location.href = data.url;
+    } catch (e) {
+      toast.error(e.message);
+      setCheckoutLoading(null);
+    }
+  };
+
+  const PLANS = [
+    { id: "plan_small",     name: "Petite",       price: "79€/mois",  features: ["1 campagne", "10 clippers", "Tracking 24h"] },
+    { id: "plan_medium",    name: "Assez Grosse",  price: "199€/mois", features: ["3 campagnes", "15 clippers/camp.", "Tracking 6h", "Analytics avancés"], featured: true },
+    { id: "plan_unlimited", name: "Illimitée",     price: "599€/mois", features: ["Campagnes illimitées", "Clippers illimités", "Tracking temps réel", "Support premium"] },
+  ];
 
   const handlePicture = (e) => {
     const file = e.target.files?.[0];
@@ -1358,6 +1476,103 @@ function SettingsPage() {
               className="bg-white/5 border-white/10 text-white w-24"
             />
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Subscription card */}
+      <Card className="bg-[#121212] border-white/10">
+        <CardHeader>
+          <CardTitle className="text-white flex items-center gap-2">
+            <CreditCard className="w-5 h-5 text-[#FF007F]" />
+            Abonnement
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {/* Current status */}
+          {subStatus && (
+            <div className={`rounded-xl p-4 border ${
+              subStatus.subscription_status === "active"
+                ? "bg-[#39FF14]/10 border-[#39FF14]/30"
+                : subStatus.trial_expired || subStatus.subscription_status === "expired"
+                ? "bg-red-500/10 border-red-500/30"
+                : subStatus.subscription_status === "trial"
+                ? "bg-[#00E5FF]/10 border-[#00E5FF]/30"
+                : "bg-white/5 border-white/10"
+            }`}>
+              {subStatus.subscription_status === "active" && (
+                <div>
+                  <p className="text-[#39FF14] font-semibold text-sm">✓ Abonnement actif</p>
+                  <p className="text-white/60 text-xs mt-0.5">
+                    Plan {PLANS.find(p => p.id === subStatus.subscription_plan)?.name || subStatus.subscription_plan}
+                  </p>
+                </div>
+              )}
+              {subStatus.subscription_status === "trial" && !subStatus.trial_expired && (
+                <div>
+                  <p className="text-[#00E5FF] font-semibold text-sm">Essai gratuit en cours</p>
+                  <p className="text-white/60 text-xs mt-0.5">
+                    {subStatus.trial_days_remaining > 0
+                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""}`
+                      : "Dernier jour"}
+                  </p>
+                </div>
+              )}
+              {(subStatus.trial_expired || subStatus.subscription_status === "expired" || subStatus.subscription_status === "past_due") && (
+                <div>
+                  <p className="text-red-400 font-semibold text-sm">⚠️ Essai expiré</p>
+                  <p className="text-white/60 text-xs mt-0.5">Abonnez-vous pour continuer à créer des campagnes</p>
+                </div>
+              )}
+              {(!subStatus.subscription_status || subStatus.subscription_status === "none") && (
+                <div>
+                  <p className="text-white/60 text-sm">Aucun abonnement actif</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Plan cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {PLANS.map(plan => {
+              const isActive = subStatus?.subscription_plan === plan.id && subStatus?.subscription_status === "active";
+              return (
+                <div key={plan.id} className={`rounded-xl p-4 border space-y-3 ${
+                  plan.featured
+                    ? "border-[#FF007F]/60 bg-[#FF007F]/5"
+                    : "border-white/10 bg-white/3"
+                } ${isActive ? "ring-2 ring-[#39FF14]/50" : ""}`}>
+                  {plan.featured && (
+                    <span className="text-[10px] font-semibold bg-[#FF007F] text-white px-2 py-0.5 rounded-full">Recommandé</span>
+                  )}
+                  <div>
+                    <p className="text-white font-semibold text-sm">{plan.name}</p>
+                    <p className="text-white/80 font-bold text-xl">{plan.price}</p>
+                  </div>
+                  <ul className="space-y-1">
+                    {plan.features.map(f => (
+                      <li key={f} className="text-white/50 text-xs flex items-center gap-1.5">
+                        <span className="text-[#39FF14]">✓</span> {f}
+                      </li>
+                    ))}
+                  </ul>
+                  <Button
+                    onClick={() => handleSubscribe(plan.id)}
+                    disabled={isActive || checkoutLoading === plan.id}
+                    className={`w-full text-xs py-2 ${
+                      isActive
+                        ? "bg-[#39FF14]/20 text-[#39FF14] cursor-default"
+                        : plan.featured
+                        ? "bg-[#FF007F] hover:bg-[#FF007F]/80 text-white"
+                        : "bg-white/10 hover:bg-white/20 text-white border border-white/10"
+                    }`}
+                  >
+                    {isActive ? "Plan actuel" : checkoutLoading === plan.id ? "Redirection..." : "Choisir ce plan"}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-xs text-white/30">Paiement sécurisé par Stripe · HT · Résiliation possible à tout moment</p>
         </CardContent>
       </Card>
 
