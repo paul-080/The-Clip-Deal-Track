@@ -3129,7 +3129,18 @@ async def admin_demo_login(role: str, request: Request, _: bool = Depends(verify
         "expires_at": expires_at.isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat()
     })
-    return {"session_token": session_token, "role": role, "user_id": user_id}
+    # Set cookie so the preview tab is auto-authenticated
+    is_prod = os.environ.get("RAILWAY_ENVIRONMENT") == "production"
+    resp = Response(
+        content=json.dumps({"session_token": session_token, "role": role, "user_id": user_id}),
+        media_type="application/json"
+    )
+    resp.set_cookie(
+        key="session_token", value=session_token,
+        httponly=True, secure=is_prod, samesite="lax",
+        path="/", max_age=24 * 60 * 60
+    )
+    return resp
 
 @api_router.get("/admin/api-status")
 async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code)):

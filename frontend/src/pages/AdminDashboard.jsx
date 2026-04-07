@@ -90,9 +90,9 @@ function CodeGate({ onUnlock }) {
         {/* Logo */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center gap-2 mb-6">
-            <Shield className="w-8 h-8 text-[#f0c040]" />
+            <Shield className="w-8 h-8 text-[#00E5FF]" />
             <span className="text-2xl font-bold">
-              <span className="text-[#f0c040]">The Clip</span>
+              <span className="text-[#00E5FF]">The Clip</span>
               <span className="text-white"> Deal</span>
             </span>
           </div>
@@ -109,14 +109,14 @@ function CodeGate({ onUnlock }) {
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="••••••••••••"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-[#f0c040]/50 transition-colors text-center tracking-widest text-lg"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/50 transition-colors text-center tracking-widest text-lg"
               autoFocus
             />
           </div>
           <button
             type="submit"
             disabled={loading || !code}
-            className="w-full bg-[#f0c040] hover:bg-[#f0c040]/90 disabled:opacity-40 text-black font-semibold py-3 rounded-lg transition-all"
+            className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black font-semibold py-3 rounded-lg transition-all"
           >
             {loading ? "Vérification..." : "Entrer"}
           </button>
@@ -161,7 +161,7 @@ function OverviewTab() {
     { label: "Comptes sociaux", value: stats.social_accounts, icon: Globe, color: "text-amber-400" },
     { label: "Messages", value: stats.messages, icon: Briefcase, color: "text-pink-400" },
     { label: "Membres campagne", value: stats.campaign_members, icon: UserCircle, color: "text-cyan-400" },
-    { label: "Revenus total", value: `${stats.total_earnings_eur} €`, icon: CreditCard, color: "text-[#f0c040]" },
+    { label: "Revenus total", value: `${stats.total_earnings_eur} €`, icon: CreditCard, color: "text-[#00E5FF]" },
   ];
 
   return (
@@ -338,12 +338,11 @@ function PreviewTab({ role, label, icon: Icon, color }) {
   const openPreview = async () => {
     setLoading(true);
     try {
-      const data = await adminFetch(`/admin/demo-login/${role}`, { method: "POST" });
-      // Store token in localStorage so the new tab can pick it up
-      localStorage.setItem("preview_session_token", data.session_token);
-      localStorage.setItem("preview_role", role);
-      window.open(`/${role}?admin_preview=1&session=${data.session_token}`, "_blank");
-      toast.success(`Preview ${label} ouvert dans un nouvel onglet`);
+      // This call sets the session_token cookie automatically (credentials: include)
+      await adminFetch(`/admin/demo-login/${role}`, { method: "POST" });
+      // Cookie is now set — open the dashboard in a new tab, it will be auto-authenticated
+      window.open(`/${role}`, "_blank");
+      toast.success(`Preview ${label} ouvert — connecté en tant que démo`);
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -373,13 +372,13 @@ function PreviewTab({ role, label, icon: Icon, color }) {
             <p className="font-medium text-white/60 mb-1">Compte de démonstration</p>
             <p>Email : <span className="text-white/70">{role}@demo.clipdeal.local</span></p>
             <p>Rôle : <span className="text-white/70">{role}</span></p>
-            <p className="mt-2 text-amber-400/70">⚠️ La session preview durera 24h. Le clic droit admin est actif dans ce contexte.</p>
+            <p className="mt-2 text-white/50">⚠️ La session preview durera 24h. Le clic droit admin est actif dans ce contexte.</p>
           </div>
 
           <button
             onClick={openPreview}
             disabled={loading}
-            className="flex items-center gap-2 bg-[#f0c040] hover:bg-[#f0c040]/90 disabled:opacity-50 text-black font-semibold px-6 py-3 rounded-lg transition-all"
+            className="flex items-center gap-2 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black font-semibold px-6 py-3 rounded-lg transition-all"
           >
             <ExternalLink className="w-4 h-4" />
             {loading ? "Connexion..." : `Ouvrir le dashboard ${label}`}
@@ -627,7 +626,7 @@ function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onCance
         <div className="flex gap-3">
           <button
             onClick={onConfirm}
-            className={`flex-1 ${danger ? "bg-red-500 hover:bg-red-600" : "bg-[#f0c040] hover:bg-[#f0c040]/90 text-black"} text-white font-medium py-2.5 rounded-lg text-sm transition-all`}
+            className={`flex-1 ${danger ? "bg-red-500 hover:bg-red-600" : "bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black"} text-white font-medium py-2.5 rounded-lg text-sm transition-all`}
           >
             {confirmLabel}
           </button>
@@ -662,7 +661,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
       {/* Header */}
       <div className="p-5 border-b border-white/10">
         <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-[#f0c040]" />
+          <Shield className="w-5 h-5 text-[#00E5FF]" />
           <span className="text-sm font-bold text-white">Admin Panel</span>
         </div>
         <p className="text-xs text-white/30 mt-1">The Clip Deal</p>
@@ -679,7 +678,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
               onClick={() => setActive(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
                 isActive
-                  ? "bg-[#f0c040]/15 text-[#f0c040]"
+                  ? "bg-[#00E5FF]/15 text-[#00E5FF]"
                   : "text-white/50 hover:text-white hover:bg-white/5"
               } ${isPreview && !isActive ? "opacity-75" : ""}`}
             >
