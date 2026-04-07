@@ -25,8 +25,14 @@ export default function ChatPanel({ campaigns }) {
   const [paymentSummary, setPaymentSummary] = useState(null);
   const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [receivedAdvices, setReceivedAdvices] = useState([]);
+  const [tabUnread, setTabUnread] = useState({ questions: 0, conseils: 0 });
   const messagesEndRef = useRef(null);
   const wsRef = useRef(null);
+
+  // ── Helpers localStorage pour "vu jusqu'à" par onglet ──────────────────
+  const lsKey = (tab) => `chatSeen_${campaignId}_${tab}_${user?.user_id}`;
+  const getLastSeen = (tab) => { try { return localStorage.getItem(lsKey(tab)) || ""; } catch { return ""; } };
+  const saveLastSeen = (tab) => { try { localStorage.setItem(lsKey(tab), new Date().toISOString()); } catch {} };
 
   const pathParts = location.pathname.split("/");
   const campaignIndex = pathParts.indexOf("campaign");
@@ -52,9 +58,43 @@ export default function ChatPanel({ campaigns }) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // When tab changes, reset selected clipper
+  // ── Calcul non-lus Questions ────────────────────────────────────────────
+  useEffect(() => {
+    if (!messages.length) return;
+    const lastSeen = getLastSeen("questions");
+    if (activeTab === "questions") {
+      // On est sur l'onglet — reset immédiat
+      setTabUnread(prev => ({ ...prev, questions: 0 }));
+      saveLastSeen("questions");
+    } else {
+      const count = messages.filter(m =>
+        m.sender_id !== user?.user_id &&
+        (!lastSeen || (m.created_at || "") > lastSeen)
+      ).length;
+      setTabUnread(prev => ({ ...prev, questions: count }));
+    }
+  }, [messages, activeTab]);
+
+  // ── Calcul non-lus Conseils (côté clippeur) ─────────────────────────────
+  useEffect(() => {
+    if (!isClipper || !receivedAdvices.length) return;
+    const lastSeen = getLastSeen("conseils");
+    if (activeTab === "conseils") {
+      setTabUnread(prev => ({ ...prev, conseils: 0 }));
+      saveLastSeen("conseils");
+    } else {
+      const count = receivedAdvices.filter(a =>
+        !lastSeen || (a.created_at || "") > lastSeen
+      ).length;
+      setTabUnread(prev => ({ ...prev, conseils: count }));
+    }
+  }, [receivedAdvices, activeTab]);
+
+  // ── Quand on change d'onglet → marquer comme vu ─────────────────────────
   useEffect(() => {
     setSelectedClipper(null);
+    saveLastSeen(activeTab);
+    setTabUnread(prev => ({ ...prev, [activeTab]: 0 }));
   }, [activeTab]);
 
   const fetchMessages = async () => {
@@ -115,6 +155,23 @@ export default function ChatPanel({ campaigns }) {
         if (data.type === "new_message" && data.message.campaign_id === campaignId) {
           if (data.message.message_type === "question" || data.message.message_type === "chat") {
             setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
+            // Incrémenter badge si pas sur l'onglet Questions
+            if (data.message.sender_id !== user?.user_id) {
+              setTabUnread(prev => ({
+                ...prev,
+                questions: activeTab === "questions" ? 0 : (prev.questions || 0) + 1,
+              }));
+              if (activeTab === "questions") saveLastSeen("questions");
+            }
+          }
+        }
+        // Nouveau conseil reçu (clippeur)
+        if (data.type === "new_advice" && isClipper) {
+          fetchReceivedAdvices();
+          if (activeTab !== "conseils") {
+            setTabUnread(prev => ({ ...prev, conseils: (prev.conseils || 0) + 1 }));
+          } else {
+            saveLastSeen("conseils");
           }
         }
       };
@@ -231,29 +288,45 @@ export default function ChatPanel({ campaigns }) {
           <h2 className="font-display font-bold text-lg text-white">{campaign?.name || "Campagne"}</h2>
         </div>
         <div className="flex gap-1 bg-white/5 p-1 rounded-lg w-fit">
-          {tabs.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                activeTab === tab.id
-                  ? (tab.id === "paiement" || tab.id === "remuneration") ? "bg-[#f0c040]/20 text-[#f0c040]"
-                    : tab.id === "conseils" ? "bg-[#FF007F]/20 text-[#FF007F]"
-                    : "bg-white/10 text-white"
-                  : "text-white/50 hover:text-white/70"
-              }`}>
-              <tab.icon className="w-3.5 h-3.5" />
-              {tab.label}
-              {tab.id === "conseils" && clippers.filter(c => c.needs_advice).length > 0 && (
-                <span className="px-1.5 py-0.5 bg-[#FF007F]/20 text-[#FF007F] rounded-full text-xs">
-                  {clippers.filter(c => c.needs_advice).length}
-                </span>
-              )}
-              {tab.id === "paiement" && paymentSummary?.clippers?.some(c => c.owed > 0) && (
-                <span className="px-1.5 py-0.5 bg-[#f0c040]/20 text-[#f0c040] rounded-full text-xs">
-                  {paymentSummary.clippers.filter(c => c.owed > 0).length}
-                </span>
-              )}
-            </button>
-          ))}
+          {tabs.map(tab => {
+            // Calcul du badge pour chaque onglet
+            let badge = 0;
+            if (tab.id === "questions") {
+              badge = tabUnread.questions;
+            } else if (tab.id === "conseils" && isClipper) {
+              badge = tabUnread.conseils;
+            } else if (tab.id === "conseils" && isAgency) {
+              badge = clippers.filter(c => c.needs_advice).length;
+            } else if (tab.id === "paiement") {
+              badge = paymentSummary?.clippers?.filter(c => c.owed > 0).length || 0;
+            }
+
+            const badgeColor = tab.id === "questions" ? "#00E5FF"
+              : tab.id === "conseils" ? "#FF007F"
+              : "#f0c040";
+
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                  activeTab === tab.id
+                    ? (tab.id === "paiement" || tab.id === "remuneration") ? "bg-[#f0c040]/20 text-[#f0c040]"
+                      : tab.id === "conseils" ? "bg-[#FF007F]/20 text-[#FF007F]"
+                      : "bg-white/10 text-white"
+                    : "text-white/50 hover:text-white/70"
+                }`}>
+                <tab.icon className="w-3.5 h-3.5" />
+                {tab.label}
+                {badge > 0 && (
+                  <span
+                    className="flex items-center justify-center min-w-[18px] h-[18px] rounded-full text-[10px] font-bold text-black px-1"
+                    style={{ backgroundColor: badgeColor }}
+                  >
+                    {badge > 99 ? "99+" : badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
