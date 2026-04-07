@@ -2515,26 +2515,45 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
             detail=platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}. Compte privé ou vide ?")
         )
 
+    # Chercher les campagnes auxquelles ce compte est assigné
+    assignments = await db.campaign_social_accounts.find(
+        {"account_id": account_id}, {"_id": 0, "campaign_id": 1}
+    ).to_list(50)
+    linked_campaign_ids = [a["campaign_id"] for a in assignments]
+
+    # Récupérer le RPM des campagnes liées pour calculer les gains
+    campaign_rpms = {}
+    for cid in linked_campaign_ids:
+        camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0, "rpm": 1})
+        if camp:
+            campaign_rpms[cid] = camp.get("rpm", 0)
+
+    # campaign_id principal = le premier lié (ou None si aucun)
+    primary_campaign_id = linked_campaign_ids[0] if linked_campaign_ids else None
+    primary_rpm = campaign_rpms.get(primary_campaign_id, 0) if primary_campaign_id else 0
+
     saved = 0
     for vid in videos:
         if not vid.get("platform_video_id"):
             continue
+        vid_views = vid.get("views", 0)
+        earnings = round((vid_views / 1000) * primary_rpm, 4) if primary_rpm else 0
         doc = {
             "video_id": f"vid_{uuid.uuid4().hex[:12]}",
             "platform_video_id": vid["platform_video_id"],
             "account_id": account_id,
             "user_id": user["user_id"],
-            "campaign_id": None,
+            "campaign_id": primary_campaign_id,   # ← lié à la campagne automatiquement
             "platform": platform,
             "url": vid.get("url", ""),
             "title": vid.get("title"),
             "thumbnail_url": vid.get("thumbnail_url"),
-            "views": vid.get("views", 0),
+            "views": vid_views,
             "likes": vid.get("likes", 0),
             "comments": vid.get("comments", 0),
             "published_at": vid.get("published_at"),
             "fetched_at": now_iso,
-            "earnings": 0,
+            "earnings": earnings,
         }
         try:
             await db.tracked_videos.update_one(
@@ -2546,7 +2565,8 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
         except Exception:
             pass
     await db.social_accounts.update_one({"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}})
-    return {"message": f"{saved} vidéo(s) importées depuis {platform}/@{username}", "count": saved, "simulated": False}
+    campaigns_info = f" (campagne : {primary_campaign_id})" if primary_campaign_id else ""
+    return {"message": f"{saved} vidéo(s) importées depuis {platform}/@{username}{campaigns_info}", "count": saved, "simulated": False}
 
 @api_router.get("/social-accounts/{account_id}/videos")
 async def get_account_videos(account_id: str, user: dict = Depends(get_current_user)):
@@ -2962,20 +2982,20 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
             {"_id": 0}
         )
         if campaign:
-            posts = await db.posts.find(
-                {"campaign_id": membership["campaign_id"], "user_id": user["user_id"]},
-                {"_id": 0, "views": 1}
-            ).to_list(10000)
-            views = sum(p.get("views", 0) for p in posts)
-            earnings = (views / 1000) * campaign["rpm"]
+            rpm = campaign.get("rpm", 0)
+            # Réutilise le calcul unifié (tracked_videos + manual posts)
+            calc = await _calc_earnings_for_member(campaign["campaign_id"], user["user_id"], rpm)
+            views = calc["views"]
+            earnings = calc["earned"]
             total_earnings += earnings
             total_views += views
             campaign_stats.append({
                 "campaign_id": campaign["campaign_id"],
                 "campaign_name": campaign["name"],
                 "views": views,
-                "post_count": len(posts),
                 "earnings": round(earnings, 2),
+                "paid": calc["paid"],
+                "owed": calc["owed"],
                 "strikes": membership.get("strikes", 0),
                 "status": membership.get("status", "active")
             })
@@ -3076,26 +3096,18 @@ async def request_payout(payout_data: PayoutRequest, user: dict = Depends(get_cu
     ).to_list(100)
 
     total_earnings = 0
+    total_paid_confirmed = 0
     for membership in memberships:
         campaign = await db.campaigns.find_one({"campaign_id": membership["campaign_id"]}, {"_id": 0})
         if campaign:
-            posts = await db.posts.find(
-                {"campaign_id": membership["campaign_id"], "user_id": user["user_id"]},
-                {"_id": 0, "views": 1}
-            ).to_list(10000)
-            views = sum(p.get("views", 0) for p in posts)
-            total_earnings += (views / 1000) * campaign["rpm"]
+            rpm = campaign.get("rpm", 0)
+            calc = await _calc_earnings_for_member(campaign["campaign_id"], user["user_id"], rpm)
+            total_earnings += calc["earned"]
+            total_paid_confirmed += calc["paid"]
 
     total_earnings = round(total_earnings, 2)
     amount = payout_data.amount
-
-    # Check already paid out
-    paid_out = await db.payments.find(
-        {"user_id": user["user_id"], "type": "payout", "status": {"$in": ["completed", "pending"]}},
-        {"_id": 0, "amount_eur": 1}
-    ).to_list(1000)
-    already_paid = sum(p.get("amount_eur", 0) for p in paid_out)
-    available = total_earnings - already_paid
+    available = round(max(total_earnings - total_paid_confirmed, 0), 2)
 
     if amount > available:
         raise HTTPException(status_code=400, detail=f"Solde insuffisant. Disponible : {available:.2f} EUR")
@@ -3128,15 +3140,60 @@ async def get_payment_history(user: dict = Depends(get_current_user)):
 # ================= PAIEMENTS DIRECTS (sans Stripe) =================
 
 async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) -> dict:
-    """Calculate total views and earnings for a clipper on a campaign."""
-    posts = await db.posts.find(
+    """
+    Calculate total views and earnings for a clipper on a campaign.
+
+    Sources (union, dédupliqué par platform_video_id) :
+    1. tracked_videos liés à ce campaign_id directement
+    2. tracked_videos des comptes sociaux assignés à cette campagne (campaign_social_accounts)
+    3. posts soumis manuellement (db.posts)
+    """
+    seen_video_ids = set()
+    total_views = 0
+
+    # ── Source 1 : tracked_videos avec campaign_id explicite ──────────────
+    t_vids = await db.tracked_videos.find(
         {"campaign_id": campaign_id, "user_id": user_id},
-        {"_id": 0, "views": 1}
+        {"_id": 0, "platform_video_id": 1, "views": 1}
     ).to_list(10000)
-    views = sum(p.get("views", 0) for p in posts)
+    for v in t_vids:
+        vid_key = v.get("platform_video_id") or v.get("video_id", "")
+        if vid_key and vid_key not in seen_video_ids:
+            seen_video_ids.add(vid_key)
+            total_views += v.get("views", 0)
+
+    # ── Source 2 : comptes assignés à la campagne (même si campaign_id=None) ──
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id, "user_id": user_id},
+        {"_id": 0, "account_id": 1}
+    ).to_list(100)
+    account_ids = [a["account_id"] for a in assignments]
+    if account_ids:
+        acc_vids = await db.tracked_videos.find(
+            {"account_id": {"$in": account_ids}},
+            {"_id": 0, "platform_video_id": 1, "views": 1}
+        ).to_list(10000)
+        for v in acc_vids:
+            vid_key = v.get("platform_video_id") or v.get("video_id", "")
+            if vid_key and vid_key not in seen_video_ids:
+                seen_video_ids.add(vid_key)
+                total_views += v.get("views", 0)
+
+    # ── Source 3 : posts manuels ────────────────────────────────────────────
+    manual_posts = await db.posts.find(
+        {"campaign_id": campaign_id, "user_id": user_id},
+        {"_id": 0, "post_id": 1, "views": 1}
+    ).to_list(10000)
+    for p in manual_posts:
+        post_key = f"post_{p.get('post_id', '')}"
+        if post_key not in seen_video_ids:
+            seen_video_ids.add(post_key)
+            total_views += p.get("views", 0)
+
+    views = total_views
     earned = round((views / 1000) * rpm, 2)
 
-    # Already confirmed payments for this user+campaign
+    # ── Paiements déjà confirmés ───────────────────────────────────────────
     confirmed = await db.payments.find(
         {"user_id": user_id, "campaign_id": campaign_id, "type": "direct_payment", "status": "confirmed"},
         {"_id": 0, "amount_eur": 1, "confirmed_at": 1}
