@@ -543,11 +543,13 @@ def _send_verification_email_sync(to_email: str, code: str):
     """Send a 6-digit verification code by email (synchronous, runs in executor)."""
     if not SMTP_USER or not SMTP_PASSWORD:
         logger.warning(f"SMTP not configured — verification code for {to_email}: {code}")
-        return  # silently skip if not configured
+        return
+
+    logger.info(f"SMTP sending to={to_email} host={SMTP_HOST}:{SMTP_PORT} user={SMTP_USER}")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"{code} — Votre code de vérification The Clip Deal Track"
-    msg["From"] = SMTP_FROM
+    msg["From"] = SMTP_USER  # use SMTP_USER directly as From to avoid Gmail rejection
     msg["To"] = to_email
 
     html = f"""
@@ -568,10 +570,20 @@ def _send_verification_email_sync(to_email: str, code: str):
     msg.attach(MIMEText(html, "html"))
 
     context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls(context=context)
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(SMTP_USER, to_email, msg.as_string())
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, to_email, msg.as_string())
+            logger.info(f"SMTP email sent successfully to {to_email}")
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"SMTP auth failed — check SMTP_USER/SMTP_PASSWORD (App Password required for Gmail): {e}")
+        raise
+    except Exception as e:
+        logger.error(f"SMTP send failed: {type(e).__name__}: {e}")
+        raise
 
 async def _send_verification_email(to_email: str, code: str):
     loop = asyncio.get_event_loop()
