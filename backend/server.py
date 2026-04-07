@@ -1914,17 +1914,135 @@ def _parse_tiktok_videos(scraped: dict) -> list:
     return result
 
 
-async def _verify_tiktok(username: str) -> dict:
-    """Verify TikTok account. Primary: Playwright. Fallback: yt-dlp."""
+async def _verify_tiktok_tikwm(username: str) -> dict:
+    """
+    Verify TikTok account via TikWm public API.
+    TikWm uses residential IPs so it bypasses TikTok's cloud server blocking.
+    Free, no API key required.
+    """
     username = username.lstrip("@")
-    # Primary: Playwright headless browser
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.get(
+            "https://www.tikwm.com/api/user/info",
+            params={"unique_id": username},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": "https://www.tikwm.com/",
+            }
+        )
+    if r.status_code != 200:
+        raise ValueError(f"TikWm API inaccessible (HTTP {r.status_code})")
+    try:
+        data = r.json()
+    except Exception:
+        raise ValueError("TikWm API: réponse invalide")
+
+    code = data.get("code")
+    if code != 0:
+        # code -1 = user not found, other codes = API error
+        if code == -1 or "not found" in str(data.get("msg", "")).lower():
+            raise ValueError(f"Compte TikTok @{username} introuvable. Vérifiez que le nom d'utilisateur est correct et que le compte est public.")
+        raise ValueError(f"TikWm API erreur (code {code}): {data.get('msg', 'inconnue')}")
+
+    user_data = data.get("data", {})
+    user = user_data.get("user", {})
+    stats = user_data.get("stats", {})
+
+    if not user:
+        raise ValueError(f"Compte TikTok @{username} introuvable ou privé.")
+
+    return {
+        "display_name": user.get("nickname") or username,
+        "avatar_url": user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb"),
+        "follower_count": stats.get("followerCount"),
+        "platform_channel_id": user.get("id") or user.get("secUid"),
+    }
+
+
+async def _fetch_tiktok_tikwm(username: str) -> list:
+    """
+    Fetch all TikTok videos for a user via TikWm API.
+    Paginates automatically. Works from cloud servers (TikWm uses residential proxies).
+    """
+    username = username.lstrip("@")
+    all_videos = []
+    cursor = 0
+    max_pages = 10  # 10 × 35 = 350 videos max
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+        for _ in range(max_pages):
+            r = await c.get(
+                "https://www.tikwm.com/api/user/posts",
+                params={"unique_id": username, "count": 35, "cursor": cursor},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Referer": "https://www.tikwm.com/",
+                }
+            )
+            if r.status_code != 200:
+                break
+            try:
+                data = r.json()
+            except Exception:
+                break
+
+            if data.get("code") != 0:
+                break
+
+            page_data = data.get("data", {})
+            items = page_data.get("videos", [])
+            if not items:
+                break
+
+            for item in items:
+                vid_id = str(item.get("video_id") or item.get("id") or "")
+                if not vid_id:
+                    continue
+                create_time = item.get("create_time") or 0
+                all_videos.append({
+                    "platform_video_id": vid_id,
+                    "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
+                    "title": (item.get("title") or item.get("desc") or "")[:200] or None,
+                    "thumbnail_url": item.get("cover") or item.get("origin_cover"),
+                    "views": int(item.get("play_count") or 0),
+                    "likes": int(item.get("digg_count") or 0),
+                    "comments": int(item.get("comment_count") or 0),
+                    "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+                })
+
+            has_more = page_data.get("hasMore") or page_data.get("has_more")
+            if not has_more:
+                break
+            cursor = page_data.get("cursor", cursor + 35)
+            await asyncio.sleep(0.5)  # gentle rate limiting
+
+    return all_videos
+
+
+async def _verify_tiktok(username: str) -> dict:
+    """Verify TikTok account. Primary: TikWm API (cloud-safe). Fallbacks: Playwright, yt-dlp."""
+    username = username.lstrip("@")
+    # Primary: TikWm API — works from cloud servers, no anti-bot issues
+    try:
+        return await _verify_tiktok_tikwm(username)
+    except ValueError as e:
+        # If TikWm says "not found", don't try other methods — account genuinely doesn't exist
+        msg = str(e).lower()
+        if "introuvable" in msg or "not found" in msg or "public" in msg:
+            raise
+        logger.warning(f"TikWm verify failed for @{username}: {e}")
+    except Exception as e:
+        logger.warning(f"TikWm verify failed for @{username}: {e}")
+    # Fallback: Playwright headless browser
     if PLAYWRIGHT_AVAILABLE:
         try:
             scraped = await _scrape_tiktok_playwright(username)
             return _parse_tiktok_scraped(scraped)
         except Exception as e:
             logger.warning(f"Playwright TikTok verify failed for @{username}: {e}")
-    # Fallback: yt-dlp
+    # Last resort: yt-dlp
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _ytdlp_verify():
@@ -1932,7 +2050,7 @@ async def _verify_tiktok(username: str) -> dict:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
             if not info:
-                raise ValueError(f"Compte TikTok '{username}' introuvable")
+                raise ValueError(f"Compte TikTok @{username} introuvable")
             return {
                 "display_name": info.get("uploader") or info.get("channel") or username,
                 "avatar_url": info.get("thumbnail"),
@@ -1940,7 +2058,7 @@ async def _verify_tiktok(username: str) -> dict:
                 "platform_channel_id": None,
             }
         return await loop.run_in_executor(_thread_pool, _ytdlp_verify)
-    raise ValueError(f"Impossible de vérifier TikTok @{username} — installez playwright ou yt-dlp")
+    raise ValueError(f"Impossible de vérifier TikTok @{username}")
 
 
 async def _scrape_instagram_api(username: str) -> dict:
@@ -2214,11 +2332,19 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
 
 async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> list:
     """
-    Fetch TikTok videos using Playwright (primary) or yt-dlp (fallback).
-    Playwright reuses the profile scrape which already captures videos.
+    Fetch TikTok videos. Priority: TikWm API (cloud-safe) → Playwright → yt-dlp.
     """
     username = username.lstrip("@")
-    # Primary: Playwright (pas de filtre de date — toutes les vidéos)
+    # Primary: TikWm API — no cloud blocking, paginated, free
+    try:
+        videos = await _fetch_tiktok_tikwm(username)
+        if videos:
+            logger.info(f"TikWm fetched {len(videos)} videos for @{username}")
+            return videos
+        logger.warning(f"TikWm returned 0 videos for @{username}")
+    except Exception as e:
+        logger.warning(f"TikWm fetch failed for @{username}: {e}")
+    # Fallback: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
         try:
             scraped = await _scrape_tiktok_playwright(username)
@@ -2695,8 +2821,8 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
 
     if not videos:
         platform_tips = {
-            "tiktok": "TikTok bloque les scrapers sur serveurs cloud. Vérifiez que le compte est public et réessayez.",
-            "instagram": "Instagram est inaccessible. Vérifiez que le compte est public (non privé).",
+            "tiktok": f"Aucune vidéo trouvée pour @{username} sur TikTok. Vérifiez que le compte est public et a au moins une vidéo publiée.",
+            "instagram": "Aucune vidéo trouvée. Vérifiez que le compte Instagram est public et a des Reels/vidéos publiés.",
             "youtube": "Aucune vidéo trouvée. Vérifiez que la chaîne YouTube a des vidéos publiques.",
         }
         raise HTTPException(
