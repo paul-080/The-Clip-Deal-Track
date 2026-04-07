@@ -586,19 +586,23 @@ async def google_login(login_req: GoogleLoginRequest):
     """Authenticate with a real Google id_token from Google Identity Services."""
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Google OAuth non configuré — ajoutez GOOGLE_CLIENT_ID dans .env")
-    if not GOOGLE_AUTH_AVAILABLE:
-        raise HTTPException(status_code=500, detail="Librairie google-auth non disponible")
     if login_req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
 
+    # Verify the Google id_token via Google's tokeninfo endpoint (async-safe)
     try:
-        idinfo = google_id_token.verify_oauth2_token(
-            login_req.id_token,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID,
-            clock_skew_in_seconds=10,
-        )
-    except ValueError as e:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": login_req.id_token},
+            )
+        if resp.status_code != 200:
+            raise ValueError(f"tokeninfo returned {resp.status_code}")
+        idinfo = resp.json()
+        # Verify the audience matches our client ID
+        if idinfo.get("aud") != GOOGLE_CLIENT_ID:
+            raise ValueError(f"aud mismatch: {idinfo.get('aud')}")
+    except Exception as e:
         logger.warning(f"Invalid Google token: {e}")
         raise HTTPException(status_code=401, detail="Token Google invalide ou expiré")
 
