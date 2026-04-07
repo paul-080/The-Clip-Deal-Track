@@ -4,7 +4,7 @@ import { useAuth, API } from "../App";
 import { toast } from "sonner";
 import { GoogleLogin } from "@react-oauth/google";
 import { motion, AnimatePresence } from "framer-motion";
-import { Play, Users, Zap, TrendingUp, ChevronRight, Video, DollarSign, BarChart3, Building2, Eye, X, ArrowLeft } from "lucide-react";
+import { Play, Users, Zap, TrendingUp, ChevronRight, Video, DollarSign, BarChart3, Building2, Eye, X, ArrowLeft, Mail, Lock, LogIn } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -25,6 +25,18 @@ export default function LandingPage() {
   });
   const [profilePicture, setProfilePicture] = useState(null); // base64
   const [cguAccepted, setCguAccepted] = useState(false);
+
+  // Email auth states
+  const [authMethod, setAuthMethod] = useState(null); // null | "email" | "google"
+  const [emailForm, setEmailForm] = useState({ email: "", password: "", confirmPassword: "" });
+  const [verificationCode, setVerificationCode] = useState("");
+  const [emailPending, setEmailPending] = useState(""); // email awaiting verification
+  const [emailLoading, setEmailLoading] = useState(false);
+
+  // Login modal (existing users)
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [loginLoading, setLoginLoading] = useState(false);
 
   const roles = [
     {
@@ -70,6 +82,10 @@ export default function LandingPage() {
       setSelectedRole(null);
       setFormData({ firstName: "", lastName: "", pseudo: "", agencyName: "" });
       setProfilePicture(null);
+      setAuthMethod(null);
+      setEmailForm({ email: "", password: "", confirmPassword: "" });
+      setVerificationCode("");
+      setEmailPending("");
     }
   };
 
@@ -144,6 +160,84 @@ export default function LandingPage() {
     }
   };
 
+  const handleEmailRegister = async () => {
+    if (!isFormValid() || !cguAccepted) return;
+    if (emailForm.password.length < 6) { toast.error("Mot de passe trop court (6 caractères minimum)"); return; }
+    if (emailForm.password !== emailForm.confirmPassword) { toast.error("Les mots de passe ne correspondent pas"); return; }
+    setEmailLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email: emailForm.email.trim().toLowerCase(),
+          password: emailForm.password,
+          role: selectedRole,
+          display_name: getDisplayName(),
+          first_name: formData.firstName,
+          last_name: formData.lastName,
+          agency_name: formData.agencyName,
+        }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Erreur lors de l'inscription");
+      setEmailPending(emailForm.email.trim().toLowerCase());
+      setStep(3);
+      toast.success(`Code envoyé à ${emailForm.email}`);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
+  const handleVerifyCode = async () => {
+    if (verificationCode.length !== 6) { toast.error("Entrez le code à 6 chiffres"); return; }
+    setEmailLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/verify-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: emailPending, code: verificationCode }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Code invalide");
+      setUser(data.user);
+      toast.success(`Bienvenue ${data.user.display_name} !`);
+      setShowRoleModal(false);
+      navigate(`/${data.user.role}`);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!loginForm.email || !loginForm.password) { toast.error("Remplissez tous les champs"); return; }
+    setLoginLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: loginForm.email.trim().toLowerCase(), password: loginForm.password }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Connexion échouée");
+      setUser(data.user);
+      toast.success(`Bon retour, ${data.user.display_name} !`);
+      setShowLoginModal(false);
+      navigate(`/${data.user.role}`);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
   const selectedRoleData = roles.find(r => r.id === selectedRole);
 
   return (
@@ -186,7 +280,7 @@ export default function LandingPage() {
             ) : (
               <>
                 <Button
-                  onClick={handleGetStarted}
+                  onClick={() => setShowLoginModal(true)}
                   variant="ghost"
                   data-testid="nav-login-btn"
                   className="text-white/70 hover:text-white hover:bg-white/10 rounded-full px-5 py-2 font-medium transition-colors duration-200"
@@ -195,7 +289,7 @@ export default function LandingPage() {
                 </Button>
                 <Button
                   onClick={handleGetStarted}
-                  className="bg-[#f0c040] hover:bg-[#f0c040]/90 text-black rounded-full px-5 py-2 font-semibold transition-colors duration-200"
+                  className="bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black rounded-full px-5 py-2 font-semibold transition-colors duration-200"
                 >
                   Créer un compte
                 </Button>
@@ -637,7 +731,7 @@ export default function LandingPage() {
                   <ChevronRight className="w-5 h-5 ml-2" />
                 </Button>
               </motion.div>
-            ) : (
+            ) : step === 2 ? (
               <motion.div
                 key="step2"
                 initial={{ opacity: 0, x: 20 }}
@@ -646,7 +740,7 @@ export default function LandingPage() {
               >
                 <DialogHeader>
                   <div className="flex items-center gap-3 mb-2">
-                    <button 
+                    <button
                       onClick={handleBackStep}
                       className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
                     >
@@ -739,20 +833,21 @@ export default function LandingPage() {
                     type="checkbox"
                     checked={cguAccepted}
                     onChange={(e) => setCguAccepted(e.target.checked)}
-                    className="mt-0.5 w-3.5 h-3.5 accent-[#f0c040] flex-shrink-0"
+                    className="mt-0.5 w-3.5 h-3.5 accent-[#00E5FF] flex-shrink-0"
                   />
                   <span>
                     J'accepte les{" "}
-                    <span className="text-[#f0c040] underline">Conditions Générales d'Utilisation</span>
+                    <span className="text-[#00E5FF] underline">Conditions Générales d'Utilisation</span>
                     {" "}et la{" "}
-                    <span className="text-[#f0c040] underline">Politique de confidentialité</span>
+                    <span className="text-[#00E5FF] underline">Politique de confidentialité</span>
                     . Je reconnais que The Clip Deal est un outil de mise en relation et n'est pas responsable des contenus publiés par les clippers.
                   </span>
                 </label>
 
-                {/* Bouton Google — seul moyen de valider, activé uniquement si le formulaire est rempli */}
-                <div className="mt-4">
-                  {isFormValid() && cguAccepted ? (
+                {/* Méthodes de connexion */}
+                {isFormValid() && cguAccepted ? (
+                  <div className="mt-5 space-y-3">
+                    {/* Option Google */}
                     <div className="flex justify-center">
                       <GoogleLogin
                         onSuccess={handleGoogleSuccess}
@@ -764,15 +859,173 @@ export default function LandingPage() {
                         useOneTap={false}
                       />
                     </div>
-                  ) : (
-                    <div className="w-full py-4 rounded-xl text-center text-sm text-white/30 border border-white/10">
-                      {!isFormValid() ? "Remplissez tous les champs pour continuer" : "Acceptez les CGU pour continuer"}
+
+                    {/* Divider */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-px bg-white/10" />
+                      <span className="text-xs text-white/30">ou</span>
+                      <div className="flex-1 h-px bg-white/10" />
                     </div>
-                  )}
+
+                    {/* Option Email */}
+                    {authMethod !== "email" ? (
+                      <Button
+                        onClick={() => setAuthMethod("email")}
+                        variant="outline"
+                        className="w-full border-white/20 text-white/70 hover:bg-white/5 hover:text-white gap-2"
+                      >
+                        <Mail className="w-4 h-4" />
+                        Continuer avec Email
+                      </Button>
+                    ) : (
+                      <div className="space-y-3 bg-white/5 rounded-xl p-4 border border-white/10">
+                        <Input
+                          type="email"
+                          placeholder="votre@email.com"
+                          value={emailForm.email}
+                          onChange={(e) => setEmailForm(f => ({ ...f, email: e.target.value }))}
+                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                        />
+                        <Input
+                          type="password"
+                          placeholder="Mot de passe (6 caractères min.)"
+                          value={emailForm.password}
+                          onChange={(e) => setEmailForm(f => ({ ...f, password: e.target.value }))}
+                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                        />
+                        <Input
+                          type="password"
+                          placeholder="Confirmer le mot de passe"
+                          value={emailForm.confirmPassword}
+                          onChange={(e) => setEmailForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                        />
+                        <Button
+                          onClick={handleEmailRegister}
+                          disabled={emailLoading || !emailForm.email || !emailForm.password}
+                          className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
+                        >
+                          {emailLoading ? "Envoi en cours..." : "Recevoir le code de vérification"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-full py-4 rounded-xl text-center text-sm text-white/30 border border-white/10 mt-4">
+                    {!isFormValid() ? "Remplissez tous les champs pour continuer" : "Acceptez les CGU pour continuer"}
+                  </div>
+                )}
+              </motion.div>
+            ) : step === 3 ? (
+              /* ── STEP 3 : Vérification email ── */
+              <motion.div
+                key="step3"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+              >
+                <DialogHeader>
+                  <div className="flex items-center gap-3 mb-2">
+                    <button
+                      onClick={() => setStep(2)}
+                      className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                    >
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <div className="w-10 h-10 rounded-lg bg-[#00E5FF]/20 flex items-center justify-center">
+                      <Mail className="w-5 h-5 text-[#00E5FF]" />
+                    </div>
+                    <DialogTitle className="font-display font-bold text-xl text-white">
+                      Vérification email
+                    </DialogTitle>
+                  </div>
+                </DialogHeader>
+                <p className="text-white/50 text-sm mt-3 ml-14 mb-6">
+                  Un code à 6 chiffres a été envoyé à <span className="text-white">{emailPending}</span>
+                </p>
+                <div className="space-y-4">
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    placeholder="_ _ _ _ _ _"
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    className="bg-white/5 border-white/10 text-white placeholder:text-white/20 text-center text-3xl tracking-[1rem] font-mono h-16"
+                  />
+                  <Button
+                    onClick={handleVerifyCode}
+                    disabled={emailLoading || verificationCode.length !== 6}
+                    className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold py-6"
+                  >
+                    {emailLoading ? "Vérification..." : "Confirmer mon compte"}
+                  </Button>
+                  <button
+                    onClick={() => { setStep(2); setVerificationCode(""); }}
+                    className="w-full text-center text-sm text-white/40 hover:text-white/70 transition-colors"
+                  >
+                    Renvoyer le code
+                  </button>
                 </div>
               </motion.div>
-            )}
+            ) : null}
           </AnimatePresence>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Modal Se connecter ── */}
+      <Dialog open={showLoginModal} onOpenChange={setShowLoginModal}>
+        <DialogContent className="bg-[#121212] border-white/10 max-w-md">
+          <DialogHeader>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-lg bg-[#00E5FF]/20 flex items-center justify-center">
+                <LogIn className="w-5 h-5 text-[#00E5FF]" />
+              </div>
+              <DialogTitle className="font-display font-bold text-xl text-white">
+                Se connecter
+              </DialogTitle>
+            </div>
+          </DialogHeader>
+          <div className="space-y-4 mt-4">
+            <div>
+              <label className="block text-sm text-white/70 mb-2">Email</label>
+              <Input
+                type="email"
+                placeholder="votre@email.com"
+                value={loginForm.email}
+                onChange={(e) => setLoginForm(f => ({ ...f, email: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-white/70 mb-2">Mot de passe</label>
+              <Input
+                type="password"
+                placeholder="••••••••"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm(f => ({ ...f, password: e.target.value }))}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+              />
+            </div>
+            <Button
+              onClick={handleLogin}
+              disabled={loginLoading || !loginForm.email || !loginForm.password}
+              className="w-full bg-white text-black hover:bg-white/90 font-semibold py-6 mt-2"
+            >
+              {loginLoading ? "Connexion..." : "Se connecter"}
+            </Button>
+            <p className="text-center text-sm text-white/40">
+              Pas encore de compte ?{" "}
+              <button
+                onClick={() => { setShowLoginModal(false); handleGetStarted(); }}
+                className="text-[#00E5FF] hover:underline"
+              >
+                Créer un compte
+              </button>
+            </p>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

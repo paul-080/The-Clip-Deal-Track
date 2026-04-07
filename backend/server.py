@@ -18,6 +18,11 @@ import stripe
 import hashlib
 import hmac
 import secrets
+import random
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 try:
     from google.oauth2 import id_token as google_id_token
     from google.auth.transport import requests as google_requests
@@ -62,7 +67,7 @@ else:
 
 db = client[db_name]
 
-# Stripe
+# Config
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
@@ -70,6 +75,12 @@ ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+# SMTP
+SMTP_HOST = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+SMTP_USER = os.environ.get('SMTP_USER', '')
+SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '')
+SMTP_FROM = os.environ.get('SMTP_FROM', 'The Clip Deal Track <noreply@theclipdealtrack.com>')
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -111,6 +122,10 @@ class EmailRegisterRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     agency_name: Optional[str] = None
+
+class VerifyEmailRequest(BaseModel):
+    email: str
+    code: str
 
 class Campaign(BaseModel):
     campaign_id: str
@@ -524,38 +539,141 @@ def _make_session_response(user: dict, session_token: str) -> Response:
                     secure=os.environ.get("RAILWAY_ENVIRONMENT") == "production", samesite="lax", path="/", max_age=7*24*60*60)
     return resp
 
+def _send_verification_email_sync(to_email: str, code: str):
+    """Send a 6-digit verification code by email (synchronous, runs in executor)."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        logger.warning(f"SMTP not configured — verification code for {to_email}: {code}")
+        return  # silently skip if not configured
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"{code} — Votre code de vérification The Clip Deal Track"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_email
+
+    html = f"""
+    <div style="font-family:Inter,Arial,sans-serif;background:#0A0A0A;padding:40px;max-width:480px;margin:0 auto;border-radius:12px;">
+      <div style="text-align:center;margin-bottom:32px;">
+        <div style="display:inline-block;background:linear-gradient(135deg,#00E5FF,#FF007F);border-radius:10px;padding:12px 20px;">
+          <span style="color:#000;font-weight:bold;font-size:18px;">▶ The Clip Deal Track</span>
+        </div>
+      </div>
+      <h2 style="color:#fff;font-size:22px;font-weight:600;margin-bottom:8px;">Vérification de votre email</h2>
+      <p style="color:rgba(255,255,255,0.6);font-size:15px;margin-bottom:32px;">Entrez ce code dans l'application pour confirmer votre adresse email :</p>
+      <div style="background:#1a1a1a;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:24px;text-align:center;margin-bottom:24px;">
+        <span style="color:#00E5FF;font-size:42px;font-weight:700;letter-spacing:12px;">{code}</span>
+      </div>
+      <p style="color:rgba(255,255,255,0.4);font-size:13px;">Ce code expire dans 15 minutes. Si vous n'avez pas demandé ce code, ignorez cet email.</p>
+    </div>
+    """
+    msg.attach(MIMEText(html, "html"))
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls(context=context)
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, to_email, msg.as_string())
+
+async def _send_verification_email(to_email: str, code: str):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _send_verification_email_sync, to_email, code)
+
 @api_router.post("/auth/register")
 async def email_register(req: EmailRegisterRequest):
-    """Register with email + password."""
+    """Register with email + password — stores a pending verification code, sends it by email."""
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="Mot de passe trop court (6 caractères minimum)")
+    if "@" not in req.email or "." not in req.email:
+        raise HTTPException(status_code=400, detail="Adresse email invalide")
 
     existing = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
-    if existing:
+    if existing and existing.get("email_verified", True):
         raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email")
 
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
-    await db.users.insert_one({
-        "user_id": user_id,
-        "email": req.email.lower(),
-        "name": req.display_name,
-        "picture": None,
-        "role": req.role,
-        "display_name": req.display_name,
-        "first_name": req.first_name,
-        "last_name": req.last_name,
-        "agency_name": req.agency_name,
-        "password_hash": _hash_password(req.password),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "settings": {}
-    })
+    code = str(random.randint(100000, 999999))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    # Upsert pending verification (replace any previous pending code for this email)
+    await db.email_verifications.update_one(
+        {"email": req.email.lower()},
+        {"$set": {
+            "email": req.email.lower(),
+            "password_hash": _hash_password(req.password),
+            "role": req.role,
+            "display_name": req.display_name,
+            "first_name": req.first_name,
+            "last_name": req.last_name,
+            "agency_name": req.agency_name,
+            "code": code,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True
+    )
+
+    # Send email (non-blocking)
+    try:
+        await _send_verification_email(req.email.lower(), code)
+    except Exception as e:
+        logger.error(f"Email send failed for {req.email}: {e}")
+        # Still return success — code is logged in warnings if SMTP not configured
+
+    return {"message": f"Code de vérification envoyé à {req.email}", "requires_verification": True}
+
+@api_router.post("/auth/verify-email")
+async def verify_email(req: VerifyEmailRequest):
+    """Verify the 6-digit code and create the user account + session."""
+    pending = await db.email_verifications.find_one({"email": req.email.lower()}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Aucune vérification en attente pour cet email")
+
+    expires_at = pending.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Code expiré — relancez l'inscription")
+
+    if not hmac.compare_digest(str(pending.get("code", "")), str(req.code).strip()):
+        raise HTTPException(status_code=401, detail="Code incorrect")
+
+    # Create or reactivate user
+    existing_user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
+    if existing_user:
+        user_id = existing_user["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {
+            "email_verified": True,
+            "password_hash": pending["password_hash"],
+            "role": pending["role"],
+            "display_name": pending["display_name"],
+        }})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": req.email.lower(),
+            "name": pending["display_name"],
+            "picture": None,
+            "role": pending["role"],
+            "display_name": pending["display_name"],
+            "first_name": pending.get("first_name"),
+            "last_name": pending.get("last_name"),
+            "agency_name": pending.get("agency_name"),
+            "password_hash": pending["password_hash"],
+            "email_verified": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "settings": {}
+        })
+
+    # Clean up pending code
+    await db.email_verifications.delete_one({"email": req.email.lower()})
 
     session_token = uuid.uuid4().hex
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
-        "expires_at": expires_at.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
+        "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
 
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return _make_session_response(user, session_token)
@@ -597,11 +715,14 @@ async def google_login(login_req: GoogleLoginRequest):
                 params={"id_token": login_req.id_token},
             )
         if resp.status_code != 200:
-            raise ValueError(f"tokeninfo returned {resp.status_code}")
+            raise ValueError(f"tokeninfo returned {resp.status_code}: {resp.text}")
         idinfo = resp.json()
-        # Verify the audience matches our client ID
-        if idinfo.get("aud") != GOOGLE_CLIENT_ID:
-            raise ValueError(f"aud mismatch: {idinfo.get('aud')}")
+        # Verify the audience matches our client ID (check both aud and azp)
+        token_aud = idinfo.get("aud", "")
+        token_azp = idinfo.get("azp", "")
+        if GOOGLE_CLIENT_ID not in (token_aud, token_azp):
+            logger.warning(f"Google client ID mismatch. Expected={GOOGLE_CLIENT_ID}, aud={token_aud}, azp={token_azp}")
+            raise ValueError(f"Client ID mismatch")
     except Exception as e:
         logger.warning(f"Invalid Google token: {e}")
         raise HTTPException(status_code=401, detail="Token Google invalide ou expiré")
