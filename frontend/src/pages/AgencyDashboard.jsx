@@ -275,7 +275,7 @@ function DiscoverPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {campaigns.map((campaign) => (
-            <div key={campaign.campaign_id} className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden hover:border-white/20 transition-all group">
+            <div key={campaign.campaign_id} data-campaign-id={campaign.campaign_id} data-campaign-name={campaign.name} className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden hover:border-white/20 transition-all group">
               {/* Cover */}
               <div
                 className="h-32 relative overflow-hidden"
@@ -1064,7 +1064,7 @@ function LinksPage() {
       ) : (
         <div className="space-y-6">
           {campaigns.map((campaign) => (
-            <Card key={campaign.campaign_id} className="bg-[#121212] border-white/10">
+            <Card key={campaign.campaign_id} data-campaign-id={campaign.campaign_id} data-campaign-name={campaign.name} className="bg-[#121212] border-white/10">
               <CardHeader>
                 <CardTitle className="text-white flex items-center gap-2">
                   <Video className="w-5 h-5 text-[#FF007F]" />

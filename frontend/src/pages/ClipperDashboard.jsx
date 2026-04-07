@@ -1140,6 +1140,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                           {videos.map((v) => (
                             <a key={v.video_id || v.platform_video_id} href={v.url} target="_blank" rel="noreferrer"
+                              data-video-id={v.video_id || v.platform_video_id}
                               className="group block rounded-lg overflow-hidden bg-white/5 hover:bg-white/10 transition-colors">
                               {v.thumbnail_url ? (
                                 <img src={v.thumbnail_url} alt="" className="w-full aspect-video object-cover" />
@@ -1198,7 +1199,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                 (a) => a.status === "verified" && !assignedAccounts.find((ca) => ca.account_id === a.account_id)
               );
               return (
-                <Card key={campaign.campaign_id} className="bg-[#121212] border-white/10">
+                <Card key={campaign.campaign_id} data-campaign-id={campaign.campaign_id} data-campaign-name={campaign.name} className="bg-[#121212] border-white/10">
                   <CardHeader className="pb-2">
                     <CardTitle className="text-white text-lg flex items-center gap-2">
                       <Video className="w-5 h-5 text-[#00E5FF]" />

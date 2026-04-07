@@ -66,6 +66,7 @@ db = client[db_name]
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY', '')
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
+ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
@@ -2938,6 +2939,289 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
+
+# ================= ADMIN ROUTES =================
+
+async def verify_admin_code(request: Request):
+    """Dependency: verify X-Admin-Code header against env var."""
+    code = request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    return True
+
+@api_router.get("/admin/verify")
+async def admin_verify(request: Request):
+    """Verify admin code — returns 200 if valid, 403 if not."""
+    await verify_admin_code(request)
+    return {"ok": True}
+
+@api_router.get("/admin/stats")
+async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
+    users_count = await db.users.count_documents({})
+    campaigns_count = await db.campaigns.count_documents({})
+    videos_count = await db.tracked_videos.count_documents({})
+    accounts_count = await db.social_accounts.count_documents({})
+    messages_count = await db.messages.count_documents({})
+    members_count = await db.campaign_members.count_documents({})
+    # Revenue: sum of earnings in euros
+    pipeline = [{"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
+    result = await db.earnings.aggregate(pipeline).to_list(1)
+    total_earnings = result[0]["total"] if result else 0
+    return {
+        "users": users_count,
+        "campaigns": campaigns_count,
+        "tracked_videos": videos_count,
+        "social_accounts": accounts_count,
+        "messages": messages_count,
+        "campaign_members": members_count,
+        "total_earnings_eur": round(total_earnings, 2),
+    }
+
+@api_router.get("/admin/users")
+async def admin_list_users(request: Request, _: bool = Depends(verify_admin_code)):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(2000)
+    return users
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    # Delete all related data
+    await db.users.delete_one({"user_id": user_id})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.social_accounts.delete_many({"user_id": user_id})
+    await db.campaign_members.delete_many({"user_id": user_id})
+    await db.messages.delete_many({"sender_id": user_id})
+    await db.earnings.delete_many({"user_id": user_id})
+    await db.strikes.delete_many({"user_id": user_id})
+    return {"deleted": user_id}
+
+@api_router.post("/admin/users/{user_id}/ban")
+async def admin_ban_user(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    await db.users.update_one({"user_id": user_id}, {"$set": {"banned": True}})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    return {"banned": user_id}
+
+@api_router.delete("/admin/campaigns/{campaign_id}")
+async def admin_delete_campaign(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    # Notify agency
+    agency_id = campaign.get("agency_id")
+    if agency_id:
+        agency_user = await db.users.find_one({"user_id": agency_id}, {"_id": 0})
+        if agency_user:
+            notif = {
+                "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+                "campaign_id": campaign_id,
+                "sender_id": "admin",
+                "sender_name": "The Clip Deal — Modération",
+                "sender_role": "admin",
+                "recipient_id": agency_id,
+                "content": f"Votre campagne « {campaign.get('name', campaign_id)} » a été retirée par la plateforme The Clip Deal car elle ne respecte pas nos conditions d'utilisation.",
+                "message_type": "admin_notice",
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.messages.insert_one(notif)
+    await db.campaigns.delete_one({"campaign_id": campaign_id})
+    await db.campaign_members.delete_many({"campaign_id": campaign_id})
+    await db.tracked_videos.delete_many({"campaign_id": campaign_id})
+    return {"deleted": campaign_id}
+
+@api_router.delete("/admin/videos/{video_id}")
+async def admin_delete_video(video_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    video = await db.tracked_videos.find_one({"video_id": video_id}, {"_id": 0})
+    if not video:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable")
+    # Notify clipper
+    clipper_id = video.get("user_id")
+    if clipper_id:
+        notif = {
+            "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+            "campaign_id": video.get("campaign_id", ""),
+            "sender_id": "admin",
+            "sender_name": "The Clip Deal — Modération",
+            "sender_role": "admin",
+            "recipient_id": clipper_id,
+            "content": f"Votre publication a été retirée par la plateforme The Clip Deal car elle ne respecte pas nos conditions d'utilisation.",
+            "message_type": "admin_notice",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.messages.insert_one(notif)
+    await db.tracked_videos.delete_one({"video_id": video_id})
+    return {"deleted": video_id}
+
+@api_router.post("/admin/notify")
+async def admin_notify_user(request: Request, _: bool = Depends(verify_admin_code)):
+    body = await request.json()
+    user_id = body.get("user_id")
+    message_content = body.get("message", "Votre contenu a été retiré par la plateforme.")
+    campaign_id = body.get("campaign_id", "")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id requis")
+    notif = {
+        "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+        "campaign_id": campaign_id,
+        "sender_id": "admin",
+        "sender_name": "The Clip Deal — Modération",
+        "sender_role": "admin",
+        "recipient_id": user_id,
+        "content": message_content,
+        "message_type": "admin_notice",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.messages.insert_one(notif)
+    await manager.send_to_user(user_id, {"type": "admin_notice", "content": message_content})
+    return {"sent": True}
+
+@api_router.delete("/admin/data/all-users")
+async def admin_delete_all_users(request: Request, _: bool = Depends(verify_admin_code)):
+    # Keep demo accounts and admin markers
+    await db.users.delete_many({"email": {"$not": {"$regex": "@demo\\.clipdeal\\.local"}}})
+    await db.user_sessions.delete_many({})
+    return {"deleted": "all_non_demo_users"}
+
+@api_router.delete("/admin/data/all-campaigns")
+async def admin_delete_all_campaigns(request: Request, _: bool = Depends(verify_admin_code)):
+    await db.campaigns.delete_many({})
+    await db.campaign_members.delete_many({})
+    await db.tracked_videos.delete_many({})
+    return {"deleted": "all_campaigns"}
+
+@api_router.delete("/admin/data/all-videos")
+async def admin_delete_all_videos(request: Request, _: bool = Depends(verify_admin_code)):
+    await db.tracked_videos.delete_many({})
+    return {"deleted": "all_videos"}
+
+@api_router.post("/admin/demo-login/{role}")
+async def admin_demo_login(role: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Create a demo session for a given role — used by admin previews."""
+    if role not in ["clipper", "agency", "manager", "client"]:
+        raise HTTPException(status_code=400, detail="Rôle invalide")
+    demo_names = {"clipper": "Demo Clippeur", "agency": "Demo Agence", "manager": "Demo Manager", "client": "Demo Client"}
+    demo_emails = {
+        "clipper": "clipper@demo.clipdeal.local",
+        "agency": "agency@demo.clipdeal.local",
+        "manager": "manager@demo.clipdeal.local",
+        "client": "client@demo.clipdeal.local",
+    }
+    email = demo_emails[role]
+    display_name = demo_names[role]
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+    else:
+        user_id = f"demo_{role}_{uuid.uuid4().hex[:8]}"
+        await db.users.insert_one({
+            "user_id": user_id, "email": email, "name": display_name, "picture": None,
+            "role": role, "display_name": display_name,
+            "created_at": datetime.now(timezone.utc).isoformat(), "settings": {}
+        })
+    session_token = uuid.uuid4().hex
+    expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+    await db.user_sessions.insert_one({
+        "user_id": user_id, "session_token": session_token,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    return {"session_token": session_token, "role": role, "user_id": user_id}
+
+@api_router.get("/admin/api-status")
+async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code)):
+    """Test all API connections in parallel and return status."""
+    import time
+
+    async def test_mongodb():
+        t = time.time()
+        try:
+            await db.command("ping")
+            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
+
+    async def test_youtube():
+        t = time.time()
+        if not YOUTUBE_API_KEY:
+            return {"status": "not_configured", "error": "YOUTUBE_API_KEY manquante"}
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "id": "UC_x5XG1OV2P6uZZ5FSM9Ttw", "key": YOUTUBE_API_KEY}
+                )
+            if r.status_code == 200:
+                return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+            return {"status": "error", "error": f"HTTP {r.status_code}", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
+
+    async def test_playwright():
+        t = time.time()
+        if not PLAYWRIGHT_AVAILABLE:
+            return {"status": "not_installed", "error": "Playwright non installé"}
+        try:
+            async with _playwright_api() as pw:
+                browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
+                await browser.close()
+            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:100], "latency_ms": round((time.time() - t) * 1000)}
+
+    async def test_stripe():
+        t = time.time()
+        if STRIPE_API_KEY == "sk_test_placeholder" or not STRIPE_API_KEY:
+            return {"status": "not_configured", "error": "Clé Stripe non configurée"}
+        try:
+            import stripe as stripe_mod
+            stripe_mod.api_key = STRIPE_API_KEY
+            stripe_mod.Balance.retrieve()
+            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:100], "latency_ms": round((time.time() - t) * 1000)}
+
+    async def test_google_oauth():
+        t = time.time()
+        if not GOOGLE_CLIENT_ID:
+            return {"status": "not_configured", "error": "GOOGLE_CLIENT_ID manquant"}
+        if not GOOGLE_AUTH_AVAILABLE:
+            return {"status": "not_installed", "error": "google-auth non installé"}
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("https://oauth2.googleapis.com/tokeninfo?id_token=test")
+            # A 400 means the endpoint is reachable (invalid token is expected)
+            if r.status_code in (200, 400):
+                return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+            return {"status": "error", "error": f"HTTP {r.status_code}", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
+
+    results = await asyncio.gather(
+        test_mongodb(), test_youtube(), test_playwright(), test_stripe(), test_google_oauth(),
+        return_exceptions=False
+    )
+    return {
+        "mongodb": results[0],
+        "youtube_api": results[1],
+        "playwright": results[2],
+        "stripe": results[3],
+        "google_oauth": results[4],
+        "checked_at": datetime.now(timezone.utc).isoformat()
+    }
+
+@api_router.get("/admin/campaigns")
+async def admin_list_campaigns(request: Request, _: bool = Depends(verify_admin_code)):
+    campaigns = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
+    return campaigns
+
+@api_router.get("/admin/videos")
+async def admin_list_videos(request: Request, _: bool = Depends(verify_admin_code)):
+    videos = await db.tracked_videos.find({}, {"_id": 0}).to_list(2000)
+    return videos
 
 # ================= HEALTH & ROOT =================
 
