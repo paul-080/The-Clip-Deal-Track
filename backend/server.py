@@ -2754,42 +2754,6 @@ async def refresh_social_account(account_id: str, user: dict = Depends(get_curre
     asyncio.create_task(_verify_and_update_account(account_id, account["platform"], account["username"]))
     return {"message": "Vérification relancée"}
 
-def _generate_simulated_videos(platform: str, username: str, account_id: str, count: int = 4) -> list:
-    """Generate realistic simulated videos when real scraping is unavailable."""
-    import random as _rnd
-    titles_tiktok = [
-        "POV : quand tu découvres ce hack 🔥", "Trend du moment 💀", "Essayez ça chez vous 👀",
-        "On a testé et c'est incroyable", "Tu savais que... ?", "Le clip le plus fou de la semaine",
-        "Réaction honnête 😅", "Challenge accepté !", "Ça m'a pris 5 min pour faire ça",
-    ]
-    titles_ig = [
-        "Reel de la semaine ✨", "Nouvelle tendance 🔥", "Check this out 👀",
-        "Transformation incroyable", "Résultats après 30 jours", "Le secret que personne ne te dit",
-    ]
-    titles_yt = [
-        "Je teste la tendance TikTok", "Vlog de la semaine", "Résultats choquants",
-        "Mon setup 2025", "Tutorial complet", "La vérité sur...",
-    ]
-    titles = titles_tiktok if platform == "tiktok" else (titles_ig if platform == "instagram" else titles_yt)
-    result = []
-    base_views = _rnd.randint(8_000, 250_000)
-    for i in range(count):
-        vid_views = int(base_views * _rnd.uniform(0.4, 2.5))
-        days_ago = _rnd.randint(i * 4 + 1, i * 4 + 10)
-        pub_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
-        fake_id = f"sim_{uuid.uuid4().hex[:12]}"
-        result.append({
-            "platform_video_id": fake_id,
-            "url": f"https://www.{'tiktok.com/@' if platform=='tiktok' else 'instagram.com/p/' if platform=='instagram' else 'youtube.com/shorts/'}{username}/{fake_id}",
-            "title": _rnd.choice(titles),
-            "thumbnail_url": None,
-            "views": vid_views,
-            "likes": int(vid_views * _rnd.uniform(0.03, 0.10)),
-            "comments": int(vid_views * _rnd.uniform(0.002, 0.008)),
-            "published_at": pub_dt.isoformat(),
-            "simulated": True,
-        })
-    return result
 
 @api_router.post("/social-accounts/{account_id}/scrape-now")
 async def scrape_account_now(account_id: str, user: dict = Depends(get_current_user)):
@@ -4044,6 +4008,17 @@ async def admin_delete_all_videos(request: Request, _: bool = Depends(verify_adm
     await db.tracked_videos.delete_many({})
     return {"deleted": "all_videos"}
 
+@api_router.delete("/admin/data/simulated-videos")
+async def admin_delete_simulated_videos(request: Request, _: bool = Depends(verify_admin_code)):
+    """Delete only simulated/fake videos (simulated=True or platform_video_id starts with sim_)."""
+    result = await db.tracked_videos.delete_many({
+        "$or": [
+            {"simulated": True},
+            {"platform_video_id": {"$regex": "^sim_"}},
+        ]
+    })
+    return {"deleted": result.deleted_count, "message": f"{result.deleted_count} vidéo(s) simulée(s) supprimée(s)"}
+
 @api_router.post("/admin/demo-login/{role}")
 async def admin_demo_login(role: str, request: Request, _: bool = Depends(verify_admin_code)):
     """Create a demo session for a given role — used by admin previews."""
@@ -4248,6 +4223,21 @@ async def startup_event():
         await db.messages.create_index([("campaign_id", 1), ("created_at", 1)])
     except Exception:
         pass
+
+    # Purge all simulated/fake videos that may have been inserted by old code versions.
+    # Simulated videos have simulated=True OR platform_video_id starting with "sim_".
+    try:
+        result = await db.tracked_videos.delete_many({
+            "$or": [
+                {"simulated": True},
+                {"platform_video_id": {"$regex": "^sim_"}},
+            ]
+        })
+        if result.deleted_count > 0:
+            logger.info(f"Startup: purged {result.deleted_count} simulated/fake videos from DB.")
+    except Exception as e:
+        logger.warning(f"Startup simulated video purge failed: {e}")
+
     asyncio.create_task(auto_strike_loop())
     asyncio.create_task(track_videos_loop())
 
