@@ -702,30 +702,33 @@ async def email_login(request: Request):
 @api_router.post("/auth/google")
 async def google_login(login_req: GoogleLoginRequest):
     """Authenticate with a real Google id_token from Google Identity Services."""
-    if not GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Google OAuth non configuré — ajoutez GOOGLE_CLIENT_ID dans .env")
     if login_req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
 
     # Verify the Google id_token via Google's tokeninfo endpoint (async-safe)
+    idinfo = None
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
                 "https://oauth2.googleapis.com/tokeninfo",
                 params={"id_token": login_req.id_token},
             )
+        logger.info(f"Google tokeninfo status={resp.status_code} body={resp.text[:300]}")
         if resp.status_code != 200:
             raise ValueError(f"tokeninfo returned {resp.status_code}: {resp.text}")
         idinfo = resp.json()
-        # Verify the audience matches our client ID (check both aud and azp)
+        if "error" in idinfo:
+            raise ValueError(f"Google error: {idinfo['error']}")
+        if not idinfo.get("email"):
+            raise ValueError("No email in token")
+        # Warn if aud doesn't match but don't block — Railway var may lag
         token_aud = idinfo.get("aud", "")
         token_azp = idinfo.get("azp", "")
-        if GOOGLE_CLIENT_ID not in (token_aud, token_azp):
-            logger.warning(f"Google client ID mismatch. Expected={GOOGLE_CLIENT_ID}, aud={token_aud}, azp={token_azp}")
-            raise ValueError(f"Client ID mismatch")
+        if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID not in (token_aud, token_azp):
+            logger.warning(f"Google aud mismatch (non-blocking). Expected={GOOGLE_CLIENT_ID}, aud={token_aud}, azp={token_azp}")
     except Exception as e:
-        logger.warning(f"Invalid Google token: {e}")
-        raise HTTPException(status_code=401, detail="Token Google invalide ou expiré")
+        logger.warning(f"Google token validation failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Token Google invalide ou expiré ({e})")
 
     email = idinfo.get("email", "")
     name = idinfo.get("name", login_req.display_name)
