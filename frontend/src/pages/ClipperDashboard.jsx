@@ -82,6 +82,7 @@ export default function ClipperDashboard() {
     { id: "home", label: "Accueil", icon: Home, path: "/clipper" },
     { id: "discover", label: "Découvrir", icon: Search, path: "/clipper/discover" },
     { id: "accounts", label: "Mes comptes", icon: Smartphone, path: "/clipper/accounts" },
+    { id: "videos", label: "Mes vidéos", icon: Video, path: "/clipper/videos" },
     { type: "divider" },
     { type: "section", label: "MES CAMPAGNES" },
     ...campaigns.map((c) => ({
@@ -116,12 +117,13 @@ export default function ClipperDashboard() {
           <Route index element={<ClipperHome announcements={announcements} stats={stats} />} />
           <Route path="discover" element={<DiscoverCampaigns onJoin={fetchData} />} />
           <Route path="accounts" element={
-            <AccountsPage 
-              accounts={socialAccounts} 
+            <AccountsPage
+              accounts={socialAccounts}
               campaigns={campaigns}
               onUpdate={fetchData}
             />
           } />
+          <Route path="videos" element={<AllVideosPage />} />
           <Route path="campaign/:campaignId" element={<CampaignDashboard campaigns={campaigns} />} />
           <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
           <Route path="payment" element={<PaymentPage stats={stats} />} />
@@ -812,6 +814,160 @@ function DiscoverCampaigns({ onJoin }) {
 }
 
 // Accounts Management Page
+// ---- All Videos Page ----
+function AllVideosPage() {
+  const [videos, setVideos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all"); // all | tiktok | instagram | youtube
+  const [sort, setSort] = useState("recent"); // recent | views | earnings
+
+  useEffect(() => {
+    fetchAllVideos();
+  }, []);
+
+  const fetchAllVideos = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/clipper/all-videos`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setVideos(data.videos || []);
+      }
+    } catch {}
+    finally { setLoading(false); }
+  };
+
+  const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n || 0);
+  const platformColor = { tiktok: "#00E5FF", youtube: "#FF0000", instagram: "#FF007F" };
+  const platformEmoji = { tiktok: "🎵", youtube: "▶️", instagram: "📸" };
+
+  const filtered = videos
+    .filter(v => filter === "all" || v.platform === filter)
+    .sort((a, b) => {
+      if (sort === "views") return (b.views || 0) - (a.views || 0);
+      if (sort === "earnings") return (b.earnings || 0) - (a.earnings || 0);
+      return new Date(b.published_at || b.fetched_at || 0) - new Date(a.published_at || a.fetched_at || 0);
+    });
+
+  const totalViews = videos.reduce((s, v) => s + (v.views || 0), 0);
+  const totalEarnings = videos.reduce((s, v) => s + (v.earnings || 0), 0);
+  const platformCounts = videos.reduce((acc, v) => { acc[v.platform] = (acc[v.platform] || 0) + 1; return acc; }, {});
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-display font-bold text-3xl text-white mb-1">Mes vidéos</h1>
+          <p className="text-white/50">{videos.length} vidéo{videos.length !== 1 ? "s" : ""} trackée{videos.length !== 1 ? "s" : ""} · {fmt(totalViews)} vues · €{totalEarnings.toFixed(2)} générés</p>
+        </div>
+        <button onClick={fetchAllVideos} className="text-white/40 hover:text-white text-sm transition-colors border border-white/10 rounded-lg px-3 py-1.5 hover:border-white/30">
+          ↻ Actualiser
+        </button>
+      </div>
+
+      {/* Stats pills */}
+      {videos.length > 0 && (
+        <div className="flex gap-3 flex-wrap">
+          {Object.entries(platformCounts).map(([plat, count]) => (
+            <div key={plat} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+              <span>{platformEmoji[plat]}</span>
+              <span className="text-xs font-medium" style={{ color: platformColor[plat] }}>{plat}</span>
+              <span className="text-white/50 text-xs">{count} vidéo{count > 1 ? "s" : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="flex gap-2 flex-wrap">
+        <div className="flex bg-white/5 rounded-lg p-1 gap-1">
+          {["all", "tiktok", "instagram", "youtube"].map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                filter === f ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"
+              }`}
+              style={filter === f && f !== "all" ? { color: platformColor[f] } : {}}>
+              {f === "all" ? "Tout" : f === "tiktok" ? "🎵 TikTok" : f === "instagram" ? "📸 Instagram" : "▶️ YouTube"}
+            </button>
+          ))}
+        </div>
+        <div className="flex bg-white/5 rounded-lg p-1 gap-1">
+          {[["recent", "Récentes"], ["views", "Vues"], ["earnings", "Gains"]].map(([s, l]) => (
+            <button key={s} onClick={() => setSort(s)}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                sort === s ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"
+              }`}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20">
+          <Video className="w-16 h-16 text-white/10 mx-auto mb-4" />
+          <p className="text-white/40 text-lg mb-2">{videos.length === 0 ? "Aucune vidéo trackée" : "Aucune vidéo pour ce filtre"}</p>
+          <p className="text-white/20 text-sm">
+            {videos.length === 0
+              ? "Ajoutez vos comptes réseaux sociaux et lancez un scraping pour voir vos vidéos ici"
+              : "Essayez un autre filtre"}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+          {filtered.map((v) => {
+            const color = platformColor[v.platform] || "#fff";
+            return (
+              <a key={v.video_id || v.platform_video_id} href={v.url} target="_blank" rel="noreferrer"
+                className="group block rounded-xl overflow-hidden bg-[#121212] border border-white/10 hover:border-white/20 transition-all hover:-translate-y-0.5">
+                {/* Thumbnail */}
+                <div className="relative w-full aspect-video bg-white/5">
+                  {v.thumbnail_url
+                    ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center text-2xl">
+                        {platformEmoji[v.platform] || "🎬"}
+                      </div>
+                  }
+                  {/* Platform badge */}
+                  <span className="absolute top-1.5 left-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded"
+                    style={{ background: `${color}dd`, color: "#000" }}>
+                    {v.platform}
+                  </span>
+                  {/* Views overlay */}
+                  <span className="absolute bottom-1.5 right-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/70 text-white">
+                    👁 {fmt(v.views)}
+                  </span>
+                </div>
+                {/* Info */}
+                <div className="p-2.5">
+                  <p className="text-white text-xs font-medium line-clamp-2 mb-1.5 leading-snug">
+                    {v.title || "Vidéo sans titre"}
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/30 text-[10px]">
+                      {v.published_at ? new Date(v.published_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : ""}
+                    </span>
+                    {v.earnings > 0 && (
+                      <span className="text-[#39FF14] text-[10px] font-mono font-bold">€{v.earnings.toFixed(2)}</span>
+                    )}
+                  </div>
+                  {v.campaign_name && v.campaign_name !== "Sans campagne" && (
+                    <p className="text-white/20 text-[9px] mt-1 truncate">{v.campaign_name}</p>
+                  )}
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 function AccountsPage({ accounts, campaigns, onUpdate }) {
   const [newPlatform, setNewPlatform] = useState("");
   const [newUsername, setNewUsername] = useState("");
@@ -944,7 +1100,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
       });
       if (res.ok) {
         const data = await res.json();
-        toast.success(data.message || "Scraping terminé");
+        toast.success(data.message || "Scraping terminé ✓");
         // Reload videos
         const vres = await fetch(`${API}/social-accounts/${accountId}/videos`, { credentials: "include" });
         if (vres.ok) {
@@ -953,7 +1109,10 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
         }
       } else {
         const err = await res.json();
-        toast.error(err.detail || "Erreur lors du scraping");
+        const detail = err.detail || "Erreur lors du scraping";
+        // Show a short toast but log the full error
+        const shortMsg = detail.length > 120 ? detail.substring(0, 120) + "…" : detail;
+        toast.error(shortMsg, { duration: 8000 });
       }
     } catch (e) {
       toast.error("Erreur de connexion");
@@ -1112,10 +1271,10 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                         </div>
                       )}
                       {account.status === "error" && (
-                        <div className="mt-1">
-                          <span className="text-red-400 text-xs flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            Compte introuvable — vérifiez le nom d'utilisateur
+                        <div className="mt-1 max-w-md">
+                          <span className="text-red-400 text-xs flex items-start gap-1">
+                            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                            <span>{account.error_message || "Compte introuvable — vérifiez le nom d'utilisateur"}</span>
                           </span>
                         </div>
                       )}

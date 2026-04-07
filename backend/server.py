@@ -2111,24 +2111,82 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
         )
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
+
+        # TikTok: NEVER use HTTP fallback — cloud IPs are blocked by TikTok/Cloudflare
+        # and the response (200 + JS challenge) cannot reliably confirm account existence.
+        if platform == "tiktok":
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {
+                    "status": "error",
+                    "error_message": (
+                        f"Compte TikTok @{username} introuvable ou inaccessible. "
+                        "TikTok bloque la vérification automatique depuis les serveurs cloud. "
+                        "Vérifiez que le pseudo est exact et que le compte est public, puis réessayez."
+                    )
+                }}
+            )
+            return
+
         if via_url:
-            # Fallback via URL : on vérifie au moins que la page répond (HTTP 200)
+            # Fallback via URL : GET request + parse body to confirm account existence
             profile_urls = {
-                "tiktok": f"https://www.tiktok.com/@{username}",
                 "instagram": f"https://www.instagram.com/{username}/",
                 "youtube": f"https://www.youtube.com/@{username}",
             }
             url_to_check = profile_urls.get(platform, "")
             http_ok = False
+            error_reason = f"Compte @{username} introuvable sur {platform}. Vérifiez que le compte existe et est public."
+
             if url_to_check:
                 try:
-                    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
-                        resp = await c.head(url_to_check, headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+                        resp = await c.get(url_to_check, headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
                         })
-                        http_ok = resp.status_code in (200, 301, 302)
-                except Exception:
+                        body = resp.text
+
+                        if platform == "instagram":
+                            # Instagram returns 404 for non-existent accounts; 200 for existing ones
+                            if resp.status_code == 404:
+                                http_ok = False
+                                error_reason = f"Compte Instagram @{username} introuvable. Vérifiez le nom d'utilisateur."
+                            elif resp.status_code == 200:
+                                # Check for "not found" / private indicators in page
+                                not_found_markers = ["Page introuvable", "Désolé, cette page", "Sorry, this page"]
+                                if any(m in body for m in not_found_markers):
+                                    http_ok = False
+                                    error_reason = f"Compte Instagram @{username} introuvable ou privé."
+                                else:
+                                    http_ok = True
+                            else:
+                                http_ok = False
+
+                        elif platform == "youtube":
+                            # YouTube: check if channel page has meaningful content
+                            if resp.status_code == 404:
+                                http_ok = False
+                                error_reason = f"Chaîne YouTube @{username} introuvable."
+                            elif resp.status_code == 200:
+                                # Check for "404" or not-found markers in YouTube page
+                                not_found_markers = ["This channel doesn't exist", "404", "ytInitialData"]
+                                # ytInitialData must be present on a valid page
+                                if "ytInitialData" in body:
+                                    http_ok = True
+                                else:
+                                    http_ok = False
+                                    error_reason = f"Chaîne YouTube @{username} introuvable ou inaccessible."
+                            else:
+                                http_ok = False
+                        else:
+                            http_ok = resp.status_code in (200, 301, 302)
+
+                except Exception as http_e:
+                    logger.warning(f"HTTP fallback check failed for {platform}/@{username}: {http_e}")
                     http_ok = False
+
             if http_ok:
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
@@ -2144,7 +2202,7 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
             else:
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
-                    {"$set": {"status": "error", "error_message": f"Compte @{username} introuvable sur {platform}. Vérifiez que le compte existe et est public."}}
+                    {"$set": {"status": "error", "error_message": error_reason}}
                 )
         else:
             await db.social_accounts.update_one(
@@ -2168,49 +2226,76 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> lis
             return videos
         except Exception as e:
             logger.warning(f"Playwright TikTok video fetch failed for @{username}: {e}")
-    # Fallback: yt-dlp (pas de filtre de date — on récupère tout)
+    # Fallback: yt-dlp (try multiple strategies for cloud-blocked environments)
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _ytdlp_videos():
-            opts = {
+            # Strategy 1: standard with mobile-like headers
+            base_opts = {
                 "quiet": True,
                 "skip_download": True,
                 "extract_flat": True,
                 "playlistend": 200,
                 "ignoreerrors": True,
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                    "Referer": "https://www.tiktok.com/",
-                },
+                "no_warnings": True,
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
-            if not info:
-                return []
-            entries = info.get("entries") or []
-            result = []
-            for e in (entries or []):
-                if not e:
+            strategies = [
+                # Strategy A: desktop UA + referer
+                {**base_opts, "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Referer": "https://www.tiktok.com/",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }},
+                # Strategy B: mobile UA
+                {**base_opts, "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+                    "Referer": "https://www.tiktok.com/",
+                }},
+                # Strategy C: use TikTok mobile API hostname via extractor-args
+                {**base_opts, "extractor_args": {"tiktok": {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"]}},
+                 "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                }},
+            ]
+            for opts in strategies:
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
+                    if not info:
+                        continue
+                    entries = info.get("entries") or []
+                    if not entries:
+                        continue
+                    result = []
+                    for e in (entries or []):
+                        if not e:
+                            continue
+                        vid_id = str(e.get("id", ""))
+                        if not vid_id:
+                            continue
+                        result.append({
+                            "platform_video_id": vid_id,
+                            "url": e.get("webpage_url") or e.get("url") or f"https://www.tiktok.com/@{username}/video/{vid_id}",
+                            "title": e.get("title"),
+                            "thumbnail_url": e.get("thumbnail"),
+                            "views": int(e.get("view_count") or 0),
+                            "likes": int(e.get("like_count") or 0),
+                            "comments": int(e.get("comment_count") or 0),
+                            "published_at": datetime.fromtimestamp(e["timestamp"], tz=timezone.utc).isoformat() if e.get("timestamp") else None,
+                        })
+                    if result:
+                        logger.info(f"yt-dlp TikTok: got {len(result)} videos for @{username}")
+                        return result
+                except Exception as strat_e:
+                    logger.warning(f"yt-dlp TikTok strategy failed for @{username}: {strat_e}")
                     continue
-                vid_id = str(e.get("id", ""))
-                if not vid_id:
-                    continue
-                result.append({
-                    "platform_video_id": vid_id,
-                    "url": e.get("webpage_url") or e.get("url") or f"https://www.tiktok.com/@{username}/video/{vid_id}",
-                    "title": e.get("title"),
-                    "thumbnail_url": e.get("thumbnail"),
-                    "views": int(e.get("view_count") or 0),
-                    "likes": int(e.get("like_count") or 0),
-                    "comments": int(e.get("comment_count") or 0),
-                    "published_at": datetime.fromtimestamp(e["timestamp"], tz=timezone.utc).isoformat() if e.get("timestamp") else None,
-                })
-            return result
+            raise ValueError(f"TikTok bloque les requêtes depuis ce serveur pour @{username}. Le scraping TikTok est inaccessible depuis les serveurs cloud en raison des protections anti-bot de TikTok.")
         try:
             return await loop.run_in_executor(_thread_pool, _ytdlp_videos)
         except Exception as e:
             logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
-    return []
+            raise
+    raise ValueError("yt-dlp non installé — scraping TikTok impossible")
 
 
 async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
@@ -3072,6 +3157,26 @@ async def get_campaign_stats(campaign_id: str, user: dict = Depends(get_current_
         "clipper_count": len(members),
         "clipper_stats": clipper_stats_sorted
     }
+
+@api_router.get("/clipper/all-videos")
+async def get_clipper_all_videos(user: dict = Depends(get_current_user)):
+    """All tracked videos for the current clipper across all accounts and campaigns."""
+    if user.get("role") != "clipper":
+        raise HTTPException(status_code=403, detail="Clippers only")
+    videos = await db.tracked_videos.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("published_at", -1).to_list(500)
+    # Enrich with campaign name
+    campaign_ids = list(set(v["campaign_id"] for v in videos if v.get("campaign_id")))
+    camp_names = {}
+    for cid in campaign_ids:
+        c = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0, "name": 1})
+        if c:
+            camp_names[cid] = c["name"]
+    for v in videos:
+        v["campaign_name"] = camp_names.get(v.get("campaign_id"), "Sans campagne")
+    return {"videos": videos, "total": len(videos)}
 
 @api_router.get("/clipper/stats")
 async def get_clipper_stats(user: dict = Depends(get_current_user)):
