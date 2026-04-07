@@ -160,9 +160,11 @@ export default function LandingPage() {
             animate={{ opacity: 1, x: 0 }}
             className="flex items-center gap-3"
           >
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[#00E5FF] via-[#FF007F] to-[#39FF14] flex items-center justify-center">
-              <Play className="w-5 h-5 text-black fill-black" />
-            </div>
+            <img
+              src={process.env.PUBLIC_URL + "/logo.svg"}
+              alt="The Clip Deal Track"
+              className="w-10 h-10 rounded-lg"
+            />
             <span className="font-display font-bold text-xl tracking-tight text-white">
               The Clip Deal Track
             </span>
@@ -548,9 +550,11 @@ export default function LandingPage() {
       <footer className="relative z-10 px-6 lg:px-16 py-8 border-t border-white/5">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00E5FF] via-[#FF007F] to-[#39FF14] flex items-center justify-center">
-              <Play className="w-4 h-4 text-black fill-black" />
-            </div>
+            <img
+              src={process.env.PUBLIC_URL + "/logo.svg"}
+              alt="The Clip Deal Track"
+              className="w-8 h-8 rounded-lg"
+            />
             <span className="font-display font-bold text-white">The Clip Deal Track</span>
           </div>
           <p className="text-sm text-white/40">© 2025 The Clip Deal Track. Tous droits réservés.</p>

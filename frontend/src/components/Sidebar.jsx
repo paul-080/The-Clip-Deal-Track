@@ -1,7 +1,7 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../App";
 import { motion } from "framer-motion";
-import { Play, LogOut, ChevronDown, ChevronRight } from "lucide-react";
+import { LogOut, ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
 export default function Sidebar({ items, accentColor, role }) {
@@ -114,12 +114,11 @@ export default function Sidebar({ items, accentColor, role }) {
       {/* Header */}
       <div className="p-4 border-b border-white/5">
         <div className="flex items-center gap-3">
-          <div 
-            className="w-10 h-10 rounded-lg flex items-center justify-center"
-            style={{ backgroundColor: `${accentColor}20` }}
-          >
-            <Play className="w-5 h-5 fill-current" style={{ color: accentColor }} />
-          </div>
+          <img
+            src={process.env.PUBLIC_URL + "/logo.svg"}
+            alt="The Clip Deal Track"
+            className="w-10 h-10 rounded-lg flex-shrink-0"
+          />
           <div className="flex-1 min-w-0">
             <p className="font-display font-bold text-white text-sm truncate">
               The Clip Deal Track
