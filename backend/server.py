@@ -701,6 +701,37 @@ async def verify_email(req: VerifyEmailRequest):
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return _make_session_response(user, session_token)
 
+@api_router.get("/auth/test-smtp")
+async def test_smtp():
+    """Test SMTP config — returns success or exact error message."""
+    result = {
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_user": SMTP_USER,
+        "smtp_password_set": bool(SMTP_PASSWORD),
+        "smtp_password_length": len(SMTP_PASSWORD) if SMTP_PASSWORD else 0,
+    }
+    if not SMTP_USER or not SMTP_PASSWORD:
+        result["status"] = "error"
+        result["error"] = "SMTP_USER ou SMTP_PASSWORD manquant dans les variables Railway"
+        return result
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+        result["status"] = "ok"
+        result["message"] = "Connexion SMTP réussie ✅"
+    except smtplib.SMTPAuthenticationError as e:
+        result["status"] = "error"
+        result["error"] = f"Authentification échouée — mauvais App Password ? ({e})"
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"{type(e).__name__}: {e}"
+    return result
+
 @api_router.post("/auth/login")
 async def email_login(request: Request):
     """Login with email + password."""
