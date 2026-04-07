@@ -841,23 +841,6 @@ export default function LandingPage() {
                   </div>
                 </div>
 
-                {/* CGU checkbox */}
-                <label className="flex items-start gap-2 cursor-pointer text-xs text-white/50 mt-4">
-                  <input
-                    type="checkbox"
-                    checked={cguAccepted}
-                    onChange={(e) => setCguAccepted(e.target.checked)}
-                    className="mt-0.5 w-3.5 h-3.5 accent-[#00E5FF] flex-shrink-0"
-                  />
-                  <span>
-                    J'accepte les{" "}
-                    <span className="text-[#00E5FF] underline">Conditions Générales d'Utilisation</span>
-                    {" "}et la{" "}
-                    <span className="text-[#00E5FF] underline">Politique de confidentialité</span>
-                    . Je reconnais que The Clip Deal est un outil de mise en relation et n'est pas responsable des contenus publiés par les clippers.
-                  </span>
-                </label>
-
                 {/* Mot de passe commun (Google + Email) */}
                 <div className="mt-4 space-y-3">
                   <div>
@@ -881,6 +864,23 @@ export default function LandingPage() {
                     />
                   </div>
                 </div>
+
+                {/* CGU checkbox */}
+                <label className="flex items-start gap-2 cursor-pointer text-xs text-white/50 mt-4">
+                  <input
+                    type="checkbox"
+                    checked={cguAccepted}
+                    onChange={(e) => setCguAccepted(e.target.checked)}
+                    className="mt-0.5 w-3.5 h-3.5 accent-[#00E5FF] flex-shrink-0"
+                  />
+                  <span>
+                    J'accepte les{" "}
+                    <span className="text-[#00E5FF] underline">Conditions Générales d'Utilisation</span>
+                    {" "}et la{" "}
+                    <span className="text-[#00E5FF] underline">Politique de confidentialité</span>
+                    . Je reconnais que The Clip Deal est un outil de mise en relation et n'est pas responsable des contenus publiés par les clippers.
+                  </span>
+                </label>
 
                 {/* Méthodes de connexion */}
                 {(() => {
