@@ -2008,22 +2008,44 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
         if via_url:
-            # Fallback: accept via URL without external verification
-            await db.social_accounts.update_one(
-                {"account_id": account_id},
-                {"$set": {
-                    "status": "verified",
-                    "verified_at": datetime.now(timezone.utc).isoformat(),
-                    "error_message": None,
-                    "display_name": username,
-                    "follower_count": None,
-                    "avatar_url": None,
-                }}
-            )
+            # Fallback via URL : on vérifie au moins que la page répond (HTTP 200)
+            profile_urls = {
+                "tiktok": f"https://www.tiktok.com/@{username}",
+                "instagram": f"https://www.instagram.com/{username}/",
+                "youtube": f"https://www.youtube.com/@{username}",
+            }
+            url_to_check = profile_urls.get(platform, "")
+            http_ok = False
+            if url_to_check:
+                try:
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+                        resp = await c.head(url_to_check, headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                        })
+                        http_ok = resp.status_code in (200, 301, 302)
+                except Exception:
+                    http_ok = False
+            if http_ok:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "verified_at": datetime.now(timezone.utc).isoformat(),
+                        "error_message": None,
+                        "display_name": username,
+                        "follower_count": None,
+                        "avatar_url": None,
+                    }}
+                )
+            else:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {"status": "error", "error_message": f"Compte @{username} introuvable sur {platform}. Vérifiez que le compte existe et est public."}}
+                )
         else:
             await db.social_accounts.update_one(
                 {"account_id": account_id},
-                {"$set": {"status": "error", "error_message": "Compte introuvable"}}
+                {"$set": {"status": "error", "error_message": f"Compte @{username} introuvable sur {platform}"}}
             )
 
 # ---------- Video fetching ----------
@@ -2034,36 +2056,28 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> lis
     Playwright reuses the profile scrape which already captures videos.
     """
     username = username.lstrip("@")
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-    # Primary: Playwright
+    # Primary: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
         try:
             scraped = await _scrape_tiktok_playwright(username)
             videos = _parse_tiktok_videos(scraped)
-            # Filter by cutoff date
-            filtered = []
-            for v in videos:
-                if v.get("published_at"):
-                    try:
-                        pub = datetime.fromisoformat(v["published_at"])
-                        if pub.replace(tzinfo=timezone.utc) >= cutoff:
-                            filtered.append(v)
-                        continue
-                    except Exception:
-                        pass
-                filtered.append(v)
-            return filtered
+            return videos
         except Exception as e:
             logger.warning(f"Playwright TikTok video fetch failed for @{username}: {e}")
-    # Fallback: yt-dlp
+    # Fallback: yt-dlp (pas de filtre de date — on récupère tout)
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _ytdlp_videos():
-            date_after = cutoff.strftime("%Y%m%d")
             opts = {
-                "quiet": True, "skip_download": True,
-                "extract_flat": True, "dateafter": date_after,
-                "playlistend": 50,
+                "quiet": True,
+                "skip_download": True,
+                "extract_flat": True,
+                "playlistend": 200,
+                "ignoreerrors": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "Referer": "https://www.tiktok.com/",
+                },
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
@@ -2074,9 +2088,12 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> lis
             for e in (entries or []):
                 if not e:
                     continue
+                vid_id = str(e.get("id", ""))
+                if not vid_id:
+                    continue
                 result.append({
-                    "platform_video_id": str(e.get("id", "")),
-                    "url": e.get("url") or e.get("webpage_url") or "",
+                    "platform_video_id": vid_id,
+                    "url": e.get("webpage_url") or e.get("url") or f"https://www.tiktok.com/@{username}/video/{vid_id}",
                     "title": e.get("title"),
                     "thumbnail_url": e.get("thumbnail"),
                     "views": int(e.get("view_count") or 0),
@@ -2085,67 +2102,67 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> lis
                     "published_at": datetime.fromtimestamp(e["timestamp"], tz=timezone.utc).isoformat() if e.get("timestamp") else None,
                 })
             return result
-        return await loop.run_in_executor(_thread_pool, _ytdlp_videos)
+        try:
+            return await loop.run_in_executor(_thread_pool, _ytdlp_videos)
+        except Exception as e:
+            logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
     return []
 
 
-async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 30) -> list:
+async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
     """
-    Fetch Instagram videos using the Instagram internal API (httpx) or Playwright fallback.
+    Fetch Instagram videos — instaloader en priorité (plus fiable), puis API httpx.
+    Récupère TOUTES les vidéos (Reels inclus), sans filtre de date.
     """
     username = username.lstrip("@")
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-    # Primary: httpx Instagram API (reuse same web_profile_info endpoint, which includes recent media)
-    try:
-        data = await _scrape_instagram_api(username)
-        videos = _parse_instagram_videos(data)
-        filtered = []
-        for v in videos:
-            if v.get("published_at"):
-                try:
-                    pub = datetime.fromisoformat(v["published_at"])
-                    if pub.replace(tzinfo=timezone.utc) >= cutoff:
-                        filtered.append(v)
-                    continue
-                except Exception:
-                    pass
-            filtered.append(v)
-        return filtered
-    except Exception as e:
-        logger.warning(f"Instagram httpx video fetch failed for @{username}: {e}")
-    # Fallback: Playwright interception
-    if PLAYWRIGHT_AVAILABLE:
-        try:
-            data = await _scrape_instagram_playwright(username)
-            return _parse_instagram_videos(data)
-        except Exception as e:
-            logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
-    # Last resort: instaloader
+    # Priorité 1 : instaloader (le plus fiable pour les comptes publics)
     if INSTALOADER_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _il_videos():
-            L = instaloader.Instaloader()
+            L = instaloader.Instaloader(
+                download_videos=False,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                quiet=True,
+            )
             profile = instaloader.Profile.from_username(L.context, username)
             result = []
             for post in profile.get_posts():
-                if post.date_utc.replace(tzinfo=timezone.utc) < cutoff:
-                    break
+                # Récupère vidéos ET reels (is_video = True pour les deux)
                 if not post.is_video:
                     continue
                 result.append({
                     "platform_video_id": str(post.mediaid),
                     "url": f"https://www.instagram.com/p/{post.shortcode}/",
-                    "title": (post.caption or "")[:100],
+                    "title": (post.caption or "")[:150],
                     "thumbnail_url": post.url,
                     "views": post.video_view_count or 0,
                     "likes": post.likes,
                     "comments": post.comments,
                     "published_at": post.date_utc.replace(tzinfo=timezone.utc).isoformat(),
                 })
-                if len(result) >= 50:
+                if len(result) >= 200:
                     break
             return result
-        return await loop.run_in_executor(_thread_pool, _il_videos)
+        try:
+            return await loop.run_in_executor(_thread_pool, _il_videos)
+        except Exception as e:
+            logger.warning(f"instaloader failed for @{username}: {e}")
+    # Fallback : API httpx Instagram (scrape léger)
+    try:
+        data = await _scrape_instagram_api(username)
+        return _parse_instagram_videos(data)
+    except Exception as e:
+        logger.warning(f"Instagram httpx video fetch failed for @{username}: {e}")
+    # Dernier recours : Playwright
+    if PLAYWRIGHT_AVAILABLE:
+        try:
+            data = await _scrape_instagram_playwright(username)
+            return _parse_instagram_videos(data)
+        except Exception as e:
+            logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
@@ -2165,19 +2182,12 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
         r2 = await c.get(
             "https://www.googleapis.com/youtube/v3/playlistItems",
             params={"part": "snippet,contentDetails", "playlistId": uploads_playlist,
-                    "maxResults": 50, "key": YOUTUBE_API_KEY}
+                    "maxResults": 200, "key": YOUTUBE_API_KEY}
         )
         playlist_items = r2.json().get("items", [])
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
-    video_ids = []
-    for item in playlist_items:
-        published = item["contentDetails"].get("videoPublishedAt", "")
-        if published:
-            pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-            if pub_dt < cutoff:
-                continue
-        video_ids.append(item["contentDetails"]["videoId"])
+    # Pas de filtre de date — on récupère toutes les vidéos
+    video_ids = [item["contentDetails"]["videoId"] for item in playlist_items if item.get("contentDetails", {}).get("videoId")]
 
     if not video_ids:
         return []
@@ -2477,17 +2487,33 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
     platform = account["platform"]
     username = account.get("username") or account.get("account_url") or ""
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    scrape_error = None
     try:
-        videos = await fetch_videos(platform, username, account, since_days=60)
+        # Récupère TOUTES les vidéos (3650 jours = 10 ans = historique complet)
+        videos = await fetch_videos(platform, username, account, since_days=3650)
     except Exception as e:
         logger.warning(f"Scraping failed for {platform}/@{username}: {e}")
+        scrape_error = str(e)
         videos = []
 
-    # If real scraping returned nothing (blocked, API unavailable, etc.), use simulated data
-    simulated = False
+    if not videos and scrape_error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Le scraping a échoué pour {platform}/@{username}. "
+                   f"Vérifiez que le compte est bien public. Erreur : {scrape_error}"
+        )
+
     if not videos:
-        videos = _generate_simulated_videos(platform, username, account_id, count=random.randint(3, 6))
-        simulated = True
+        platform_tips = {
+            "tiktok": "TikTok bloque les scrapers sur serveurs cloud. Vérifiez que le compte est public et réessayez.",
+            "instagram": "Instagram est inaccessible. Vérifiez que le compte est public (non privé).",
+            "youtube": "Aucune vidéo trouvée. Vérifiez que la chaîne YouTube a des vidéos publiques.",
+        }
+        raise HTTPException(
+            status_code=422,
+            detail=platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}. Compte privé ou vide ?")
+        )
 
     saved = 0
     for vid in videos:
@@ -2520,10 +2546,7 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
         except Exception:
             pass
     await db.social_accounts.update_one({"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}})
-    msg = f"{saved} vidéo(s) importées"
-    if simulated:
-        msg += " (données simulées — scraping indisponible)"
-    return {"message": msg, "count": saved, "simulated": simulated}
+    return {"message": f"{saved} vidéo(s) importées depuis {platform}/@{username}", "count": saved, "simulated": False}
 
 @api_router.get("/social-accounts/{account_id}/videos")
 async def get_account_videos(account_id: str, user: dict = Depends(get_current_user)):
@@ -2557,6 +2580,45 @@ async def get_messages(campaign_id: str, user: dict = Depends(get_current_user))
         {"_id": 0}
     ).sort("created_at", -1).to_list(100)
     return {"messages": list(reversed(messages))}
+
+@api_router.get("/messages/unread-counts")
+async def get_unread_counts(user: dict = Depends(get_current_user)):
+    """Retourne le nombre de messages non lus par campagne depuis le dernier vu."""
+    uid = user["user_id"]
+    # Récupérer les campagnes de l'utilisateur
+    memberships = await db.campaign_members.find(
+        {"user_id": uid}, {"_id": 0, "campaign_id": 1}
+    ).to_list(200)
+    campaign_ids = list(set(m["campaign_id"] for m in memberships))
+    # Pour les agences, ajouter leurs propres campagnes
+    if user.get("role") == "agency":
+        own = await db.campaigns.find({"agency_id": uid}, {"_id": 0, "campaign_id": 1}).to_list(200)
+        campaign_ids = list(set(campaign_ids + [c["campaign_id"] for c in own]))
+
+    counts = {}
+    for cid in campaign_ids:
+        # Récupérer la date du dernier "vu" de cet utilisateur pour cette campagne
+        seen_doc = await db.message_reads.find_one({"user_id": uid, "campaign_id": cid}, {"_id": 0})
+        last_seen = seen_doc.get("last_seen_at") if seen_doc else None
+        query = {"campaign_id": cid, "sender_id": {"$ne": uid}}
+        if last_seen:
+            query["created_at"] = {"$gt": last_seen}
+        count = await db.messages.count_documents(query)
+        if count > 0:
+            counts[cid] = count
+    return {"unread": counts}
+
+@api_router.post("/campaigns/{campaign_id}/mark-read")
+async def mark_campaign_read(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Marque tous les messages d'une campagne comme lus pour cet utilisateur."""
+    uid = user["user_id"]
+    now = datetime.now(timezone.utc).isoformat()
+    await db.message_reads.update_one(
+        {"user_id": uid, "campaign_id": campaign_id},
+        {"$set": {"last_seen_at": now, "user_id": uid, "campaign_id": campaign_id}},
+        upsert=True
+    )
+    return {"ok": True}
 
 @api_router.post("/messages")
 async def send_message(message_data: MessageCreate, user: dict = Depends(get_current_user)):
@@ -2722,8 +2784,8 @@ async def get_received_advices(campaign_id: str, user: dict = Depends(get_curren
 
 @api_router.post("/advices")
 async def create_advice(advice_data: AdviceCreate, user: dict = Depends(get_current_user)):
-    if user.get("role") != "manager":
-        raise HTTPException(status_code=403, detail="Only managers can send advice")
+    if user.get("role") not in ("manager", "agency"):
+        raise HTTPException(status_code=403, detail="Seuls les managers et agences peuvent envoyer des conseils")
     
     advice = {
         "advice_id": f"adv_{uuid.uuid4().hex[:12]}",
@@ -3780,6 +3842,11 @@ async def startup_event():
         await db.tracked_videos.create_index(
             [("account_id", 1), ("platform_video_id", 1)], unique=True
         )
+    except Exception:
+        pass
+    try:
+        await db.message_reads.create_index([("user_id", 1), ("campaign_id", 1)], unique=True)
+        await db.messages.create_index([("campaign_id", 1), ("created_at", 1)])
     except Exception:
         pass
     asyncio.create_task(auto_strike_loop())

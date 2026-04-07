@@ -43,6 +43,8 @@ export default function ChatPanel({ campaigns }) {
     fetchPaymentSummary();
     fetchReceivedAdvices();
     connectWebSocket();
+    // Marquer les messages comme lus à l'ouverture
+    markRead();
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, [campaignId]);
 
@@ -91,6 +93,14 @@ export default function ChatPanel({ campaigns }) {
         const data = await res.json();
         setReceivedAdvices(data.advices || []);
       }
+    } catch {}
+  };
+
+  const markRead = async () => {
+    try {
+      await fetch(`${API}/campaigns/${campaignId}/mark-read`, {
+        method: "POST", credentials: "include",
+      });
     } catch {}
   };
 
@@ -180,7 +190,12 @@ export default function ChatPanel({ campaigns }) {
       return [...paymentSummary.clippers].sort((a, b) => b.earned - a.earned);
     }
     if (activeTab === "conseils") {
-      return [...clippers].sort((a, b) => (b.needs_advice ? 1 : 0) - (a.needs_advice ? 1 : 0));
+      // Le moins conseillé (le + longtemps sans conseil) remonte en PREMIER
+      return [...clippers].sort((a, b) => {
+        const hoursA = a.hours_since_advice ?? Infinity; // jamais conseillé = priorité max
+        const hoursB = b.hours_since_advice ?? Infinity;
+        return hoursB - hoursA;
+      });
     }
     return clippers;
   };

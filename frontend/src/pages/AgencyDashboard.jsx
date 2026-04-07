@@ -27,9 +27,12 @@ export default function AgencyDashboard() {
   const [campaigns, setCampaigns] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [unreadCounts, setUnreadCounts] = useState({});
 
   useEffect(() => {
     fetchData();
+    fetchUnreadCounts();
+    const interval = setInterval(fetchUnreadCounts, 30000); // refresh toutes les 30s
     // Auto-start trial and show welcome page for new agencies
     if (user && !user.trial_started_at && !user.subscription_status) {
       fetch(`${API}/subscription/start-trial`, { method: "POST", credentials: "include" })
@@ -41,7 +44,18 @@ export default function AgencyDashboard() {
         })
         .catch(() => {});
     }
+    return () => clearInterval(interval);
   }, []);
+
+  const fetchUnreadCounts = async () => {
+    try {
+      const res = await fetch(`${API}/messages/unread-counts`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setUnreadCounts(data.unread || {});
+      }
+    } catch {}
+  };
 
   const fetchData = async () => {
     try {
@@ -82,6 +96,7 @@ export default function AgencyDashboard() {
           label: `Chat — ${c.name}`,
           icon: MessageCircle,
           path: `/agency/campaign/${c.campaign_id}/chat`,
+          badge: unreadCounts[c.campaign_id] || 0,
         },
       ],
     })),

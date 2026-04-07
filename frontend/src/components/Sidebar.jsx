@@ -43,6 +43,13 @@ export default function Sidebar({ items, accentColor, role }) {
     const isExpanded = expandedItems[item.id] ?? isParentActive(item);
     const active = isActive(item.path);
 
+    // Badge count sur cet item ou sur ses enfants (pour le parent)
+    const itemBadge = item.badge || 0;
+    const childrenBadgeTotal = hasChildren
+      ? item.children.reduce((sum, c) => sum + (c.badge || 0), 0)
+      : 0;
+    const totalBadge = itemBadge + (isExpanded ? 0 : childrenBadgeTotal);
+
     return (
       <div key={item.id}>
         <button
@@ -63,9 +70,6 @@ export default function Sidebar({ items, accentColor, role }) {
           }}
           data-testid={`sidebar-${item.id}`}
         >
-          {item.notification && (
-            <span className="notification-dot" />
-          )}
           <item.icon
             className="w-5 h-5 flex-shrink-0"
             style={{ color: active ? accentColor : "rgba(255,255,255,0.6)" }}
@@ -77,8 +81,17 @@ export default function Sidebar({ items, accentColor, role }) {
           >
             {item.label}
           </span>
+          {/* Pastille de notification */}
+          {totalBadge > 0 && (
+            <span
+              className="flex-shrink-0 min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] font-bold text-white px-1"
+              style={{ backgroundColor: accentColor }}
+            >
+              {totalBadge > 99 ? "99+" : totalBadge}
+            </span>
+          )}
           {hasChildren && (
-            <span className="text-white/40">
+            <span className="text-white/40 ml-1">
               {isExpanded ? (
                 <ChevronDown className="w-4 h-4" />
               ) : (

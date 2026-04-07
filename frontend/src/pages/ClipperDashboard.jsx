@@ -27,10 +27,24 @@ export default function ClipperDashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [unreadCounts, setUnreadCounts] = useState({});
 
   useEffect(() => {
     fetchData();
+    fetchUnreadCounts();
+    const interval = setInterval(fetchUnreadCounts, 30000);
+    return () => clearInterval(interval);
   }, []);
+
+  const fetchUnreadCounts = async () => {
+    try {
+      const res = await fetch(`${API}/messages/unread-counts`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setUnreadCounts(data.unread || {});
+      }
+    } catch {}
+  };
 
   const fetchData = async () => {
     try {
@@ -81,6 +95,7 @@ export default function ClipperDashboard() {
           label: `Chat — ${c.name}`,
           icon: MessageCircle,
           path: `/clipper/campaign/${c.campaign_id}/chat`,
+          badge: unreadCounts[c.campaign_id] || 0,
         },
       ],
     })),
