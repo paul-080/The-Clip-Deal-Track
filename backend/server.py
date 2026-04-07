@@ -621,24 +621,16 @@ async def email_register(req: EmailRegisterRequest):
         upsert=True
     )
 
-    # Send email via Resend
-    email_configured = bool(RESEND_API_KEY)
-    if email_configured:
-        try:
-            await _send_verification_email(req.email.lower(), code)
-        except Exception as e:
-            logger.error(f"Email send failed for {req.email}: {e}")
-            email_configured = False
+    # Send verification email — mandatory, no bypass
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=503, detail="Le service d'envoi d'email n'est pas configuré. Contactez l'administrateur.")
+    try:
+        await _send_verification_email(req.email.lower(), code)
+    except Exception as e:
+        logger.error(f"Email send failed for {req.email}: {e}")
+        raise HTTPException(status_code=503, detail="Impossible d'envoyer l'email de vérification. Réessayez dans quelques minutes.")
 
-    if not email_configured:
-        logger.warning(f"Email not configured — verification code for {req.email}: {code}")
-        return {
-            "message": f"Code de vérification envoyé à {req.email}",
-            "requires_verification": True,
-            "dev_code": code,
-        }
-
-    return {"message": f"Code de vérification envoyé à {req.email}", "requires_verification": True}
+    return {"message": f"Code envoyé à {req.email}"}
 
 @api_router.post("/auth/verify-email")
 async def verify_email(req: VerifyEmailRequest):

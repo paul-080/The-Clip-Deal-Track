@@ -27,12 +27,11 @@ export default function LandingPage() {
   const [cguAccepted, setCguAccepted] = useState(false);
 
   // Email auth states
-  const [authMethod, setAuthMethod] = useState(null); // null | "email" | "google"
+  const [authMethod, setAuthMethod] = useState(null); // null | "email"
   const [emailForm, setEmailForm] = useState({ email: "", password: "", confirmPassword: "" });
   const [verificationCode, setVerificationCode] = useState("");
   const [emailPending, setEmailPending] = useState(""); // email awaiting verification
   const [emailLoading, setEmailLoading] = useState(false);
-  const [devCode, setDevCode] = useState(""); // shown when SMTP not configured
 
   // Login modal (existing users)
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -87,6 +86,7 @@ export default function LandingPage() {
       setEmailForm({ email: "", password: "", confirmPassword: "" });
       setVerificationCode("");
       setEmailPending("");
+      setCguAccepted(false);
     }
   };
 
@@ -184,13 +184,8 @@ export default function LandingPage() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Erreur lors de l'inscription");
       setEmailPending(emailForm.email.trim().toLowerCase());
-      if (data.dev_code) {
-        setDevCode(data.dev_code);
-        setVerificationCode(data.dev_code);
-        toast.info("Mode dev : code pré-rempli (SMTP non configuré)");
-      } else {
-        toast.success(`Code envoyé à ${emailForm.email}`);
-      }
+      setVerificationCode(""); // always empty — user must type it themselves
+      toast.success(`Code envoyé à ${emailForm.email} — vérifiez vos mails`);
       setStep(3);
     } catch (e) {
       toast.error(e.message);
@@ -233,6 +228,17 @@ export default function LandingPage() {
         body: JSON.stringify({ email: loginForm.email.trim().toLowerCase(), password: loginForm.password }),
       });
       const data = await r.json();
+      if (r.status === 403 && data.detail === "email_not_verified") {
+        // Redirect to email verification flow
+        setShowLoginModal(false);
+        setEmailPending(loginForm.email.trim().toLowerCase());
+        setEmailForm(f => ({ ...f, email: loginForm.email.trim().toLowerCase(), password: loginForm.password }));
+        setVerificationCode("");
+        setShowRoleModal(true);
+        setStep(3);
+        toast.info("Vérifiez votre email — entrez le code reçu");
+        return;
+      }
       if (!r.ok) throw new Error(data.detail || "Connexion échouée");
       setUser(data.user);
       toast.success(`Bon retour, ${data.user.display_name} !`);
@@ -947,15 +953,13 @@ export default function LandingPage() {
                     </DialogTitle>
                   </div>
                 </DialogHeader>
-                {devCode ? (
-                  <div className="mt-3 ml-14 mb-4 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-400">
-                    ⚠️ Email non envoyé (SMTP non configuré) — code pré-rempli automatiquement
-                  </div>
-                ) : (
-                  <p className="text-white/50 text-sm mt-3 ml-14 mb-6">
-                    Un code à 6 chiffres a été envoyé à <span className="text-white">{emailPending}</span>
+                <div className="mt-3 ml-14 mb-6">
+                  <p className="text-white/50 text-sm">
+                    Un code à 6 chiffres a été envoyé à
                   </p>
-                )}
+                  <p className="text-white font-medium text-sm mt-1">{emailPending}</p>
+                  <p className="text-white/30 text-xs mt-2">Vérifiez aussi votre dossier Spam.</p>
+                </div>
                 <div className="space-y-4">
                   <Input
                     type="text"
@@ -974,7 +978,30 @@ export default function LandingPage() {
                     {emailLoading ? "Vérification..." : "Confirmer mon compte"}
                   </Button>
                   <button
-                    onClick={() => { setStep(2); setVerificationCode(""); }}
+                    onClick={async () => {
+                      try {
+                        const r = await fetch(`${API}/auth/register`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          credentials: "include",
+                          body: JSON.stringify({
+                            email: emailPending,
+                            password: emailForm.password,
+                            role: selectedRole,
+                            display_name: getDisplayName(),
+                            first_name: formData.firstName,
+                            last_name: formData.lastName,
+                            agency_name: formData.agencyName,
+                          }),
+                        });
+                        const data = await r.json();
+                        if (!r.ok) throw new Error(data.detail);
+                        setVerificationCode("");
+                        toast.success("Nouveau code envoyé !");
+                      } catch (e) {
+                        toast.error(e.message || "Erreur lors du renvoi");
+                      }
+                    }}
                     className="w-full text-center text-sm text-white/40 hover:text-white/70 transition-colors"
                   >
                     Renvoyer le code
