@@ -352,8 +352,13 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # Block access until email is verified (Google OAuth users are always verified)
-    if not user.get("email_verified", False):
+    # Block access until email is verified
+    # Exceptions: Google OAuth users (have google_sub), demo users, or users created before this feature
+    is_google_user = bool(user.get("google_sub"))
+    is_demo_user = "demo" in user.get("user_id", "") or user.get("email", "").endswith("@demo.clipdeal.local")
+    email_verified = user.get("email_verified")
+    # Only block if email_verified is explicitly False (not None/missing = old accounts)
+    if email_verified is False and not is_google_user and not is_demo_user:
         raise HTTPException(status_code=403, detail="email_not_verified")
 
     return user
@@ -597,7 +602,8 @@ async def email_register(req: EmailRegisterRequest):
         raise HTTPException(status_code=400, detail="Adresse email invalide")
 
     existing = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
-    if existing and existing.get("email_verified", True):
+    # Block if a fully verified account already exists with this email
+    if existing and existing.get("email_verified") is True:
         raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email")
 
     code = str(random.randint(100000, 999999))
