@@ -694,6 +694,14 @@ async def verify_email(req: VerifyEmailRequest):
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return _make_session_response(user, session_token)
 
+@api_router.get("/auth/debug-env")
+async def debug_env():
+    """Debug: show all env var names containing RESEND, SMTP, or RAILWAY."""
+    import os
+    keys = {k: (v[:4] + "..." if v else "VIDE") for k, v in os.environ.items()
+            if any(x in k.upper() for x in ["RESEND", "SMTP", "RAILWAY", "FRONTEND", "GOOGLE"])}
+    return {"env_keys": keys, "resend_api_key_at_runtime": os.environ.get("RESEND_API_KEY", "NOT_FOUND")}
+
 @api_router.get("/auth/test-smtp")
 async def test_smtp():
     """Test Resend API config."""
