@@ -617,22 +617,21 @@ async def email_register(req: EmailRegisterRequest):
         upsert=True
     )
 
-    # Send email (non-blocking)
-    smtp_configured = bool(SMTP_USER and SMTP_PASSWORD)
-    if smtp_configured:
+    # Send email via Resend
+    email_configured = bool(RESEND_API_KEY)
+    if email_configured:
         try:
             await _send_verification_email(req.email.lower(), code)
         except Exception as e:
             logger.error(f"Email send failed for {req.email}: {e}")
-            # Fallback: return code in response so user is not blocked
-            smtp_configured = False
+            email_configured = False
 
-    if not smtp_configured:
-        logger.warning(f"SMTP not configured — verification code for {req.email}: {code}")
+    if not email_configured:
+        logger.warning(f"Email not configured — verification code for {req.email}: {code}")
         return {
             "message": f"Code de vérification envoyé à {req.email}",
             "requires_verification": True,
-            "dev_code": code,  # shown in frontend when SMTP not configured
+            "dev_code": code,
         }
 
     return {"message": f"Code de vérification envoyé à {req.email}", "requires_verification": True}
