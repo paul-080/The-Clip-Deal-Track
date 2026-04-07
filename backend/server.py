@@ -351,7 +351,11 @@ async def get_current_user(request: Request) -> dict:
     )
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    
+
+    # Block access until email is verified (Google OAuth users are always verified)
+    if not user.get("email_verified", False):
+        raise HTTPException(status_code=403, detail="email_not_verified")
+
     return user
 
 # ================= AUTH ROUTES =================
@@ -758,6 +762,9 @@ async def email_login(request: Request):
     if not _verify_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
 
+    if not user.get("email_verified", False):
+        raise HTTPException(status_code=403, detail="email_not_verified")
+
     session_token = uuid.uuid4().hex
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({"user_id": user["user_id"], "session_token": session_token,
@@ -809,7 +816,7 @@ async def google_login(login_req: GoogleLoginRequest):
     )
     if existing:
         user_id = existing["user_id"]
-        upd = {"name": name, "google_sub": google_sub}
+        upd = {"name": name, "google_sub": google_sub, "email_verified": True}
         if picture:
             upd["picture"] = picture
         if not existing.get("role"):
@@ -826,6 +833,7 @@ async def google_login(login_req: GoogleLoginRequest):
             "google_sub": google_sub,
             "role": login_req.role,
             "display_name": login_req.display_name,
+            "email_verified": True,  # Google already verified the email
             "created_at": datetime.now(timezone.utc).isoformat(),
             "settings": {}
         })

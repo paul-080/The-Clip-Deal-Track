@@ -30,6 +30,7 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [emailNotVerified, setEmailNotVerified] = useState(false);
 
   const checkAuth = useCallback(async () => {
     try {
@@ -42,8 +43,16 @@ export const AuthProvider = ({ children }) => {
       if (response.ok) {
         const userData = await response.json();
         setUser(userData);
+        setEmailNotVerified(false);
+      } else if (response.status === 403) {
+        const data = await response.json().catch(() => ({}));
+        if (data.detail === "email_not_verified") {
+          setEmailNotVerified(true);
+        }
+        setUser(null);
       } else {
         setUser(null);
+        setEmailNotVerified(false);
       }
     } catch (error) {
       console.error("Auth check failed:", error);
@@ -121,7 +130,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, setUser, loading, login, logout, selectRole, checkAuth }}>
+    <AuthContext.Provider value={{ user, setUser, loading, login, logout, selectRole, checkAuth, emailNotVerified, setEmailNotVerified }}>
       {children}
     </AuthContext.Provider>
   );
@@ -188,13 +197,99 @@ const DashboardRouter = () => {
   return null;
 };
 
+// Email not verified screen
+const EmailVerificationGate = () => {
+  const { setEmailNotVerified } = useAuth();
+  const [code, setCode] = useState("");
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleVerify = async () => {
+    if (code.length !== 6 || !email) return;
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/verify-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: email.toLowerCase(), code }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Code invalide");
+      // Reload page — user is now verified
+      window.location.reload();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center px-4">
+      <div className="w-full max-w-md bg-[#121212] border border-white/10 rounded-2xl p-8 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-[#00E5FF]/20 flex items-center justify-center mx-auto mb-6">
+          <span className="text-3xl">✉️</span>
+        </div>
+        <h1 className="text-2xl font-bold text-white mb-2">Vérifiez votre email</h1>
+        <p className="text-white/50 text-sm mb-8">
+          Un code de vérification a été envoyé à votre adresse email. Entrez-le ci-dessous pour accéder au site.
+        </p>
+        <div className="space-y-4 text-left">
+          <div>
+            <label className="block text-sm text-white/60 mb-2">Votre email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="votre@email.com"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder:text-white/30 outline-none focus:border-[#00E5FF]/50"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-white/60 mb-2">Code à 6 chiffres</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              value={code}
+              onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="_ _ _ _ _ _"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder:text-white/20 text-center text-2xl tracking-widest font-mono outline-none focus:border-[#00E5FF]/50"
+            />
+          </div>
+          <button
+            onClick={handleVerify}
+            disabled={loading || code.length !== 6 || !email}
+            className="w-full py-3 rounded-xl bg-[#00E5FF] text-black font-semibold hover:bg-[#00E5FF]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            {loading ? "Vérification..." : "Confirmer mon compte"}
+          </button>
+        </div>
+        <button
+          onClick={() => { setEmailNotVerified(false); window.location.href = "/"; }}
+          className="mt-6 text-sm text-white/30 hover:text-white/60 transition-colors"
+        >
+          Retour à l'accueil
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // App Router with session_id detection
 const AppRouter = () => {
+  const { emailNotVerified } = useAuth();
   const location = useLocation();
 
   // Check URL fragment for session_id synchronously during render
   if (location.hash?.includes("session_id=")) {
     return <AuthCallback />;
+  }
+
+  // Block access until email verified
+  if (emailNotVerified) {
+    return <EmailVerificationGate />;
   }
 
   return (
