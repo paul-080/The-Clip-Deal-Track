@@ -145,6 +145,7 @@ export default function LandingPage() {
           last_name: formData.lastName,
           agency_name: formData.agencyName,
           profile_picture: profilePicture || undefined,
+          password: emailForm.password || undefined,
         }),
       });
       if (!r.ok) {
@@ -857,8 +858,35 @@ export default function LandingPage() {
                   </span>
                 </label>
 
+                {/* Mot de passe commun (Google + Email) */}
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="block text-sm text-white/70 mb-2">Mot de passe *</label>
+                    <Input
+                      type="password"
+                      placeholder="Minimum 6 caractères"
+                      value={emailForm.password}
+                      onChange={(e) => setEmailForm(f => ({ ...f, password: e.target.value }))}
+                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-white/70 mb-2">Confirmer le mot de passe *</label>
+                    <Input
+                      type="password"
+                      placeholder="Répétez votre mot de passe"
+                      value={emailForm.confirmPassword}
+                      onChange={(e) => setEmailForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                    />
+                  </div>
+                </div>
+
                 {/* Méthodes de connexion */}
-                {isFormValid() && cguAccepted ? (
+                {(() => {
+                  const passwordValid = emailForm.password.length >= 6 && emailForm.password === emailForm.confirmPassword;
+                  const allValid = isFormValid() && cguAccepted && passwordValid;
+                  return allValid ? (
                   <div className="mt-5 space-y-3">
                     {/* Option Google */}
                     <div className="flex justify-center">
@@ -880,54 +908,34 @@ export default function LandingPage() {
                       <div className="flex-1 h-px bg-white/10" />
                     </div>
 
-                    {/* Option Email */}
-                    {authMethod !== "email" ? (
+                    {/* Option Email avec code */}
+                    <div className="space-y-3">
+                      <Input
+                        type="email"
+                        placeholder="votre@email.com"
+                        value={emailForm.email}
+                        onChange={(e) => setEmailForm(f => ({ ...f, email: e.target.value }))}
+                        className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                      />
                       <Button
-                        onClick={() => setAuthMethod("email")}
-                        variant="outline"
-                        className="w-full border-white/20 text-white/70 hover:bg-white/5 hover:text-white gap-2"
+                        onClick={handleEmailRegister}
+                        disabled={emailLoading || !emailForm.email}
+                        className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
                       >
-                        <Mail className="w-4 h-4" />
-                        Continuer avec Email
+                        <Mail className="w-4 h-4 mr-2" />
+                        {emailLoading ? "Envoi en cours..." : "Continuer avec Email"}
                       </Button>
-                    ) : (
-                      <div className="space-y-3 bg-white/5 rounded-xl p-4 border border-white/10">
-                        <Input
-                          type="email"
-                          placeholder="votre@email.com"
-                          value={emailForm.email}
-                          onChange={(e) => setEmailForm(f => ({ ...f, email: e.target.value }))}
-                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-                        />
-                        <Input
-                          type="password"
-                          placeholder="Mot de passe (6 caractères min.)"
-                          value={emailForm.password}
-                          onChange={(e) => setEmailForm(f => ({ ...f, password: e.target.value }))}
-                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-                        />
-                        <Input
-                          type="password"
-                          placeholder="Confirmer le mot de passe"
-                          value={emailForm.confirmPassword}
-                          onChange={(e) => setEmailForm(f => ({ ...f, confirmPassword: e.target.value }))}
-                          className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-                        />
-                        <Button
-                          onClick={handleEmailRegister}
-                          disabled={emailLoading || !emailForm.email || !emailForm.password}
-                          className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
-                        >
-                          {emailLoading ? "Envoi en cours..." : "Recevoir le code de vérification"}
-                        </Button>
-                      </div>
-                    )}
+                    </div>
                   </div>
-                ) : (
+                  ) : (
                   <div className="w-full py-4 rounded-xl text-center text-sm text-white/30 border border-white/10 mt-4">
-                    {!isFormValid() ? "Remplissez tous les champs pour continuer" : "Acceptez les CGU pour continuer"}
+                    {!isFormValid() ? "Remplissez tous les champs pour continuer" :
+                     !cguAccepted ? "Acceptez les CGU pour continuer" :
+                     emailForm.password.length < 6 ? "Mot de passe trop court (6 caractères min.)" :
+                     "Les mots de passe ne correspondent pas"}
                   </div>
-                )}
+                  );
+                })()}
               </motion.div>
             ) : step === 3 ? (
               /* ── STEP 3 : Vérification email ── */

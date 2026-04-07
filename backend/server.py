@@ -115,6 +115,7 @@ class GoogleLoginRequest(BaseModel):
     last_name: Optional[str] = None
     agency_name: Optional[str] = None
     profile_picture: Optional[str] = None
+    password: Optional[str] = None  # app password chosen by user
 
 class EmailRegisterRequest(BaseModel):
     email: str
@@ -820,10 +821,13 @@ async def google_login(login_req: GoogleLoginRequest):
         if not existing.get("role"):
             upd["role"] = login_req.role
             upd["display_name"] = login_req.display_name
+        # Save app password if provided and not already set
+        if login_req.password and len(login_req.password) >= 6 and not existing.get("password_hash"):
+            upd["password_hash"] = _hash_password(login_req.password)
         await db.users.update_one({"user_id": user_id}, {"$set": upd})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
+        new_user = {
             "user_id": user_id,
             "email": email,
             "name": name,
@@ -834,7 +838,10 @@ async def google_login(login_req: GoogleLoginRequest):
             "email_verified": True,  # Google already verified the email
             "created_at": datetime.now(timezone.utc).isoformat(),
             "settings": {}
-        })
+        }
+        if login_req.password and len(login_req.password) >= 6:
+            new_user["password_hash"] = _hash_password(login_req.password)
+        await db.users.insert_one(new_user)
 
     session_token = uuid.uuid4().hex
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
