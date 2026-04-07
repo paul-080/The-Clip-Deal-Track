@@ -1512,6 +1512,7 @@ function SettingsPage() {
   const [displayName, setDisplayName] = useState(user?.display_name || "");
   const [picturePreview, setPicturePreview] = useState(user?.picture || null);
   const [pictureBase64, setPictureBase64] = useState(null);
+  const [paymentInfo, setPaymentInfo] = useState(user?.payment_info || "");
   const [isSaving, setIsSaving] = useState(false);
 
   const handlePicture = (e) => {
@@ -1525,7 +1526,7 @@ function SettingsPage() {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      const body = { display_name: displayName };
+      const body = { display_name: displayName, payment_info: paymentInfo };
       if (pictureBase64) body.picture = pictureBase64;
       const res = await fetch(`${API}/profile`, {
         method: "PUT",
@@ -1590,7 +1591,20 @@ function SettingsPage() {
             <label className="block text-sm text-white/70 mb-2">Email</label>
             <Input value={user?.email || ""} disabled className="bg-white/5 border-white/10 text-white/50" />
           </div>
-          <Button onClick={handleSave} disabled={isSaving} className="bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black" data-testid="save-settings-btn">
+
+          {/* IBAN / PayPal */}
+          <div className="pt-2 border-t border-white/10">
+            <label className="block text-sm text-white/70 mb-1">Coordonnées de paiement</label>
+            <p className="text-xs text-white/30 mb-2">IBAN, PayPal ou Revolut — visible uniquement par les agences pour vous payer</p>
+            <Input
+              value={paymentInfo}
+              onChange={(e) => setPaymentInfo(e.target.value)}
+              placeholder="FR76 3000 6000 0112 3456 7890 189  ou  votre@paypal.com"
+              className="bg-white/5 border-white/10 text-white placeholder:text-white/20"
+            />
+          </div>
+
+          <Button onClick={handleSave} disabled={isSaving} className="bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-semibold" data-testid="save-settings-btn">
             {isSaving ? "Enregistrement…" : "Enregistrer"}
           </Button>
         </CardContent>
