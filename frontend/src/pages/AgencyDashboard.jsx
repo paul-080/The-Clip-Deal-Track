@@ -912,7 +912,7 @@ function CampaignDashboard({ campaigns }) {
               <p className="text-sm">Aucune candidature en attente</p>
             </div>
           ) : (
-            pendingMembers.map(member => {
+            <>{pendingMembers.map(member => {
               const isManager = member.role === "manager";
               const roleColor = isManager ? "#39FF14" : "#FF007F";
               const roleLabel = isManager ? "Manager" : "Clippeur";
@@ -964,7 +964,7 @@ function CampaignDashboard({ campaigns }) {
                 </div>
               </div>
               );
-            }))
+            })}</>
           )}
         </div>
       )}
