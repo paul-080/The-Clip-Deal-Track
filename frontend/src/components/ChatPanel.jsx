@@ -4,7 +4,7 @@ import { useAuth, API } from "../App";
 import { motion } from "framer-motion";
 import {
   Send, MessageCircle, HelpCircle, Lightbulb, Clock, AlertCircle,
-  User, DollarSign, Eye, CheckCircle, CreditCard, ChevronRight
+  User, DollarSign, Eye, CheckCircle, CreditCard, ChevronRight, ExternalLink
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -472,8 +472,9 @@ export default function ChatPanel({ campaigns }) {
                     <p className="text-white/20 text-xs">pour lui envoyer un conseil</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col h-full">
-                    <div className="flex items-center gap-2 mb-4 p-3 bg-white/5 rounded-xl">
+                  <div className="flex flex-col h-full overflow-y-auto">
+                    {/* Clipper header */}
+                    <div className="flex items-center gap-2 mb-3 p-3 bg-white/5 rounded-xl flex-shrink-0">
                       <div className="w-8 h-8 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center">
                         {selectedClipper.picture
                           ? <img src={selectedClipper.picture} alt="" className="w-full h-full object-cover" />
@@ -488,8 +489,43 @@ export default function ChatPanel({ campaigns }) {
                         </p>
                       </div>
                     </div>
+
+                    {/* Social accounts */}
+                    {selectedClipper.social_accounts && selectedClipper.social_accounts.length > 0 && (
+                      <div className="mb-3 flex-shrink-0">
+                        <p className="text-xs text-white/40 uppercase tracking-wider mb-2 font-medium">Comptes sociaux</p>
+                        <div className="space-y-1.5">
+                          {selectedClipper.social_accounts.map((acc, i) => {
+                            const platformColors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
+                            const platformEmojis = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
+                            const color = platformColors[acc.platform] || "#fff";
+                            const link = acc.account_url || (
+                              acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
+                              acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
+                              acc.platform === "youtube" ? `https://youtube.com/@${acc.username}` :
+                              null
+                            );
+                            return (
+                              <a key={i} href={link} target="_blank" rel="noopener noreferrer"
+                                className="flex items-center gap-2 p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-all group"
+                                style={{ borderLeft: `2px solid ${color}40` }}>
+                                <span className="text-sm">{platformEmojis[acc.platform] || "🔗"}</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium truncate" style={{ color }}>
+                                    {acc.platform.charAt(0).toUpperCase() + acc.platform.slice(1)}
+                                  </p>
+                                  <p className="text-xs text-white/50 truncate">@{acc.username}</p>
+                                </div>
+                                <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/60 flex-shrink-0" />
+                              </a>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex-1" />
-                    <div className="space-y-3">
+                    <div className="space-y-3 flex-shrink-0">
                       <Textarea value={adviceContent} onChange={e => setAdviceContent(e.target.value)}
                         placeholder={`Écrivez un conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
                         rows={4}

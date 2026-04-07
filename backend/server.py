@@ -2973,11 +2973,18 @@ async def get_clippers_advice_status(campaign_id: str, user: dict = Depends(get_
                 hours_since_advice = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
                 needs_advice = hours_since_advice >= 72
             
+            # Get social accounts for this clipper
+            clipper_social_accounts = await db.social_accounts.find(
+                {"user_id": member["user_id"]},
+                {"_id": 0, "platform": 1, "username": 1, "account_url": 1, "status": 1}
+            ).to_list(20)
+
             clippers.append({
                 **clipper_user,
                 "hours_since_advice": round(hours_since_advice, 1) if hours_since_advice else None,
                 "needs_advice": needs_advice,
-                "last_advice_at": last_advice["created_at"] if last_advice else None
+                "last_advice_at": last_advice["created_at"] if last_advice else None,
+                "social_accounts": clipper_social_accounts
             })
     
     # Sort: those needing advice first, then by hours since last advice (descending)

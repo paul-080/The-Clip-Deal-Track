@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "../App";
 import Sidebar from "../components/Sidebar";
@@ -395,6 +395,150 @@ function DiscoverPage() {
   );
 }
 
+// Image Crop Modal
+function ImageCropModal({ src, onConfirm, onClose }) {
+  const containerRef = useRef(null);
+  const imgRef = useRef(null);
+  const [aspectRatio, setAspectRatio] = useState(16 / 9);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [imgSize, setImgSize] = useState({ w: 0, h: 0 });
+  const [containerSize, setContainerSize] = useState({ w: 400, h: 225 });
+  const [scale, setScale] = useState(1);
+
+  const RATIOS = [
+    { label: "16:9", value: 16 / 9 },
+    { label: "1:1", value: 1 },
+    { label: "4:3", value: 4 / 3 },
+    { label: "9:16", value: 9 / 16 },
+  ];
+
+  const CROP_W = 400;
+
+  useEffect(() => {
+    const img = new window.Image();
+    img.onload = () => {
+      setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+      const cropH = CROP_W / aspectRatio;
+      const sx = Math.max(CROP_W / img.naturalWidth, cropH / img.naturalHeight);
+      setScale(sx);
+      setOffset({ x: 0, y: 0 });
+    };
+    img.src = src;
+  }, [src]);
+
+  useEffect(() => {
+    const cropH = CROP_W / aspectRatio;
+    setContainerSize({ w: CROP_W, h: cropH });
+    if (imgSize.w > 0) {
+      const sx = Math.max(CROP_W / imgSize.w, cropH / imgSize.h);
+      setScale(sx);
+      setOffset({ x: 0, y: 0 });
+    }
+  }, [aspectRatio, imgSize]);
+
+  const clampOffset = (ox, oy) => {
+    const cropH = CROP_W / aspectRatio;
+    const maxX = 0;
+    const minX = Math.min(0, CROP_W - imgSize.w * scale);
+    const maxY = 0;
+    const minY = Math.min(0, cropH - imgSize.h * scale);
+    return {
+      x: Math.max(minX, Math.min(maxX, ox)),
+      y: Math.max(minY, Math.min(maxY, oy)),
+    };
+  };
+
+  const onMouseDown = (e) => {
+    setDragging(true);
+    setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
+  };
+  const onMouseMove = (e) => {
+    if (!dragging) return;
+    const raw = { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y };
+    setOffset(clampOffset(raw.x, raw.y));
+  };
+  const onMouseUp = () => setDragging(false);
+
+  const handleConfirm = () => {
+    const cropH = CROP_W / aspectRatio;
+    const canvas = document.createElement("canvas");
+    canvas.width = CROP_W;
+    canvas.height = cropH;
+    const ctx = canvas.getContext("2d");
+    const img = new window.Image();
+    img.onload = () => {
+      ctx.drawImage(img, offset.x, offset.y, imgSize.w * scale, imgSize.h * scale);
+      onConfirm(canvas.toDataURL("image/jpeg", 0.92));
+    };
+    img.src = src;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+      <div className="bg-[#1a1a1a] rounded-2xl border border-white/10 p-6 w-full max-w-lg">
+        <h3 className="text-white font-bold text-lg mb-4">Recadrer l'image</h3>
+
+        {/* Ratio selector */}
+        <div className="flex gap-2 mb-4">
+          {RATIOS.map(r => (
+            <button key={r.label} onClick={() => setAspectRatio(r.value)}
+              className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
+                aspectRatio === r.value ? "bg-[#FF007F] text-white" : "bg-white/10 text-white/60 hover:text-white"
+              }`}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Crop area */}
+        <div
+          ref={containerRef}
+          className="relative overflow-hidden rounded-xl border border-white/20 mx-auto cursor-grab active:cursor-grabbing select-none"
+          style={{ width: CROP_W, height: containerSize.h, maxWidth: "100%" }}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
+        >
+          {src && (
+            <img
+              ref={imgRef}
+              src={src}
+              alt="crop"
+              draggable={false}
+              style={{
+                position: "absolute",
+                left: offset.x,
+                top: offset.y,
+                width: imgSize.w * scale,
+                height: imgSize.h * scale,
+                userSelect: "none",
+              }}
+            />
+          )}
+          {/* Grid overlay */}
+          <div className="absolute inset-0 pointer-events-none" style={{
+            backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)",
+            backgroundSize: `${CROP_W / 3}px ${containerSize.h / 3}px`
+          }} />
+        </div>
+        <p className="text-xs text-white/30 text-center mt-2">Glissez pour repositionner</p>
+
+        <div className="flex gap-3 mt-5">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-xl bg-white/5 text-white/70 hover:bg-white/10 transition-colors text-sm">
+            Annuler
+          </button>
+          <button onClick={handleConfirm} className="flex-1 px-4 py-2.5 rounded-xl bg-[#FF007F] hover:bg-[#FF007F]/80 text-white font-semibold transition-colors text-sm">
+            Valider le recadrage
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Create Campaign Page
 function CreateCampaign({ onCreated }) {
   const navigate = useNavigate();
@@ -414,6 +558,7 @@ function CreateCampaign({ onCreated }) {
   });
   const [customQuestion, setCustomQuestion] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [cropModalSrc, setCropModalSrc] = useState(null);
 
   const handleChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -519,7 +664,16 @@ function CreateCampaign({ onCreated }) {
             <label className="block text-sm text-white/70 mb-2">Image de la campagne (optionnel)</label>
             <div className="flex items-center gap-3">
               {formData.image_url && (
-                <img src={formData.image_url} alt="preview" className="w-16 h-16 rounded-lg object-cover border border-white/10" />
+                <div className="relative flex-shrink-0">
+                  <img src={formData.image_url} alt="preview" className="w-24 h-14 rounded-lg object-cover border border-white/10" />
+                  <button
+                    type="button"
+                    onClick={() => setCropModalSrc(formData.image_url)}
+                    className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 hover:opacity-100 transition-opacity rounded-lg text-white text-xs font-medium"
+                  >
+                    ✂ Recadrer
+                  </button>
+                </div>
               )}
               <label className="flex-1 flex items-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/5 cursor-pointer hover:bg-white/10 transition-colors">
                 <Image className="w-4 h-4 text-white/50" />
@@ -532,13 +686,24 @@ function CreateCampaign({ onCreated }) {
                     const file = e.target.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
-                    reader.onload = (ev) => handleChange("image_url", ev.target.result);
+                    reader.onload = (ev) => setCropModalSrc(ev.target.result);
                     reader.readAsDataURL(file);
                   }}
                 />
               </label>
             </div>
           </div>
+          {/* Crop Modal */}
+          {cropModalSrc && (
+            <ImageCropModal
+              src={cropModalSrc}
+              onConfirm={(croppedDataUrl) => {
+                handleChange("image_url", croppedDataUrl);
+                setCropModalSrc(null);
+              }}
+              onClose={() => setCropModalSrc(null)}
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -745,14 +910,27 @@ function CampaignDashboard({ campaigns }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [pendingMembers, setPendingMembers] = useState([]);
   const [processingMember, setProcessingMember] = useState(null);
+  const [recentVideos, setRecentVideos] = useState([]);
+  const [selectedRankClipper, setSelectedRankClipper] = useState(null);
 
   useEffect(() => {
     if (campaignId) {
       fetchCampaign();
       fetchStats();
       fetchPendingMembers();
+      fetchRecentVideos();
     }
   }, [campaignId]);
+
+  const fetchRecentVideos = async () => {
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setRecentVideos((data.videos || []).slice(0, 20));
+      }
+    } catch {}
+  };
 
   const fetchCampaign = async () => {
     try {
@@ -1043,56 +1221,141 @@ function CampaignDashboard({ campaigns }) {
         </Card>
       )}
 
-      {/* Clippers Ranking */}
-      <Card className="bg-[#121212] border-white/10">
-        <CardHeader>
-          <CardTitle className="text-white flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-[#FF007F]" />
-            Classement des clippeurs
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!campaign.members || campaign.members.filter(m => m.status === "active").length === 0 ? (
-            <p className="text-white/50 text-center py-8">Aucun clippeur actif</p>
-          ) : (
-            <div className="space-y-3">
-              {campaign.members.filter(m => m.status === "active").map((member, index) => (
-                <div
-                  key={member.member_id}
-                  className={`relative flex items-center justify-between p-4 rounded-lg ${
-                    member.strikes > 0 ? "bg-red-500/10 border border-red-500/30" : "bg-white/5"
-                  }`}
-                >
-                  {member.strikes > 0 && (
-                    <div className="absolute -top-2 left-4 bg-red-500 text-white text-xs px-2 py-0.5 rounded">
-                      {member.strikes} strike(s)
+      {/* Split view: Clippers Ranking (left) + Recent Videos (right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* LEFT — Clipper ranking */}
+        <Card className="bg-[#121212] border-white/10">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-[#FF007F]" />
+              Classement des clippeurs
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!campaign.members || campaign.members.filter(m => m.status === "active").length === 0 ? (
+              <p className="text-white/50 text-center py-8">Aucun clippeur actif</p>
+            ) : (
+              <div className="space-y-2">
+                {campaign.members.filter(m => m.status === "active").map((member, index) => {
+                  const isSelected = selectedRankClipper === member.member_id;
+                  const clipperVideos = recentVideos.filter(v => v.user_id === member.user_id);
+                  return (
+                    <div key={member.member_id}>
+                      <button
+                        onClick={() => setSelectedRankClipper(isSelected ? null : member.member_id)}
+                        className={`relative w-full flex items-center justify-between p-3 rounded-lg transition-all text-left ${
+                          isSelected ? "bg-white/10 ring-1 ring-[#FF007F]/40" :
+                          member.strikes > 0 ? "bg-red-500/10 border border-red-500/30 hover:bg-red-500/15" : "bg-white/5 hover:bg-white/8"
+                        }`}
+                      >
+                        {member.strikes > 0 && !isSelected && (
+                          <div className="absolute -top-2 left-4 bg-red-500 text-white text-xs px-2 py-0.5 rounded">
+                            {member.strikes} strike(s)
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3">
+                          <span className="font-mono font-bold text-base text-white/40 w-7">
+                            #{index + 1}
+                          </span>
+                          <div className="w-8 h-8 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-sm font-bold text-[#FF007F]">
+                            {(member.user_info?.display_name || member.user_info?.name || "?")[0].toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-white text-sm font-medium">
+                              {member.user_info?.display_name || member.user_info?.name}
+                            </p>
+                            <p className="text-xs text-white/40">{clipperVideos.length} vidéo{clipperVideos.length !== 1 ? "s" : ""} trackée{clipperVideos.length !== 1 ? "s" : ""}</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-mono text-white text-sm">
+                            {(stats?.clipper_stats?.[index]?.views || 0).toLocaleString()} vues
+                          </p>
+                          <p className="text-xs text-[#FF007F]">
+                            €{stats?.clipper_stats?.[index]?.earnings?.toFixed(2) || "0.00"}
+                          </p>
+                        </div>
+                      </button>
                     </div>
-                  )}
-                  <div className="flex items-center gap-4">
-                    <span className="font-mono font-bold text-lg text-white/50 w-8">
-                      #{index + 1}
-                    </span>
-                    <div>
-                      <p className="text-white font-medium">
-                        {member.user_info?.display_name || member.user_info?.name}
-                      </p>
-                      <p className="text-xs text-white/50">{member.user_info?.email}</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-mono text-white">
-                      {stats?.clipper_stats?.[index]?.views?.toLocaleString() || 0} vues
-                    </p>
-                    <p className="text-sm text-[#FF007F]">
-                      €{stats?.clipper_stats?.[index]?.earnings?.toFixed(2) || "0.00"}
-                    </p>
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* RIGHT — Recent tracked videos */}
+        <Card className="bg-[#121212] border-white/10">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-white flex items-center gap-2">
+                <Video className="w-5 h-5 text-[#00E5FF]" />
+                {selectedRankClipper
+                  ? `Vidéos — ${campaign.members?.find(m => m.member_id === selectedRankClipper)?.user_info?.display_name || "Clippeur"}`
+                  : "Vidéos récentes"}
+              </CardTitle>
+              <button onClick={fetchRecentVideos} className="text-white/30 hover:text-white/60 text-xs transition-colors">↻ Actualiser</button>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const selectedMember = campaign.members?.find(m => m.member_id === selectedRankClipper);
+              const displayVideos = selectedRankClipper && selectedMember
+                ? recentVideos.filter(v => v.user_id === selectedMember.user_id)
+                : recentVideos;
+
+              if (displayVideos.length === 0) {
+                return (
+                  <div className="text-center py-8">
+                    <Video className="w-10 h-10 text-white/20 mx-auto mb-3" />
+                    <p className="text-white/40 text-sm">
+                      {selectedRankClipper ? "Aucune vidéo trackée pour ce clippeur" : "Aucune vidéo trackée"}
+                    </p>
+                    <p className="text-white/20 text-xs mt-1">Les vidéos apparaîtront après le prochain scraping</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {displayVideos.slice(0, 15).map((video, i) => {
+                    const platformColors = { tiktok: "#00E5FF", youtube: "#FF0000", instagram: "#FF007F" };
+                    const color = platformColors[video.platform] || "#fff";
+                    const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n || 0);
+                    return (
+                      <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5 hover:bg-white/10 transition-all group">
+                        {/* Thumbnail or placeholder */}
+                        <div className="w-12 h-9 rounded bg-white/10 flex-shrink-0 overflow-hidden relative">
+                          {video.thumbnail_url
+                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                            : <div className="w-full h-full flex items-center justify-center">
+                                <span className="text-xs" style={{ color }}>{video.platform === "tiktok" ? "🎵" : video.platform === "youtube" ? "▶️" : "📸"}</span>
+                              </div>
+                          }
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs truncate font-medium">
+                            {video.title || `Vidéo ${video.platform}`}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: `${color}20`, color }}>
+                              {video.platform}
+                            </span>
+                            <span className="text-[10px] text-white/40">👁 {fmt(video.views)}</span>
+                            {video.earnings > 0 && <span className="text-[10px] text-[#FF007F]">€{video.earnings?.toFixed(2)}</span>}
+                          </div>
+                        </div>
+                        <Eye className="w-3 h-3 text-white/20 group-hover:text-white/50 flex-shrink-0" />
+                      </a>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </CardContent>
+        </Card>
+      </div>
 
       </>}
     </motion.div>
