@@ -1256,9 +1256,95 @@ async def reject_campaign_member(campaign_id: str, member_id: str, user: dict = 
 
     return {"message": "Candidature refusée"}
 
+# ── Endpoints publics (sans authentification) ─────────────────────────────
+
+@api_router.get("/campaigns/join-info/{token}")
+async def get_join_info(token: str):
+    """Info publique d'une campagne depuis un token d'invitation (sans auth)."""
+    campaign = await db.campaigns.find_one({
+        "$or": [
+            {"token_clipper": token},
+            {"token_manager": token},
+            {"token_client": token},
+        ]
+    }, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+    # Déterminer le rôle selon le token
+    if campaign.get("token_clipper") == token:
+        role = "clipper"
+    elif campaign.get("token_manager") == token:
+        role = "manager"
+    else:
+        role = "client"
+    # Compter les membres actifs
+    member_count = await db.campaign_members.count_documents(
+        {"campaign_id": campaign["campaign_id"], "role": "clipper", "status": "active"}
+    )
+    return {
+        "campaign_id": campaign["campaign_id"],
+        "name": campaign.get("name"),
+        "rpm": campaign.get("rpm", 0),
+        "budget": campaign.get("budget", 0),
+        "role": role,
+        "clipper_count": member_count,
+        "agency_name": campaign.get("agency_name"),
+    }
+
+@api_router.get("/campaigns/public-stats/{token}")
+async def get_public_stats(token: str):
+    """Stats publiques pour le client — SANS authentification requise."""
+    campaign = await db.campaigns.find_one({"token_client": token}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Lien client invalide")
+    campaign_id = campaign["campaign_id"]
+
+    # Total views depuis tracked_videos
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {"_id": None, "total_views": {"$sum": "$views"}, "total_videos": {"$sum": 1}}}
+    ]
+    agg = await db.tracked_videos.aggregate(pipeline).to_list(1)
+    total_views = agg[0]["total_views"] if agg else 0
+    total_videos = agg[0]["total_videos"] if agg else 0
+
+    # Clippeurs actifs
+    members = await db.campaign_members.find(
+        {"campaign_id": campaign_id, "role": "clipper", "status": "active"},
+        {"_id": 0, "user_id": 1}
+    ).to_list(200)
+    clipper_count = len(members)
+
+    # Top vidéos
+    top_videos = await db.tracked_videos.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "url": 1, "title": 1, "views": 1, "platform": 1, "thumbnail_url": 1, "published_at": 1}
+    ).sort("views", -1).to_list(12)
+
+    # Stats par plateforme
+    platform_agg = await db.tracked_videos.aggregate([
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {"_id": "$platform", "views": {"$sum": "$views"}, "count": {"$sum": 1}}}
+    ]).to_list(10)
+
+    return {
+        "campaign_name": campaign.get("name"),
+        "total_views": total_views,
+        "total_videos": total_videos,
+        "clipper_count": clipper_count,
+        "rpm": campaign.get("rpm", 0),
+        "top_videos": top_videos,
+        "platforms": {p["_id"]: {"views": p["views"], "count": p["count"]} for p in platform_agg},
+    }
+
 @api_router.post("/campaigns/join/{token}")
 async def join_campaign(token: str, user: dict = Depends(get_current_user)):
-    """Join a campaign using invitation token"""
+    """
+    Rejoindre une campagne via token.
+    - CLIPPER  → membre actif immédiatement
+    - MANAGER  → candidature en attente (l'agence doit accepter)
+    - CLIENT   → accès stats publiques (pas de membership nécessaire)
+    """
     campaign = await db.campaigns.find_one({
         "$or": [
             {"token_clipper": token},
@@ -1266,60 +1352,78 @@ async def join_campaign(token: str, user: dict = Depends(get_current_user)):
             {"token_client": token}
         ]
     }, {"_id": 0})
-    
+
     if not campaign:
-        raise HTTPException(status_code=404, detail="Invalid invitation link")
-    
-    if campaign["token_clipper"] == token:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expiré")
+
+    if campaign.get("token_clipper") == token:
         expected_role = "clipper"
-    elif campaign["token_manager"] == token:
+    elif campaign.get("token_manager") == token:
         expected_role = "manager"
     else:
         expected_role = "client"
-    
-    if user.get("role") and user["role"] != expected_role:
-        raise HTTPException(status_code=400, detail=f"This link is for {expected_role}s only")
-    
-    if not user.get("role"):
-        await db.users.update_one(
-            {"user_id": user["user_id"]},
-            {"$set": {"role": expected_role}}
-        )
-    
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # ── MANAGER → candidature en attente ────────────────────────────────
+    if expected_role == "manager":
+        existing_app = await db.campaign_members.find_one({
+            "campaign_id": campaign["campaign_id"], "user_id": user["user_id"]
+        })
+        if existing_app:
+            return {"message": "Candidature déjà soumise", "status": existing_app.get("status"), "campaign": campaign}
+
+        member = {
+            "member_id": f"mem_{uuid.uuid4().hex[:12]}",
+            "campaign_id": campaign["campaign_id"],
+            "user_id": user["user_id"],
+            "role": "manager",
+            "status": "pending",          # ← en attente d'approbation
+            "applied_via_link": True,
+            "joined_at": now,
+            "strikes": 0,
+            "last_post_at": None,
+        }
+        await db.campaign_members.insert_one(member)
+        # Notifier l'agence
+        await manager.send_to_user(campaign["agency_id"], {
+            "type": "manager_application",
+            "campaign_id": campaign["campaign_id"],
+            "user_id": user["user_id"],
+        })
+        return {"message": "Candidature envoyée — en attente d'approbation", "status": "pending", "campaign": campaign}
+
+    # ── CLIENT → juste stocker l'accès pour les stats ───────────────────
+    if expected_role == "client":
+        return {"message": "Accès stats accordé", "status": "active", "campaign": campaign}
+
+    # ── CLIPPER → rejoindre directement ─────────────────────────────────
     existing = await db.campaign_members.find_one({
-        "campaign_id": campaign["campaign_id"],
-        "user_id": user["user_id"]
+        "campaign_id": campaign["campaign_id"], "user_id": user["user_id"]
     })
-    
     if existing:
-        return {"message": "Already a member", "campaign": campaign}
-    
+        return {"message": "Déjà membre", "status": "active", "campaign": campaign}
+
     member = {
         "member_id": f"mem_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign["campaign_id"],
         "user_id": user["user_id"],
-        "role": expected_role,
+        "role": "clipper",
         "status": "active",
-        "joined_at": datetime.now(timezone.utc).isoformat(),
+        "joined_at": now,
         "strikes": 0,
-        "last_post_at": None
+        "last_post_at": None,
     }
-    
     await db.campaign_members.insert_one(member)
-    
-    await manager.send_to_user(user["user_id"], {
-        "type": "campaign_joined",
-        "campaign": campaign
-    })
-    
+
+    await manager.send_to_user(user["user_id"], {"type": "campaign_joined", "campaign": campaign})
     await manager.send_to_user(campaign["agency_id"], {
         "type": "member_joined",
         "campaign_id": campaign["campaign_id"],
         "user_id": user["user_id"],
-        "role": expected_role
+        "role": "clipper",
     })
-    
-    return {"message": "Joined successfully", "campaign": campaign}
+    return {"message": "Vous avez rejoint la campagne !", "status": "active", "campaign": campaign}
 
 @api_router.post("/campaigns/{campaign_id}/apply")
 async def apply_to_campaign(campaign_id: str, application: ApplicationCreate, user: dict = Depends(get_current_user)):

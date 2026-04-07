@@ -912,29 +912,45 @@ function CampaignDashboard({ campaigns }) {
               <p className="text-sm">Aucune candidature en attente</p>
             </div>
           ) : (
-            pendingMembers.map(member => (
-              <div key={member.member_id} className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-start gap-4">
-                <div className="w-10 h-10 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-[#FF007F] font-bold text-sm flex-shrink-0">
+            pendingMembers.map(member => {
+              const isManager = member.role === "manager";
+              const roleColor = isManager ? "#39FF14" : "#FF007F";
+              const roleLabel = isManager ? "Manager" : "Clippeur";
+              return (
+              <div key={member.member_id} className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-start gap-4"
+                style={{ borderLeft: `3px solid ${roleColor}` }}>
+                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0"
+                  style={{ background: `${roleColor}20`, color: roleColor }}>
                   {(member.user_info?.display_name || member.user_info?.name || "?")[0].toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-white font-semibold text-sm">
-                    {member.user_info?.display_name || member.user_info?.name || "Clipper"}
-                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-white font-semibold text-sm">
+                      {member.user_info?.display_name || member.user_info?.name || "Utilisateur"}
+                    </p>
+                    {/* Badge rôle */}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                      style={{ color: roleColor, borderColor: `${roleColor}40`, background: `${roleColor}15` }}>
+                      {roleLabel}
+                    </span>
+                  </div>
                   <p className="text-white/40 text-xs mt-0.5">
+                    {member.user_info?.email || ""}
+                    {" · "}
                     Postulé le {member.joined_at ? new Date(member.joined_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" }) : "Date inconnue"}
                   </p>
-                  <div className="flex gap-2 mt-2 flex-wrap">
-                    {member.tiktok && <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">TikTok: @{member.tiktok}</span>}
-                    {member.instagram && <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">IG: @{member.instagram}</span>}
-                    {member.youtube && <span className="text-xs bg-white/10 text-white/70 px-2 py-0.5 rounded-full">YT: @{member.youtube}</span>}
-                  </div>
+                  {isManager && (
+                    <p className="text-xs mt-1" style={{ color: `${roleColor}99` }}>
+                      🛡 Demande d'accès manager — accès à la supervision et aux conseils
+                    </p>
+                  )}
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
                   <button
                     onClick={() => handleAcceptMember(member.member_id)}
                     disabled={processingMember === member.member_id}
-                    className="px-3 py-1.5 rounded-lg bg-[#39FF14]/10 hover:bg-[#39FF14]/20 text-[#39FF14] text-xs font-semibold border border-[#39FF14]/30 transition-colors disabled:opacity-50"
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50"
+                    style={{ background: `${roleColor}15`, color: roleColor, borderColor: `${roleColor}40` }}
                   >
                     ✓ Accepter
                   </button>
@@ -947,7 +963,8 @@ function CampaignDashboard({ campaigns }) {
                   </button>
                 </div>
               </div>
-            ))
+              );
+            }))
           )}
         </div>
       )}
