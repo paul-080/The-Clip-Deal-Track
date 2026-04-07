@@ -16,6 +16,7 @@ import asyncio
 import concurrent.futures
 import stripe
 import hashlib
+import hmac
 import secrets
 try:
     from google.oauth2 import id_token as google_id_token
@@ -48,6 +49,8 @@ load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL')
+if not mongo_url and os.environ.get("RAILWAY_ENVIRONMENT") == "production":
+    raise RuntimeError("MONGO_URL est requis en production")
 db_name = os.environ.get('DB_NAME', 'clipdeal_dev')
 
 if mongo_url:
@@ -507,7 +510,7 @@ def _hash_password(password: str) -> str:
 def _verify_password(password: str, stored: str) -> bool:
     try:
         salt, h = stored.split(":", 1)
-        return hashlib.sha256(f"{salt}{password}".encode()).hexdigest() == h
+        return hmac.compare_digest(hashlib.sha256(f"{salt}{password}".encode()).hexdigest(), h)
     except Exception:
         return False
 
@@ -517,7 +520,7 @@ def _make_session_response(user: dict, session_token: str) -> Response:
         media_type="application/json"
     )
     resp.set_cookie(key="session_token", value=session_token, httponly=True,
-                    secure=False, samesite="lax", path="/", max_age=7*24*60*60)
+                    secure=os.environ.get("RAILWAY_ENVIRONMENT") == "production", samesite="lax", path="/", max_age=7*24*60*60)
     return resp
 
 @api_router.post("/auth/register")
@@ -1942,56 +1945,7 @@ async def run_video_tracking():
             try:
                 videos = await fetch_videos(platform, username, account, since_days=30)
                 now_iso = datetime.now(timezone.utc).isoformat()
-                # Simulated fallback if real fetch returns nothing
                 if not videos:
-                    import random
-                    existing_vids = await db.tracked_videos.find(
-                        {"account_id": account_id}, {"_id": 0}
-                    ).sort("fetched_at", -1).to_list(5)
-                    if existing_vids:
-                        # Grow existing videos views by 2-15%
-                        for ev in existing_vids:
-                            growth = random.uniform(1.02, 1.15)
-                            new_views = int(ev.get("views", 0) * growth)
-                            new_likes = int(ev.get("likes", 0) * growth)
-                            earnings = (new_views / 1000) * rpm
-                            await db.tracked_videos.update_one(
-                                {"account_id": account_id, "platform_video_id": ev["platform_video_id"]},
-                                {"$set": {"views": new_views, "likes": new_likes, "earnings": round(earnings, 4), "fetched_at": now_iso}}
-                            )
-                    else:
-                        # Create 1-3 simulated starter videos
-                        for i in range(random.randint(1, 3)):
-                            sim_vid_id = f"sim_{uuid.uuid4().hex[:10]}"
-                            sim_views = random.randint(500, 50000)
-                            sim_likes = int(sim_views * random.uniform(0.03, 0.08))
-                            earnings = (sim_views / 1000) * rpm
-                            sim_doc = {
-                                "video_id": f"vid_{uuid.uuid4().hex[:12]}",
-                                "platform_video_id": sim_vid_id,
-                                "account_id": account_id,
-                                "user_id": user_id,
-                                "campaign_id": campaign_id,
-                                "platform": platform,
-                                "url": f"https://www.{platform}.com/@{username}",
-                                "title": f"Clip #{i+1}",
-                                "thumbnail_url": None,
-                                "views": sim_views,
-                                "likes": sim_likes,
-                                "comments": int(sim_views * 0.003),
-                                "published_at": (datetime.now(timezone.utc) - timedelta(days=i*3)).isoformat(),
-                                "fetched_at": now_iso,
-                                "created_at": now_iso,
-                                "earnings": round(earnings, 4),
-                            }
-                            try:
-                                await db.tracked_videos.update_one(
-                                    {"account_id": account_id, "platform_video_id": sim_vid_id},
-                                    {"$set": sim_doc, "$setOnInsert": {"created_at": now_iso}},
-                                    upsert=True
-                                )
-                            except Exception:
-                                pass
                     await db.social_accounts.update_one(
                         {"account_id": account_id},
                         {"$set": {"last_tracked_at": now_iso}}
@@ -2969,9 +2923,6 @@ async def update_profile(profile_data: dict, user: dict = Depends(get_current_us
         )
     updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     return updated or {}
-    
-    updated_user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
-    return updated_user
 
 # ================= WEBSOCKET =================
 
@@ -3001,10 +2952,17 @@ async def health():
 # Include router
 app.include_router(api_router)
 
+ALLOWED_ORIGINS = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+_origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
+if "http://localhost:3000" not in _origins:
+    _origins.append("http://localhost:3000")
+if "http://localhost:3001" not in _origins:
+    _origins.append("http://localhost:3001")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["http://localhost:3001", "http://localhost:3000", "http://127.0.0.1:3001"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -3056,10 +3014,13 @@ async def check_and_issue_strikes():
                 joined_at = member.get("joined_at")
                 if not joined_at:
                     continue
-                if isinstance(joined_at, str):
-                    joined_at = datetime.fromisoformat(joined_at)
-                if joined_at.tzinfo is None:
-                    joined_at = joined_at.replace(tzinfo=timezone.utc)
+                try:
+                    if isinstance(joined_at, str):
+                        joined_at = datetime.fromisoformat(joined_at.replace("Z", "+00:00"))
+                    if joined_at.tzinfo is None:
+                        joined_at = joined_at.replace(tzinfo=timezone.utc)
+                except (ValueError, AttributeError):
+                    continue
                 days_inactive = (now - joined_at).days
             else:
                 if isinstance(last_post_at, str):
