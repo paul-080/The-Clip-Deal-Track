@@ -1738,94 +1738,414 @@ async def _verify_youtube(username: str) -> dict:
                 }
     raise ValueError(f"Chaîne YouTube '{username}' introuvable")
 
+_STEALTH_SCRIPT = """
+    () => {
+        // 1. Hide webdriver flag — most critical check
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+
+        // 2. Add chrome object (headless browsers lack this)
+        if (!window.chrome) {
+            window.chrome = {
+                app: { InstallState: {}, RunningState: {}, isInstalled: false },
+                csi: () => {},
+                loadTimes: () => {},
+                runtime: {
+                    OnInstalledReason: {},
+                    OnRestartRequiredReason: {},
+                    PlatformArch: {},
+                    PlatformNaclArch: {},
+                    PlatformOs: {},
+                    RequestUpdateCheckStatus: {},
+                },
+            };
+        }
+
+        // 3. Mock plugins list (headless has 0 plugins)
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                const arr = [
+                    Object.assign(Object.create(Plugin.prototype), {
+                        name: 'Chrome PDF Plugin',
+                        description: 'Portable Document Format',
+                        filename: 'internal-pdf-viewer',
+                        length: 1,
+                    }),
+                    Object.assign(Object.create(Plugin.prototype), {
+                        name: 'Chrome PDF Viewer',
+                        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                        description: '',
+                        length: 1,
+                    }),
+                    Object.assign(Object.create(Plugin.prototype), {
+                        name: 'Native Client',
+                        filename: 'internal-nacl-plugin',
+                        description: '',
+                        length: 2,
+                    }),
+                ];
+                arr.__proto__ = PluginArray.prototype;
+                return arr;
+            },
+        });
+
+        // 4. Languages
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'fr'] });
+
+        // 5. Platform
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+
+        // 6. Hardware concurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+
+        // 7. Permissions API — avoid 'denied' state that bots trigger
+        const origPermissions = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = (p) => {
+            if (p.name === 'notifications') {
+                return Promise.resolve({ state: 'prompt', onchange: null });
+            }
+            return origPermissions(p);
+        };
+
+        // 8. WebGL vendor/renderer — real GPU strings
+        const origGetParam = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {
+            if (param === 37445) return 'Intel Inc.';
+            if (param === 37446) return 'Intel Iris OpenGL Engine';
+            return origGetParam.apply(this, arguments);
+        };
+        const origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
+        if (origGetParam2) {
+            WebGL2RenderingContext.prototype.getParameter = function(param) {
+                if (param === 37445) return 'Intel Inc.';
+                if (param === 37446) return 'Intel Iris OpenGL Engine';
+                return origGetParam2.apply(this, arguments);
+            };
+        }
+
+        // 9. Hide automation in toString checks
+        const originalFunction = Function.prototype.toString;
+        Function.prototype.toString = function() {
+            if (this === navigator.permissions.query) return 'function query() { [native code] }';
+            return originalFunction.apply(this, arguments);
+        };
+    }
+"""
+
 async def _scrape_tiktok_playwright(username: str) -> dict:
     """
-    Scrape TikTok profile using Playwright headless browser.
-    Intercepts TikTok's internal API calls to get user info + videos.
-    Falls back to extracting embedded SIGI_STATE / UNIVERSAL_DATA JSON from the HTML.
+    Scrape TikTok profile using Playwright with full stealth patches.
+    Intercepts TikTok's internal API calls (item_list) AND extracts
+    __UNIVERSAL_DATA_FOR_REHYDRATION__ from the page HTML.
+    Also calls TikTok's web API with cookies obtained from the page visit.
     """
     if not PLAYWRIGHT_AVAILABLE:
-        raise ImportError("playwright non installé. Exécuter: pip install playwright && playwright install chromium --with-deps")
+        raise ImportError("playwright non installé")
     username = username.lstrip("@")
     user_info_data: dict = {}
     video_list_data: list = []
     sigi_state: dict = {}
+    page_cookies: list = []
+    page_debug_info: dict = {}
     from playwright.async_api import async_playwright
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox", "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage", "--disable-gpu",
+                "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-                "--window-size=1280,800",
+                "--disable-infobars",
+                "--ignore-certificate-errors",
+                "--disable-extensions",
+                "--disable-web-security",
+                "--allow-running-insecure-content",
+                "--window-size=1366,768",
+                "--start-maximized",
             ]
         )
         try:
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 locale="en-US",
-                viewport={"width": 1280, "height": 800},
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                timezone_id="America/New_York",
+                viewport={"width": 1366, "height": 768},
+                screen={"width": 1920, "height": 1080},
+                extra_http_headers={
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                },
             )
+            # Inject stealth patches BEFORE any page navigation
+            await context.add_init_script(_STEALTH_SCRIPT)
             page = await context.new_page()
-            # Block heavy media to speed up page load
-            async def _block_media(route):
+
+            # Only block fonts/media — allow JS, CSS, images for realistic fingerprint
+            async def _route(route):
                 rtype = route.request.resource_type
-                if rtype in ("image", "media", "font"):
+                url = route.request.url
+                # Block video/audio streams (heavy bandwidth, not needed)
+                if rtype in ("media",) or ".mp4" in url or ".webm" in url:
                     await route.abort()
                 else:
                     await route.continue_()
-            await page.route("**/*", _block_media)
+            await page.route("**/*", _route)
+
             # Intercept TikTok internal API responses
             async def _handle_response(response):
                 url = response.url
                 try:
-                    if "tiktok.com/api/user/detail" in url:
+                    if "api/user/detail" in url or "web/api/v2/user/info" in url:
                         body = await response.json()
-                        user_info_data.update(body.get("userInfo", {}))
-                    elif "tiktok.com/api/post/item_list" in url:
+                        ui = body.get("userInfo") or body.get("data", {}).get("user", {})
+                        if ui:
+                            user_info_data.update(ui if "user" in ui else {"user": ui})
+                    elif ("api/post/item_list" in url or "api/creator/item_list" in url
+                          or "api/user/post" in url):
                         body = await response.json()
-                        video_list_data.extend(body.get("itemList", []))
+                        items = body.get("itemList") or body.get("aweme_list") or []
+                        if items:
+                            video_list_data.extend(items)
+                            logger.info(f"Intercepted {len(items)} videos from {url}")
                 except Exception:
                     pass
             page.on("response", _handle_response)
-            await page.goto(
-                f"https://www.tiktok.com/@{username}",
-                wait_until="domcontentloaded", timeout=35000
-            )
-            await page.wait_for_timeout(4000)
-            # Extract embedded JSON if API interception didn't yield data
-            if not user_info_data:
-                raw = await page.evaluate("""
-                    () => {
-                        for (const id of ['SIGI_STATE', '__UNIVERSAL_DATA_FOR_REHYDRATION__']) {
-                            const el = document.getElementById(id);
-                            if (el && el.textContent && el.textContent.length > 10) {
-                                try { return { id, data: JSON.parse(el.textContent) }; } catch(e) {}
-                            }
-                        }
-                        // Fallback: search script tags
-                        for (const s of document.querySelectorAll('script[type="application/json"]')) {
-                            if (s.textContent && (s.textContent.includes('"UserModule"') || s.textContent.includes('"webapp.user-detail"'))) {
-                                try { return { id: s.id || 'script', data: JSON.parse(s.textContent) }; } catch(e) {}
-                            }
-                        }
-                        return null;
+
+            # Navigate to TikTok profile
+            logger.info(f"Playwright: navigating to tiktok.com/@{username}")
+            try:
+                await page.goto(
+                    f"https://www.tiktok.com/@{username}",
+                    wait_until="domcontentloaded",
+                    timeout=40000,
+                )
+            except Exception as nav_e:
+                logger.warning(f"Playwright nav timeout (continuing): {nav_e}")
+
+            # Wait for page to settle + TikTok API calls to fire
+            await page.wait_for_timeout(5000)
+
+            # Extract page debug info
+            page_debug_info = await page.evaluate("""
+                () => ({
+                    title: document.title,
+                    url: window.location.href,
+                    hasChallenge: document.title.toLowerCase().includes('challenge')
+                        || document.body?.innerText?.includes('challenge') || false,
+                    bodyLength: document.body?.innerText?.length || 0,
+                })
+            """)
+            logger.info(f"Playwright page: {page_debug_info}")
+
+            # If bot challenge detected, stop early
+            if page_debug_info.get("hasChallenge") or page_debug_info.get("bodyLength", 0) < 500:
+                logger.warning(f"Playwright: bot challenge detected for @{username}")
+                return {"api_user": {}, "api_videos": [], "sigi": {}, "username": username,
+                        "debug": page_debug_info}
+
+            # Try to scroll to load more videos (triggers more item_list API calls)
+            if not video_list_data:
+                for _ in range(3):
+                    await page.mouse.wheel(0, 2000)
+                    await page.wait_for_timeout(1500)
+
+            # Extract embedded JSON data from page
+            raw = await page.evaluate("""
+                () => {
+                    // Method 1: __UNIVERSAL_DATA_FOR_REHYDRATION__ (TikTok 2024+)
+                    const uel = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+                    if (uel && uel.textContent && uel.textContent.length > 100) {
+                        try {
+                            const d = JSON.parse(uel.textContent);
+                            return { id: '__UNIVERSAL_DATA_FOR_REHYDRATION__', data: d };
+                        } catch(e) {}
                     }
-                """)
-                if raw:
-                    sigi_state.update({"id": raw["id"], "data": raw["data"]})
+                    // Method 2: SIGI_STATE (TikTok 2022-2023)
+                    const sel = document.getElementById('SIGI_STATE');
+                    if (sel && sel.textContent && sel.textContent.length > 100) {
+                        try {
+                            const d = JSON.parse(sel.textContent);
+                            return { id: 'SIGI_STATE', data: d };
+                        } catch(e) {}
+                    }
+                    // Method 3: any large JSON script tag with user data
+                    const scripts = document.querySelectorAll('script[type="application/json"]');
+                    for (const s of scripts) {
+                        const t = s.textContent || '';
+                        if (t.length > 500 && (
+                            t.includes('"UserModule"') ||
+                            t.includes('"webapp.user-detail"') ||
+                            t.includes('"userInfo"') ||
+                            t.includes('"uniqueId"')
+                        )) {
+                            try {
+                                return { id: s.id || 'json-script', data: JSON.parse(t) };
+                            } catch(e) {}
+                        }
+                    }
+                    // Method 4: window.__INIT_PROPS__
+                    try {
+                        if (window.__INIT_PROPS__) return { id: '__INIT_PROPS__', data: window.__INIT_PROPS__ };
+                    } catch(e) {}
+                    return null;
+                }
+            """)
+            if raw:
+                sigi_state.update({"id": raw["id"], "data": raw["data"]})
+                logger.info(f"Playwright: extracted embedded JSON ({raw['id']}, {len(str(raw['data']))} chars)")
+
+            # Get cookies for subsequent API calls
+            page_cookies = await context.cookies()
+
         except Exception as e:
             logger.warning(f"Playwright TikTok error for @{username}: {e}")
         finally:
             await browser.close()
-    return {
+
+    scraped = {
         "api_user": user_info_data,
         "api_videos": video_list_data,
         "sigi": sigi_state,
         "username": username,
+        "debug": page_debug_info,
     }
+
+    # If we got videos from interception, great. If not but we have cookies,
+    # try calling TikTok's item_list API directly with those cookies.
+    if not video_list_data and page_cookies and sigi_state:
+        try:
+            extra_videos = await _fetch_tiktok_with_cookies(username, page_cookies, sigi_state)
+            scraped["api_videos"] = extra_videos
+            logger.info(f"Playwright cookie API: {len(extra_videos)} videos for @{username}")
+        except Exception as e:
+            logger.warning(f"Playwright cookie API failed for @{username}: {e}")
+
+    return scraped
+
+
+async def _fetch_tiktok_with_cookies(username: str, cookies: list, sigi_data: dict) -> list:
+    """
+    Use cookies obtained from Playwright page visit to call TikTok's item_list API.
+    TikTok requires valid browser cookies (ttwid, tt_chain_token) for API access.
+    """
+    # Build cookie string
+    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies
+                           if c.get("domain", "").endswith("tiktok.com"))
+    if not cookie_str:
+        return []
+
+    # Extract user info from sigi_state
+    sec_uid = ""
+    user_id = ""
+    data = sigi_data.get("data", {})
+    # Try UNIVERSAL_DATA format
+    scope = data.get("__DEFAULT_SCOPE__", {})
+    ud = scope.get("webapp.user-detail", {}).get("userInfo", {})
+    if ud:
+        user = ud.get("user", {})
+        sec_uid = user.get("secUid", "")
+        user_id = user.get("id", "")
+    # Try SIGI_STATE format
+    if not sec_uid:
+        user_module = data.get("UserModule", {})
+        users = user_module.get("users", {})
+        for u in users.values():
+            sec_uid = u.get("secUid", "")
+            user_id = u.get("id", "")
+            if sec_uid:
+                break
+    if not sec_uid:
+        return []
+
+    all_videos = []
+    cursor = 0
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.tiktok.com/@{username}",
+        "Cookie": cookie_str,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+    }
+
+    for page in range(10):
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+                r = await c.get(
+                    "https://www.tiktok.com/api/post/item_list/",
+                    params={
+                        "aid": "1988",
+                        "app_language": "en",
+                        "app_name": "tiktok_web",
+                        "browser_language": "en-US",
+                        "browser_name": "Mozilla",
+                        "browser_online": "true",
+                        "browser_platform": "Win32",
+                        "browser_version": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "channel": "tiktok_web",
+                        "cookie_enabled": "true",
+                        "count": "35",
+                        "cursor": str(cursor),
+                        "device_platform": "web_pc",
+                        "focus_state": "true",
+                        "from_page": "user",
+                        "history_len": "2",
+                        "is_fullscreen": "false",
+                        "is_page_visible": "true",
+                        "language": "en",
+                        "os": "windows",
+                        "priority_region": "",
+                        "region": "US",
+                        "screen_height": "768",
+                        "screen_width": "1366",
+                        "secUid": sec_uid,
+                        "timezone_name": "America/New_York",
+                        "userId": user_id,
+                        "webcast_language": "en",
+                    },
+                    headers=headers,
+                )
+            logger.info(f"TikTok item_list API page {page} @{username}: HTTP {r.status_code}")
+            if r.status_code != 200:
+                break
+            body = r.json()
+            items = body.get("itemList") or []
+            has_more = body.get("hasMore", False)
+            next_cursor = body.get("cursor") or (cursor + 35)
+            for item in items:
+                vid_id = str(item.get("id") or "")
+                if not vid_id:
+                    continue
+                vid = item.get("video") or {}
+                stats = item.get("stats") or item.get("statsV2") or {}
+                create_time = item.get("createTime") or 0
+                author = item.get("author") or {}
+                uname = author.get("uniqueId") or username
+                def _i(v):
+                    try: return int(v or 0)
+                    except: return 0
+                all_videos.append({
+                    "platform_video_id": vid_id,
+                    "url": f"https://www.tiktok.com/@{uname}/video/{vid_id}",
+                    "title": (item.get("desc") or "")[:150] or None,
+                    "thumbnail_url": vid.get("cover") or vid.get("originCover") or vid.get("dynamicCover"),
+                    "views": _i(stats.get("playCount") or stats.get("play_count")),
+                    "likes": _i(stats.get("diggCount") or stats.get("digg_count")),
+                    "comments": _i(stats.get("commentCount") or stats.get("comment_count")),
+                    "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+                })
+            logger.info(f"TikTok item_list page {page}: {len(items)} items (total={len(all_videos)})")
+            if not has_more or not items:
+                break
+            cursor = next_cursor
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning(f"TikTok item_list page {page} error: {e}")
+            break
+    return all_videos
 
 
 def _parse_tiktok_scraped(scraped: dict) -> dict:
@@ -1953,11 +2273,16 @@ async def _verify_tiktok_tikwm(username: str) -> dict:
     if not user:
         raise ValueError(f"Compte TikTok @{username} introuvable ou privé.")
 
+    # Prefer numeric id for mobile API; secUid starts with "MS4" and is needed for web API
+    numeric_id = user.get("id", "")
+    sec_uid = user.get("secUid") or user.get("sec_uid", "")
+
     return {
         "display_name": user.get("nickname") or username,
         "avatar_url": user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb"),
         "follower_count": stats.get("followerCount"),
-        "platform_channel_id": user.get("id") or user.get("secUid"),
+        # Store "numericId|secUid" so we have both for different API strategies
+        "platform_channel_id": f"{numeric_id}|{sec_uid}" if (numeric_id and sec_uid) else (numeric_id or sec_uid),
     }
 
 
@@ -2622,6 +2947,17 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     Playwright is tried when TikWm finds < 10 videos (to potentially find more).
     """
     username = username.lstrip("@")
+    # Parse user_id: may be "numericId|secUid" format from updated TikWm verify
+    numeric_id = user_id or ""
+    sec_uid = ""
+    if user_id and "|" in user_id:
+        parts = user_id.split("|", 1)
+        numeric_id = parts[0]
+        sec_uid = parts[1]
+    elif user_id and user_id.startswith("MS4"):
+        sec_uid = user_id
+        numeric_id = ""
+
     tikwm_videos = []
     # Primary: TikWm API — all strategies A-E (search is always available)
     try:
@@ -2629,14 +2965,14 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         logger.info(f"TikWm fetched {len(tikwm_videos)} videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
-    # If TikWm found many videos (likely had API key or search was exhaustive), return immediately
+    # If TikWm found many videos (API key worked), return immediately
     if len(tikwm_videos) >= 10:
         return tikwm_videos
-    # Strategy 2: TikTok mobile API (requires numeric user_id from platform_channel_id)
+    # Strategy 2: TikTok mobile API (requires numeric user_id)
     mobile_videos = []
-    if user_id and not user_id.startswith("MS4"):  # MS4 prefix = secUid, not numeric id
+    if numeric_id and not numeric_id.startswith("MS4"):
         try:
-            mobile_videos = await _fetch_tiktok_mobile_api(user_id, username)
+            mobile_videos = await _fetch_tiktok_mobile_api(numeric_id, username)
             if mobile_videos:
                 logger.info(f"TikTok mobile API fetched {len(mobile_videos)} videos for @{username}")
         except Exception as e:
