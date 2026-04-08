@@ -2652,10 +2652,22 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     if PLAYWRIGHT_AVAILABLE:
         try:
             scraped = await _scrape_tiktok_playwright(username)
-            videos = _parse_tiktok_videos(scraped)
-            return videos
+            playwright_videos = _parse_tiktok_videos(scraped)
+            if playwright_videos:
+                logger.info(f"Playwright fetched {len(playwright_videos)} videos for @{username}")
+                # Merge with any TikWm videos already found
+                pw_merged = {v["platform_video_id"]: v for v in combined}
+                for v in playwright_videos:
+                    pw_merged[v["platform_video_id"]] = v
+                return list(pw_merged.values())
+            else:
+                logger.warning(f"Playwright returned 0 videos for @{username}")
         except Exception as e:
             logger.warning(f"Playwright TikTok video fetch failed for @{username}: {e}")
+    # If we have TikWm partial results, return them rather than failing completely
+    if combined:
+        logger.info(f"Returning {len(combined)} partial TikWm videos for @{username} (full scraping blocked)")
+        return combined
     # Fallback: yt-dlp (try multiple strategies for cloud-blocked environments)
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
@@ -2724,7 +2736,11 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             return await loop.run_in_executor(_thread_pool, _ytdlp_videos)
         except Exception as e:
             logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
+            if combined:
+                return combined
             raise
+    if combined:
+        return combined
     raise ValueError("yt-dlp non installé — scraping TikTok impossible")
 
 
