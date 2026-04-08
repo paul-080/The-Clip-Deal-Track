@@ -3105,9 +3105,17 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
 
     if not videos:
         platform_tips = {
-            "tiktok": f"Aucune vidéo trouvée pour @{username} sur TikTok. Vérifiez que le compte est public et a au moins une vidéo publiée.",
-            "instagram": "Aucune vidéo trouvée. Vérifiez que le compte Instagram est public et a des Reels/vidéos publiés.",
-            "youtube": "Aucune vidéo trouvée. Vérifiez que la chaîne YouTube a des vidéos publiques.",
+            "tiktok": (
+                f"Aucune vidéo trouvée pour @{username} sur TikTok. "
+                "TikTok bloque le scraping automatique depuis les serveurs cloud. "
+                "Solution : 1) Utilisez le bouton 'Ajouter vidéo' pour coller l'URL de chaque vidéo manuellement. "
+                "2) Ou configurez une clé API TikWm gratuite (tikwm.com) dans les variables Railway."
+            ),
+            "instagram": (
+                "Aucune vidéo trouvée. Instagram bloque le scraping automatique depuis les serveurs cloud. "
+                "Vérifiez que le compte Instagram est public et a des Reels/vidéos publiés."
+            ),
+            "youtube": "Aucune vidéo trouvée. Vérifiez que la chaîne YouTube a des vidéos publiques et que YOUTUBE_API_KEY est configurée.",
         }
         raise HTTPException(
             status_code=422,
@@ -3164,8 +3172,21 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
         except Exception:
             pass
     await db.social_accounts.update_one({"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}})
-    campaigns_info = f" (campagne : {primary_campaign_id})" if primary_campaign_id else ""
-    return {"message": f"{saved} vidéo(s) importées depuis {platform}/@{username}{campaigns_info}", "count": saved, "simulated": False}
+    campaigns_info = f" dans la campagne" if primary_campaign_id else ""
+    # Add platform-specific note when only partial results
+    partial_note = ""
+    if platform == "tiktok" and saved < 10:
+        partial_note = (
+            f" — Seules {saved} vidéo(s) trouvées via la recherche TikWm. "
+            "Pour toutes vos vidéos : utilisez 'Ajouter vidéo' manuellement, "
+            "ou configurez TIKWM_API_KEY (gratuit sur tikwm.com) dans Railway."
+        )
+    return {
+        "message": f"{saved} vidéo(s) importée(s){campaigns_info}{partial_note}",
+        "count": saved,
+        "simulated": False,
+        "partial": platform == "tiktok" and saved < 10,
+    }
 
 @api_router.get("/social-accounts/{account_id}/videos")
 async def get_account_videos(account_id: str, user: dict = Depends(get_current_user)):
