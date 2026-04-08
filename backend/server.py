@@ -2123,11 +2123,13 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
 
         # ── Strategy E: feed/search — paginated search for user's videos ────────
         # The search endpoint is not blocked by Cloudflare (returns 200).
-        # Paginate through results and filter by author unique_id.
-        # type=0: all videos, type=1: user search, type=2: sound
+        # Paginate through ALL results across BOTH types and filter by author.
+        # type=0: all videos, type=1: user-oriented search (may return different results)
+        seen_ids: set = set()
         for search_type in [0, 1]:
             search_cursor = 0
-            for search_page in range(8):
+            consecutive_empty = 0
+            for search_page in range(15):  # up to 15 pages = 300 results per type
                 try:
                     r = await c.get(
                         "https://www.tikwm.com/api/feed/search",
@@ -2139,7 +2141,6 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
                     if r.status_code != 200:
                         break
                     data = r.json()
-                    logger.info(f"TikWm E search code={data.get('code')}")
                     if data.get("code") != 0:
                         break
                     page_data = data.get("data") or {}
@@ -2150,30 +2151,33 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
                         items = page_data.get("videos") or page_data.get("data") or []
                     next_cursor = page_data.get("cursor") if isinstance(page_data, dict) else 0
                     has_more = page_data.get("hasMore", False) if isinstance(page_data, dict) else False
+                    found_this_page = 0
                     for item in (items or []):
                         author = item.get("author") or {}
-                        if isinstance(author, dict):
-                            uid = (author.get("unique_id") or "").lower()
-                        else:
-                            uid = str(author).lower()
+                        uid = (author.get("unique_id") or "").lower() if isinstance(author, dict) else str(author).lower()
                         # Skip if we can confirm it's a different user
                         if uid and uid != username.lower():
                             continue
                         parsed = _parse_tikwm_video_item(item, username)
-                        if parsed:
-                            # Avoid duplicates
-                            if not any(v["platform_video_id"] == parsed["platform_video_id"] for v in all_videos):
-                                all_videos.append(parsed)
-                    logger.info(f"TikWm E type={search_type} page={search_page}: {len(all_videos)} total videos so far")
+                        if parsed and parsed["platform_video_id"] not in seen_ids:
+                            all_videos.append(parsed)
+                            seen_ids.add(parsed["platform_video_id"])
+                            found_this_page += 1
+                    logger.info(f"TikWm E type={search_type} page={search_page}: +{found_this_page} new (total={len(all_videos)})")
+                    if found_this_page == 0:
+                        consecutive_empty += 1
+                        if consecutive_empty >= 3:
+                            break  # 3 consecutive pages with no user's videos — stop
+                    else:
+                        consecutive_empty = 0
                     if not has_more or not items or not next_cursor:
                         break
                     search_cursor = next_cursor
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.25)
                 except Exception as e:
                     logger.warning(f"TikWm E search error (type={search_type} page={search_page}): {e}")
                     break
-            if all_videos:
-                break  # Found videos with this search type, no need to try another
+        # No early break — always try both types to maximize video count
 
     if all_videos:
         logger.info(f"TikWm strategy E (search): {len(all_videos)} videos for @{username}")
