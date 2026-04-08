@@ -1068,6 +1068,23 @@ function CampaignDashboard({ campaigns }) {
         </button>
       </div>
 
+      {/* TikTok partial tracking notice (shown when < 10 videos and platform includes TikTok) */}
+      {allVideos.length > 0 && allVideos.length < 10 && allVideos.some(v => v.platform === "tiktok") && (
+        <div className="rounded-xl border border-[#FF004F]/20 bg-[#FF004F]/5 p-3 flex items-start gap-3">
+          <span className="flex-shrink-0 text-lg">📡</span>
+          <div>
+            <p className="text-white/60 text-xs leading-relaxed">
+              <strong className="text-white/80">Tracking TikTok partiel</strong> — {allVideos.length} vidéo(s) récupérées.
+              Pour un tracking complet automatique :{" "}
+              <a href="https://tikwm.com" target="_blank" rel="noreferrer" className="text-[#00E5FF] underline">tikwm.com</a>
+              {" "}→ créer un compte gratuit → copier la clé API → ajouter{" "}
+              <code className="bg-white/10 px-1 rounded text-xs">TIKWM_API_KEY</code> dans Railway.
+              Les clippeurs peuvent aussi coller leurs URLs TikTok manuellement dans leurs comptes.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* TABS — Shortimize style */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
         {[

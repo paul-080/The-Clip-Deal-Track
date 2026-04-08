@@ -5224,6 +5224,27 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
+@api_router.get("/tracking-status")
+async def tracking_status():
+    """Public endpoint: returns which platforms have full automatic tracking configured."""
+    return {
+        "tiktok": {
+            "full_auto": bool(TIKWM_API_KEY),
+            "method": "TikWm API (full)" if TIKWM_API_KEY else "TikWm search (partial ~2-3 videos) + manual URL",
+            "note": None if TIKWM_API_KEY else "Add TIKWM_API_KEY in Railway env vars (free at tikwm.com) for full auto tracking",
+        },
+        "youtube": {
+            "full_auto": bool(YOUTUBE_API_KEY),
+            "method": "YouTube Data API v3" if YOUTUBE_API_KEY else "Not configured",
+            "note": None if YOUTUBE_API_KEY else "Add YOUTUBE_API_KEY in Railway env vars (free at console.cloud.google.com)",
+        },
+        "instagram": {
+            "full_auto": False,
+            "method": "Unavailable (Railway datacenter IPs blocked by Instagram)",
+            "note": "Instagram blocks automated scraping from cloud servers. No workaround without residential proxies.",
+        },
+    }
+
 # Include router
 app.include_router(api_router)
 
@@ -5272,6 +5293,27 @@ async def startup_event():
 
     asyncio.create_task(auto_strike_loop())
     asyncio.create_task(track_videos_loop())
+
+    # Test TikWm API key at startup and log the result
+    if TIKWM_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://www.tikwm.com/api/user/posts",
+                    params={"unique_id": "tiktok", "count": 1, "cursor": 0, "key": TIKWM_API_KEY},
+                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tikwm.com/"},
+                )
+                if r.status_code == 200 and r.json().get("code") == 0:
+                    logger.info("✅ TikWm API key is valid — full automatic TikTok tracking enabled.")
+                else:
+                    logger.warning(f"⚠️ TikWm API key may be invalid (HTTP {r.status_code}, code={r.json().get('code')})")
+        except Exception as e:
+            logger.warning(f"⚠️ TikWm API key test failed: {e}")
+    else:
+        logger.warning(
+            "⚠️ TIKWM_API_KEY not set. TikTok tracking limited to search results (~2-3 videos/account). "
+            "Get a free key at tikwm.com and add TIKWM_API_KEY to Railway env vars."
+        )
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
