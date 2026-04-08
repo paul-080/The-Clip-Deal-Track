@@ -977,6 +977,10 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
   const [expandedAccounts, setExpandedAccounts] = useState(new Set());
   const [refreshingAccounts, setRefreshingAccounts] = useState(new Set());
   const [scrapingAccounts, setScrapingAccounts] = useState(new Set());
+  // Manual video URL submission (TikTok fallback)
+  const [manualVideoUrl, setManualVideoUrl] = useState("");
+  const [manualVideoAccount, setManualVideoAccount] = useState(null); // account_id
+  const [addingManualVideo, setAddingManualVideo] = useState(false);
 
   // Poll every 3s while any account is pending
   useEffect(() => {
@@ -1136,6 +1140,42 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
       }
     } catch (error) {
       toast.error("Erreur de connexion");
+    }
+  };
+
+  const handleAddVideoManually = async (accountId) => {
+    if (!manualVideoUrl.trim()) {
+      toast.error("Collez l'URL de votre vidéo TikTok");
+      return;
+    }
+    setAddingManualVideo(true);
+    try {
+      const res = await fetch(`${API}/social-accounts/${accountId}/add-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ video_url: manualVideoUrl.trim() }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message || "Vidéo ajoutée ✓");
+        setManualVideoUrl("");
+        setManualVideoAccount(null);
+        // Reload videos for this account
+        const vres = await fetch(`${API}/social-accounts/${accountId}/videos`, { credentials: "include" });
+        if (vres.ok) {
+          const vdata = await vres.json();
+          setVideosByAccount((prev) => ({ ...prev, [accountId]: vdata.videos || [] }));
+        }
+        setExpandedAccounts((prev) => new Set(prev).add(accountId));
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur lors de l'ajout de la vidéo", { duration: 8000 });
+      }
+    } catch {
+      toast.error("Erreur de connexion");
+    } finally {
+      setAddingManualVideo(false);
     }
   };
 
@@ -1305,6 +1345,20 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                               <><TrendingUp className="w-3 h-3" /> Scraper</>
                             )}
                           </Button>
+                          {account.platform === "tiktok" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
+                                setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
+                              }}
+                              className="text-[#FF007F]/70 hover:text-[#FF007F] text-xs gap-1 border border-[#FF007F]/20 hover:border-[#FF007F]/40"
+                              title="Ajouter une vidéo manuellement"
+                            >
+                              <Plus className="w-3 h-3" /> Ajouter vidéo
+                            </Button>
+                          )}
                         </>
                       )}
                       {(account.status === "error" || account.status === "pending") && (
@@ -1344,10 +1398,39 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                   {/* Videos section (collapsible) */}
                   {isExpanded && (
                     <div className="mt-4 pt-4 border-t border-white/10">
+                      {/* Manual video URL input (TikTok only) */}
+                      {account.platform === "tiktok" && manualVideoAccount === account.account_id && (
+                        <div className="mb-4 p-3 rounded-lg bg-[#FF007F]/5 border border-[#FF007F]/20">
+                          <p className="text-[#FF007F] text-xs font-semibold mb-2">
+                            📎 Ajouter une vidéo TikTok manuellement
+                          </p>
+                          <p className="text-white/40 text-xs mb-2">
+                            Collez l'URL d'une de vos vidéos TikTok (ex: https://www.tiktok.com/@{account.username}/video/123…)
+                          </p>
+                          <div className="flex gap-2">
+                            <Input
+                              value={manualVideoUrl}
+                              onChange={(e) => setManualVideoUrl(e.target.value)}
+                              placeholder="https://www.tiktok.com/@.../video/..."
+                              className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/20 text-xs h-8"
+                              onKeyDown={(e) => e.key === "Enter" && handleAddVideoManually(account.account_id)}
+                            />
+                            <Button
+                              size="sm"
+                              onClick={() => handleAddVideoManually(account.account_id)}
+                              disabled={addingManualVideo || !manualVideoUrl.trim()}
+                              className="bg-[#FF007F]/80 hover:bg-[#FF007F] text-white text-xs h-8 px-3"
+                            >
+                              {addingManualVideo ? <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" /> : "Ajouter"}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       {videos.length === 0 ? (
                         <div className="text-center py-6 space-y-3">
                           <Video className="w-8 h-8 text-white/20 mx-auto" />
                           <p className="text-white/40 text-sm">Aucune vidéo trackée pour l'instant</p>
+                          <div className="flex gap-2 justify-center flex-wrap">
                           <Button
                             size="sm"
                             onClick={() => handleScrapeNow(account.account_id)}
@@ -1356,6 +1439,16 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                           >
                             {scrapingAccounts.has(account.account_id) ? "Scraping en cours..." : "Lancer le scraping maintenant"}
                           </Button>
+                          {account.platform === "tiktok" && (
+                            <Button
+                              size="sm"
+                              onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
+                              className="bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] border border-[#FF007F]/30 text-xs"
+                            >
+                              <Plus className="w-3 h-3 mr-1" /> Ajouter manuellement
+                            </Button>
+                          )}
+                          </div>
                         </div>
                       ) : (
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">

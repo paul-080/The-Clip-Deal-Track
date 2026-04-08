@@ -2470,12 +2470,131 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
 
 # ---------- Video fetching ----------
 
-async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> list:
+async def _fetch_tiktok_mobile_api(user_id: str, username: str) -> list:
     """
-    Fetch TikTok videos. Priority: TikWm API (cloud-safe) → Playwright → yt-dlp.
+    Fetch TikTok videos via TikTok's own mobile app API using the numeric user_id.
+    This bypasses Cloudflare since it targets TikTok's internal CDN endpoints.
+    user_id is the numeric ID stored in platform_channel_id after account verification.
     """
     username = username.lstrip("@")
-    # Primary: TikWm API — no cloud blocking, paginated, free
+    all_videos = []
+    mobile_headers = {
+        "User-Agent": "TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet",
+        "Accept": "application/json",
+        "Accept-Language": "en-US",
+        "sdk-version": "2",
+    }
+    api_hosts = [
+        "api16-normal-c-useast1a.tiktokv.com",
+        "api19-normal-c-useast1a.tiktokv.com",
+        "api2-19-h2.musical.ly",
+    ]
+    for api_host in api_hosts:
+        cursor = 0
+        for page in range(8):
+            try:
+                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+                    r = await c.get(
+                        f"https://{api_host}/aweme/v1/aweme/post/",
+                        params={
+                            "user_id": user_id,
+                            "count": 35,
+                            "max_cursor": cursor,
+                            "aid": 1233,
+                            "device_type": "iPhone11",
+                            "os_version": "14.0",
+                            "version_code": "200103",
+                            "app_name": "musical_ly",
+                            "channel": "App Store",
+                        },
+                        headers=mobile_headers,
+                    )
+                logger.info(f"TikTok mobile API {api_host} page {page} @{username}: HTTP {r.status_code}")
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                aweme_list = data.get("aweme_list") or []
+                has_more = data.get("has_more", 0)
+                max_cursor = data.get("max_cursor") or cursor
+                for item in aweme_list:
+                    vid_id = str(item.get("aweme_id") or "")
+                    if not vid_id:
+                        continue
+                    stats = item.get("statistics") or {}
+                    video_info = item.get("video") or {}
+                    cover_list = (video_info.get("cover") or {}).get("url_list") or []
+                    cover = cover_list[0] if cover_list else None
+                    create_time = item.get("create_time") or 0
+                    all_videos.append({
+                        "platform_video_id": vid_id,
+                        "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
+                        "title": (item.get("desc") or "")[:200] or None,
+                        "thumbnail_url": cover,
+                        "views": int(stats.get("play_count") or 0),
+                        "likes": int(stats.get("digg_count") or 0),
+                        "comments": int(stats.get("comment_count") or 0),
+                        "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+                    })
+                if not has_more or not aweme_list:
+                    break
+                cursor = max_cursor
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"TikTok mobile API {api_host} page {page} error: {e}")
+                break
+        if all_videos:
+            logger.info(f"TikTok mobile API ({api_host}): {len(all_videos)} videos for @{username}")
+            return all_videos
+    return all_videos
+
+
+async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
+    """
+    Fetch stats for a single TikTok video using TikWm's download API.
+    This endpoint works without authentication even from cloud servers.
+    Returns a video dict or None.
+    """
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.post(
+            "https://www.tikwm.com/api/",
+            data={"url": video_url, "hd": "1"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.tikwm.com/",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+    if r.status_code != 200:
+        return None
+    data = r.json()
+    if data.get("code") != 0:
+        return None
+    v = data.get("data") or {}
+    vid_id = str(v.get("id") or "")
+    if not vid_id:
+        return None
+    author = v.get("author") or {}
+    username = author.get("unique_id") or "unknown"
+    create_time = v.get("create_time") or 0
+    return {
+        "platform_video_id": vid_id,
+        "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
+        "title": (v.get("title") or "")[:200] or None,
+        "thumbnail_url": v.get("cover") or v.get("origin_cover"),
+        "views": int(v.get("play_count") or 0),
+        "likes": int(v.get("digg_count") or 0),
+        "comments": int(v.get("comment_count") or 0),
+        "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+        "_author_username": username,
+    }
+
+
+async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
+    """
+    Fetch TikTok videos. Priority: TikWm API (cloud-safe) → TikTok Mobile API → Playwright → yt-dlp.
+    """
+    username = username.lstrip("@")
+    # Primary: TikWm API — works with API key or free (some endpoints)
     try:
         videos = await _fetch_tiktok_tikwm(username)
         if videos:
@@ -2484,6 +2603,15 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30) -> lis
         logger.warning(f"TikWm returned 0 videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
+    # Strategy 2: TikTok mobile API (requires numeric user_id from platform_channel_id)
+    if user_id and not user_id.startswith("MS4"):  # MS4 prefix = secUid, not numeric id
+        try:
+            videos = await _fetch_tiktok_mobile_api(user_id, username)
+            if videos:
+                logger.info(f"TikTok mobile API fetched {len(videos)} videos for @{username}")
+                return videos
+        except Exception as e:
+            logger.warning(f"TikTok mobile API failed for @{username}: {e}")
     # Fallback: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
         try:
@@ -2675,7 +2803,7 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
         channel_id = account.get("platform_channel_id")
         return await _fetch_youtube_videos(channel_id, since_days)
     elif platform == "tiktok":
-        return await _fetch_tiktok_videos_async(username, since_days)
+        return await _fetch_tiktok_videos_async(username, since_days, account.get("platform_channel_id"))
     elif platform == "instagram":
         platform_channel_id = account.get("platform_channel_id")
         return await _fetch_instagram_videos_async(username, platform_channel_id, since_days)
@@ -2995,6 +3123,122 @@ async def get_account_videos(account_id: str, user: dict = Depends(get_current_u
         raise HTTPException(status_code=404, detail="Account not found")
     videos = await db.tracked_videos.find({"account_id": account_id}, {"_id": 0}).sort("published_at", -1).to_list(100)
     return {"videos": videos}
+
+@api_router.post("/social-accounts/{account_id}/add-video")
+async def add_video_manually(account_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """
+    Clipper submits a TikTok video URL manually.
+    Fetches real stats via TikWm single-video API (no API key needed for this endpoint).
+    Saved to tracked_videos for the account + all campaigns where this account is assigned.
+    """
+    body = await request.json()
+    video_url = (body.get("video_url") or "").strip()
+    if not video_url or "tiktok.com" not in video_url:
+        raise HTTPException(status_code=400, detail="URL TikTok invalide (ex: https://www.tiktok.com/@user/video/123)")
+
+    account = await db.social_accounts.find_one(
+        {"account_id": account_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    if account.get("platform") != "tiktok":
+        raise HTTPException(status_code=400, detail="Ce bouton n'est disponible que pour les comptes TikTok")
+
+    # Fetch stats from TikWm single-video API (works without auth key)
+    vid_data = await _fetch_tiktok_single_video_tikwm(video_url)
+    if not vid_data:
+        raise HTTPException(status_code=400, detail="Impossible de récupérer les stats de cette vidéo. Vérifiez que l'URL est correcte et que la vidéo est publique.")
+
+    # Validate that the video belongs to this account
+    vid_author = (vid_data.get("_author_username") or "").lower()
+    account_username = account.get("username", "").lower().lstrip("@")
+    if vid_author and account_username and vid_author != account_username:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cette vidéo appartient à @{vid_author}, pas à @{account_username}. Ajoutez uniquement vos propres vidéos."
+        )
+
+    # Find all campaigns where this account is assigned
+    assignments = await db.campaign_social_accounts.find(
+        {"account_id": account_id}, {"_id": 0}
+    ).to_list(100)
+
+    saved_count = 0
+    for assignment in assignments:
+        campaign_id = assignment["campaign_id"]
+        campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+        rpm = (campaign or {}).get("rpm", 0)
+        earnings = (vid_data["views"] / 1000) * rpm
+
+        doc = {
+            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+            "platform_video_id": vid_data["platform_video_id"],
+            "account_id": account_id,
+            "user_id": user["user_id"],
+            "campaign_id": campaign_id,
+            "platform": "tiktok",
+            "url": vid_data["url"],
+            "title": vid_data.get("title"),
+            "thumbnail_url": vid_data.get("thumbnail_url"),
+            "views": vid_data["views"],
+            "likes": vid_data.get("likes", 0),
+            "comments": vid_data.get("comments", 0),
+            "published_at": vid_data.get("published_at"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "earnings": round(earnings, 4),
+            "manually_added": True,
+            "simulated": False,
+        }
+        try:
+            await db.tracked_videos.update_one(
+                {"account_id": account_id, "platform_video_id": vid_data["platform_video_id"]},
+                {"$set": doc},
+                upsert=True,
+            )
+            saved_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to upsert manually added video {vid_data['platform_video_id']}: {e}")
+
+    if saved_count == 0:
+        # No campaign assigned — save anyway linked to account only
+        doc = {
+            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+            "platform_video_id": vid_data["platform_video_id"],
+            "account_id": account_id,
+            "user_id": user["user_id"],
+            "campaign_id": None,
+            "platform": "tiktok",
+            "url": vid_data["url"],
+            "title": vid_data.get("title"),
+            "thumbnail_url": vid_data.get("thumbnail_url"),
+            "views": vid_data["views"],
+            "likes": vid_data.get("likes", 0),
+            "comments": vid_data.get("comments", 0),
+            "published_at": vid_data.get("published_at"),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "earnings": 0,
+            "manually_added": True,
+            "simulated": False,
+        }
+        await db.tracked_videos.update_one(
+            {"account_id": account_id, "platform_video_id": vid_data["platform_video_id"]},
+            {"$set": doc},
+            upsert=True,
+        )
+
+    return {
+        "message": f"Vidéo ajoutée avec succès ({vid_data['views']:,} vues)",
+        "video": {
+            "url": vid_data["url"],
+            "title": vid_data.get("title"),
+            "views": vid_data["views"],
+            "likes": vid_data.get("likes", 0),
+            "thumbnail_url": vid_data.get("thumbnail_url"),
+        }
+    }
+
 
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
