@@ -4472,6 +4472,74 @@ async def debug_tikwm(username: str):
 
     return result
 
+
+@api_router.get("/debug/instagram/{username}")
+async def debug_instagram(username: str):
+    """Debug endpoint: tests Instagram verification + video fetching for a public account."""
+    username = username.lstrip("@")
+    result = {
+        "username": username,
+        "instaloader_available": INSTALOADER_AVAILABLE,
+    }
+    # Test 1: Verify account (httpx API + fallbacks)
+    try:
+        info = await _verify_instagram(username)
+        result["verify"] = {
+            "status": "success",
+            "display_name": info.get("display_name"),
+            "follower_count": info.get("follower_count"),
+            "avatar_url": info.get("avatar_url"),
+        }
+    except Exception as e:
+        result["verify"] = {"status": "error", "error": str(e)[:200]}
+    # Test 2: Fetch videos
+    try:
+        videos = await _fetch_instagram_videos_async(username, since_days=3650)
+        result["videos"] = {
+            "count": len(videos),
+            "sample": videos[:2] if videos else [],
+        }
+    except Exception as e:
+        result["videos"] = {"error": str(e)[:200]}
+    return result
+
+
+@api_router.get("/debug/youtube/{handle}")
+async def debug_youtube(handle: str):
+    """Debug endpoint: tests YouTube channel verification + video fetching."""
+    result = {
+        "handle": handle,
+        "youtube_api_key_configured": bool(YOUTUBE_API_KEY),
+    }
+    if not YOUTUBE_API_KEY:
+        result["error"] = "YOUTUBE_API_KEY not configured in Railway env vars. Add it at console.cloud.google.com."
+        return result
+    # Test 1: Verify channel
+    try:
+        info = await _verify_youtube(handle)
+        result["verify"] = {
+            "status": "success",
+            "display_name": info.get("display_name"),
+            "follower_count": info.get("follower_count"),
+            "channel_id": info.get("platform_channel_id"),
+        }
+        channel_id = info.get("platform_channel_id")
+    except Exception as e:
+        result["verify"] = {"status": "error", "error": str(e)[:200]}
+        channel_id = None
+    # Test 2: Fetch videos
+    if channel_id:
+        try:
+            videos = await _fetch_youtube_videos(channel_id, since_days=365)
+            result["videos"] = {
+                "count": len(videos),
+                "sample": videos[:2] if videos else [],
+            }
+        except Exception as e:
+            result["videos"] = {"error": str(e)[:200]}
+    return result
+
+
 @api_router.get("/admin/stats")
 async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
     users_count = await db.users.count_documents({})
