@@ -2121,37 +2121,59 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
             logger.info(f"TikWm strategy D (@prefix): {len(all_videos)} videos for @{username}")
             return all_videos
 
-        # ── Strategy E: feed/search — search for username's videos ───────────
-        try:
-            r = await c.get(
-                "https://www.tikwm.com/api/feed/search",
-                params={"keywords": username, "count": 20, "cursor": 0, "type": 1},
-                headers=TIKWM_HEADERS,
-            )
-            logger.info(f"TikWm E (search) @{username}: HTTP {r.status_code}")
-            if r.status_code == 200:
-                data = r.json()
-                logger.info(f"TikWm E search code={data.get('code')}")
-                if data.get("code") == 0:
+        # ── Strategy E: feed/search — paginated search for user's videos ────────
+        # The search endpoint is not blocked by Cloudflare (returns 200).
+        # Paginate through results and filter by author unique_id.
+        # type=0: all videos, type=1: user search, type=2: sound
+        for search_type in [0, 1]:
+            search_cursor = 0
+            for search_page in range(8):
+                try:
+                    r = await c.get(
+                        "https://www.tikwm.com/api/feed/search",
+                        params={"keywords": username, "count": 20, "cursor": search_cursor,
+                                "region": "FR", "type": search_type},
+                        headers=TIKWM_HEADERS,
+                    )
+                    logger.info(f"TikWm E (search type={search_type} page={search_page}) @{username}: HTTP {r.status_code}")
+                    if r.status_code != 200:
+                        break
+                    data = r.json()
+                    logger.info(f"TikWm E search code={data.get('code')}")
+                    if data.get("code") != 0:
+                        break
                     page_data = data.get("data") or {}
-                    items = page_data.get("videos") or page_data.get("data") or []
+                    items = []
                     if isinstance(page_data, list):
                         items = page_data
+                    elif isinstance(page_data, dict):
+                        items = page_data.get("videos") or page_data.get("data") or []
+                    next_cursor = page_data.get("cursor") if isinstance(page_data, dict) else 0
+                    has_more = page_data.get("hasMore", False) if isinstance(page_data, dict) else False
                     for item in (items or []):
-                        # Only include videos from this exact user
                         author = item.get("author") or {}
                         if isinstance(author, dict):
                             uid = (author.get("unique_id") or "").lower()
                         else:
                             uid = str(author).lower()
+                        # Skip if we can confirm it's a different user
                         if uid and uid != username.lower():
                             continue
                         parsed = _parse_tikwm_video_item(item, username)
                         if parsed:
-                            all_videos.append(parsed)
-                    logger.info(f"TikWm E: {len(all_videos)} videos from search")
-        except Exception as e:
-            logger.warning(f"TikWm E search error: {e}")
+                            # Avoid duplicates
+                            if not any(v["platform_video_id"] == parsed["platform_video_id"] for v in all_videos):
+                                all_videos.append(parsed)
+                    logger.info(f"TikWm E type={search_type} page={search_page}: {len(all_videos)} total videos so far")
+                    if not has_more or not items or not next_cursor:
+                        break
+                    search_cursor = next_cursor
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.warning(f"TikWm E search error (type={search_type} page={search_page}): {e}")
+                    break
+            if all_videos:
+                break  # Found videos with this search type, no need to try another
 
     if all_videos:
         logger.info(f"TikWm strategy E (search): {len(all_videos)} videos for @{username}")
@@ -4321,15 +4343,47 @@ async def debug_tikwm(username: str):
         except Exception as e:
             result["posts_get_web1"] = {"error": str(e)}
 
-        # Test 6: feed search
+        # Test 6: feed search type=0 (videos)
         try:
             r = await c.get("https://www.tikwm.com/api/feed/search",
-                params={"keywords": username, "count": 5, "cursor": 0, "type": 1}, headers=HEADERS)
+                params={"keywords": username, "count": 20, "cursor": 0, "type": 0}, headers=HEADERS)
             body = r.json() if r.status_code == 200 else r.text[:300]
-            result["feed_search"] = {"http_status": r.status_code,
-                "body": {"code": body.get("code"), "data_keys": list((body.get("data") or {}).keys()) if isinstance(body.get("data"), dict) else str(type(body.get("data")))} if isinstance(body, dict) else body}
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                items = body["data"].get("videos") or body["data"].get("data") or []
+                result["feed_search_type0"] = {
+                    "http_status": r.status_code,
+                    "code": body.get("code"),
+                    "data_keys": list(body["data"].keys()),
+                    "items_count": len(items),
+                    "first_item_author": (items[0].get("author") or {}).get("unique_id") if items else None,
+                    "has_more": body["data"].get("hasMore"),
+                    "cursor": body["data"].get("cursor"),
+                }
+            else:
+                result["feed_search_type0"] = {"http_status": r.status_code, "body_snippet": str(body)[:300]}
         except Exception as e:
-            result["feed_search"] = {"error": str(e)}
+            result["feed_search_type0"] = {"error": str(e)}
+
+        # Test 7: feed search type=1 (user)
+        try:
+            r = await c.get("https://www.tikwm.com/api/feed/search",
+                params={"keywords": username, "count": 20, "cursor": 0, "type": 1}, headers=HEADERS)
+            body = r.json() if r.status_code == 200 else r.text[:300]
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                items = body["data"].get("videos") or body["data"].get("data") or []
+                result["feed_search_type1"] = {
+                    "http_status": r.status_code,
+                    "code": body.get("code"),
+                    "data_keys": list(body["data"].keys()),
+                    "items_count": len(items),
+                    "first_item_author": (items[0].get("author") or {}).get("unique_id") if items else None,
+                    "has_more": body["data"].get("hasMore"),
+                    "cursor": body["data"].get("cursor"),
+                }
+            else:
+                result["feed_search_type1"] = {"http_status": r.status_code, "body_snippet": str(body)[:300]}
+        except Exception as e:
+            result["feed_search_type1"] = {"error": str(e)}
 
     # Also run the full _fetch_tiktok_tikwm function
     try:
