@@ -2618,26 +2618,36 @@ async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
 async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
     """
     Fetch TikTok videos. Priority: TikWm API (cloud-safe) → TikTok Mobile API → Playwright → yt-dlp.
+    TikWm with API key gets all videos. Without key, search gets partial results.
+    Playwright is tried when TikWm finds < 10 videos (to potentially find more).
     """
     username = username.lstrip("@")
-    # Primary: TikWm API — works with API key or free (some endpoints)
+    tikwm_videos = []
+    # Primary: TikWm API — all strategies A-E (search is always available)
     try:
-        videos = await _fetch_tiktok_tikwm(username)
-        if videos:
-            logger.info(f"TikWm fetched {len(videos)} videos for @{username}")
-            return videos
-        logger.warning(f"TikWm returned 0 videos for @{username}")
+        tikwm_videos = await _fetch_tiktok_tikwm(username)
+        logger.info(f"TikWm fetched {len(tikwm_videos)} videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
+    # If TikWm found many videos (likely had API key or search was exhaustive), return immediately
+    if len(tikwm_videos) >= 10:
+        return tikwm_videos
     # Strategy 2: TikTok mobile API (requires numeric user_id from platform_channel_id)
+    mobile_videos = []
     if user_id and not user_id.startswith("MS4"):  # MS4 prefix = secUid, not numeric id
         try:
-            videos = await _fetch_tiktok_mobile_api(user_id, username)
-            if videos:
-                logger.info(f"TikTok mobile API fetched {len(videos)} videos for @{username}")
-                return videos
+            mobile_videos = await _fetch_tiktok_mobile_api(user_id, username)
+            if mobile_videos:
+                logger.info(f"TikTok mobile API fetched {len(mobile_videos)} videos for @{username}")
         except Exception as e:
             logger.warning(f"TikTok mobile API failed for @{username}: {e}")
+    # Merge TikWm + mobile results (deduplicate by platform_video_id)
+    merged: dict = {}
+    for v in (tikwm_videos + mobile_videos):
+        merged[v["platform_video_id"]] = v
+    combined = list(merged.values())
+    if len(combined) >= 10:
+        return combined
     # Fallback: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
         try:
@@ -4420,7 +4430,7 @@ async def debug_tikwm(username: str):
     else:
         result["mobile_api_result"] = {"skipped": "user_id not available from user_info"}
 
-    # Full pipeline test (TikWm + Mobile API + yt-dlp)
+    # Full pipeline test (TikWm + Mobile API + Playwright + yt-dlp)
     try:
         all_videos = await _fetch_tiktok_videos_async(username, since_days=30, user_id=user_id_from_info)
         result["full_pipeline_result"] = {
@@ -4429,6 +4439,20 @@ async def debug_tikwm(username: str):
         }
     except Exception as e:
         result["full_pipeline_result"] = {"error": str(e)}
+
+    # Test Playwright directly
+    result["playwright_available"] = PLAYWRIGHT_AVAILABLE
+    if PLAYWRIGHT_AVAILABLE:
+        try:
+            scraped = await _scrape_tiktok_playwright(username)
+            parsed_vids = _parse_tiktok_videos(scraped)
+            result["playwright_result"] = {
+                "videos_found": len(parsed_vids),
+                "sample": parsed_vids[:2] if parsed_vids else [],
+                "raw_keys": list(scraped.keys()) if isinstance(scraped, dict) else type(scraped).__name__,
+            }
+        except Exception as e:
+            result["playwright_result"] = {"error": str(e)[:300]}
 
     return result
 
