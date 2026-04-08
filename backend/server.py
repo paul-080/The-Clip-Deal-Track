@@ -4385,7 +4385,7 @@ async def debug_tikwm(username: str):
         except Exception as e:
             result["feed_search_type1"] = {"error": str(e)}
 
-    # Also run the full _fetch_tiktok_tikwm function
+    # Also run the full _fetch_tiktok_tikwm function (TikWm strategies only)
     try:
         videos = await _fetch_tiktok_tikwm(username)
         result["_fetch_tiktok_tikwm_result"] = {
@@ -4394,6 +4394,37 @@ async def debug_tikwm(username: str):
         }
     except Exception as e:
         result["_fetch_tiktok_tikwm_result"] = {"error": str(e)}
+
+    # Test TikTok mobile API (uses numeric user_id from user_info)
+    user_id_from_info = None
+    try:
+        ui = result.get("user_info", {})
+        if isinstance(ui.get("body"), dict):
+            user_id_from_info = ui["body"].get("data", {}).get("user", {}).get("id")
+    except Exception:
+        pass
+    if user_id_from_info:
+        try:
+            mobile_videos = await _fetch_tiktok_mobile_api(user_id_from_info, username)
+            result["mobile_api_result"] = {
+                "user_id_used": user_id_from_info,
+                "videos_found": len(mobile_videos),
+                "sample": mobile_videos[:2] if mobile_videos else [],
+            }
+        except Exception as e:
+            result["mobile_api_result"] = {"user_id_used": user_id_from_info, "error": str(e)}
+    else:
+        result["mobile_api_result"] = {"skipped": "user_id not available from user_info"}
+
+    # Full pipeline test (TikWm + Mobile API + yt-dlp)
+    try:
+        all_videos = await _fetch_tiktok_videos_async(username, since_days=30, user_id=user_id_from_info)
+        result["full_pipeline_result"] = {
+            "videos_found": len(all_videos),
+            "sample": all_videos[:2] if all_videos else [],
+        }
+    except Exception as e:
+        result["full_pipeline_result"] = {"error": str(e)}
 
     return result
 
