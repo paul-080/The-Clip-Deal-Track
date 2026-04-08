@@ -1960,64 +1960,127 @@ async def _verify_tiktok_tikwm(username: str) -> dict:
     }
 
 
+def _parse_tikwm_video_item(item: dict, username: str) -> dict | None:
+    """Parse a single TikWm video item into our internal format."""
+    vid_id = str(item.get("video_id") or item.get("aweme_id") or item.get("id") or "")
+    if not vid_id:
+        return None
+    create_time = item.get("create_time") or 0
+    return {
+        "platform_video_id": vid_id,
+        "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
+        "title": (item.get("title") or item.get("desc") or "")[:200] or None,
+        "thumbnail_url": item.get("cover") or item.get("origin_cover") or item.get("ai_dynamic_cover"),
+        "views": int(item.get("play_count") or item.get("views") or 0),
+        "likes": int(item.get("digg_count") or item.get("likes") or 0),
+        "comments": int(item.get("comment_count") or item.get("comments") or 0),
+        "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+    }
+
+
 async def _fetch_tiktok_tikwm(username: str) -> list:
     """
     Fetch all TikTok videos for a user via TikWm API.
     Paginates automatically. Works from cloud servers (TikWm uses residential proxies).
+    Tries multiple TikWm endpoint variants for robustness.
     """
     username = username.lstrip("@")
     all_videos = []
-    cursor = 0
-    max_pages = 10  # 10 × 35 = 350 videos max
+
+    TIKWM_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.tikwm.com/",
+    }
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-        for _ in range(max_pages):
-            r = await c.get(
-                "https://www.tikwm.com/api/user/posts",
-                params={"unique_id": username, "count": 35, "cursor": cursor},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json",
-                    "Referer": "https://www.tikwm.com/",
-                }
-            )
-            if r.status_code != 200:
-                break
+
+        # ── Strategy A: /api/user/posts with pagination ───────────────────────
+        cursor = 0
+        max_pages = 10
+        got_any = False
+
+        for page_num in range(max_pages):
             try:
+                r = await c.get(
+                    "https://www.tikwm.com/api/user/posts",
+                    params={"unique_id": username, "count": 35, "cursor": cursor},
+                    headers=TIKWM_HEADERS,
+                )
+                logger.info(f"TikWm /api/user/posts page {page_num} for @{username}: HTTP {r.status_code}")
+                if r.status_code != 200:
+                    break
                 data = r.json()
-            except Exception:
+                logger.info(f"TikWm page {page_num} response code={data.get('code')} keys={list((data.get('data') or {}).keys()) if isinstance(data.get('data'), dict) else type(data.get('data')).__name__}")
+                if data.get("code") != 0:
+                    logger.warning(f"TikWm non-zero code {data.get('code')}: {data.get('msg')}")
+                    break
+                page_data = data.get("data") or {}
+                if not isinstance(page_data, dict):
+                    logger.warning(f"TikWm unexpected data type: {type(page_data)}")
+                    break
+                # TikWm uses "videos" key
+                items = page_data.get("videos") or page_data.get("aweme_list") or page_data.get("items") or []
+                logger.info(f"TikWm page {page_num}: {len(items)} items")
+                if not items:
+                    break
+                for item in items:
+                    parsed = _parse_tikwm_video_item(item, username)
+                    if parsed:
+                        all_videos.append(parsed)
+                        got_any = True
+                has_more = page_data.get("hasMore") or page_data.get("has_more")
+                if not has_more:
+                    break
+                cursor = page_data.get("cursor") or (cursor + 35)
+                await asyncio.sleep(0.5)
+            except Exception as page_e:
+                logger.warning(f"TikWm page {page_num} error: {page_e}")
                 break
 
-            if data.get("code") != 0:
-                break
+        if all_videos:
+            logger.info(f"TikWm strategy A: {len(all_videos)} videos for @{username}")
+            return all_videos
 
-            page_data = data.get("data", {})
-            items = page_data.get("videos", [])
-            if not items:
-                break
+        # ── Strategy B: /api/user/posts with @username format ────────────────
+        if not got_any:
+            try:
+                r2 = await c.get(
+                    "https://www.tikwm.com/api/user/posts",
+                    params={"unique_id": f"@{username}", "count": 35, "cursor": 0},
+                    headers=TIKWM_HEADERS,
+                )
+                if r2.status_code == 200:
+                    data2 = r2.json()
+                    logger.info(f"TikWm strategy B (@prefix) code={data2.get('code')}")
+                    if data2.get("code") == 0:
+                        page_data2 = data2.get("data") or {}
+                        items2 = (page_data2.get("videos") or []) if isinstance(page_data2, dict) else []
+                        for item in items2:
+                            parsed = _parse_tikwm_video_item(item, username)
+                            if parsed:
+                                all_videos.append(parsed)
+            except Exception as e2:
+                logger.warning(f"TikWm strategy B failed: {e2}")
 
-            for item in items:
-                vid_id = str(item.get("video_id") or item.get("id") or "")
-                if not vid_id:
-                    continue
-                create_time = item.get("create_time") or 0
-                all_videos.append({
-                    "platform_video_id": vid_id,
-                    "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
-                    "title": (item.get("title") or item.get("desc") or "")[:200] or None,
-                    "thumbnail_url": item.get("cover") or item.get("origin_cover"),
-                    "views": int(item.get("play_count") or 0),
-                    "likes": int(item.get("digg_count") or 0),
-                    "comments": int(item.get("comment_count") or 0),
-                    "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
-                })
+        if all_videos:
+            logger.info(f"TikWm strategy B: {len(all_videos)} videos for @{username}")
+            return all_videos
 
-            has_more = page_data.get("hasMore") or page_data.get("has_more")
-            if not has_more:
-                break
-            cursor = page_data.get("cursor", cursor + 35)
-            await asyncio.sleep(0.5)  # gentle rate limiting
+        # ── Strategy C: tikvid.me as alternative proxy ───────────────────────
+        try:
+            r3 = await c.get(
+                "https://www.tikwm.com/api/feed/search",
+                params={"keywords": username, "count": 20, "cursor": 0, "region": "FR", "type": 1},
+                headers=TIKWM_HEADERS,
+            )
+            if r3.status_code == 200:
+                data3 = r3.json()
+                logger.info(f"TikWm search fallback code={data3.get('code')}")
+        except Exception:
+            pass
 
+    logger.warning(f"TikWm: 0 videos found for @{username} after all strategies")
     return all_videos
 
 
@@ -3864,6 +3927,58 @@ async def admin_verify(request: Request):
     """Verify admin code — returns 200 if valid, 403 if not."""
     await verify_admin_code(request)
     return {"ok": True}
+
+@api_router.get("/debug/tikwm/{username}")
+async def debug_tikwm(username: str):
+    """Debug endpoint: shows raw TikWm API responses for a TikTok username. No auth required."""
+    username = username.lstrip("@")
+    result = {}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        # Test 1: user info
+        try:
+            r_info = await c.get(
+                "https://www.tikwm.com/api/user/info",
+                params={"unique_id": username},
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            result["user_info"] = {"http_status": r_info.status_code, "body": r_info.json() if r_info.status_code == 200 else r_info.text[:500]}
+        except Exception as e:
+            result["user_info"] = {"error": str(e)}
+
+        # Test 2: posts (no @ prefix)
+        try:
+            r_posts = await c.get(
+                "https://www.tikwm.com/api/user/posts",
+                params={"unique_id": username, "count": 10, "cursor": 0},
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            body = r_posts.json() if r_posts.status_code == 200 else r_posts.text[:500]
+            # Trim video list for readability
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                vids = (body["data"].get("videos") or [])
+                body["data"]["videos"] = vids[:3]  # show only first 3
+                body["data"]["_total_returned"] = len(vids)
+            result["posts_no_at"] = {"http_status": r_posts.status_code, "body": body}
+        except Exception as e:
+            result["posts_no_at"] = {"error": str(e)}
+
+        # Test 3: posts (with @ prefix)
+        try:
+            r_posts2 = await c.get(
+                "https://www.tikwm.com/api/user/posts",
+                params={"unique_id": f"@{username}", "count": 10, "cursor": 0},
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            body2 = r_posts2.json() if r_posts2.status_code == 200 else r_posts2.text[:500]
+            if isinstance(body2, dict) and isinstance(body2.get("data"), dict):
+                vids2 = (body2["data"].get("videos") or [])
+                body2["data"]["videos"] = vids2[:3]
+                body2["data"]["_total_returned"] = len(vids2)
+            result["posts_with_at"] = {"http_status": r_posts2.status_code, "body": body2}
+        except Exception as e:
+            result["posts_with_at"] = {"error": str(e)}
+
+    return result
 
 @api_router.get("/admin/stats")
 async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
