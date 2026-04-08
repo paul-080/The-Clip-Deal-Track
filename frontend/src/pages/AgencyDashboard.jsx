@@ -1,14 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "../App";
 import Sidebar from "../components/Sidebar";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { 
+import {
   Home, Search, Plus, Link2, CreditCard, Settings, MessageCircle,
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
-  TrendingUp, BarChart3
+  TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
+  ChevronUp, ChevronDown, RefreshCw, Play
 } from "lucide-react";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -900,7 +902,7 @@ function CreateCampaign({ onCreated }) {
   );
 }
 
-// Campaign Dashboard for Agency
+// Campaign Dashboard for Agency — Shortimize style
 function CampaignDashboard({ campaigns }) {
   const location = useLocation();
   const campaignId = location.pathname.split("/")[3];
@@ -910,52 +912,50 @@ function CampaignDashboard({ campaigns }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [pendingMembers, setPendingMembers] = useState([]);
   const [processingMember, setProcessingMember] = useState(null);
-  const [recentVideos, setRecentVideos] = useState([]);
-  const [selectedRankClipper, setSelectedRankClipper] = useState(null);
+  const [allVideos, setAllVideos] = useState([]);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [sortField, setSortField] = useState("published_at");
+  const [sortDir, setSortDir] = useState("desc");
+  const [filterPlatform, setFilterPlatform] = useState("all");
+  const [filterClipper, setFilterClipper] = useState("all");
+
+  const fmt = (n) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}K` : String(n || 0);
+  const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
+  const PLAT_ICON = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
 
   useEffect(() => {
     if (campaignId) {
       fetchCampaign();
       fetchStats();
       fetchPendingMembers();
-      fetchRecentVideos();
+      fetchAllVideos();
     }
   }, [campaignId]);
 
-  const fetchRecentVideos = async () => {
+  const fetchAllVideos = async () => {
+    setVideosLoading(true);
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
-        setRecentVideos((data.videos || []).slice(0, 20));
+        setAllVideos(data.videos || []);
       }
     } catch {}
+    finally { setVideosLoading(false); }
   };
 
   const fetchCampaign = async () => {
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}`, { credentials: "include" });
-      if (res.ok) {
-        const data = await res.json();
-        setCampaign(data);
-      }
-    } catch (error) {
-      console.error("Error:", error);
-    } finally {
-      setLoading(false);
-    }
+      if (res.ok) setCampaign(await res.json());
+    } catch {} finally { setLoading(false); }
   };
 
   const fetchStats = async () => {
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/stats`, { credentials: "include" });
-      if (res.ok) {
-        const data = await res.json();
-        setStats(data);
-      }
-    } catch (error) {
-      console.error("Error:", error);
-    }
+      if (res.ok) setStats(await res.json());
+    } catch {}
   };
 
   const fetchPendingMembers = async () => {
@@ -965,124 +965,380 @@ function CampaignDashboard({ campaigns }) {
         const data = await res.json();
         setPendingMembers(data.members || []);
       }
-    } catch (error) {
-      console.error("Error fetching pending members:", error);
-    }
+    } catch {}
   };
 
   const handleAcceptMember = async (memberId) => {
     setProcessingMember(memberId);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/members/${memberId}/accept`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (res.ok) {
-        toast.success("Candidature acceptée !");
-        fetchPendingMembers();
-        fetchCampaign();
-      } else {
-        toast.error("Erreur lors de l'acceptation");
-      }
-    } catch {
-      toast.error("Erreur réseau");
-    }
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${memberId}/accept`, { method: "POST", credentials: "include" });
+      if (res.ok) { toast.success("Candidature acceptée !"); fetchPendingMembers(); fetchCampaign(); }
+      else toast.error("Erreur lors de l'acceptation");
+    } catch { toast.error("Erreur réseau"); }
     setProcessingMember(null);
   };
 
   const handleRejectMember = async (memberId) => {
     setProcessingMember(memberId);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/members/${memberId}/reject`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (res.ok) {
-        toast.success("Candidature refusée");
-        fetchPendingMembers();
-      } else {
-        toast.error("Erreur lors du refus");
-      }
-    } catch {
-      toast.error("Erreur réseau");
-    }
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${memberId}/reject`, { method: "POST", credentials: "include" });
+      if (res.ok) { toast.success("Candidature refusée"); fetchPendingMembers(); }
+      else toast.error("Erreur lors du refus");
+    } catch { toast.error("Erreur réseau"); }
     setProcessingMember(null);
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  // ── Chart data: aggregate views per day from published_at ──────────────────
+  const chartData = useMemo(() => {
+    if (!allVideos.length) return [];
+    const byDay = {};
+    const today = new Date();
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(today); d.setDate(d.getDate() - i);
+      const key = d.toISOString().split("T")[0];
+      byDay[key] = { date: key, views: 0, videos: 0 };
+    }
+    allVideos.forEach(v => {
+      const d = (v.published_at || v.fetched_at || "").split("T")[0];
+      if (byDay[d]) { byDay[d].views += v.views || 0; byDay[d].videos += 1; }
+    });
+    return Object.values(byDay).map(d => ({
+      ...d,
+      label: new Date(d.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+    }));
+  }, [allVideos]);
 
-  if (!campaign) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-white/50">Campagne non trouvée</p>
-      </div>
-    );
-  }
+  // ── Filtered + sorted videos ─────────────────────────────────────────────
+  const displayVideos = useMemo(() => {
+    let vids = [...allVideos];
+    if (filterPlatform !== "all") vids = vids.filter(v => v.platform === filterPlatform);
+    if (filterClipper !== "all") vids = vids.filter(v => v.user_id === filterClipper);
+    vids.sort((a, b) => {
+      let av = a[sortField] ?? 0, bv = b[sortField] ?? 0;
+      if (typeof av === "string") av = av.toLowerCase(); if (typeof bv === "string") bv = bv.toLowerCase();
+      return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+    });
+    return vids;
+  }, [allVideos, filterPlatform, filterClipper, sortField, sortDir]);
 
-  const budgetPercentage = campaign.budget_total 
-    ? Math.min(100, (campaign.budget_used / campaign.budget_total) * 100)
-    : 0;
+  const toggleSort = (field) => {
+    if (sortField === field) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir("desc"); }
+  };
+
+  const SortIcon = ({ field }) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 text-white/20" />;
+    return sortDir === "asc" ? <ChevronUp className="w-3 h-3 text-[#FF007F]" /> : <ChevronDown className="w-3 h-3 text-[#FF007F]" />;
+  };
+
+  // ── Aggregate KPIs ───────────────────────────────────────────────────────
+  const totalViews = allVideos.reduce((s, v) => s + (v.views || 0), 0);
+  const totalLikes = allVideos.reduce((s, v) => s + (v.likes || 0), 0);
+  const totalComments = allVideos.reduce((s, v) => s + (v.comments || 0), 0);
+  const totalEarnings = allVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+  const engagementRate = totalViews > 0 ? ((totalLikes + totalComments) / totalViews * 100).toFixed(1) : "0.0";
+  const avgViews = allVideos.length > 0 ? Math.round(totalViews / allVideos.length) : 0;
+
+  // Clippers list for filter dropdown
+  const activeMembers = campaign?.members?.filter(m => m.status === "active") || [];
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+  if (!campaign) return <div className="text-center py-12"><p className="text-white/50">Campagne non trouvée</p></div>;
+
+  const budgetPercentage = campaign.budget_total ? Math.min(100, (campaign.budget_used / campaign.budget_total) * 100) : 0;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="space-y-8"
-      data-testid="agency-campaign-dashboard"
-    >
-      <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">{campaign.name}</h1>
-        <Badge variant="outline" className="border-[#39FF14]/30 text-[#39FF14]">
-          {campaign.status}
-        </Badge>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="agency-campaign-dashboard">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <div className="flex items-center gap-3">
+            <Badge variant="outline" className="border-[#39FF14]/30 text-[#39FF14] text-xs">{campaign.status}</Badge>
+            <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
+          </div>
+        </div>
+        <button onClick={() => { fetchAllVideos(); fetchStats(); }} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
+          <RefreshCw className="w-4 h-4" /> Actualiser
+        </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-white/5 rounded-xl p-1 w-fit">
-        <button
-          onClick={() => setActiveTab("overview")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            activeTab === "overview" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"
-          }`}
-        >
-          Aperçu
-        </button>
-        <button
-          onClick={() => { setActiveTab("candidatures"); fetchPendingMembers(); }}
-          className={`relative px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            activeTab === "candidatures" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"
-          }`}
-        >
-          Candidatures
-          {pendingMembers.length > 0 && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
-              {pendingMembers.length}
-            </span>
+      {/* TABS — Shortimize style */}
+      <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
+        {[
+          { id: "overview", label: "Vue d'ensemble" },
+          { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
+          { id: "candidatures", label: "Candidatures", badge: pendingMembers.length },
+        ].map(tab => (
+          <button key={tab.id}
+            onClick={() => { setActiveTab(tab.id); if (tab.id === "candidatures") fetchPendingMembers(); }}
+            className={`relative flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === tab.id ? "bg-[#FF007F] text-white shadow-lg" : "text-white/50 hover:text-white"
+            }`}>
+            {tab.label}
+            {tab.dot && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+            {tab.badge > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold px-1">
+                {tab.badge}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══════════ OVERVIEW TAB ═══════════ */}
+      {activeTab === "overview" && (
+        <div className="space-y-5">
+          {/* KPI row */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[
+              { label: "Vues totales", value: fmt(totalViews), color: "text-white" },
+              { label: "Likes", value: fmt(totalLikes), color: "text-[#FF007F]" },
+              { label: "Commentaires", value: fmt(totalComments), color: "text-white/70" },
+              { label: "Engagement", value: `${engagementRate}%`, color: "text-[#39FF14]" },
+              { label: "Moy. vues/vidéo", value: fmt(avgViews), color: "text-[#00E5FF]" },
+              { label: "Gains estimés", value: `€${totalEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
+            ].map((kpi) => (
+              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Views chart */}
+          <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-white font-medium">Vues par jour (30 derniers jours)</p>
+              <p className="text-white/30 text-xs">Basé sur la date de publication des vidéos</p>
+            </div>
+            {chartData.some(d => d.views > 0) ? (
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="viewsGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#FF007F" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#FF007F" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} interval={4} />
+                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
+                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} labelStyle={{ color: "white", fontSize: 11 }} formatter={(v) => [fmt(v), "Vues"]} />
+                  <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsGrad)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-48 flex items-center justify-center">
+                <p className="text-white/20 text-sm">Aucune donnée de vues disponible — lancez un scraping</p>
+              </div>
+            )}
+          </div>
+
+          {/* Budget + Clippers ranking */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Budget */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+              <p className="text-white font-medium">Budget & RPM</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div><p className="text-xs text-white/40">RPM</p><p className="text-[#FF007F] font-mono font-bold text-lg">€{campaign.rpm}/1K</p></div>
+                {!campaign.budget_unlimited && campaign.budget_total && (
+                  <div><p className="text-xs text-white/40">Budget utilisé</p><p className="text-white font-mono font-bold text-lg">€{campaign.budget_used || 0} / €{campaign.budget_total}</p></div>
+                )}
+              </div>
+              {!campaign.budget_unlimited && campaign.budget_total && (
+                <div>
+                  <div className="flex justify-between text-xs text-white/40 mb-1">
+                    <span>Progression</span><span>{budgetPercentage.toFixed(0)}%</span>
+                  </div>
+                  <Progress value={budgetPercentage} className="h-2" />
+                </div>
+              )}
+            </div>
+
+            {/* Clippers ranking */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+              <p className="text-white font-medium mb-3">Classement des clippeurs</p>
+              {activeMembers.length === 0 ? (
+                <p className="text-white/30 text-sm text-center py-4">Aucun clippeur actif</p>
+              ) : (
+                <div className="space-y-2">
+                  {activeMembers.map((member, index) => {
+                    const memberVideos = allVideos.filter(v => v.user_id === member.user_id);
+                    const memberViews = memberVideos.reduce((s, v) => s + (v.views || 0), 0);
+                    const memberEarnings = memberVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+                    return (
+                      <div key={member.member_id} className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5">
+                        <span className="font-mono text-sm text-white/30 w-6">#{index+1}</span>
+                        <div className="w-7 h-7 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-xs font-bold text-[#FF007F] flex-shrink-0">
+                          {(member.user_info?.display_name || "?")[0].toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-sm truncate">{member.user_info?.display_name || member.user_info?.name}</p>
+                          <p className="text-white/30 text-xs">{memberVideos.length} vidéo{memberVideos.length !== 1 ? "s" : ""}</p>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-white text-sm font-mono">{fmt(memberViews)}</p>
+                          <p className="text-[#FF007F] text-xs">€{memberEarnings.toFixed(2)}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════ VIDEOS TAB ═══════════ */}
+      {activeTab === "videos" && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="flex gap-3 flex-wrap">
+            <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
+              {["all", "tiktok", "instagram", "youtube"].map(p => (
+                <button key={p} onClick={() => setFilterPlatform(p)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${filterPlatform === p ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}
+                  style={filterPlatform === p && p !== "all" ? { color: PLAT_COLOR[p] } : {}}>
+                  {p === "all" ? "Toutes" : `${PLAT_ICON[p]} ${p}`}
+                </button>
+              ))}
+            </div>
+            {activeMembers.length > 0 && (
+              <select value={filterClipper} onChange={e => setFilterClipper(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white/70 focus:outline-none">
+                <option value="all">Tous les clippeurs</option>
+                {activeMembers.map(m => (
+                  <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
+                ))}
+              </select>
+            )}
+            <span className="ml-auto text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
+          </div>
+
+          {videosLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : displayVideos.length === 0 ? (
+            <div className="text-center py-20 bg-[#121212] border border-white/10 rounded-xl">
+              <Play className="w-12 h-12 text-white/10 mx-auto mb-3" />
+              <p className="text-white/40">Aucune vidéo trackée</p>
+              <p className="text-white/20 text-sm mt-1">Les clippeurs doivent lancer un scraping depuis leur dashboard</p>
+            </div>
+          ) : (
+            <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+              {/* Table header */}
+              <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 text-xs text-white/40 font-medium">
+                <button className="flex items-center gap-1 text-left hover:text-white/70 transition-colors" onClick={() => toggleSort("title")}>
+                  Vidéo <SortIcon field="title" />
+                </button>
+                <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("views")}>
+                  Vues <SortIcon field="views" />
+                </button>
+                <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("likes")}>
+                  Likes <SortIcon field="likes" />
+                </button>
+                <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("comments")}>
+                  Comments <SortIcon field="comments" />
+                </button>
+                <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("earnings")}>
+                  Gains <SortIcon field="earnings" />
+                </button>
+                <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("published_at")}>
+                  Date <SortIcon field="published_at" />
+                </button>
+              </div>
+
+              {/* Table rows */}
+              <div className="divide-y divide-white/5">
+                {displayVideos.map((video, i) => {
+                  const color = PLAT_COLOR[video.platform] || "#fff";
+                  const engRate = video.views > 0 ? (((video.likes || 0) + (video.comments || 0)) / video.views * 100).toFixed(1) : "—";
+                  const clipperName = activeMembers.find(m => m.user_id === video.user_id)?.user_info?.display_name || null;
+                  return (
+                    <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
+                      className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 hover:bg-white/5 transition-all group items-center">
+
+                      {/* Thumbnail + title */}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative w-16 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
+                          {video.thumbnail_url
+                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                            : <div className="w-full h-full flex items-center justify-center text-lg">{PLAT_ICON[video.platform]}</div>
+                          }
+                          {/* Play overlay on hover */}
+                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <ExternalLink className="w-4 h-4 text-white" />
+                          </div>
+                          {/* Platform pill */}
+                          <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold px-1 py-0.5 rounded"
+                            style={{ background: `${color}ee`, color: "#000" }}>
+                            {video.platform}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-white text-sm truncate leading-tight">
+                            {video.title || `Vidéo ${video.platform}`}
+                          </p>
+                          {clipperName && (
+                            <p className="text-white/30 text-xs truncate mt-0.5">{clipperName}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Views */}
+                      <div className="text-white font-mono text-sm">{fmt(video.views || 0)}</div>
+
+                      {/* Likes */}
+                      <div className="flex items-center gap-1 text-white/60 text-sm">
+                        <Heart className="w-3 h-3 text-[#FF007F]" />
+                        {fmt(video.likes || 0)}
+                      </div>
+
+                      {/* Comments */}
+                      <div className="flex items-center gap-1 text-white/60 text-sm">
+                        <MessageSquare className="w-3 h-3 text-[#00E5FF]" />
+                        {fmt(video.comments || 0)}
+                      </div>
+
+                      {/* Earnings */}
+                      <div className={`font-mono text-sm font-bold ${(video.earnings || 0) > 0 ? "text-[#f0c040]" : "text-white/20"}`}>
+                        {(video.earnings || 0) > 0 ? `€${video.earnings.toFixed(2)}` : "—"}
+                      </div>
+
+                      {/* Date */}
+                      <div className="text-white/40 text-xs">
+                        {video.published_at
+                          ? new Date(video.published_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" })
+                          : "—"}
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
           )}
-        </button>
-      </div>
+        </div>
+      )}
 
-      {/* Candidatures Tab */}
+      {/* ═══════════ CANDIDATURES TAB ═══════════ */}
       {activeTab === "candidatures" && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between">
             <h3 className="text-white font-semibold text-lg">
               Candidatures en attente
               {pendingMembers.length > 0 && (
-                <span className="ml-2 bg-[#FF007F] text-white text-xs px-2 py-0.5 rounded-full">
-                  {pendingMembers.length}
-                </span>
+                <span className="ml-2 bg-[#FF007F] text-white text-xs px-2 py-0.5 rounded-full">{pendingMembers.length}</span>
               )}
             </h3>
-            <button onClick={fetchPendingMembers} className="text-white/40 hover:text-white text-xs transition-colors underline">
-              Rafraîchir
-            </button>
+            <button onClick={fetchPendingMembers} className="text-white/40 hover:text-white text-xs transition-colors underline">Rafraîchir</button>
           </div>
           {pendingMembers.length === 0 ? (
             <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
@@ -1093,271 +1349,39 @@ function CampaignDashboard({ campaigns }) {
             <>{pendingMembers.map(member => {
               const isManager = member.role === "manager";
               const roleColor = isManager ? "#39FF14" : "#FF007F";
-              const roleLabel = isManager ? "Manager" : "Clippeur";
               return (
-              <div key={member.member_id} className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-start gap-4"
-                style={{ borderLeft: `3px solid ${roleColor}` }}>
-                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0"
-                  style={{ background: `${roleColor}20`, color: roleColor }}>
-                  {(member.user_info?.display_name || member.user_info?.name || "?")[0].toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-white font-semibold text-sm">
-                      {member.user_info?.display_name || member.user_info?.name || "Utilisateur"}
-                    </p>
-                    {/* Badge rôle */}
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
-                      style={{ color: roleColor, borderColor: `${roleColor}40`, background: `${roleColor}15` }}>
-                      {roleLabel}
-                    </span>
+                <div key={member.member_id} className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-start gap-4"
+                  style={{ borderLeft: `3px solid ${roleColor}` }}>
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0"
+                    style={{ background: `${roleColor}20`, color: roleColor }}>
+                    {(member.user_info?.display_name || "?")[0].toUpperCase()}
                   </div>
-                  <p className="text-white/40 text-xs mt-0.5">
-                    {member.user_info?.email || ""}
-                    {" · "}
-                    Postulé le {member.joined_at ? new Date(member.joined_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" }) : "Date inconnue"}
-                  </p>
-                  {isManager && (
-                    <p className="text-xs mt-1" style={{ color: `${roleColor}99` }}>
-                      🛡 Demande d'accès manager — accès à la supervision et aux conseils
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-white font-semibold text-sm">{member.user_info?.display_name || member.user_info?.name || "Utilisateur"}</p>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                        style={{ color: roleColor, borderColor: `${roleColor}40`, background: `${roleColor}15` }}>
+                        {isManager ? "Manager" : "Clippeur"}
+                      </span>
+                    </div>
+                    <p className="text-white/40 text-xs mt-0.5">
+                      {member.user_info?.email || ""}
+                      {" · "}Postulé le {member.joined_at ? new Date(member.joined_at).toLocaleDateString("fr-FR") : "Date inconnue"}
                     </p>
-                  )}
+                  </div>
+                  <div className="flex gap-2 flex-shrink-0">
+                    <button onClick={() => handleAcceptMember(member.member_id)} disabled={processingMember === member.member_id}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border disabled:opacity-50 transition-colors"
+                      style={{ background: `${roleColor}15`, color: roleColor, borderColor: `${roleColor}40` }}>✓ Accepter</button>
+                    <button onClick={() => handleRejectMember(member.member_id)} disabled={processingMember === member.member_id}
+                      className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-semibold border border-red-500/30 disabled:opacity-50 transition-colors">✗ Refuser</button>
+                  </div>
                 </div>
-                <div className="flex gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => handleAcceptMember(member.member_id)}
-                    disabled={processingMember === member.member_id}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50"
-                    style={{ background: `${roleColor}15`, color: roleColor, borderColor: `${roleColor}40` }}
-                  >
-                    ✓ Accepter
-                  </button>
-                  <button
-                    onClick={() => handleRejectMember(member.member_id)}
-                    disabled={processingMember === member.member_id}
-                    className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-semibold border border-red-500/30 transition-colors disabled:opacity-50"
-                  >
-                    ✗ Refuser
-                  </button>
-                </div>
-              </div>
               );
             })}</>
           )}
         </div>
       )}
-
-      {/* Overview Tab */}
-      {activeTab === "overview" && <>
-
-      {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-white/50">Vues totales</p>
-                <p className="font-mono font-bold text-2xl text-white">
-                  {stats?.total_views?.toLocaleString() || 0}
-                </p>
-              </div>
-              <Eye className="w-8 h-8 text-white/20" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-white/50">Clippeurs</p>
-                <p className="font-mono font-bold text-2xl text-white">
-                  {stats?.clipper_count || 0}
-                </p>
-              </div>
-              <Users className="w-8 h-8 text-white/20" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-white/50">RPM</p>
-                <p className="font-mono font-bold text-2xl text-[#FF007F]">
-                  €{campaign.rpm}
-                </p>
-              </div>
-              <DollarSign className="w-8 h-8 text-[#FF007F]/30" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-white/50">Budget utilisé</p>
-                <p className="font-mono font-bold text-2xl text-white">
-                  €{stats?.budget_used || 0}
-                </p>
-              </div>
-              <BarChart3 className="w-8 h-8 text-white/20" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Budget Progress */}
-      {!campaign.budget_unlimited && campaign.budget_total && (
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-white/70">Budget</span>
-              <span className="text-white font-mono">
-                €{campaign.budget_used || 0} / €{campaign.budget_total}
-              </span>
-            </div>
-            <Progress value={budgetPercentage} className="h-2" />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Split view: Clippers Ranking (left) + Recent Videos (right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* LEFT — Clipper ranking */}
-        <Card className="bg-[#121212] border-white/10">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-[#FF007F]" />
-              Classement des clippeurs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!campaign.members || campaign.members.filter(m => m.status === "active").length === 0 ? (
-              <p className="text-white/50 text-center py-8">Aucun clippeur actif</p>
-            ) : (
-              <div className="space-y-2">
-                {campaign.members.filter(m => m.status === "active").map((member, index) => {
-                  const isSelected = selectedRankClipper === member.member_id;
-                  const clipperVideos = recentVideos.filter(v => v.user_id === member.user_id);
-                  return (
-                    <div key={member.member_id}>
-                      <button
-                        onClick={() => setSelectedRankClipper(isSelected ? null : member.member_id)}
-                        className={`relative w-full flex items-center justify-between p-3 rounded-lg transition-all text-left ${
-                          isSelected ? "bg-white/10 ring-1 ring-[#FF007F]/40" :
-                          member.strikes > 0 ? "bg-red-500/10 border border-red-500/30 hover:bg-red-500/15" : "bg-white/5 hover:bg-white/8"
-                        }`}
-                      >
-                        {member.strikes > 0 && !isSelected && (
-                          <div className="absolute -top-2 left-4 bg-red-500 text-white text-xs px-2 py-0.5 rounded">
-                            {member.strikes} strike(s)
-                          </div>
-                        )}
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono font-bold text-base text-white/40 w-7">
-                            #{index + 1}
-                          </span>
-                          <div className="w-8 h-8 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-sm font-bold text-[#FF007F]">
-                            {(member.user_info?.display_name || member.user_info?.name || "?")[0].toUpperCase()}
-                          </div>
-                          <div>
-                            <p className="text-white text-sm font-medium">
-                              {member.user_info?.display_name || member.user_info?.name}
-                            </p>
-                            <p className="text-xs text-white/40">{clipperVideos.length} vidéo{clipperVideos.length !== 1 ? "s" : ""} trackée{clipperVideos.length !== 1 ? "s" : ""}</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="font-mono text-white text-sm">
-                            {(stats?.clipper_stats?.[index]?.views || 0).toLocaleString()} vues
-                          </p>
-                          <p className="text-xs text-[#FF007F]">
-                            €{stats?.clipper_stats?.[index]?.earnings?.toFixed(2) || "0.00"}
-                          </p>
-                        </div>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* RIGHT — Recent tracked videos */}
-        <Card className="bg-[#121212] border-white/10">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-white flex items-center gap-2">
-                <Video className="w-5 h-5 text-[#00E5FF]" />
-                {selectedRankClipper
-                  ? `Vidéos — ${campaign.members?.find(m => m.member_id === selectedRankClipper)?.user_info?.display_name || "Clippeur"}`
-                  : "Vidéos récentes"}
-              </CardTitle>
-              <button onClick={fetchRecentVideos} className="text-white/30 hover:text-white/60 text-xs transition-colors">↻ Actualiser</button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {(() => {
-              const selectedMember = campaign.members?.find(m => m.member_id === selectedRankClipper);
-              const displayVideos = selectedRankClipper && selectedMember
-                ? recentVideos.filter(v => v.user_id === selectedMember.user_id)
-                : recentVideos;
-
-              if (displayVideos.length === 0) {
-                return (
-                  <div className="text-center py-8">
-                    <Video className="w-10 h-10 text-white/20 mx-auto mb-3" />
-                    <p className="text-white/40 text-sm">
-                      {selectedRankClipper ? "Aucune vidéo trackée pour ce clippeur" : "Aucune vidéo trackée"}
-                    </p>
-                    <p className="text-white/20 text-xs mt-1">Les vidéos apparaîtront après le prochain scraping</p>
-                  </div>
-                );
-              }
-
-              return (
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                  {displayVideos.slice(0, 15).map((video, i) => {
-                    const platformColors = { tiktok: "#00E5FF", youtube: "#FF0000", instagram: "#FF007F" };
-                    const color = platformColors[video.platform] || "#fff";
-                    const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n || 0);
-                    return (
-                      <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5 hover:bg-white/10 transition-all group">
-                        {/* Thumbnail or placeholder */}
-                        <div className="w-12 h-9 rounded bg-white/10 flex-shrink-0 overflow-hidden relative">
-                          {video.thumbnail_url
-                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" />
-                            : <div className="w-full h-full flex items-center justify-center">
-                                <span className="text-xs" style={{ color }}>{video.platform === "tiktok" ? "🎵" : video.platform === "youtube" ? "▶️" : "📸"}</span>
-                              </div>
-                          }
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white text-xs truncate font-medium">
-                            {video.title || `Vidéo ${video.platform}`}
-                          </p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: `${color}20`, color }}>
-                              {video.platform}
-                            </span>
-                            <span className="text-[10px] text-white/40">👁 {fmt(video.views)}</span>
-                            {video.earnings > 0 && <span className="text-[10px] text-[#FF007F]">€{video.earnings?.toFixed(2)}</span>}
-                          </div>
-                        </div>
-                        <Eye className="w-3 h-3 text-white/20 group-hover:text-white/50 flex-shrink-0" />
-                      </a>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </CardContent>
-        </Card>
-      </div>
-
-      </>}
     </motion.div>
   );
 }
