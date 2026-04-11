@@ -918,6 +918,9 @@ function CampaignDashboard({ campaigns }) {
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
   const [filterClipper, setFilterClipper] = useState("all");
+  const [showManualVideoModal, setShowManualVideoModal] = useState(false);
+  const [manualVideoForm, setManualVideoForm] = useState({ user_id: "", url: "", views: "", platform: "tiktok", title: "" });
+  const [addingVideo, setAddingVideo] = useState(false);
 
   const fmt = (n) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}K` : String(n || 0);
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -931,6 +934,29 @@ function CampaignDashboard({ campaigns }) {
       fetchAllVideos();
     }
   }, [campaignId]);
+
+  const handleAddManualVideo = async () => {
+    if (!manualVideoForm.user_id || !manualVideoForm.url) return;
+    setAddingVideo(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/manual-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ ...manualVideoForm, views: parseInt(manualVideoForm.views) || 0 }),
+      });
+      if (res.ok) {
+        toast.success("Vidéo ajoutée avec succès ✓");
+        setShowManualVideoModal(false);
+        setManualVideoForm({ user_id: "", url: "", views: "", platform: "tiktok", title: "" });
+        fetchAllVideos();
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur lors de l'ajout");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setAddingVideo(false); }
+  };
 
   const fetchAllVideos = async () => {
     setVideosLoading(true);
@@ -1068,22 +1094,6 @@ function CampaignDashboard({ campaigns }) {
         </button>
       </div>
 
-      {/* TikTok partial tracking notice (shown when < 10 videos and platform includes TikTok) */}
-      {allVideos.length > 0 && allVideos.length < 10 && allVideos.some(v => v.platform === "tiktok") && (
-        <div className="rounded-xl border border-[#FF004F]/20 bg-[#FF004F]/5 p-3 flex items-start gap-3">
-          <span className="flex-shrink-0 text-lg">📡</span>
-          <div>
-            <p className="text-white/60 text-xs leading-relaxed">
-              <strong className="text-white/80">Tracking TikTok partiel</strong> — {allVideos.length} vidéo(s) récupérées.
-              Pour un tracking complet automatique :{" "}
-              <a href="https://tikwm.com" target="_blank" rel="noreferrer" className="text-[#00E5FF] underline">tikwm.com</a>
-              {" "}→ créer un compte gratuit → copier la clé API → ajouter{" "}
-              <code className="bg-white/10 px-1 rounded text-xs">TIKWM_API_KEY</code> dans Railway.
-              Les clippeurs peuvent aussi coller leurs URLs TikTok manuellement dans leurs comptes.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* TABS — Shortimize style */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
@@ -1236,8 +1246,96 @@ function CampaignDashboard({ campaigns }) {
                 ))}
               </select>
             )}
-            <span className="ml-auto text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
+            <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
+            <button onClick={() => setShowManualVideoModal(true)}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f0c040]/10 hover:bg-[#f0c040]/20 border border-[#f0c040]/30 text-[#f0c040] text-xs font-medium transition-all">
+              + Ajouter une vidéo manuellement
+            </button>
           </div>
+
+          {/* Modal ajout vidéo manuelle */}
+          {showManualVideoModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+              <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <h3 className="text-white font-semibold text-lg">Ajouter une vidéo</h3>
+                    <p className="text-white/40 text-xs mt-0.5">Pour les vidéos postées en dehors de la campagne — toujours comptabilisées dans la rémunération.</p>
+                  </div>
+                  <button onClick={() => setShowManualVideoModal(false)} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                </div>
+
+                {/* Clippeur */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Clippeur *</label>
+                  <select value={manualVideoForm.user_id}
+                    onChange={e => setManualVideoForm(f => ({ ...f, user_id: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#f0c040]/50">
+                    <option value="">Sélectionner un clippeur</option>
+                    {activeMembers.map(m => (
+                      <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Plateforme */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Plateforme *</label>
+                  <div className="flex gap-2">
+                    {[["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]].map(([p, icon]) => (
+                      <button key={p} onClick={() => setManualVideoForm(f => ({ ...f, platform: p }))}
+                        className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${manualVideoForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
+                        {icon} {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* URL */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">URL de la vidéo *</label>
+                  <input type="url" value={manualVideoForm.url}
+                    onChange={e => setManualVideoForm(f => ({ ...f, url: e.target.value }))}
+                    placeholder="https://www.tiktok.com/@..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                </div>
+
+                {/* Titre (optionnel) */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Titre <span className="text-white/20">(optionnel)</span></label>
+                  <input type="text" value={manualVideoForm.title}
+                    onChange={e => setManualVideoForm(f => ({ ...f, title: e.target.value }))}
+                    placeholder="Nom de la vidéo..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                </div>
+
+                {/* Vues */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Nombre de vues actuelles</label>
+                  <input type="number" min="0" value={manualVideoForm.views}
+                    onChange={e => setManualVideoForm(f => ({ ...f, views: e.target.value }))}
+                    placeholder="0"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                  {manualVideoForm.views && campaign?.rpm ? (
+                    <p className="text-xs text-[#f0c040] mt-1">≈ €{((parseInt(manualVideoForm.views) || 0) / 1000 * campaign.rpm).toFixed(2)} de gains pour ce clippeur</p>
+                  ) : null}
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setShowManualVideoModal(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
+                    Annuler
+                  </button>
+                  <button onClick={handleAddManualVideo}
+                    disabled={addingVideo || !manualVideoForm.user_id || !manualVideoForm.url}
+                    className="flex-1 py-2.5 rounded-xl bg-[#f0c040] text-black font-semibold text-sm hover:bg-[#f0c040]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                    {addingVideo ? "Ajout..." : "Ajouter"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {videosLoading ? (
             <div className="flex items-center justify-center py-20">
@@ -1287,9 +1385,13 @@ function CampaignDashboard({ campaigns }) {
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="relative w-16 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
                           {video.thumbnail_url
-                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" />
-                            : <div className="w-full h-full flex items-center justify-center text-lg">{PLAT_ICON[video.platform]}</div>
-                          }
+                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover"
+                                onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                            : null}
+                          <div className="w-full h-full items-center justify-center text-lg"
+                            style={{ display: video.thumbnail_url ? "none" : "flex" }}>
+                            {PLAT_ICON[video.platform]}
+                          </div>
                           {/* Play overlay on hover */}
                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                             <ExternalLink className="w-4 h-4 text-white" />

@@ -875,9 +875,9 @@ export default function LandingPage() {
                   />
                   <span>
                     J'accepte les{" "}
-                    <span className="text-[#00E5FF] underline">Conditions Générales d'Utilisation</span>
+                    <a href="/cgu" target="_blank" rel="noopener noreferrer" className="text-[#00E5FF] underline hover:text-[#00E5FF]/80" onClick={e => e.stopPropagation()}>Conditions Générales d'Utilisation</a>
                     {" "}et la{" "}
-                    <span className="text-[#00E5FF] underline">Politique de confidentialité</span>
+                    <a href="/cgu" target="_blank" rel="noopener noreferrer" className="text-[#00E5FF] underline hover:text-[#00E5FF]/80" onClick={e => e.stopPropagation()}>Politique de confidentialité</a>
                     . Je reconnais que The Clip Deal est un outil de mise en relation et n'est pas responsable des contenus publiés par les clippers.
                   </span>
                 </label>

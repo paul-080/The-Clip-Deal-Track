@@ -14,6 +14,7 @@ import ManagerDashboard from "./pages/ManagerDashboard";
 import ClientDashboard from "./pages/ClientDashboard";
 import JoinCampaign from "./pages/JoinCampaign";
 import AdminDashboard from "./pages/AdminDashboard";
+import TermsPage from "./pages/TermsPage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
@@ -345,6 +346,9 @@ const AppRouter = () => {
       
       {/* Admin — protected by code only, no auth required */}
       <Route path="/admin" element={<AdminDashboard />} />
+
+      {/* Legal — public */}
+      <Route path="/cgu" element={<TermsPage />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />

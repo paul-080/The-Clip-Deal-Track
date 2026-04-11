@@ -927,11 +927,13 @@ function AllVideosPage() {
                 {/* Thumbnail */}
                 <div className="relative w-full aspect-video bg-white/5">
                   {v.thumbnail_url
-                    ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
-                    : <div className="w-full h-full flex items-center justify-center text-2xl">
-                        {platformEmoji[v.platform] || "🎬"}
-                      </div>
-                  }
+                    ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover"
+                        onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                    : null}
+                  <div className="w-full h-full items-center justify-center text-2xl"
+                    style={{ display: v.thumbnail_url ? "none" : "flex" }}>
+                    {platformEmoji[v.platform] || "🎬"}
+                  </div>
                   {/* Platform badge */}
                   <span className="absolute top-1.5 left-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded"
                     style={{ background: `${color}dd`, color: "#000" }}>

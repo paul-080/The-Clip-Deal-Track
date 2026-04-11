@@ -71,6 +71,25 @@ db = client[db_name]
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY', '')
 TIKWM_API_KEY = os.environ.get('TIKWM_API_KEY', '')
+RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '').strip()
+
+# Instagram session cookie rotation
+# Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
+# Also supports single: INSTAGRAM_SESSION_ID=cookie (legacy)
+_raw_sessions = os.environ.get('INSTAGRAM_SESSION_IDS', '') or os.environ.get('INSTAGRAM_SESSION_ID', '')
+INSTAGRAM_SESSIONS: list[str] = [s.strip() for s in _raw_sessions.split(',') if s.strip()]
+# Single alias for backward compat
+INSTAGRAM_SESSION_ID = INSTAGRAM_SESSIONS[0] if INSTAGRAM_SESSIONS else ''
+_instagram_session_index = 0
+
+def _get_instagram_session() -> str:
+    """Round-robin rotation entre les cookies Instagram configurés."""
+    global _instagram_session_index
+    if not INSTAGRAM_SESSIONS:
+        return ''
+    cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
+    _instagram_session_index += 1
+    return cookie
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
 ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 stripe.api_key = STRIPE_API_KEY
@@ -2555,7 +2574,8 @@ async def _verify_tiktok(username: str) -> dict:
 async def _scrape_instagram_api(username: str) -> dict:
     """
     Call Instagram's internal web API to fetch profile info.
-    Uses the same endpoint as Instagram's web app (no auth needed for public profiles).
+    When INSTAGRAM_SESSION_ID is set, uses authenticated session (works from cloud IPs).
+    Without session, only works from residential IPs (blocked on Railway).
     """
     username = username.lstrip("@")
     headers = {
@@ -2571,15 +2591,121 @@ async def _scrape_instagram_api(username: str) -> dict:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site",
     }
+    # Inject session cookie — required from cloud/datacenter IPs (rotation)
+    session = _get_instagram_session()
+    if session:
+        headers["Cookie"] = f"sessionid={session}; ds_user_id=0"
     url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
         r = await c.get(url, headers=headers)
     if r.status_code == 200:
-        return r.json()
+        data = r.json()
+        # Instagram returns 200 with empty user when not found (when authenticated)
+        if not data.get("data", {}).get("user"):
+            raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+        return data
     elif r.status_code in (404, 400):
         raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+    elif r.status_code == 401:
+        raise ValueError(f"Instagram session expirée — mettre à jour INSTAGRAM_SESSION_ID")
     else:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
+
+
+async def _scrape_instagram_rapidapi(username: str) -> dict:
+    """
+    Fetch Instagram profile via RapidAPI instagram-scraper-api2.
+    Free tier: 100 req/month. Requires RAPIDAPI_KEY env var.
+    """
+    if not RAPIDAPI_KEY:
+        raise ValueError("RAPIDAPI_KEY non configuré")
+    username = username.lstrip("@")
+    headers = {
+        "x-rapidapi-host": "instagram-scraper-api2.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+    }
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(
+            f"https://instagram-scraper-api2.p.rapidapi.com/v1/info",
+            params={"username_or_id_or_url": username},
+            headers=headers,
+        )
+    if r.status_code != 200:
+        raise ValueError(f"RapidAPI Instagram erreur {r.status_code}")
+    data = r.json().get("data", {})
+    if not data:
+        raise ValueError(f"Compte Instagram @{username} introuvable via RapidAPI")
+    return {
+        "display_name": data.get("full_name") or username,
+        "avatar_url": data.get("profile_pic_url_hd") or data.get("profile_pic_url"),
+        "follower_count": data.get("follower_count") or data.get("edge_followed_by", {}).get("count"),
+        "platform_channel_id": str(data.get("id") or data.get("pk") or ""),
+    }
+
+
+async def _fetch_instagram_videos_rapidapi(username: str) -> list:
+    """Fetch Instagram videos/reels via RapidAPI."""
+    if not RAPIDAPI_KEY:
+        raise ValueError("RAPIDAPI_KEY non configuré")
+    username = username.lstrip("@")
+    headers = {
+        "x-rapidapi-host": "instagram-scraper-api2.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+    }
+    result = []
+    pagination_token = None
+    async with httpx.AsyncClient(timeout=20) as c:
+        for _ in range(5):  # max 5 pages
+            params = {"username_or_id_or_url": username}
+            if pagination_token:
+                params["pagination_token"] = pagination_token
+            r = await c.get(
+                "https://instagram-scraper-api2.p.rapidapi.com/v1/posts",
+                params=params,
+                headers=headers,
+            )
+            if r.status_code != 200:
+                break
+            body = r.json()
+            items = body.get("data", {}).get("items", [])
+            for item in items:
+                media_type = item.get("media_type")
+                # 2 = video, 8 = carousel (may contain videos) — skip photos (1)
+                if media_type not in (2, 8):
+                    continue
+                # For carousels, check resources
+                if media_type == 8:
+                    resources = item.get("resources", [])
+                    has_video = any(r.get("media_type") == 2 for r in resources)
+                    if not has_video:
+                        continue
+                pk = str(item.get("id") or item.get("pk") or "")
+                code = item.get("code") or item.get("shortcode") or ""
+                ts = item.get("taken_at") or 0
+                caption_data = item.get("caption") or {}
+                caption = caption_data.get("text", "") if isinstance(caption_data, dict) else str(caption_data or "")
+                # Thumbnail — plusieurs champs possibles selon le type de media
+                _img_vers = item.get("image_versions2", {})
+                _candidates = _img_vers.get("candidates", []) if _img_vers else []
+                _thumb = (
+                    item.get("thumbnail_url")
+                    or (_candidates[0].get("url") if _candidates else None)
+                    or item.get("carousel_media", [{}])[0].get("image_versions2", {}).get("candidates", [{}])[0].get("url") if item.get("carousel_media") else None
+                )
+                result.append({
+                    "platform_video_id": pk,
+                    "url": f"https://www.instagram.com/p/{code}/" if code else "",
+                    "title": caption[:150] if caption else None,
+                    "thumbnail_url": _thumb,
+                    "views": int(item.get("play_count") or item.get("view_count") or item.get("video_view_count") or 0),
+                    "likes": int((item.get("like_count") or 0)),
+                    "comments": int((item.get("comment_count") or 0)),
+                    "published_at": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else None,
+                })
+            pagination_token = body.get("pagination_token")
+            if not pagination_token or len(result) >= 100:
+                break
+    return result
 
 
 async def _scrape_instagram_playwright(username: str) -> dict:
@@ -2652,8 +2778,8 @@ def _parse_instagram_videos(data: dict) -> list:
             "platform_video_id": str(node.get("id") or node.get("pk") or ""),
             "url": f"https://www.instagram.com/p/{node.get('shortcode', '')}/",
             "title": caption[:100] if caption else None,
-            "thumbnail_url": node.get("thumbnail_src") or node.get("display_url"),
-            "views": int(node.get("video_view_count") or node.get("play_count") or 0),
+            "thumbnail_url": node.get("thumbnail_src") or node.get("display_url") or node.get("thumbnail_resources", [{}])[-1].get("src") if node.get("thumbnail_resources") else node.get("thumbnail_src") or node.get("display_url"),
+            "views": int(node.get("play_count") or node.get("video_view_count") or node.get("clips_metadata", {}).get("reels_media", {}).get("play_count") or 0),
             "likes": int((node.get("edge_media_preview_like") or {}).get("count") or node.get("like_count") or 0),
             "comments": int((node.get("edge_media_to_comment") or {}).get("count") or node.get("comment_count") or 0),
             "published_at": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else None,
@@ -2662,26 +2788,44 @@ def _parse_instagram_videos(data: dict) -> list:
 
 
 async def _verify_instagram(username: str) -> dict:
-    """Verify Instagram account. Primary: httpx API. Fallback: Playwright. Last resort: instaloader."""
+    """Verify Instagram account.
+    Priority:
+      1. httpx API with INSTAGRAM_SESSION_ID (works from cloud)
+      2. RapidAPI instagram-scraper-api2 (works from cloud, free 100/month)
+      3. Playwright browser interception (blocked from cloud)
+      4. instaloader (blocked from cloud)
+    """
     username = username.lstrip("@")
-    # Primary: httpx Instagram internal API
+    # Priority 1: httpx with session cookie (works from Railway when session is set)
     try:
         data = await _scrape_instagram_api(username)
         return _parse_instagram_profile(data)
     except Exception as e:
         logger.warning(f"Instagram httpx API failed for @{username}: {e}")
-    # Fallback: Playwright browser interception
+    # Priority 2: RapidAPI (works from cloud, no session needed)
+    if RAPIDAPI_KEY:
+        try:
+            return await _scrape_instagram_rapidapi(username)
+        except Exception as e:
+            logger.warning(f"RapidAPI Instagram failed for @{username}: {e}")
+    # Priority 3: Playwright (only works from residential IPs)
     if PLAYWRIGHT_AVAILABLE:
         try:
             data = await _scrape_instagram_playwright(username)
             return _parse_instagram_profile(data)
         except Exception as e:
             logger.warning(f"Playwright Instagram failed for @{username}: {e}")
-    # Last resort: instaloader
+    # Priority 4: instaloader (only works from residential IPs)
     if INSTALOADER_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _il_verify():
             L = instaloader.Instaloader()
+            _s = _get_instagram_session()
+            if _s:
+                try:
+                    L.context._session.cookies.set("sessionid", _s, domain=".instagram.com")
+                except Exception:
+                    pass
             profile = instaloader.Profile.from_username(L.context, username)
             return {
                 "display_name": profile.full_name or username,
@@ -2689,8 +2833,14 @@ async def _verify_instagram(username: str) -> dict:
                 "follower_count": profile.followers,
                 "platform_channel_id": str(profile.userid),
             }
-        return await loop.run_in_executor(_thread_pool, _il_verify)
-    raise ValueError(f"Impossible de vérifier Instagram @{username}")
+        try:
+            return await loop.run_in_executor(_thread_pool, _il_verify)
+        except Exception as e:
+            logger.warning(f"instaloader verify failed for @{username}: {e}")
+    raise ValueError(
+        f"Impossible de vérifier Instagram @{username}. "
+        "Configurez INSTAGRAM_SESSION_ID ou RAPIDAPI_KEY dans les variables d'environnement Railway."
+    )
 
 
 async def verify_account(platform: str, username: str) -> dict:
@@ -3082,11 +3232,80 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
 
 async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
     """
-    Fetch Instagram videos — instaloader en priorité (plus fiable), puis API httpx.
-    Récupère TOUTES les vidéos (Reels inclus), sans filtre de date.
+    Fetch Instagram videos/reels.
+    Ordre de priorité (cloud Railway compatible) :
+    1. RapidAPI instagram-scraper-api2 (fonctionne depuis datacenter, nécessite RAPIDAPI_KEY)
+    2. httpx API Instagram avec session cookie (nécessite INSTAGRAM_SESSION_ID)
+    3. instaloader avec session cookie (nécessite INSTAGRAM_SESSION_ID)
+    4. instaloader sans session (fonctionne uniquement depuis IP résidentielle)
+    5. Playwright (dernière chance)
     """
     username = username.lstrip("@")
-    # Priorité 1 : instaloader (le plus fiable pour les comptes publics)
+
+    # Priorité 1 : RapidAPI — fonctionne depuis Railway sans session
+    if RAPIDAPI_KEY:
+        try:
+            videos = await _fetch_instagram_videos_rapidapi(username)
+            if videos:
+                logger.info(f"Instagram RapidAPI: {len(videos)} vidéos pour @{username}")
+                return videos
+        except Exception as e:
+            logger.warning(f"RapidAPI Instagram videos failed for @{username}: {e}")
+
+    # Priorité 2 : httpx API Instagram avec session cookie
+    if INSTAGRAM_SESSIONS:
+        try:
+            data = await _scrape_instagram_api(username)
+            videos = _parse_instagram_videos(data)
+            if videos:
+                logger.info(f"Instagram httpx+session: {len(videos)} vidéos pour @{username}")
+                return videos
+        except Exception as e:
+            logger.warning(f"Instagram httpx+session videos failed for @{username}: {e}")
+
+    # Priorité 3 : instaloader avec session cookie
+    if INSTALOADER_AVAILABLE and INSTAGRAM_SESSIONS:
+        loop = asyncio.get_event_loop()
+        def _il_videos_with_session():
+            L = instaloader.Instaloader(
+                download_videos=False,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                quiet=True,
+            )
+            try:
+                L.context._session.cookies.set("sessionid", _get_instagram_session(), domain=".instagram.com")
+            except Exception:
+                pass
+            profile = instaloader.Profile.from_username(L.context, username)
+            result = []
+            for post in profile.get_posts():
+                if not post.is_video:
+                    continue
+                result.append({
+                    "platform_video_id": str(post.mediaid),
+                    "url": f"https://www.instagram.com/p/{post.shortcode}/",
+                    "title": (post.caption or "")[:150],
+                    "thumbnail_url": post.url,
+                    "views": post.video_view_count or post._node.get("play_count") or post._node.get("view_count") or 0,
+                    "likes": post.likes,
+                    "comments": post.comments,
+                    "published_at": post.date_utc.replace(tzinfo=timezone.utc).isoformat(),
+                })
+                if len(result) >= 200:
+                    break
+            return result
+        try:
+            videos = await loop.run_in_executor(_thread_pool, _il_videos_with_session)
+            if videos:
+                logger.info(f"Instagram instaloader+session: {len(videos)} vidéos pour @{username}")
+                return videos
+        except Exception as e:
+            logger.warning(f"instaloader+session failed for @{username}: {e}")
+
+    # Priorité 4 : instaloader sans session (IP résidentielle seulement)
     if INSTALOADER_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _il_videos():
@@ -3101,7 +3320,6 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             profile = instaloader.Profile.from_username(L.context, username)
             result = []
             for post in profile.get_posts():
-                # Récupère vidéos ET reels (is_video = True pour les deux)
                 if not post.is_video:
                     continue
                 result.append({
@@ -3109,7 +3327,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                     "url": f"https://www.instagram.com/p/{post.shortcode}/",
                     "title": (post.caption or "")[:150],
                     "thumbnail_url": post.url,
-                    "views": post.video_view_count or 0,
+                    "views": post.video_view_count or post._node.get("play_count") or post._node.get("view_count") or 0,
                     "likes": post.likes,
                     "comments": post.comments,
                     "published_at": post.date_utc.replace(tzinfo=timezone.utc).isoformat(),
@@ -3121,19 +3339,18 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             return await loop.run_in_executor(_thread_pool, _il_videos)
         except Exception as e:
             logger.warning(f"instaloader failed for @{username}: {e}")
-    # Fallback : API httpx Instagram (scrape léger)
-    try:
-        data = await _scrape_instagram_api(username)
-        return _parse_instagram_videos(data)
-    except Exception as e:
-        logger.warning(f"Instagram httpx video fetch failed for @{username}: {e}")
-    # Dernier recours : Playwright
+
+    # Priorité 5 : Playwright
     if PLAYWRIGHT_AVAILABLE:
         try:
             data = await _scrape_instagram_playwright(username)
-            return _parse_instagram_videos(data)
+            videos = _parse_instagram_videos(data)
+            if videos:
+                return videos
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
+
+    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — configurez RAPIDAPI_KEY ou INSTAGRAM_SESSION_ID")
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
@@ -3662,6 +3879,89 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
         raise HTTPException(status_code=403, detail="Agency/Manager only")
     asyncio.create_task(run_video_tracking())
     return {"message": "Tracking lancé en arrière-plan"}
+
+@api_router.post("/campaigns/{campaign_id}/manual-video")
+async def add_manual_video(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """
+    Agency adds a video manually for a clipper.
+    Used for videos posted outside the campaign (exception/dérogation).
+    These videos bypass the joined_at date filter and are always counted.
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("agency_id") != user["user_id"] and campaign.get("manager_id") != user["user_id"]:
+        # Allow if user is a manager of this campaign
+        member = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
+        if not member:
+            raise HTTPException(status_code=403, detail="Non autorisé")
+
+    clipper_id = body.get("user_id", "").strip()
+    url = body.get("url", "").strip()
+    views = max(0, int(body.get("views", 0)))
+    platform = body.get("platform", "tiktok").lower()
+    title = (body.get("title") or "Vidéo ajoutée manuellement").strip()
+
+    if not clipper_id or not url:
+        raise HTTPException(status_code=400, detail="user_id et url sont requis")
+
+    # Verify clipper is in this campaign
+    member = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": clipper_id, "role": "clipper"})
+    if not member:
+        raise HTTPException(status_code=400, detail="Ce clippeur ne fait pas partie de cette campagne")
+
+    rpm = campaign.get("rpm", 0)
+    video_id = f"vid_{uuid.uuid4().hex[:12]}"
+    video = {
+        "video_id": video_id,
+        "platform_video_id": f"manual_{video_id}",
+        "campaign_id": campaign_id,
+        "user_id": clipper_id,
+        "account_id": None,
+        "platform": platform,
+        "url": url,
+        "title": title,
+        "views": views,
+        "likes": 0,
+        "comments": 0,
+        "manually_added": True,
+        "added_by": user["user_id"],
+        "published_at": None,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "earnings": round((views / 1000) * rpm, 2),
+    }
+    await db.tracked_videos.insert_one(video)
+    video.pop("_id", None)
+
+    # Notify clipper
+    clipper = await db.users.find_one({"user_id": clipper_id}, {"_id": 0, "display_name": 1, "name": 1})
+    clipper_name = (clipper or {}).get("display_name") or (clipper or {}).get("name", "")
+    await notify_user(clipper_id, {
+        "type": "manual_video_added",
+        "message": f"L'agence a ajouté une vidéo à votre compte dans la campagne « {campaign.get('name', '')} ».",
+        "campaign_id": campaign_id,
+        "video_id": video_id,
+    })
+
+    return {"video": video, "earnings": video["earnings"]}
+
+@api_router.delete("/campaigns/{campaign_id}/manual-video/{video_id}")
+async def delete_manual_video(campaign_id: str, video_id: str, user: dict = Depends(get_current_user)):
+    """Agency removes a manually added video."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    result = await db.tracked_videos.delete_one({
+        "video_id": video_id,
+        "campaign_id": campaign_id,
+        "manually_added": True,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable ou non supprimable")
+    return {"message": "Vidéo supprimée"}
 
 # ================= MESSAGES & CHAT =================
 
@@ -4241,27 +4541,54 @@ async def get_payment_history(user: dict = Depends(get_current_user)):
 async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) -> dict:
     """
     Calculate total views and earnings for a clipper on a campaign.
+    Only counts videos published AFTER the clipper joined the campaign.
+    Manually-added videos (agency exception) are always counted.
 
     Sources (union, dédupliqué par platform_video_id) :
     1. tracked_videos liés à ce campaign_id directement
-    2. tracked_videos des comptes sociaux assignés à cette campagne (campaign_social_accounts)
+    2. tracked_videos des comptes sociaux assignés à cette campagne
     3. posts soumis manuellement (db.posts)
     """
+    # ── Récupérer joined_at du membre ──────────────────────────────────────
+    membership = await db.campaign_members.find_one(
+        {"campaign_id": campaign_id, "user_id": user_id},
+        {"_id": 0, "joined_at": 1}
+    )
+    joined_at_str = None
+    if membership and membership.get("joined_at"):
+        jat = membership["joined_at"]
+        joined_at_str = jat if isinstance(jat, str) else jat.isoformat()
+
+    def _after_joined(published_at, manually_added=False):
+        """Retourne True si la vidéo doit être comptabilisée."""
+        if manually_added:
+            return True  # Les vidéos ajoutées manuellement par l'agence sont toujours comptées
+        if not joined_at_str:
+            return True  # Pas de date d'entrée → tout compter
+        if not published_at:
+            return True  # Date inconnue → bénéfice du doute
+        try:
+            return str(published_at)[:19] >= joined_at_str[:19]
+        except Exception:
+            return True
+
     seen_video_ids = set()
     total_views = 0
 
     # ── Source 1 : tracked_videos avec campaign_id explicite ──────────────
     t_vids = await db.tracked_videos.find(
         {"campaign_id": campaign_id, "user_id": user_id},
-        {"_id": 0, "platform_video_id": 1, "views": 1}
+        {"_id": 0, "platform_video_id": 1, "views": 1, "published_at": 1, "manually_added": 1}
     ).to_list(10000)
     for v in t_vids:
+        if not _after_joined(v.get("published_at"), v.get("manually_added", False)):
+            continue
         vid_key = v.get("platform_video_id") or v.get("video_id", "")
         if vid_key and vid_key not in seen_video_ids:
             seen_video_ids.add(vid_key)
             total_views += v.get("views", 0)
 
-    # ── Source 2 : comptes assignés à la campagne (même si campaign_id=None) ──
+    # ── Source 2 : comptes assignés à la campagne ──────────────────────────
     assignments = await db.campaign_social_accounts.find(
         {"campaign_id": campaign_id, "user_id": user_id},
         {"_id": 0, "account_id": 1}
@@ -4270,9 +4597,11 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
     if account_ids:
         acc_vids = await db.tracked_videos.find(
             {"account_id": {"$in": account_ids}},
-            {"_id": 0, "platform_video_id": 1, "views": 1}
+            {"_id": 0, "platform_video_id": 1, "views": 1, "published_at": 1, "manually_added": 1}
         ).to_list(10000)
         for v in acc_vids:
+            if not _after_joined(v.get("published_at"), v.get("manually_added", False)):
+                continue
             vid_key = v.get("platform_video_id") or v.get("video_id", "")
             if vid_key and vid_key not in seen_video_ids:
                 seen_video_ids.add(vid_key)
@@ -4281,9 +4610,11 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
     # ── Source 3 : posts manuels ────────────────────────────────────────────
     manual_posts = await db.posts.find(
         {"campaign_id": campaign_id, "user_id": user_id},
-        {"_id": 0, "post_id": 1, "views": 1}
+        {"_id": 0, "post_id": 1, "views": 1, "created_at": 1}
     ).to_list(10000)
     for p in manual_posts:
+        if not _after_joined(p.get("created_at")):
+            continue
         post_key = f"post_{p.get('post_id', '')}"
         if post_key not in seen_video_ids:
             seen_video_ids.add(post_key)
@@ -4306,6 +4637,7 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
         "paid": paid,
         "owed": round(max(earned - paid, 0), 2),
         "last_payment": last_payment,
+        "joined_at": joined_at_str,
     }
 
 @api_router.get("/campaigns/{campaign_id}/payment-summary")
