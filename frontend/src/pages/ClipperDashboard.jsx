@@ -1542,9 +1542,23 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
           <div className="space-y-4">
             {campaigns.map((campaign) => {
               const assignedAccounts = campaignAccounts[campaign.campaign_id] || [];
-              const availableAccounts = accounts.filter(
+              // All verified accounts not already in THIS campaign
+              const verifiedAccounts = accounts.filter(
                 (a) => a.status === "verified" && !assignedAccounts.find((ca) => ca.account_id === a.account_id)
               );
+              // For each, check if it's assigned to another campaign
+              const getOtherCampaignName = (accountId) => {
+                for (const [cid, accs] of Object.entries(campaignAccounts)) {
+                  if (cid === campaign.campaign_id) continue;
+                  if (accs.find((ca) => ca.account_id === accountId)) {
+                    const c = campaigns.find((x) => x.campaign_id === cid);
+                    return c ? c.name : "une autre campagne";
+                  }
+                }
+                return null;
+              };
+              const freeAccounts = verifiedAccounts.filter((a) => !getOtherCampaignName(a.account_id));
+              const busyAccounts = verifiedAccounts.filter((a) => !!getOtherCampaignName(a.account_id));
               return (
                 <Card key={campaign.campaign_id} data-campaign-id={campaign.campaign_id} data-campaign-name={campaign.name} className="bg-[#121212] border-white/10">
                   <CardHeader className="pb-2">
@@ -1573,20 +1587,40 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                         </div>
                       ))
                     )}
-                    {availableAccounts.length > 0 && (
+                    {/* Accounts busy on another campaign — shown greyed out */}
+                    {busyAccounts.length > 0 && (
+                      <div className="space-y-1">
+                        {busyAccounts.map((account) => (
+                          <div key={account.account_id}
+                            className="flex items-center justify-between p-2 bg-white/5 rounded opacity-50 cursor-not-allowed"
+                            title={`Déjà utilisé dans « ${getOtherCampaignName(account.account_id)} »`}>
+                            <div className="flex items-center gap-2">
+                              <Badge className="bg-white/10 text-white/60">{account.platform}</Badge>
+                              <span className="text-white/60 text-sm">{account.username}</span>
+                              <span className="text-white/40 text-xs">— déjà dans « {getOtherCampaignName(account.account_id)} »</span>
+                            </div>
+                            <span className="text-xs text-yellow-400/70">Occupé</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {freeAccounts.length > 0 && (
                       <Select onValueChange={(accountId) => handleAssignAccount(campaign.campaign_id, accountId)}>
                         <SelectTrigger className="bg-white/5 border-white/10 text-white"
                           data-testid={`assign-account-${campaign.campaign_id}`}>
                           <SelectValue placeholder="+ Ajouter un compte" />
                         </SelectTrigger>
                         <SelectContent>
-                          {availableAccounts.map((account) => (
+                          {freeAccounts.map((account) => (
                             <SelectItem key={account.account_id} value={account.account_id}>
                               {account.platform} — {account.username}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                    )}
+                    {freeAccounts.length === 0 && busyAccounts.length === 0 && verifiedAccounts.length === 0 && (
+                      <p className="text-white/30 text-xs">Tous vos comptes vérifiés sont déjà assignés ici.</p>
                     )}
                   </CardContent>
                 </Card>

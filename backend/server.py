@@ -3471,8 +3471,8 @@ async def run_video_tracking():
                             {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
                             upsert=True
                         )
-                    except Exception:
-                        pass
+                    except Exception as upsert_err:
+                        logger.warning(f"Failed to upsert video {vid.get('platform_video_id')} for {platform}/@{username}: {upsert_err}")
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
                     {"$set": {"last_tracked_at": now_iso}}
@@ -3593,8 +3593,24 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
         "account_id": account_id
     })
     if existing:
-        raise HTTPException(status_code=400, detail="Already assigned")
-    
+        raise HTTPException(status_code=400, detail="Already assigned to this campaign")
+
+    # A social account can only be active on ONE campaign at a time
+    other_assignment = await db.campaign_social_accounts.find_one({
+        "account_id": account_id,
+        "campaign_id": {"$ne": campaign_id}
+    })
+    if other_assignment:
+        # Get the campaign name for a helpful error message
+        other_campaign = await db.campaigns.find_one(
+            {"campaign_id": other_assignment["campaign_id"]}, {"_id": 0, "name": 1}
+        )
+        other_name = other_campaign.get("name", other_assignment["campaign_id"]) if other_campaign else other_assignment["campaign_id"]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ce compte est déjà utilisé dans la campagne « {other_name} ». Un compte ne peut être actif que sur une seule campagne à la fois."
+        )
+
     assignment = {
         "id": f"csa_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign_id,
