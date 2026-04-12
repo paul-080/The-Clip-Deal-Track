@@ -2612,6 +2612,84 @@ async def _scrape_instagram_api(username: str) -> dict:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
 
 
+async def _fetch_instagram_feed_videos(user_id: str) -> list:
+    """
+    Fetch real Reels/video stats using the private feed endpoint.
+    web_profile_info does NOT return accurate play_count for Reels —
+    this endpoint does: /api/v1/feed/user/{user_id}/
+    Requires a valid session cookie.
+    """
+    session = _get_instagram_session()
+    if not session:
+        return []
+    headers = {
+        "User-Agent": "Instagram 319.0.0.0.41 Android",
+        "Accept": "*/*",
+        "Accept-Language": "en-US",
+        "X-IG-App-ID": "567067343352427",
+        "Cookie": f"sessionid={session}",
+    }
+    results = []
+    next_max_id = None
+    pages_fetched = 0
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        while pages_fetched < 3:  # max 3 pages = ~36 posts
+            params = {"count": 12}
+            if next_max_id:
+                params["max_id"] = next_max_id
+            url = f"https://i.instagram.com/api/v1/feed/user/{user_id}/"
+            try:
+                r = await c.get(url, headers=headers, params=params)
+            except Exception as e:
+                logger.warning(f"Instagram feed fetch error for user {user_id}: {e}")
+                break
+            if r.status_code != 200:
+                logger.warning(f"Instagram feed {r.status_code} for user {user_id}")
+                break
+            data = r.json()
+            items = data.get("items", [])
+            for item in items:
+                # Only videos/reels
+                media_type = item.get("media_type")  # 2 = video, 8 = carousel
+                if media_type not in (2, 8):
+                    continue
+                pk = str(item.get("pk") or item.get("id") or "")
+                code = item.get("code") or ""
+                caption_obj = item.get("caption")
+                caption = (caption_obj.get("text", "") if isinstance(caption_obj, dict) else "") or ""
+                ts = item.get("taken_at") or 0
+                # Thumbnail
+                _img = item.get("image_versions2", {})
+                _candidates = _img.get("candidates", []) if _img else []
+                thumb = _candidates[0].get("url") if _candidates else None
+                # Views — play_count is the real Reels view count
+                views = int(
+                    item.get("play_count")
+                    or item.get("view_count")
+                    or item.get("video_view_count")
+                    or 0
+                )
+                likes = int((item.get("like_count") or 0))
+                comments_obj = item.get("comment_count")
+                comments = int(comments_obj if isinstance(comments_obj, int) else 0)
+                results.append({
+                    "platform_video_id": pk,
+                    "url": f"https://www.instagram.com/reel/{code}/" if code else f"https://www.instagram.com/p/{pk}/",
+                    "title": caption[:150] if caption else None,
+                    "thumbnail_url": thumb,
+                    "views": views,
+                    "likes": likes,
+                    "comments": comments,
+                    "published_at": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else None,
+                })
+            pages_fetched += 1
+            next_max_id = data.get("next_max_id")
+            if not next_max_id or not data.get("more_available"):
+                break
+    logger.info(f"Instagram feed endpoint: {len(results)} vidéos pour user_id={user_id}")
+    return results
+
+
 async def _scrape_instagram_rapidapi(username: str) -> dict:
     """
     Fetch Instagram profile via RapidAPI instagram-scraper-api2.
@@ -3234,15 +3312,33 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     """
     Fetch Instagram videos/reels.
     Ordre de priorité (cloud Railway compatible) :
-    1. RapidAPI instagram-scraper-api2 (fonctionne depuis datacenter, nécessite RAPIDAPI_KEY)
-    2. httpx API Instagram avec session cookie (nécessite INSTAGRAM_SESSION_ID)
-    3. instaloader avec session cookie (nécessite INSTAGRAM_SESSION_ID)
-    4. instaloader sans session (fonctionne uniquement depuis IP résidentielle)
-    5. Playwright (dernière chance)
+    1. Feed privé Instagram /api/v1/feed/user/{id}/ — vraies vues Reels (nécessite session cookie)
+    2. RapidAPI instagram-scraper-api2 (fonctionne depuis datacenter, nécessite RAPIDAPI_KEY)
+    3. httpx web_profile_info + session (vues moins précises pour Reels)
+    4. instaloader avec session cookie
+    5. instaloader sans session (résidentiel seulement)
+    6. Playwright (dernière chance)
     """
     username = username.lstrip("@")
 
-    # Priorité 1 : RapidAPI — fonctionne depuis Railway sans session
+    # Priorité 1 : Feed privé Instagram — vraies vues play_count pour les Reels
+    # Nécessite user_id numérique (récupéré via web_profile_info ou depuis la DB)
+    if INSTAGRAM_SESSIONS:
+        try:
+            # Récupérer le user_id numérique depuis web_profile_info
+            _profile_data = await _scrape_instagram_api(username)
+            _uid = _profile_data.get("data", {}).get("user", {}).get("id") or \
+                   _profile_data.get("data", {}).get("user", {}).get("pk")
+            if _uid:
+                videos = await _fetch_instagram_feed_videos(str(_uid))
+                if videos:
+                    logger.info(f"Instagram feed API (vraies vues): {len(videos)} vidéos pour @{username}")
+                    return videos
+                # Feed returned 0 videos (e.g. private account) — fall through
+        except Exception as e:
+            logger.warning(f"Instagram feed API failed for @{username}: {e}")
+
+    # Priorité 2 : RapidAPI — fonctionne depuis Railway sans session
     if RAPIDAPI_KEY:
         try:
             videos = await _fetch_instagram_videos_rapidapi(username)
@@ -3252,18 +3348,18 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"RapidAPI Instagram videos failed for @{username}: {e}")
 
-    # Priorité 2 : httpx API Instagram avec session cookie
+    # Priorité 3 : httpx web_profile_info + session (play_count souvent 0 pour Reels)
     if INSTAGRAM_SESSIONS:
         try:
             data = await _scrape_instagram_api(username)
             videos = _parse_instagram_videos(data)
             if videos:
-                logger.info(f"Instagram httpx+session: {len(videos)} vidéos pour @{username}")
+                logger.info(f"Instagram httpx+session (web_profile_info): {len(videos)} vidéos pour @{username}")
                 return videos
         except Exception as e:
             logger.warning(f"Instagram httpx+session videos failed for @{username}: {e}")
 
-    # Priorité 3 : instaloader avec session cookie
+    # Priorité 4 : instaloader avec session cookie
     if INSTALOADER_AVAILABLE and INSTAGRAM_SESSIONS:
         loop = asyncio.get_event_loop()
         def _il_videos_with_session():
@@ -3305,7 +3401,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"instaloader+session failed for @{username}: {e}")
 
-    # Priorité 4 : instaloader sans session (IP résidentielle seulement)
+    # Priorité 5 : instaloader sans session (IP résidentielle seulement)
     if INSTALOADER_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _il_videos():
@@ -3340,7 +3436,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"instaloader failed for @{username}: {e}")
 
-    # Priorité 5 : Playwright
+    # Priorité 6 : Playwright
     if PLAYWRIGHT_AVAILABLE:
         try:
             data = await _scrape_instagram_playwright(username)
