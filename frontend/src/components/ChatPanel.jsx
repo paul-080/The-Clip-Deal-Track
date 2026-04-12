@@ -107,7 +107,7 @@ export default function ChatPanel({ campaigns }) {
       const res = await fetch(`${API}/campaigns/${campaignId}/messages`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
-        setMessages((data.messages || []).filter(m => m.message_type === "question" || m.message_type === "chat"));
+        setMessages(data.messages || []);
       }
     } catch {}
     finally { setLoading(false); }
@@ -158,15 +158,21 @@ export default function ChatPanel({ campaigns }) {
       wsRef.current.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === "new_message" && data.message.campaign_id === campaignId) {
-          if (data.message.message_type === "question" || data.message.message_type === "chat") {
-            setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
-            // Incrémenter badge si pas sur l'onglet Questions
-            if (data.message.sender_id !== user?.user_id) {
+          setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
+          const msgType = data.message.message_type || "question";
+          if (data.message.sender_id !== user?.user_id) {
+            if (msgType === "question" || msgType === "chat" || !msgType) {
               setTabUnread(prev => ({
                 ...prev,
                 questions: activeTab === "questions" ? 0 : (prev.questions || 0) + 1,
               }));
               if (activeTab === "questions") saveLastSeen("questions");
+            } else if (msgType === "conseil") {
+              setTabUnread(prev => ({
+                ...prev,
+                conseils: activeTab === "conseils" ? 0 : (prev.conseils || 0) + 1,
+              }));
+              if (activeTab === "conseils") saveLastSeen("conseils");
             }
           }
         }
@@ -184,6 +190,12 @@ export default function ChatPanel({ campaigns }) {
     } catch {}
   };
 
+  const getTabMessageType = () => {
+    if (activeTab === "conseils") return "conseil";
+    if (activeTab === "remuneration") return "remuneration";
+    return "question";
+  };
+
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !campaignId) return;
     setSending(true);
@@ -192,7 +204,7 @@ export default function ChatPanel({ campaigns }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ campaign_id: campaignId, content: newMessage.trim(), message_type: "question" }),
+        body: JSON.stringify({ campaign_id: campaignId, content: newMessage.trim(), message_type: getTabMessageType() }),
       });
       if (res.ok) {
         const msg = await res.json();
@@ -257,7 +269,7 @@ export default function ChatPanel({ campaigns }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ campaign_id: campaignId, content: msg, message_type: "question" }),
+        body: JSON.stringify({ campaign_id: campaignId, content: msg, message_type: "remuneration" }),
       });
       if (res.ok) {
         const newMsg = await res.json();
@@ -288,10 +300,20 @@ export default function ChatPanel({ campaigns }) {
     return clippers;
   };
 
-  // Messages filtered for selected clipper (Questions tab)
+  // Messages séparés par onglet — chaque tab a sa propre conversation
+  const questionMessages = messages.filter(m => !m.message_type || m.message_type === "question" || m.message_type === "chat");
+  const conseilChatMessages = messages.filter(m => m.message_type === "conseil");
+  const remunerationMessages = messages.filter(m => m.message_type === "remuneration");
+
+  // Messages filtrés pour le clippeur sélectionné (onglet Questions)
   const visibleMessages = selectedClipper
-    ? messages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
-    : messages;
+    ? questionMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
+    : questionMessages;
+
+  // Messages Conseils filtrés par clippeur sélectionné (agence)
+  const visibleConseilMessages = selectedClipper
+    ? conseilChatMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
+    : conseilChatMessages;
 
   if (!campaignId) {
     return (
@@ -555,17 +577,49 @@ export default function ChatPanel({ campaigns }) {
                       </div>
                     )}
 
-                    <div className="flex-1" />
+                    {/* Messages conseils avec ce clippeur */}
+                    {visibleConseilMessages.length > 0 && (
+                      <div className="flex-1 overflow-y-auto space-y-2 mb-3 min-h-0">
+                        {visibleConseilMessages.map((msg) => {
+                          const isOwn = msg.sender_id === user?.user_id;
+                          const roleColor = getRoleColor(msg.sender_role);
+                          return (
+                            <div key={msg.message_id} className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
+                              <div className={`max-w-[80%] rounded-xl px-3 py-2 ${isOwn ? "bg-white/10" : "bg-white/5"}`}
+                                style={{ borderLeft: isOwn ? "none" : `2px solid ${roleColor}` }}>
+                                <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+                                <p className="text-xs text-white/30 mt-0.5">{new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {visibleConseilMessages.length === 0 && <div className="flex-1" />}
                     <div className="space-y-3 flex-shrink-0">
                       <Textarea value={adviceContent} onChange={e => setAdviceContent(e.target.value)}
                         placeholder={`Écrivez un conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
-                        rows={4}
+                        rows={3}
                         className="bg-white/5 border-white/10 text-white placeholder:text-white/30 text-sm resize-none" />
                       <Button onClick={handleSendAdvice} disabled={sending || !adviceContent.trim()}
                         className="bg-[#FF007F] hover:bg-[#FF007F]/80 text-white w-full">
                         <Send className="w-4 h-4 mr-2" />
                         Envoyer le conseil
                       </Button>
+                      {/* Chat rapide — type conseil */}
+                      <div className="border-t border-white/10 pt-3">
+                        <p className="text-xs text-white/30 mb-2">Message rapide</p>
+                        <div className="flex gap-2">
+                          <Input value={newMessage} onChange={e => setNewMessage(e.target.value)}
+                            onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
+                            placeholder="Message court..."
+                            className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 text-sm" />
+                          <Button onClick={handleSendMessage} disabled={sending || !newMessage.trim()}
+                            className="bg-[#FF007F]/20 hover:bg-[#FF007F]/40 text-[#FF007F] px-3 border border-[#FF007F]/30">
+                            <Send className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )
@@ -596,11 +650,11 @@ export default function ChatPanel({ campaigns }) {
                         </div>
                       ))
                     )}
-                    {/* Messages de la conversation (questions) */}
-                    {visibleMessages.length > 0 && (
+                    {/* Conversation Conseils (messages type=conseil) */}
+                    {conseilChatMessages.length > 0 && (
                       <div className="mt-3 pt-3 border-t border-white/10 space-y-3">
                         <p className="text-xs text-white/25 uppercase tracking-wider font-medium">Conversation</p>
-                        {visibleMessages.map((msg) => {
+                        {conseilChatMessages.map((msg) => {
                           const isOwn = msg.sender_id === user?.user_id;
                           const roleColor = getRoleColor(msg.sender_role);
                           return (
@@ -811,162 +865,111 @@ export default function ChatPanel({ campaigns }) {
 
           {/* === RÉMUNÉRATION TAB (clipper) === */}
           {activeTab === "remuneration" && isClipper && (
-            <div className="overflow-y-auto pr-1">
+            <div className="flex flex-col h-full min-h-0">
               {!paymentSummary ? (
                 <div className="flex items-center justify-center h-32">
                   <div className="w-5 h-5 border-2 border-white/20 border-t-[#f0c040] rounded-full animate-spin" />
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {/* Hero montant */}
-                  <div className="bg-gradient-to-br from-[#f0c040]/15 to-[#f0c040]/5 border border-[#f0c040]/20 rounded-2xl p-5">
-                    <p className="text-xs text-white/40 mb-1 text-center">Total gagné sur cette campagne</p>
-                    <p className="text-[#f0c040] font-mono font-black text-5xl text-center leading-tight">€{paymentSummary.earned?.toFixed(2) || "0.00"}</p>
-                    {paymentSummary.paid > 0 && (
-                      <div className="flex justify-center gap-4 mt-3 pt-3 border-t border-[#f0c040]/10">
-                        <div className="text-center">
-                          <p className="text-xs text-white/30">Déjà reçu</p>
-                          <p className="text-[#39FF14] font-mono text-sm font-semibold">€{paymentSummary.paid.toFixed(2)}</p>
-                        </div>
-                        <div className="w-px bg-white/10" />
-                        <div className="text-center">
-                          <p className="text-xs text-white/30">En attente</p>
-                          <p className={`font-mono text-sm font-semibold ${paymentSummary.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
-                            {paymentSummary.owed > 0 ? `€${paymentSummary.owed.toFixed(2)}` : "✓"}
-                          </p>
-                        </div>
+                <>
+                  {/* ── Chat rémunération — occupe tout l'espace disponible ── */}
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-1 pb-2 min-h-0">
+                    {remunerationMessages.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-full text-center pt-8">
+                        <DollarSign className="w-10 h-10 text-white/10 mb-3" />
+                        <p className="text-white/30 text-sm">Ton fil de paiement</p>
+                        <p className="text-white/20 text-xs mt-1">Réclame ton argent ou échange avec l'agence ici</p>
                       </div>
-                    )}
-                  </div>
-
-                  {/* Stats */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="bg-white/5 rounded-xl p-3 text-center">
-                      <p className="text-xs text-white/40 mb-1"><Eye className="w-3 h-3 inline mr-1" />Vues</p>
-                      <p className="text-white font-mono font-bold">{fmt(paymentSummary.views)}</p>
-                    </div>
-                    <div className="bg-white/5 rounded-xl p-3 text-center">
-                      <p className="text-xs text-white/40 mb-1">RPM</p>
-                      <p className="text-white font-mono font-bold">€{paymentSummary.rpm}</p>
-                      <p className="text-white/30 text-[10px]">pour 1K vues</p>
-                    </div>
-                    <div className="bg-white/5 rounded-xl p-3 text-center">
-                      <p className="text-xs text-white/40 mb-1">Payé</p>
-                      <p className="text-[#39FF14] font-mono font-bold">€{(paymentSummary.paid || 0).toFixed(2)}</p>
-                    </div>
-                  </div>
-
-                  {/* Formule */}
-                  <div className="bg-white/5 rounded-xl p-3">
-                    <p className="text-xs text-white/40 uppercase tracking-wider font-medium mb-2">Calcul de ta rémunération</p>
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-white/50">{fmt(paymentSummary.views)} vues × €{paymentSummary.rpm}/1K</span>
-                        <span className="text-white font-mono">= €{paymentSummary.earned?.toFixed(2)}</span>
-                      </div>
-                      {paymentSummary.paid > 0 && (
-                        <div className="flex justify-between text-xs">
-                          <span className="text-white/50">Déjà versé</span>
-                          <span className="text-[#39FF14] font-mono">- €{paymentSummary.paid.toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div className="border-t border-white/10 pt-1.5 flex justify-between text-sm font-semibold">
-                        <span className="text-white/70">Tu dois recevoir</span>
-                        <span className={paymentSummary.owed > 0 ? "text-[#f0c040] font-mono" : "text-[#39FF14] font-mono"}>
-                          {paymentSummary.owed > 0 ? `€${paymentSummary.owed.toFixed(2)}` : "✓ À jour"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Info date */}
-                  {paymentSummary.joined_at && (
-                    <p className="text-xs text-white/25 flex items-start gap-1.5 px-1">
-                      <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                      Seules tes vidéos publiées après le {new Date(paymentSummary.joined_at).toLocaleDateString("fr-FR")} (date d'entrée dans la campagne) sont prises en compte.
-                    </p>
-                  )}
-
-                  {/* Statut paiement + bouton réclamer */}
-                  {paymentSummary.owed > 0 ? (
-                    <div className="space-y-2">
-                      <div className="bg-[#f0c040]/5 border border-[#f0c040]/20 rounded-xl p-4">
-                        <div className="flex items-center gap-2 mb-1">
-                          <div className="w-2 h-2 rounded-full bg-[#f0c040] animate-pulse" />
-                          <p className="text-[#f0c040] text-sm font-medium">Paiement en attente</p>
-                        </div>
-                        <p className="text-xs text-white/40">L'agence doit te virer €{paymentSummary.owed.toFixed(2)} directement.</p>
-                      </div>
-
-                      {/* Erreur RIB manquant */}
-                      {noRibError && (
-                        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-2">
-                          <div className="flex items-start gap-2">
-                            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                            <div>
-                              <p className="text-red-400 text-sm font-medium">IBAN / PayPal manquant</p>
-                              <p className="text-white/50 text-xs mt-0.5">Tu dois renseigner ton IBAN ou ton adresse PayPal avant de réclamer ton paiement. L'agence en a besoin pour te virer.</p>
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => navigate("/clipper/settings")}
-                            className="w-full py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-medium transition-all border border-red-500/20">
-                            → Aller dans Paramètres pour renseigner mon IBAN / PayPal
-                          </button>
-                        </div>
-                      )}
-
-                      <Button onClick={handleClaimPayment} disabled={claimingPayment}
-                        className="w-full bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-bold py-3 text-sm">
-                        {claimingPayment
-                          ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin mr-2" />Envoi...</>
-                          : <>💰 Réclamer €{paymentSummary.owed.toFixed(2)}</>}
-                      </Button>
-                      <p className="text-xs text-white/20 text-center">Envoie une notification à l'agence pour demander ton virement</p>
-                    </div>
-                  ) : paymentSummary.earned > 0 ? (
-                    <div className="bg-[#39FF14]/5 border border-[#39FF14]/20 rounded-xl p-4 flex items-center gap-3">
-                      <CheckCircle className="w-5 h-5 text-[#39FF14] flex-shrink-0" />
-                      <div>
-                        <p className="text-[#39FF14] text-sm font-medium">Tout est payé ✓</p>
-                        {paymentSummary.last_payment && (
-                          <p className="text-xs text-white/40">Dernier virement : €{paymentSummary.last_payment.amount_eur?.toFixed(2)} le {new Date(paymentSummary.last_payment.confirmed_at).toLocaleDateString("fr-FR")}</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {/* Chat avec l'agence */}
-                  <div className="pt-2 border-t border-white/10">
-                    <p className="text-xs text-white/30 uppercase tracking-wider font-medium mb-2">Message à l'agence</p>
-                    <div className="space-y-2 max-h-40 overflow-y-auto mb-2">
-                      {visibleMessages.slice(-5).map((msg) => {
+                    ) : (
+                      remunerationMessages.map((msg) => {
                         const isOwn = msg.sender_id === user?.user_id;
                         const roleColor = getRoleColor(msg.sender_role);
                         return (
                           <div key={msg.message_id} className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
-                            <div className={`max-w-[85%] rounded-xl px-3 py-2 ${isOwn ? "bg-white/10" : "bg-white/5"}`}
-                              style={{ borderLeft: isOwn ? "none" : `2px solid ${roleColor}` }}>
-                              {!isOwn && <p className="text-[10px] font-medium mb-0.5" style={{ color: roleColor }}>{msg.sender_name}</p>}
-                              <p className="text-white text-xs leading-relaxed">{msg.content}</p>
+                            <div className={`max-w-[80%] rounded-2xl px-3.5 py-2.5 ${isOwn ? "bg-[#f0c040]/10 border border-[#f0c040]/20" : "bg-white/5"}`}
+                              style={{ borderLeft: isOwn ? undefined : `3px solid ${roleColor}` }}>
+                              {!isOwn && <p className="text-xs font-medium mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+                              <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+                              <p className="text-xs text-white/30 mt-1">
+                                {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                              </p>
                             </div>
                           </div>
                         );
-                      })}
-                      <div ref={remunerationEndRef} />
+                      })
+                    )}
+                    <div ref={remunerationEndRef} />
+                  </div>
+
+                  {/* ── Section fixe en bas ── */}
+                  <div className="flex-shrink-0 pt-3 border-t border-white/10 space-y-2">
+
+                    {/* Stats compactes */}
+                    <div className="flex items-center justify-between px-1">
+                      <div className="flex items-center gap-3 text-xs">
+                        <span className="text-white/40 flex items-center gap-1"><Eye className="w-3 h-3" />{fmt(paymentSummary.views)} vues</span>
+                        <span className="text-white/20">·</span>
+                        <span className="text-[#f0c040] font-mono font-semibold">€{paymentSummary.earned?.toFixed(2) || "0.00"}</span>
+                        {paymentSummary.paid > 0 && (
+                          <>
+                            <span className="text-white/20">·</span>
+                            <span className="text-[#39FF14] text-xs">payé €{paymentSummary.paid.toFixed(2)}</span>
+                          </>
+                        )}
+                      </div>
+                      {paymentSummary.owed > 0 && (
+                        <span className="text-xs font-mono font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-0.5 rounded-lg">
+                          €{paymentSummary.owed.toFixed(2)} dû
+                        </span>
+                      )}
+                      {paymentSummary.owed === 0 && paymentSummary.earned > 0 && (
+                        <span className="text-xs text-[#39FF14]">✓ À jour</span>
+                      )}
                     </div>
+
+                    {/* Erreur RIB manquant */}
+                    {noRibError && (
+                      <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-2">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                          <p className="text-red-400 text-xs font-medium">IBAN / PayPal manquant</p>
+                        </div>
+                        <button onClick={() => navigate("/clipper/settings")}
+                          className="w-full py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-medium transition-all border border-red-500/20">
+                          → Paramètres — renseigner mon IBAN / PayPal
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Bouton Réclamer juste au-dessus de l'input */}
+                    {paymentSummary.owed > 0 && (
+                      <Button onClick={handleClaimPayment} disabled={claimingPayment}
+                        className="w-full bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-bold py-2.5 text-sm">
+                        {claimingPayment
+                          ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin mr-2" />Envoi...</>
+                          : <>💰 Réclamer €{paymentSummary.owed.toFixed(2)}</>}
+                      </Button>
+                    )}
+
+                    {/* Input chat */}
                     <div className="flex gap-2">
                       <Input value={newMessage} onChange={e => setNewMessage(e.target.value)}
                         onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-                        placeholder="Écrire à l'agence..."
+                        placeholder="Message à l'agence..."
                         className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 text-sm" />
                       <Button onClick={handleSendMessage} disabled={sending || !newMessage.trim()}
                         className="bg-[#f0c040]/20 hover:bg-[#f0c040]/40 text-[#f0c040] px-3 border border-[#f0c040]/30">
                         <Send className="w-4 h-4" />
                       </Button>
                     </div>
+
+                    {/* Formule en texte discret sous l'input */}
+                    <p className="text-[11px] text-white/20 text-center pb-1">
+                      {fmt(paymentSummary.views)} vues × €{paymentSummary.rpm}/1 000 vues = €{paymentSummary.earned?.toFixed(2) || "0.00"}
+                      {paymentSummary.joined_at && ` · depuis le ${new Date(paymentSummary.joined_at).toLocaleDateString("fr-FR")}`}
+                    </p>
                   </div>
-                </div>
+                </>
               )}
             </div>
           )}
