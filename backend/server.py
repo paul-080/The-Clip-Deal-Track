@@ -2612,81 +2612,196 @@ async def _scrape_instagram_api(username: str) -> dict:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
 
 
+def _parse_ig_views(item: dict) -> int:
+    """
+    Extraire le nombre de vues d'un item Instagram privé.
+    Instagram utilise des noms de champs différents selon le type de média :
+    - Reels : play_count
+    - Vidéos classiques : video_view_count
+    - IGTV : view_count
+    Certains champs sont dans des métadonnées imbriquées.
+    """
+    # Champs directs
+    v = (
+        item.get("play_count")
+        or item.get("video_view_count")
+        or item.get("view_count")
+        or item.get("ig_play_count")
+    )
+    if v:
+        return int(v)
+    # Reels metadata imbriqué
+    clips_meta = item.get("clips_metadata") or {}
+    v = clips_meta.get("play_count") or clips_meta.get("original_sound_info", {}).get("play_count")
+    if v:
+        return int(v)
+    # Carousel — chercher dans le premier élément
+    carousel = item.get("carousel_media") or []
+    if carousel:
+        v = (
+            carousel[0].get("play_count")
+            or carousel[0].get("video_view_count")
+            or carousel[0].get("view_count")
+        )
+        if v:
+            return int(v)
+    return 0
+
+
+def _parse_ig_likes(item: dict) -> int:
+    """Extraire les likes — masqués sur certains comptes."""
+    v = item.get("like_count")
+    if v:
+        return int(v)
+    fb = item.get("fb_like_count") or item.get("facepile_top_likers_count")
+    return int(fb) if fb else 0
+
+
+def _parse_ig_thumb(item: dict) -> str | None:
+    """Extraire la miniature."""
+    _img = item.get("image_versions2") or {}
+    _cands = _img.get("candidates") or []
+    if _cands:
+        return _cands[0].get("url")
+    return item.get("thumbnail_url") or item.get("cover_frame_url")
+
+
+def _parse_ig_item(item: dict) -> dict | None:
+    """Parser un item de feed Instagram en dict vidéo standardisé."""
+    media_type = item.get("media_type")
+    # 1=photo, 2=video/reel, 8=carousel — on garde video+carousel
+    if media_type not in (2, 8):
+        return None
+    pk = str(item.get("pk") or item.get("id") or "")
+    if not pk:
+        return None
+    code = item.get("code") or ""
+    caption_obj = item.get("caption")
+    caption = (caption_obj.get("text", "") if isinstance(caption_obj, dict) else "") or ""
+    ts = item.get("taken_at") or 0
+    views = _parse_ig_views(item)
+    likes = _parse_ig_likes(item)
+    comments = int(item.get("comment_count") or 0)
+    thumb = _parse_ig_thumb(item)
+    # Log de debug si toutes les stats sont à 0 (aide au diagnostic)
+    if views == 0 and likes == 0:
+        avail = {k: item[k] for k in item if "count" in k.lower() or "play" in k.lower() or "view" in k.lower() or "like" in k.lower()}
+        logger.debug(f"IG item {pk} stats=0 — champs disponibles: {avail}")
+    return {
+        "platform_video_id": pk,
+        "url": f"https://www.instagram.com/reel/{code}/" if code else f"https://www.instagram.com/p/{code or pk}/",
+        "title": caption[:150] if caption else None,
+        "thumbnail_url": thumb,
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "published_at": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else None,
+    }
+
+
+def _ig_headers_android(session: str) -> dict:
+    return {
+        "User-Agent": "Instagram 289.0.0.77.109 Android (29/10; 420dpi; 1080x2094; OnePlus; GM1913; OnePlus7Pro; qcom; en_US; 458009024)",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "X-IG-App-ID": "567067343352427",
+        "X-IG-Bandwidth-Speed-KBPS": "-1.000",
+        "X-IG-Bandwidth-TotalBytes-B": "0",
+        "X-IG-Bandwidth-TotalTime-MS": "0",
+        "Cookie": f"sessionid={session}",
+    }
+
+
 async def _fetch_instagram_feed_videos(user_id: str) -> list:
     """
-    Fetch real Reels/video stats using the private feed endpoint.
-    web_profile_info does NOT return accurate play_count for Reels —
-    this endpoint does: /api/v1/feed/user/{user_id}/
-    Requires a valid session cookie.
+    Fetch videos from a user's feed via /api/v1/feed/user/{user_id}/.
+    Returns video items with views/likes parsed from multiple possible field names.
     """
     session = _get_instagram_session()
     if not session:
         return []
-    headers = {
-        "User-Agent": "Instagram 319.0.0.0.41 Android",
-        "Accept": "*/*",
-        "Accept-Language": "en-US",
-        "X-IG-App-ID": "567067343352427",
-        "Cookie": f"sessionid={session}",
-    }
+    headers = _ig_headers_android(session)
     results = []
     next_max_id = None
     pages_fetched = 0
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        while pages_fetched < 3:  # max 3 pages = ~36 posts
+        while pages_fetched < 3:
             params = {"count": 12}
             if next_max_id:
                 params["max_id"] = next_max_id
-            url = f"https://i.instagram.com/api/v1/feed/user/{user_id}/"
             try:
-                r = await c.get(url, headers=headers, params=params)
+                r = await c.get(
+                    f"https://i.instagram.com/api/v1/feed/user/{user_id}/",
+                    headers=headers, params=params
+                )
             except Exception as e:
-                logger.warning(f"Instagram feed fetch error for user {user_id}: {e}")
+                logger.warning(f"Instagram feed fetch error user {user_id}: {e}")
                 break
             if r.status_code != 200:
-                logger.warning(f"Instagram feed {r.status_code} for user {user_id}")
+                logger.warning(f"Instagram feed HTTP {r.status_code} user {user_id} — body: {r.text[:300]}")
                 break
             data = r.json()
-            items = data.get("items", [])
-            for item in items:
-                # Only videos/reels
-                media_type = item.get("media_type")  # 2 = video, 8 = carousel
-                if media_type not in (2, 8):
-                    continue
-                pk = str(item.get("pk") or item.get("id") or "")
-                code = item.get("code") or ""
-                caption_obj = item.get("caption")
-                caption = (caption_obj.get("text", "") if isinstance(caption_obj, dict) else "") or ""
-                ts = item.get("taken_at") or 0
-                # Thumbnail
-                _img = item.get("image_versions2", {})
-                _candidates = _img.get("candidates", []) if _img else []
-                thumb = _candidates[0].get("url") if _candidates else None
-                # Views — play_count is the real Reels view count
-                views = int(
-                    item.get("play_count")
-                    or item.get("view_count")
-                    or item.get("video_view_count")
-                    or 0
-                )
-                likes = int((item.get("like_count") or 0))
-                comments_obj = item.get("comment_count")
-                comments = int(comments_obj if isinstance(comments_obj, int) else 0)
-                results.append({
-                    "platform_video_id": pk,
-                    "url": f"https://www.instagram.com/reel/{code}/" if code else f"https://www.instagram.com/p/{pk}/",
-                    "title": caption[:150] if caption else None,
-                    "thumbnail_url": thumb,
-                    "views": views,
-                    "likes": likes,
-                    "comments": comments,
-                    "published_at": datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else None,
-                })
+            # Log premier item pour debug (une fois)
+            if pages_fetched == 0 and data.get("items"):
+                first = data["items"][0]
+                logger.info(f"IG feed sample keys for user {user_id}: { {k: first.get(k) for k in ['media_type','play_count','video_view_count','view_count','like_count','comment_count','clips_metadata']} }")
+            for item in data.get("items", []):
+                parsed = _parse_ig_item(item)
+                if parsed:
+                    results.append(parsed)
             pages_fetched += 1
             next_max_id = data.get("next_max_id")
             if not next_max_id or not data.get("more_available"):
                 break
-    logger.info(f"Instagram feed endpoint: {len(results)} vidéos pour user_id={user_id}")
+    logger.info(f"Instagram feed: {len(results)} vidéos pour user_id={user_id} (views_nonzero={sum(1 for v in results if v['views'] > 0)})")
+    return results
+
+
+async def _fetch_instagram_reels(user_id: str) -> list:
+    """
+    Fetch Reels specifically via POST /api/v1/clips/user/.
+    This endpoint returns Reels with accurate play_count.
+    """
+    session = _get_instagram_session()
+    if not session:
+        return []
+    headers = _ig_headers_android(session)
+    headers["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
+    results = []
+    max_id = None
+    pages = 0
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        while pages < 3:
+            body = f"target_user_id={user_id}&page_size=12&include_feed_video=true"
+            if max_id:
+                body += f"&max_id={max_id}"
+            try:
+                r = await c.post(
+                    "https://i.instagram.com/api/v1/clips/user/",
+                    headers=headers, content=body.encode()
+                )
+            except Exception as e:
+                logger.warning(f"Instagram clips fetch error user {user_id}: {e}")
+                break
+            if r.status_code != 200:
+                logger.warning(f"Instagram clips HTTP {r.status_code} user {user_id}")
+                break
+            data = r.json()
+            # Log premier item
+            if pages == 0 and data.get("items"):
+                first_media = data["items"][0].get("media", data["items"][0])
+                logger.info(f"IG clips sample for user {user_id}: { {k: first_media.get(k) for k in ['play_count','video_view_count','like_count','comment_count']} }")
+            for entry in data.get("items", []):
+                # Clips endpoint wraps media in "media" key
+                item = entry.get("media") or entry
+                parsed = _parse_ig_item(item)
+                if parsed:
+                    results.append(parsed)
+            pages += 1
+            max_id = data.get("paging_info", {}).get("max_id") or data.get("next_max_id")
+            if not max_id or not data.get("paging_info", {}).get("more_available", data.get("more_available", False)):
+                break
+    logger.info(f"Instagram clips/reels: {len(results)} pour user_id={user_id} (views_nonzero={sum(1 for v in results if v['views'] > 0)})")
     return results
 
 
@@ -3321,22 +3436,47 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     """
     username = username.lstrip("@")
 
-    # Priorité 1 : Feed privé Instagram — vraies vues play_count pour les Reels
-    # Nécessite user_id numérique (récupéré via web_profile_info ou depuis la DB)
+    # Priorité 1 : Feed + Reels via API privée Instagram (vraies vues)
+    # On essaie les deux endpoints et on retourne celui qui a le plus de vues réelles
     if INSTAGRAM_SESSIONS:
         try:
             # Récupérer le user_id numérique depuis web_profile_info
             _profile_data = await _scrape_instagram_api(username)
-            _uid = _profile_data.get("data", {}).get("user", {}).get("id") or \
-                   _profile_data.get("data", {}).get("user", {}).get("pk")
+            _uid = (
+                _profile_data.get("data", {}).get("user", {}).get("id")
+                or _profile_data.get("data", {}).get("user", {}).get("pk")
+            )
             if _uid:
-                videos = await _fetch_instagram_feed_videos(str(_uid))
-                if videos:
-                    logger.info(f"Instagram feed API (vraies vues): {len(videos)} vidéos pour @{username}")
-                    return videos
-                # Feed returned 0 videos (e.g. private account) — fall through
+                _uid = str(_uid)
+                # Lancer les deux endpoints en parallèle
+                feed_videos, reels_videos = await asyncio.gather(
+                    _fetch_instagram_feed_videos(_uid),
+                    _fetch_instagram_reels(_uid),
+                    return_exceptions=True
+                )
+                if isinstance(feed_videos, Exception):
+                    logger.warning(f"Feed error for @{username}: {feed_videos}")
+                    feed_videos = []
+                if isinstance(reels_videos, Exception):
+                    logger.warning(f"Reels error for @{username}: {reels_videos}")
+                    reels_videos = []
+
+                # Fusionner : Reels en priorité (plus précis), feed pour les vidéos classiques
+                seen_ids = set()
+                merged = []
+                for v in reels_videos:
+                    seen_ids.add(v["platform_video_id"])
+                    merged.append(v)
+                for v in feed_videos:
+                    if v["platform_video_id"] not in seen_ids:
+                        merged.append(v)
+
+                views_nonzero = sum(1 for v in merged if v.get("views", 0) > 0)
+                logger.info(f"Instagram privé: {len(merged)} vidéos (@{username}), {views_nonzero} avec vues > 0")
+                if merged:
+                    return merged
         except Exception as e:
-            logger.warning(f"Instagram feed API failed for @{username}: {e}")
+            logger.warning(f"Instagram private API failed for @{username}: {e}")
 
     # Priorité 2 : RapidAPI — fonctionne depuis Railway sans session
     if RAPIDAPI_KEY:
@@ -5494,6 +5634,79 @@ async def admin_delete_simulated_videos(request: Request, _: bool = Depends(veri
         ]
     })
     return {"deleted": result.deleted_count, "message": f"{result.deleted_count} vidéo(s) simulée(s) supprimée(s)"}
+
+@api_router.get("/admin/debug/instagram/{username}")
+async def admin_debug_instagram(username: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """
+    Debug endpoint : montre les données brutes retournées par l'API Instagram privée.
+    Utile pour diagnostiquer pourquoi play_count / likes sont à 0.
+    GET /api/admin/debug/instagram/@username?admin_code=XXX
+    """
+    username = username.lstrip("@")
+    result = {"username": username, "session_configured": bool(INSTAGRAM_SESSIONS), "endpoints": {}}
+
+    if not INSTAGRAM_SESSIONS:
+        return {"error": "INSTAGRAM_SESSION_IDS non configuré", **result}
+
+    session = _get_instagram_session()
+    headers_android = _ig_headers_android(session)
+
+    # 1. web_profile_info — récupérer user_id
+    try:
+        profile_data = await _scrape_instagram_api(username)
+        user_node = profile_data.get("data", {}).get("user", {})
+        uid = user_node.get("id") or user_node.get("pk")
+        result["user_id"] = uid
+        result["follower_count"] = user_node.get("edge_followed_by", {}).get("count")
+        result["endpoints"]["web_profile_info"] = "OK"
+    except Exception as e:
+        result["endpoints"]["web_profile_info"] = f"ERROR: {e}"
+        return result
+
+    if not uid:
+        return {**result, "error": "user_id introuvable dans web_profile_info"}
+
+    # 2. Feed endpoint — premier item brut
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.get(
+                f"https://i.instagram.com/api/v1/feed/user/{uid}/",
+                headers=headers_android, params={"count": 3}
+            )
+        feed_data = r.json()
+        items = feed_data.get("items", [])
+        result["endpoints"]["feed"] = {
+            "status": r.status_code,
+            "total_items": len(items),
+            "sample_item_keys": list(items[0].keys()) if items else [],
+            "sample_stats": {k: items[0].get(k) for k in ["media_type","play_count","video_view_count","view_count","like_count","comment_count","clips_metadata"] if items} if items else {},
+        }
+    except Exception as e:
+        result["endpoints"]["feed"] = f"ERROR: {e}"
+
+    # 3. Clips/Reels endpoint — premier item brut
+    try:
+        hdrs = {**headers_android, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.post(
+                "https://i.instagram.com/api/v1/clips/user/",
+                headers=hdrs,
+                content=f"target_user_id={uid}&page_size=3&include_feed_video=true".encode()
+            )
+        clips_data = r.json()
+        items = clips_data.get("items", [])
+        first_media = items[0].get("media", items[0]) if items else {}
+        result["endpoints"]["clips_reels"] = {
+            "status": r.status_code,
+            "total_items": len(items),
+            "sample_media_keys": list(first_media.keys()) if first_media else [],
+            "sample_stats": {k: first_media.get(k) for k in ["media_type","play_count","video_view_count","view_count","like_count","comment_count"]} if first_media else {},
+        }
+    except Exception as e:
+        result["endpoints"]["clips_reels"] = f"ERROR: {e}"
+
+    return result
+
 
 @api_router.post("/admin/demo-login/{role}")
 async def admin_demo_login(role: str, request: Request, _: bool = Depends(verify_admin_code)):
