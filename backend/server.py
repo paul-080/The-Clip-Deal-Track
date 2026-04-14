@@ -72,6 +72,7 @@ GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY', '')
 TIKWM_API_KEY = os.environ.get('TIKWM_API_KEY', '')
 RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '').strip()
+APIFY_TOKEN = os.environ.get('APIFY_TOKEN', '').strip()
 
 # Instagram session cookie rotation
 # Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
@@ -2612,6 +2613,89 @@ async def _scrape_instagram_api(username: str) -> dict:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
 
 
+async def _fetch_instagram_videos_apify(username: str) -> list:
+    """
+    Fetch Instagram Reels via Apify instagram-reel-scraper.
+    Fonctionne depuis Railway sans cookie, retourne les vraies vues.
+    ~$2.30 pour 1 000 Reels (plan Starter $29/mois).
+    Doc: https://apify.com/apify/instagram-reel-scraper
+    """
+    if not APIFY_TOKEN:
+        raise ValueError("APIFY_TOKEN non configuré")
+    username = username.lstrip("@")
+
+    # Run actor sync — attend le résultat directement (timeout 5 min)
+    actor_id = "apify~instagram-reel-scraper"
+    url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
+    payload = {
+        "directUrls": [f"https://www.instagram.com/{username}/reels/"],
+        "resultsType": "posts",
+        "resultsLimit": 50,
+        "addParentData": False,
+    }
+    async with httpx.AsyncClient(timeout=300) as c:  # 5 min timeout
+        r = await c.post(
+            url,
+            params={"token": APIFY_TOKEN},
+            json=payload,
+        )
+    if r.status_code != 200:
+        raise ValueError(f"Apify HTTP {r.status_code}: {r.text[:300]}")
+
+    items = r.json()
+    if not isinstance(items, list):
+        raise ValueError(f"Apify réponse inattendue: {str(items)[:200]}")
+
+    results = []
+    for item in items:
+        # Apify retourne photos + vidéos — on garde seulement les vidéos/reels
+        media_type = item.get("type", "")  # "Video", "Image", "Sidecar"
+        if media_type == "Image":
+            continue
+        # Pour Sidecar (carousel), garder si contient une vidéo
+        if media_type == "Sidecar" and not item.get("videoPlayCount") and not item.get("videoViewCount"):
+            continue
+
+        video_id = str(item.get("id") or item.get("shortCode") or "")
+        short_code = item.get("shortCode") or ""
+        caption = item.get("caption") or ""
+        timestamp = item.get("timestamp") or ""
+
+        # Vues — Apify utilise videoPlayCount pour Reels, videoViewCount pour vidéos classiques
+        views = int(
+            item.get("videoPlayCount")
+            or item.get("videoViewCount")
+            or item.get("likesCount", 0) * 20  # estimation grossière si vraiment absent
+            or 0
+        )
+        likes = int(item.get("likesCount") or 0)
+        comments = int(item.get("commentsCount") or 0)
+        thumb = item.get("displayUrl") or item.get("thumbnailUrl") or ""
+
+        # Date
+        published_at = None
+        if timestamp:
+            try:
+                from dateutil import parser as dateparser
+                published_at = dateparser.parse(timestamp).isoformat()
+            except Exception:
+                published_at = timestamp
+
+        results.append({
+            "platform_video_id": video_id,
+            "url": f"https://www.instagram.com/reel/{short_code}/" if short_code else f"https://www.instagram.com/{username}/",
+            "title": caption[:150] if caption else None,
+            "thumbnail_url": thumb,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "published_at": published_at,
+        })
+
+    logger.info(f"Apify Instagram: {len(results)} vidéos pour @{username} (views_nonzero={sum(1 for v in results if v['views'] > 0)})")
+    return results
+
+
 def _parse_ig_views(item: dict) -> int:
     """
     Extraire le nombre de vues d'un item Instagram privé.
@@ -3436,8 +3520,16 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     """
     username = username.lstrip("@")
 
-    # Priorité 1 : Feed + Reels via API privée Instagram (vraies vues)
-    # On essaie les deux endpoints et on retourne celui qui a le plus de vues réelles
+    # Priorité 1 : Apify Instagram Reel Scraper — le plus fiable, pas de cookie
+    if APIFY_TOKEN:
+        try:
+            videos = await _fetch_instagram_videos_apify(username)
+            if videos:
+                return videos
+        except Exception as e:
+            logger.warning(f"Apify Instagram failed for @{username}: {e}")
+
+    # Priorité 2 : Feed + Reels via API privée Instagram (cookie requis)
     if INSTAGRAM_SESSIONS:
         try:
             # Récupérer le user_id numérique depuis web_profile_info
