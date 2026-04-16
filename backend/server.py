@@ -2613,87 +2613,160 @@ async def _scrape_instagram_api(username: str) -> dict:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
 
 
+def _parse_apify_item(item: dict, username: str) -> dict | None:
+    """Parse un item Apify Instagram en dict standardisé."""
+    media_type = item.get("type", "")
+    # Garder Video et Sidecar (carousel avec vidéo), ignorer Image pure
+    if media_type == "Image":
+        return None
+
+    video_id = str(item.get("id") or item.get("shortCode") or "")
+    if not video_id:
+        return None
+    short_code = item.get("shortCode") or ""
+    caption = item.get("caption") or ""
+    timestamp = item.get("timestamp") or ""
+
+    views = int(
+        item.get("videoPlayCount")
+        or item.get("videoViewCount")
+        or item.get("playsCount")
+        or 0
+    )
+    likes = int(item.get("likesCount") or 0)
+    comments = int(item.get("commentsCount") or 0)
+    thumb = item.get("displayUrl") or item.get("thumbnailUrl") or ""
+
+    published_at = None
+    if timestamp:
+        try:
+            from dateutil import parser as dateparser
+            published_at = dateparser.parse(timestamp).isoformat()
+        except Exception:
+            published_at = timestamp
+
+    return {
+        "platform_video_id": video_id,
+        "url": f"https://www.instagram.com/reel/{short_code}/" if short_code else f"https://www.instagram.com/{username}/",
+        "title": caption[:150] if caption else None,
+        "thumbnail_url": thumb,
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "published_at": published_at,
+    }
+
+
+async def _apify_get_dataset(dataset_id: str) -> list:
+    """Récupère les items d'un dataset Apify."""
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(
+            f"https://api.apify.com/v2/datasets/{dataset_id}/items",
+            params={"token": APIFY_TOKEN, "clean": "true", "limit": 100},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"Dataset HTTP {r.status_code}")
+    return r.json() if isinstance(r.json(), list) else []
+
+
 async def _fetch_instagram_videos_apify(username: str) -> list:
     """
-    Fetch Instagram Reels via Apify instagram-reel-scraper.
-    Fonctionne depuis Railway sans cookie, retourne les vraies vues.
-    ~$2.30 pour 1 000 Reels (plan Starter $29/mois).
-    Doc: https://apify.com/apify/instagram-reel-scraper
+    Fetch Instagram Reels via Apify (approche async fiable).
+    1. Démarre le run
+    2. Poll jusqu'à SUCCEEDED (max 4 min)
+    3. Récupère le dataset
     """
     if not APIFY_TOKEN:
         raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
 
-    # Run actor sync — attend le résultat directement (timeout 5 min)
-    actor_id = "apify~instagram-reel-scraper"
-    url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-    payload = {
-        "directUrls": [f"https://www.instagram.com/{username}/reels/"],
-        "resultsType": "posts",
-        "resultsLimit": 50,
-        "addParentData": False,
-    }
-    async with httpx.AsyncClient(timeout=300) as c:  # 5 min timeout
-        r = await c.post(
-            url,
-            params={"token": APIFY_TOKEN},
-            json=payload,
-        )
-    if r.status_code != 200:
-        raise ValueError(f"Apify HTTP {r.status_code}: {r.text[:300]}")
+    # Essayer d'abord instagram-reel-scraper, puis instagram-scraper en fallback
+    actors = [
+        ("apify~instagram-reel-scraper", {
+            "directUrls": [f"https://www.instagram.com/{username}/reels/"],
+            "resultsType": "posts",
+            "resultsLimit": 50,
+        }),
+        ("apify~instagram-scraper", {
+            "directUrls": [f"https://www.instagram.com/{username}/"],
+            "resultsType": "posts",
+            "resultsLimit": 50,
+            "searchType": "user",
+        }),
+    ]
 
-    items = r.json()
-    if not isinstance(items, list):
-        raise ValueError(f"Apify réponse inattendue: {str(items)[:200]}")
+    for actor_id, payload in actors:
+        try:
+            logger.info(f"Apify: démarrage {actor_id} pour @{username}")
+            # 1. Démarrer le run
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/runs",
+                    params={"token": APIFY_TOKEN},
+                    json=payload,
+                )
+            if r.status_code not in (200, 201):
+                logger.warning(f"Apify {actor_id} start HTTP {r.status_code}: {r.text[:200]}")
+                continue
 
-    results = []
-    for item in items:
-        # Apify retourne photos + vidéos — on garde seulement les vidéos/reels
-        media_type = item.get("type", "")  # "Video", "Image", "Sidecar"
-        if media_type == "Image":
+            run_data = r.json().get("data", r.json())
+            run_id = run_data.get("id")
+            dataset_id = run_data.get("defaultDatasetId")
+            if not run_id:
+                logger.warning(f"Apify {actor_id}: pas de run_id dans la réponse")
+                continue
+
+            logger.info(f"Apify run {run_id} démarré pour @{username}")
+
+            # 2. Poll le statut (max 4 minutes, toutes les 10s)
+            status = "RUNNING"
+            for attempt in range(24):  # 24 × 10s = 4 min
+                await asyncio.sleep(10)
+                async with httpx.AsyncClient(timeout=15) as c:
+                    sr = await c.get(
+                        f"https://api.apify.com/v2/actor-runs/{run_id}",
+                        params={"token": APIFY_TOKEN},
+                    )
+                if sr.status_code == 200:
+                    status = sr.json().get("data", {}).get("status", "RUNNING")
+                    logger.info(f"Apify run {run_id} status={status} (attempt {attempt+1})")
+                    if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
+                        break
+
+            if status != "SUCCEEDED":
+                logger.warning(f"Apify {actor_id} run {run_id} terminé avec status={status}")
+                continue
+
+            # 3. Récupérer les résultats
+            if not dataset_id:
+                run_info = sr.json().get("data", {})
+                dataset_id = run_info.get("defaultDatasetId")
+            if not dataset_id:
+                logger.warning(f"Apify: pas de dataset_id pour run {run_id}")
+                continue
+
+            items = await _apify_get_dataset(dataset_id)
+            logger.info(f"Apify {actor_id}: {len(items)} items récupérés pour @{username}")
+
+            # 4. Parser
+            results = []
+            for item in items:
+                parsed = _parse_apify_item(item, username)
+                if parsed:
+                    results.append(parsed)
+
+            views_ok = sum(1 for v in results if v["views"] > 0)
+            logger.info(f"Apify @{username}: {len(results)} vidéos, {views_ok} avec vues > 0")
+
+            if results:
+                return results
+            # Si vide, essayer le prochain actor
+
+        except Exception as e:
+            logger.warning(f"Apify {actor_id} failed for @{username}: {e}")
             continue
-        # Pour Sidecar (carousel), garder si contient une vidéo
-        if media_type == "Sidecar" and not item.get("videoPlayCount") and not item.get("videoViewCount"):
-            continue
 
-        video_id = str(item.get("id") or item.get("shortCode") or "")
-        short_code = item.get("shortCode") or ""
-        caption = item.get("caption") or ""
-        timestamp = item.get("timestamp") or ""
-
-        # Vues — Apify utilise videoPlayCount pour Reels, videoViewCount pour vidéos classiques
-        views = int(
-            item.get("videoPlayCount")
-            or item.get("videoViewCount")
-            or item.get("likesCount", 0) * 20  # estimation grossière si vraiment absent
-            or 0
-        )
-        likes = int(item.get("likesCount") or 0)
-        comments = int(item.get("commentsCount") or 0)
-        thumb = item.get("displayUrl") or item.get("thumbnailUrl") or ""
-
-        # Date
-        published_at = None
-        if timestamp:
-            try:
-                from dateutil import parser as dateparser
-                published_at = dateparser.parse(timestamp).isoformat()
-            except Exception:
-                published_at = timestamp
-
-        results.append({
-            "platform_video_id": video_id,
-            "url": f"https://www.instagram.com/reel/{short_code}/" if short_code else f"https://www.instagram.com/{username}/",
-            "title": caption[:150] if caption else None,
-            "thumbnail_url": thumb,
-            "views": views,
-            "likes": likes,
-            "comments": comments,
-            "published_at": published_at,
-        })
-
-    logger.info(f"Apify Instagram: {len(results)} vidéos pour @{username} (views_nonzero={sum(1 for v in results if v['views'] > 0)})")
-    return results
+    return []
 
 
 def _parse_ig_views(item: dict) -> int:

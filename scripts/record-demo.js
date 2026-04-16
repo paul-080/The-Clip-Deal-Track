@@ -27,20 +27,25 @@ async function scroll(page, px) {
 }
 
 async function login(page, email, password) {
-  await page.goto(`${BASE_URL}/login`, { waitUntil: "domcontentloaded" });
-  await w(600);
-  // Remplir email
-  const em = page.locator('input[type="email"], input[placeholder*="mail" i], input[name="email"]').first();
-  await em.waitFor({ timeout: 5000 }).catch(() => {});
+  // Aller sur la landing page
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  await w(1000);
+  // Cliquer sur "Se connecter" pour ouvrir la modal
+  await page.locator('button:has-text("Se connecter")').first().click();
+  await w(800);
+  // Remplir le champ email dans la modal
+  const em = page.locator('input[type="email"]').first();
+  await em.waitFor({ timeout: 8000 });
   await em.fill(email);
-  // Remplir mot de passe
+  await w(300);
+  // Remplir le mot de passe
   const pw = page.locator('input[type="password"]').first();
   await pw.fill(password);
-  await w(300);
-  // Soumettre
-  await page.locator('button[type="submit"], button:has-text("Connexion"), button:has-text("Se connecter")').first().click();
-  await page.waitForURL((u) => !u.includes("/login"), { timeout: 10000 }).catch(() => {});
-  await w(800);
+  await w(400);
+  // Soumettre — le bouton "Se connecter" dans la modal
+  await page.locator('button:has-text("Se connecter")').last().click();
+  await page.waitForURL((u) => u.includes("/agency") || u.includes("/clipper") || u.includes("/dashboard"), { timeout: 12000 }).catch(() => {});
+  await w(1000);
 }
 
 async function clickTab(page, label) {
