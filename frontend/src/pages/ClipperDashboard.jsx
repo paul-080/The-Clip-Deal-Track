@@ -1,6 +1,27 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "../App";
+
+// Proxy les images Instagram/TikTok (CDN URLs expirent côté navigateur)
+const imgSrc = (url) => {
+  if (!url) return null;
+  if (
+    url.includes("cdninstagram") || url.includes("fbcdn.net") ||
+    url.includes("tiktokcdn") || url.includes("p16-sign")
+  ) {
+    return `${API}/proxy-image?url=${encodeURIComponent(url)}`;
+  }
+  return url;
+};
+
+// Nombre de vues exact avec suffixe lisible (1 600 vues, pas "2K")
+const fmtViews = (n) => {
+  if (!n || n === 0) return "0";
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 10000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toLocaleString("fr-FR");
+};
 import Sidebar from "../components/Sidebar";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
@@ -837,7 +858,7 @@ function AllVideosPage() {
     finally { setLoading(false); }
   };
 
-  const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n || 0);
+  const fmt = fmtViews;
   const platformColor = { tiktok: "#00E5FF", youtube: "#FF0000", instagram: "#FF007F" };
   const platformEmoji = { tiktok: "🎵", youtube: "▶️", instagram: "📸" };
 
@@ -927,7 +948,7 @@ function AllVideosPage() {
                 {/* Thumbnail */}
                 <div className="relative w-full aspect-video bg-white/5">
                   {v.thumbnail_url
-                    ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover"
+                    ? <img src={imgSrc(v.thumbnail_url)} alt="" className="w-full h-full object-cover"
                         onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
                     : null}
                   <div className="w-full h-full items-center justify-center text-2xl"
@@ -1196,7 +1217,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
     }
   };
 
-  const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n || 0);
+  const fmt = fmtViews;
   const platformColor = { tiktok: "#00E5FF", youtube: "#FF0000", instagram: "#FF007F" };
 
   return (
@@ -1302,7 +1323,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                     <div className="w-14 h-14 rounded-full flex-shrink-0 overflow-hidden border-2"
                       style={{ borderColor: color + "40" }}>
                       {account.avatar_url
-                        ? <img src={account.avatar_url} alt="" className="w-full h-full object-cover" />
+                        ? <img src={imgSrc(account.avatar_url)} alt="" className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center text-xl font-bold"
                             style={{ background: color + "20", color }}>
                             {account.platform[0].toUpperCase()}
@@ -1490,7 +1511,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
                               data-video-id={v.video_id || v.platform_video_id}
                               className="group block rounded-lg overflow-hidden bg-white/5 hover:bg-white/10 transition-colors">
                               {v.thumbnail_url ? (
-                                <img src={v.thumbnail_url} alt="" className="w-full aspect-video object-cover" />
+                                <img src={imgSrc(v.thumbnail_url)} alt="" className="w-full aspect-video object-cover" />
                               ) : (
                                 <div className="w-full aspect-video bg-white/10 flex items-center justify-center">
                                   <Video className="w-6 h-6 text-white/20" />
@@ -1791,7 +1812,7 @@ function PaymentPage({ stats }) {
     finally { setSavingInfo(false); }
   };
 
-  const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n||0);
+  const fmt = fmtViews;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8" data-testid="payment-page">

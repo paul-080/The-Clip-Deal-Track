@@ -1,6 +1,27 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { useAuth, API } from "../App";
+
+// Proxy les images Instagram/TikTok (CDN URLs expirent côté navigateur)
+const imgSrc = (url) => {
+  if (!url) return null;
+  if (
+    url.includes("cdninstagram") || url.includes("fbcdn.net") ||
+    url.includes("tiktokcdn") || url.includes("p16-sign")
+  ) {
+    return `${API}/proxy-image?url=${encodeURIComponent(url)}`;
+  }
+  return url;
+};
+
+// Nombre de vues exact avec suffixe lisible
+const fmtViews = (n) => {
+  if (!n || n === 0) return "0";
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 10000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toLocaleString("fr-FR");
+};
 import Sidebar from "../components/Sidebar";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
@@ -922,7 +943,7 @@ function CampaignDashboard({ campaigns }) {
   const [manualVideoForm, setManualVideoForm] = useState({ user_id: "", url: "", views: "", platform: "tiktok", title: "" });
   const [addingVideo, setAddingVideo] = useState(false);
 
-  const fmt = (n) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}K` : String(n || 0);
+  const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
   const PLAT_ICON = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
 
@@ -1385,7 +1406,7 @@ function CampaignDashboard({ campaigns }) {
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="relative w-16 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
                           {video.thumbnail_url
-                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover"
+                            ? <img src={imgSrc(video.thumbnail_url)} alt="" className="w-full h-full object-cover"
                                 onError={e => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
                             : null}
                           <div className="w-full h-full items-center justify-center text-lg"
@@ -1651,7 +1672,7 @@ function PaymentPage() {
     finally { setConfirming(null); }
   };
 
-  const fmt = (n) => n >= 1000000 ? `${(n/1000000).toFixed(1)}M` : n >= 1000 ? `${(n/1000).toFixed(0)}K` : String(n||0);
+  const fmt = fmtViews;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8" data-testid="agency-payment-page">

@@ -6090,6 +6090,45 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
+
+@api_router.get("/proxy-image")
+async def proxy_image(url: str):
+    """
+    Proxy les images externes (Instagram CDN, TikTok, etc.) pour éviter les
+    restrictions CORS et les URLs expirantes côté navigateur.
+    """
+    if not url:
+        raise HTTPException(status_code=400, detail="url requis")
+    # Sécurité : n'autoriser que les CDNs connus
+    allowed = (
+        "cdninstagram.com", "fbcdn.net", "instagram.com",
+        "tiktokcdn.com", "tiktok.com", "p16-sign",
+        "googleusercontent.com", "ytimg.com", "ggpht.com",
+        "apify.com", "storage.apify.com",
+    )
+    if not any(d in url for d in allowed):
+        raise HTTPException(status_code=403, detail="Domaine non autorisé")
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Referer": "https://www.instagram.com/",
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.get(url, headers=headers)
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail=f"Image non trouvée (HTTP {r.status_code})")
+        content_type = r.headers.get("content-type", "image/jpeg")
+        return Response(
+            content=r.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 @api_router.get("/tracking-status")
 async def tracking_status():
     """Public endpoint: returns which platforms have full automatic tracking configured."""
