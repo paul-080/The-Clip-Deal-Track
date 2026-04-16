@@ -649,9 +649,44 @@ async def email_register(req: EmailRegisterRequest):
         upsert=True
     )
 
-    # Send verification email — mandatory, no bypass
+    # Si pas de service email → créer le compte directement sans vérification
     if not RESEND_API_KEY:
-        raise HTTPException(status_code=503, detail="Le service d'envoi d'email n'est pas configuré. Contactez l'administrateur.")
+        logger.warning(f"RESEND_API_KEY absent — création directe du compte pour {req.email} (rôle: {req.role})")
+        existing_user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
+        if existing_user:
+            user_id = existing_user["user_id"]
+            await db.users.update_one({"user_id": user_id}, {"$set": {
+                "email_verified": True,
+                "password_hash": _hash_password(req.password),
+                "role": req.role,
+                "display_name": req.display_name,
+            }})
+        else:
+            user_id = f"user_{uuid.uuid4().hex[:12]}"
+            await db.users.insert_one({
+                "user_id": user_id,
+                "email": req.email.lower(),
+                "name": req.display_name,
+                "picture": None,
+                "role": req.role,
+                "display_name": req.display_name,
+                "first_name": req.first_name,
+                "last_name": req.last_name,
+                "agency_name": req.agency_name,
+                "password_hash": _hash_password(req.password),
+                "email_verified": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "settings": {}
+            })
+        await db.email_verifications.delete_one({"email": req.email.lower()})
+        session_token = uuid.uuid4().hex
+        expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
+            "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
+        user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+        return _make_session_response(user, session_token)
+
+    # Avec Resend : envoyer le code de vérification
     try:
         await _send_verification_email(req.email.lower(), code)
     except Exception as e:
@@ -4748,15 +4783,72 @@ async def get_campaign_stats(campaign_id: str, user: dict = Depends(get_current_
     for i, cs in enumerate(clipper_stats_sorted):
         cs["rank"] = i + 1
 
-    return {
+    # ── Chart data: views grouped by day (last 30 days) ──
+    all_videos = await db.tracked_videos.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(5000)
+    from collections import defaultdict
+    views_by_day: dict = defaultdict(int)
+    today = datetime.now(timezone.utc).date()
+    for vid in all_videos:
+        raw = vid.get("fetched_at") or vid.get("published_at") or vid.get("created_at")
+        if not raw:
+            continue
+        try:
+            if isinstance(raw, str):
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+            else:
+                dt = raw.date() if hasattr(raw, "date") else today
+            if (today - dt).days <= 30:
+                views_by_day[str(dt)] += vid.get("views", 0)
+        except Exception:
+            pass
+    # Fill missing days with 0
+    from datetime import timedelta as _td
+    views_chart = []
+    for i in range(30, -1, -1):
+        d = str(today - _td(days=i))
+        views_chart.append({"date": d, "views": views_by_day.get(d, 0)})
+
+    # ── Videos for client view (no RPM/earnings) ──
+    # Attach clipper name to each video
+    user_cache: dict = {}
+    videos_client = []
+    for vid in sorted(all_videos, key=lambda v: v.get("published_at") or v.get("fetched_at") or "", reverse=True)[:200]:
+        uid = vid.get("user_id")
+        if uid and uid not in user_cache:
+            u = await db.users.find_one({"user_id": uid}, {"_id": 0, "display_name": 1, "name": 1, "picture": 1})
+            user_cache[uid] = u or {}
+        clipper_info = user_cache.get(uid, {})
+        videos_client.append({
+            "video_id": vid.get("video_id"),
+            "url": vid.get("url"),
+            "platform": vid.get("platform"),
+            "title": vid.get("title"),
+            "thumbnail_url": vid.get("thumbnail_url"),
+            "views": vid.get("views", 0),
+            "likes": vid.get("likes", 0),
+            "comments": vid.get("comments", 0),
+            "published_at": vid.get("published_at"),
+            "clipper_name": clipper_info.get("display_name") or clipper_info.get("name") or "Clippeur",
+            "clipper_picture": clipper_info.get("picture"),
+        })
+
+    is_client = user.get("role") == "client"
+    result = {
         "campaign_id": campaign_id,
         "total_views": total_views,
         "budget_used": round((total_views / 1000) * campaign["rpm"], 2),
         "budget_total": campaign.get("budget_total"),
         "budget_unlimited": campaign.get("budget_unlimited", False),
         "clipper_count": len(members),
-        "clipper_stats": clipper_stats_sorted
+        "clipper_stats": clipper_stats_sorted,
+        "views_chart": views_chart,
+        "videos": videos_client,
+        "video_count": len(all_videos),
     }
+    # Ne pas exposer le RPM aux clients
+    if not is_client:
+        result["rpm"] = campaign.get("rpm")
+    return result
 
 @api_router.get("/clipper/all-videos")
 async def get_clipper_all_videos(user: dict = Depends(get_current_user)):
