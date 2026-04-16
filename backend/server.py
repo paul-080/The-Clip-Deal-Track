@@ -5803,12 +5803,35 @@ async def admin_delete_simulated_videos(request: Request, _: bool = Depends(veri
 @api_router.get("/admin/debug/instagram/{username}")
 async def admin_debug_instagram(username: str, request: Request, _: bool = Depends(verify_admin_code)):
     """
-    Debug endpoint : montre les données brutes retournées par l'API Instagram privée.
-    Utile pour diagnostiquer pourquoi play_count / likes sont à 0.
-    GET /api/admin/debug/instagram/@username?admin_code=XXX
+    Debug endpoint : teste Apify + API privée Instagram.
+    GET /api/admin/debug/instagram/@username  (Header: X-Admin-Code)
     """
     username = username.lstrip("@")
-    result = {"username": username, "session_configured": bool(INSTAGRAM_SESSIONS), "endpoints": {}}
+    result = {
+        "username": username,
+        "apify_configured": bool(APIFY_TOKEN),
+        "session_configured": bool(INSTAGRAM_SESSIONS),
+        "endpoints": {},
+    }
+
+    # ── 0. Test Apify (priorité) ──────────────────────────────
+    if APIFY_TOKEN:
+        try:
+            apify_videos = await _fetch_instagram_videos_apify(username)
+            views_ok = sum(1 for v in apify_videos if v["views"] > 0)
+            result["endpoints"]["apify"] = {
+                "status": "OK",
+                "videos_found": len(apify_videos),
+                "videos_with_views": views_ok,
+                "sample": apify_videos[:2] if apify_videos else [],
+            }
+        except Exception as e:
+            result["endpoints"]["apify"] = {"status": f"ERROR: {e}"}
+    else:
+        result["endpoints"]["apify"] = {"status": "SKIP — APIFY_TOKEN non configuré"}
+
+    if not INSTAGRAM_SESSIONS:
+        return result
 
     if not INSTAGRAM_SESSIONS:
         return {"error": "INSTAGRAM_SESSION_IDS non configuré", **result}
