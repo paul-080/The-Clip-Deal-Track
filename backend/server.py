@@ -5814,17 +5814,38 @@ async def admin_debug_instagram(username: str, request: Request, _: bool = Depen
         "endpoints": {},
     }
 
-    # ── 0. Test Apify (priorité) ──────────────────────────────
+    # ── 0. Test Apify — démarrage uniquement (sans poll, évite timeout) ──
     if APIFY_TOKEN:
         try:
-            apify_videos = await _fetch_instagram_videos_apify(username)
-            views_ok = sum(1 for v in apify_videos if v["views"] > 0)
-            result["endpoints"]["apify"] = {
-                "status": "OK",
-                "videos_found": len(apify_videos),
-                "videos_with_views": views_ok,
-                "sample": apify_videos[:2] if apify_videos else [],
+            actor_id = "apify~instagram-reel-scraper"
+            payload = {
+                "directUrls": [f"https://www.instagram.com/{username}/reels/"],
+                "resultsType": "posts",
+                "resultsLimit": 10,
             }
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/runs",
+                    params={"token": APIFY_TOKEN},
+                    json=payload,
+                )
+            if r.status_code in (200, 201):
+                run_data = r.json().get("data", r.json())
+                run_id = run_data.get("id")
+                dataset_id = run_data.get("defaultDatasetId")
+                result["endpoints"]["apify"] = {
+                    "status": "RUN_STARTED",
+                    "run_id": run_id,
+                    "dataset_id": dataset_id,
+                    "check_url": f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}",
+                    "dataset_url": f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_TOKEN}&clean=true",
+                    "note": "Attendez 2-3 min puis ouvrez dataset_url dans le navigateur",
+                }
+            else:
+                result["endpoints"]["apify"] = {
+                    "status": f"HTTP {r.status_code}",
+                    "body": r.text[:300],
+                }
         except Exception as e:
             result["endpoints"]["apify"] = {"status": f"ERROR: {e}"}
     else:
