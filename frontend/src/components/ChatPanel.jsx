@@ -4,7 +4,7 @@ import { useAuth, API } from "../App";
 import { motion } from "framer-motion";
 import {
   Send, MessageCircle, HelpCircle, Lightbulb, Clock, AlertCircle,
-  User, DollarSign, Eye, CheckCircle, CreditCard, ChevronRight, ExternalLink, TrendingUp
+  User, DollarSign, Eye, EyeOff, CheckCircle, CreditCard, ChevronRight, ExternalLink, TrendingUp
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -29,6 +29,7 @@ export default function ChatPanel({ campaigns }) {
   const [receivedAdvices, setReceivedAdvices] = useState([]);
   const [tabUnread, setTabUnread] = useState({ questions: 0, conseils: 0 });
   const [claimingPayment, setClaimingPayment] = useState(false);
+  const [ibanVisible, setIbanVisible] = useState(false);
   const conseilsEndRef = useRef(null);
   const remunerationEndRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -193,6 +194,7 @@ export default function ChatPanel({ campaigns }) {
   const getTabMessageType = () => {
     if (activeTab === "conseils") return "conseil";
     if (activeTab === "remuneration") return "remuneration";
+    if (activeTab === "paiement") return "remuneration";
     return "question";
   };
 
@@ -248,6 +250,18 @@ export default function ChatPanel({ campaigns }) {
       });
       if (res.ok) {
         toast.success("Paiement confirmé ✓");
+        // Envoyer une notification automatique dans le chat paiement
+        const notifMsg = `✅ Virement de €${clipperPayment.owed.toFixed(2)} envoyé. Merci pour ton travail sur cette campagne !`;
+        const notifRes = await fetch(`${API}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ campaign_id: campaignId, content: notifMsg, message_type: "remuneration" }),
+        });
+        if (notifRes.ok) {
+          const newMsg = await notifRes.json();
+          setMessages(prev => prev.find(m => m.message_id === newMsg.message_id) ? prev : [...prev, newMsg]);
+        }
         fetchPaymentSummary();
       }
     } catch {}
@@ -696,7 +710,6 @@ export default function ChatPanel({ campaigns }) {
               {!selectedClipper ? (
                 /* Vue globale — tous les clippers */
                 <div className="overflow-y-auto space-y-2 pr-1">
-                  {/* Résumé total campagne */}
                   {paymentSummary?.clippers?.length > 0 && (
                     <div className="grid grid-cols-2 gap-2 mb-3">
                       <div className="bg-white/5 rounded-xl p-3 text-center">
@@ -709,11 +722,11 @@ export default function ChatPanel({ campaigns }) {
                       </div>
                     </div>
                   )}
-                  <p className="text-xs text-white/30 mb-2 uppercase tracking-wider font-medium">Cliqueur sur un clippeur pour gérer son paiement</p>
+                  <p className="text-xs text-white/30 mb-2 uppercase tracking-wider font-medium">Cliquez sur un clippeur pour gérer son paiement</p>
                   {(paymentSummary?.clippers || []).map((pd) => {
                     const clipper = clippers.find(c => c.user_id === pd.user_id) || pd;
                     return (
-                      <button key={pd.user_id} onClick={() => setSelectedClipper(clipper)}
+                      <button key={pd.user_id} onClick={() => { setSelectedClipper(clipper); setIbanVisible(false); }}
                         className="w-full flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-left border border-transparent hover:border-white/10">
                         <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
                           {clipper.picture ? <img src={clipper.picture} alt="" className="w-full h-full object-cover" /> : <User className="w-4 h-4 text-[#00E5FF]" />}
@@ -726,7 +739,7 @@ export default function ChatPanel({ campaigns }) {
                             <span className="text-xs text-[#00E5FF]">€{pd.earned.toFixed(2)} gagnés</span>
                           </div>
                         </div>
-                        <div className={`text-right flex-shrink-0`}>
+                        <div className="flex-shrink-0">
                           {pd.owed > 0 ? (
                             <span className="text-xs font-mono font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-lg">€{pd.owed.toFixed(2)} dû</span>
                           ) : (
@@ -745,118 +758,122 @@ export default function ChatPanel({ campaigns }) {
                 </div>
               ) : (() => {
                 const pd = paymentSummary?.clippers?.find(c => c.user_id === selectedClipper.user_id);
-                const joinedDate = pd?.joined_at ? new Date(pd.joined_at).toLocaleDateString("fr-FR") : null;
                 return (
-                  <div className="overflow-y-auto pr-1 space-y-3">
-                    {/* Back button */}
-                    <button onClick={() => setSelectedClipper(null)} className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors mb-1">
+                  <div className="flex flex-col h-full min-h-0">
+                    {/* Back */}
+                    <button onClick={() => setSelectedClipper(null)} className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors mb-2 flex-shrink-0">
                       <ChevronRight className="w-3 h-3 rotate-180" /> Tous les clippeurs
                     </button>
 
-                    {/* Clipper header card */}
-                    <div className="flex items-center gap-3 p-4 bg-white/5 rounded-xl border border-white/10">
-                      <div className="w-12 h-12 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
-                        {selectedClipper.picture ? <img src={selectedClipper.picture} alt="" className="w-full h-full object-cover" /> : <User className="w-6 h-6 text-[#00E5FF]" />}
+                    {/* Header clipper + IBAN */}
+                    <div className="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10 flex-shrink-0 mb-2">
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
+                        {selectedClipper.picture ? <img src={selectedClipper.picture} alt="" className="w-full h-full object-cover" /> : <User className="w-5 h-5 text-[#00E5FF]" />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-white font-semibold">{selectedClipper.display_name || selectedClipper.name}</p>
-                        {joinedDate && <p className="text-xs text-white/30">Dans la campagne depuis le {joinedDate}</p>}
+                        <p className="text-white font-semibold text-sm">{selectedClipper.display_name || selectedClipper.name}</p>
                         {pd?.payment_info ? (
-                          <p className="text-xs text-[#f0c040] flex items-center gap-1 mt-1"><CreditCard className="w-3 h-3" />{pd.payment_info}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <CreditCard className="w-3 h-3 text-[#f0c040] flex-shrink-0" />
+                            <span className="text-xs font-mono text-[#f0c040] truncate"
+                              style={!ibanVisible ? { filter: "blur(5px)", userSelect: "none" } : {}}>
+                              {pd.payment_info}
+                            </span>
+                            <button onClick={() => setIbanVisible(v => !v)} className="text-white/30 hover:text-white/70 transition-colors flex-shrink-0 ml-1">
+                              {ibanVisible ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            </button>
+                          </div>
                         ) : (
-                          <p className="text-xs text-white/20 italic mt-1">Pas d'IBAN/PayPal renseigné</p>
+                          <p className="text-xs text-white/20 italic mt-0.5">Pas d'IBAN/PayPal renseigné</p>
                         )}
                       </div>
+                      {pd?.owed > 0 ? (
+                        <span className="text-xs font-mono font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-lg flex-shrink-0">€{pd.owed.toFixed(2)}</span>
+                      ) : (
+                        <span className="text-xs font-mono text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-lg flex-shrink-0">✓ Payé</span>
+                      )}
                     </div>
 
+                    {/* Stats compactes */}
                     {pd && (
-                      <>
-                        {/* Stats row */}
-                        <div className="grid grid-cols-3 gap-2">
-                          <div className="bg-white/5 rounded-xl p-3 text-center">
-                            <p className="text-xs text-white/40 mb-1 flex items-center justify-center gap-1"><Eye className="w-3 h-3" />Vues</p>
-                            <p className="text-white font-mono font-bold text-lg">{fmt(pd.views)}</p>
-                          </div>
-                          <div className="bg-[#00E5FF]/5 rounded-xl p-3 text-center border border-[#00E5FF]/10">
-                            <p className="text-xs text-white/40 mb-1">Gagné</p>
-                            <p className="text-[#00E5FF] font-mono font-bold text-lg">€{pd.earned.toFixed(2)}</p>
-                          </div>
-                          <div className={`rounded-xl p-3 text-center border ${pd.owed > 0 ? "bg-[#f0c040]/10 border-[#f0c040]/20" : "bg-[#39FF14]/10 border-[#39FF14]/20"}`}>
-                            <p className="text-xs text-white/40 mb-1">À payer</p>
-                            <p className={`font-mono font-bold text-lg ${pd.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
-                              {pd.owed > 0 ? `€${pd.owed.toFixed(2)}` : "✓"}
-                            </p>
-                          </div>
+                      <div className="grid grid-cols-3 gap-2 flex-shrink-0 mb-2">
+                        <div className="bg-white/5 rounded-xl p-2 text-center">
+                          <p className="text-[10px] text-white/40 mb-0.5">Vues</p>
+                          <p className="text-white font-mono font-bold text-sm">{fmt(pd.views)}</p>
                         </div>
-
-                        {/* Calcul détaillé */}
-                        <div className="bg-white/5 rounded-xl p-3 space-y-1.5">
-                          <p className="text-xs text-white/40 uppercase tracking-wider font-medium mb-2">Calcul</p>
-                          <div className="flex justify-between text-xs">
-                            <span className="text-white/50">{fmt(pd.views)} vues × €{paymentSummary?.rpm}/1K</span>
-                            <span className="text-white font-mono">= €{pd.earned.toFixed(2)}</span>
-                          </div>
-                          {pd.paid > 0 && (
-                            <div className="flex justify-between text-xs">
-                              <span className="text-white/50">Déjà payé</span>
-                              <span className="text-[#39FF14] font-mono">- €{pd.paid.toFixed(2)}</span>
-                            </div>
-                          )}
-                          <div className="border-t border-white/10 pt-1.5 flex justify-between text-xs font-semibold">
-                            <span className="text-white/70">Reste à payer</span>
-                            <span className={pd.owed > 0 ? "text-[#f0c040] font-mono" : "text-[#39FF14] font-mono"}>
-                              {pd.owed > 0 ? `€${pd.owed.toFixed(2)}` : "✓ À jour"}
-                            </span>
-                          </div>
+                        <div className="bg-[#00E5FF]/5 rounded-xl p-2 text-center border border-[#00E5FF]/10">
+                          <p className="text-[10px] text-white/40 mb-0.5">Gagné</p>
+                          <p className="text-[#00E5FF] font-mono font-bold text-sm">€{pd.earned.toFixed(2)}</p>
                         </div>
-
-                        {/* Vidéos comptées (info) */}
-                        {joinedDate && (
-                          <p className="text-xs text-white/25 flex items-center gap-1.5 px-1">
-                            <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                            Seules les vidéos postées après le {joinedDate} sont comptabilisées.
+                        <div className={`rounded-xl p-2 text-center border ${pd.owed > 0 ? "bg-[#f0c040]/10 border-[#f0c040]/20" : "bg-[#39FF14]/10 border-[#39FF14]/20"}`}>
+                          <p className="text-[10px] text-white/40 mb-0.5">À payer</p>
+                          <p className={`font-mono font-bold text-sm ${pd.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
+                            {pd.owed > 0 ? `€${pd.owed.toFixed(2)}` : "✓"}
                           </p>
-                        )}
+                        </div>
+                      </div>
+                    )}
 
-                        {/* Historique paiements */}
-                        {pd.last_payment && (
-                          <div className="bg-[#39FF14]/5 border border-[#39FF14]/10 rounded-xl p-3 flex items-center gap-2">
-                            <CheckCircle className="w-4 h-4 text-[#39FF14] flex-shrink-0" />
-                            <div>
-                              <p className="text-xs text-[#39FF14] font-medium">Dernier virement confirmé</p>
-                              <p className="text-xs text-white/40">€{pd.last_payment.amount_eur?.toFixed(2)} — {new Date(pd.last_payment.confirmed_at).toLocaleDateString("fr-FR")}</p>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Action paiement */}
-                        {pd.owed > 0 ? (
-                          <div className="space-y-2">
-                            {pd.payment_info && (
-                              <div className="bg-[#f0c040]/5 border border-[#f0c040]/20 rounded-xl p-3">
-                                <p className="text-xs text-white/40 mb-1">Virer vers</p>
-                                <p className="text-[#f0c040] text-sm font-medium flex items-center gap-2">
-                                  <CreditCard className="w-3.5 h-3.5" />{pd.payment_info}
+                    {/* Chat rémunération — scrollable */}
+                    <div className="flex-1 overflow-y-auto space-y-2 pr-1 pb-2 min-h-0">
+                      {remunerationMessages.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-center pt-4">
+                          <DollarSign className="w-8 h-8 text-white/10 mb-2" />
+                          <p className="text-white/30 text-sm">Fil de paiement</p>
+                          <p className="text-white/20 text-xs mt-1">Les messages de paiement apparaissent ici</p>
+                        </div>
+                      ) : (
+                        remunerationMessages.map((msg) => {
+                          const isOwn = msg.sender_id === user?.user_id;
+                          const roleColor = getRoleColor(msg.sender_role);
+                          return (
+                            <div key={msg.message_id} className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
+                              <div className={`max-w-[80%] rounded-2xl px-3.5 py-2.5 ${isOwn ? "bg-[#f0c040]/10 border border-[#f0c040]/20" : "bg-white/5"}`}
+                                style={{ borderLeft: isOwn ? undefined : `3px solid ${roleColor}` }}>
+                                {!isOwn && <p className="text-xs font-medium mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+                                <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+                                <p className="text-xs text-white/30 mt-1">
+                                  {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
                                 </p>
                               </div>
-                            )}
-                            <Button onClick={handleConfirmPayment} disabled={confirmingPayment}
-                              className="w-full bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-semibold py-3 text-sm">
-                              {confirmingPayment
-                                ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin mr-2" />Confirmation...</>
-                                : <>✓ Marquer €{pd.owed.toFixed(2)} comme payé</>}
-                            </Button>
-                            <p className="text-xs text-white/20 text-center">Le virement doit être effectué manuellement (virement bancaire, PayPal, etc.)</p>
-                          </div>
-                        ) : (
-                          <div className="bg-[#39FF14]/5 border border-[#39FF14]/20 rounded-xl p-4 text-center">
-                            <CheckCircle className="w-6 h-6 text-[#39FF14] mx-auto mb-2" />
-                            <p className="text-[#39FF14] font-medium text-sm">Ce clippeur est à jour</p>
-                            <p className="text-white/30 text-xs mt-1">Aucun paiement en attente</p>
-                          </div>
-                        )}
-                      </>
-                    )}
+                            </div>
+                          );
+                        })
+                      )}
+                      <div ref={remunerationEndRef} />
+                    </div>
+
+                    {/* Actions fixes en bas */}
+                    <div className="flex-shrink-0 border-t border-white/10 pt-2 space-y-2">
+                      {pd?.owed > 0 && (
+                        <Button onClick={handleConfirmPayment} disabled={confirmingPayment}
+                          className="w-full bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-bold py-2.5 text-sm">
+                          {confirmingPayment
+                            ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin mr-2" />Confirmation...</>
+                            : <>✅ Marquer €{pd.owed.toFixed(2)} comme payé</>}
+                        </Button>
+                      )}
+                      {pd?.owed === 0 && pd?.earned > 0 && (
+                        <div className="bg-[#39FF14]/5 border border-[#39FF14]/20 rounded-xl p-3 text-center">
+                          <p className="text-[#39FF14] font-medium text-sm">✓ Ce clippeur est à jour</p>
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <Input value={newMessage} onChange={e => setNewMessage(e.target.value)}
+                          onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
+                          placeholder="Message de paiement..."
+                          className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 text-sm" />
+                        <Button onClick={handleSendMessage} disabled={sending || !newMessage.trim()}
+                          className="bg-[#f0c040]/20 hover:bg-[#f0c040]/40 text-[#f0c040] px-3 border border-[#f0c040]/30">
+                          <Send className="w-4 h-4" />
+                        </Button>
+                      </div>
+                      {pd && (
+                        <p className="text-[11px] text-white/20 text-center pb-1">
+                          {fmt(pd.views)} vues × €{paymentSummary?.rpm}/1 000 vues = €{pd.earned.toFixed(2)}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 );
               })()}

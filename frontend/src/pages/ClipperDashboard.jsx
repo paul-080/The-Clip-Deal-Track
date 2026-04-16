@@ -482,18 +482,7 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
     } catch {}
   };
 
-  const DEMO_POST = {
-    announcement_id: "demo1",
-    agency: { display_name: "Clip Factory", handle: "@clipfactory" },
-    campaign_name: "MONEY BY CLIPPING",
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-    title: "Nouvelle campagne disponible 🔥",
-    content: "- Niche Trading/Lifestyle\n- 1.2$/1000 vues\n- TikTok & Instagram\n\nREJOINS LA CAMPAGNE 🚀",
-    image_url: null,
-    likes: 2,
-  };
-
-  const displayFeed = feed.length === 0 ? [DEMO_POST] : feed;
+  const displayFeed = feed;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="clipper-home">
@@ -556,14 +545,22 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
 
       {/* Feed card */}
       <Card className="bg-[#121212] border-white/10 overflow-hidden">
-        {/* Composer */}
-        <PostComposer user={user} onPosted={reloadFeed} />
+        {/* Composer — agences uniquement */}
+        {(user?.role === "agency" || user?.role === "manager") && <PostComposer user={user} onPosted={reloadFeed} />}
 
         {/* Posts */}
         <div className="divide-y divide-white/5">
-          {displayFeed.map((ann) => (
-            <PostCard key={ann.announcement_id} ann={ann} currentUser={user} />
-          ))}
+          {displayFeed.length > 0 ? (
+            displayFeed.map((ann) => (
+              <PostCard key={ann.announcement_id} ann={ann} currentUser={user} />
+            ))
+          ) : (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <MessageCircle className="w-10 h-10 text-white/10 mb-3" />
+              <p className="text-white/30 text-sm">Aucune annonce pour le moment</p>
+              <p className="text-white/20 text-xs mt-1">Les annonces de tes agences apparaissent ici</p>
+            </div>
+          )}
         </div>
       </Card>
     </motion.div>
