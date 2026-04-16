@@ -191,7 +191,7 @@ function RegisterAndJoin({ token, role, campaignInfo }) {
       setStep("done");
 
       if (role === "clipper") {
-        toast.success("Bienvenue ! Vous avez rejoint la campagne ✓");
+        toast.success("Candidature envoyée — en attente d'approbation de l'agence !");
         setTimeout(() => navigate("/clipper"), 2500);
       } else {
         toast.success("Candidature envoyée — en attente d'approbation !");

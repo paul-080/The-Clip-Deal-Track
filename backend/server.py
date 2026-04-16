@@ -1180,7 +1180,7 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
         "campaign_id": campaign_id,
         "user_id": user["user_id"],
         "role": "clipper",
-        "status": "active" if not campaign.get("application_form_enabled", True) else "pending",
+        "status": "pending",  # toujours en attente de validation agence
         "joined_at": datetime.now(timezone.utc).isoformat(),
         "strikes": 0,
         "last_post_at": None,
@@ -1492,33 +1492,33 @@ async def join_campaign(token: str, user: dict = Depends(get_current_user)):
     if expected_role == "client":
         return {"message": "Accès stats accordé", "status": "active", "campaign": campaign}
 
-    # ── CLIPPER → rejoindre directement ─────────────────────────────────
+    # ── CLIPPER → candidature en attente (l'agence doit accepter) ──────
     existing = await db.campaign_members.find_one({
         "campaign_id": campaign["campaign_id"], "user_id": user["user_id"]
     })
     if existing:
-        return {"message": "Déjà membre", "status": "active", "campaign": campaign}
+        return {"message": "Candidature déjà soumise", "status": existing.get("status"), "campaign": campaign}
 
     member = {
         "member_id": f"mem_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign["campaign_id"],
         "user_id": user["user_id"],
         "role": "clipper",
-        "status": "active",
+        "status": "pending",   # toujours en attente de validation agence
+        "applied_via_link": True,
         "joined_at": now,
         "strikes": 0,
         "last_post_at": None,
     }
     await db.campaign_members.insert_one(member)
 
-    await manager.send_to_user(user["user_id"], {"type": "campaign_joined", "campaign": campaign})
     await manager.send_to_user(campaign["agency_id"], {
-        "type": "member_joined",
+        "type": "new_application",
         "campaign_id": campaign["campaign_id"],
         "user_id": user["user_id"],
-        "role": "clipper",
+        "display_name": user.get("display_name") or user.get("name"),
     })
-    return {"message": "Vous avez rejoint la campagne !", "status": "active", "campaign": campaign}
+    return {"message": "Candidature envoyée ! L'agence doit valider ta demande.", "status": "pending", "campaign": campaign}
 
 @api_router.post("/campaigns/{campaign_id}/apply")
 async def apply_to_campaign(campaign_id: str, application: ApplicationCreate, user: dict = Depends(get_current_user)):
@@ -4056,6 +4056,16 @@ async def get_campaign_social_accounts(campaign_id: str, user: dict = Depends(ge
 
 @api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}")
 async def assign_account_to_campaign(campaign_id: str, account_id: str, user: dict = Depends(get_current_user)):
+    # Vérifier que le clipper est accepté (pas pending)
+    if user.get("role") == "clipper":
+        member = await db.campaign_members.find_one({
+            "campaign_id": campaign_id, "user_id": user["user_id"], "role": "clipper"
+        })
+        if not member:
+            raise HTTPException(status_code=403, detail="Tu ne fais pas partie de cette campagne")
+        if member.get("status") == "pending":
+            raise HTTPException(status_code=403, detail="Ta candidature est en attente de validation.")
+
     account = await db.social_accounts.find_one({
         "account_id": account_id,
         "user_id": user["user_id"]
@@ -4505,6 +4515,16 @@ async def mark_campaign_read(campaign_id: str, user: dict = Depends(get_current_
 
 @api_router.post("/messages")
 async def send_message(message_data: MessageCreate, user: dict = Depends(get_current_user)):
+    # Bloquer les clippers en attente de validation
+    if user.get("role") == "clipper" and message_data.campaign_id:
+        member = await db.campaign_members.find_one({
+            "campaign_id": message_data.campaign_id,
+            "user_id": user["user_id"],
+            "role": "clipper",
+        })
+        if member and member.get("status") == "pending":
+            raise HTTPException(status_code=403, detail="Ta candidature est en attente de validation. Tu pourras écrire dans le chat une fois accepté.")
+
     message = {
         "message_id": f"msg_{uuid.uuid4().hex[:12]}",
         "campaign_id": message_data.campaign_id,
