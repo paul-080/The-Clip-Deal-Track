@@ -184,8 +184,19 @@ export default function LandingPage() {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Erreur lors de l'inscription");
+
+      // Backend a créé le compte directement (pas de vérification email) → connexion directe
+      if (data.session_token && data.user) {
+        setUser(data.user);
+        toast.success(`Bienvenue ${data.user.display_name} !`);
+        setShowRoleModal(false);
+        navigate(`/${data.user.role}`);
+        return;
+      }
+
+      // Sinon → étape vérification code email
       setEmailPending(emailForm.email.trim().toLowerCase());
-      setVerificationCode(""); // always empty — user must type it themselves
+      setVerificationCode("");
       toast.success(`Code envoyé à ${emailForm.email} — vérifiez vos mails`);
       setStep(3);
     } catch (e) {

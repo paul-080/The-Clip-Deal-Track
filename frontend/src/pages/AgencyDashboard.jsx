@@ -432,9 +432,6 @@ function ImageCropModal({ src, onConfirm, onClose }) {
 
   const RATIOS = [
     { label: "16:9", value: 16 / 9 },
-    { label: "1:1", value: 1 },
-    { label: "4:3", value: 4 / 3 },
-    { label: "9:16", value: 9 / 16 },
   ];
 
   const CROP_W = 400;
@@ -503,19 +500,7 @@ function ImageCropModal({ src, onConfirm, onClose }) {
       <div className="bg-[#1a1a1a] rounded-2xl border border-white/10 p-6 w-full max-w-lg">
         <h3 className="text-white font-bold text-lg mb-4">Recadrer l'image</h3>
 
-        {/* Ratio selector */}
-        <div className="flex gap-2 mb-4">
-          {RATIOS.map(r => (
-            <button key={r.label} onClick={() => setAspectRatio(r.value)}
-              className={`px-3 py-1 rounded-lg text-sm font-medium transition-all ${
-                aspectRatio === r.value ? "bg-[#FF007F] text-white" : "bg-white/10 text-white/60 hover:text-white"
-              }`}>
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Crop area */}
+        {/* Crop area — ratio fixe 16:9 */}
         <div
           ref={containerRef}
           className="relative overflow-hidden rounded-xl border border-white/20 mx-auto cursor-grab active:cursor-grabbing select-none"
