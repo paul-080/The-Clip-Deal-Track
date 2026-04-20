@@ -1023,6 +1023,9 @@ function CampaignDashboard({ campaigns }) {
   const [generatingLinks, setGeneratingLinks] = useState(false);
   const [copiedLinkId, setCopiedLinkId] = useState(null);
   const [regeneratingLinkId, setRegeneratingLinkId] = useState(null);
+  const [showAddBudget, setShowAddBudget] = useState(false);
+  const [addBudgetAmount, setAddBudgetAmount] = useState("");
+  const [addingBudget, setAddingBudget] = useState(false);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -1081,6 +1084,31 @@ function CampaignDashboard({ campaigns }) {
       } else toast.error("Erreur lors de la régénération");
     } catch { toast.error("Erreur réseau"); }
     finally { setRegeneratingLinkId(null); }
+  };
+
+  const handleAddBudget = async () => {
+    const amount = parseFloat(addBudgetAmount);
+    if (!amount || amount <= 0) return;
+    setAddingBudget(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-budget`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ amount }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCampaign(prev => ({ ...prev, budget_total: data.budget_total, budget_unlimited: false }));
+        toast.success(`+€${amount} ajouté au budget ✓`);
+        setAddBudgetAmount("");
+        setShowAddBudget(false);
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur lors de l'ajout");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setAddingBudget(false); }
   };
 
   const handleAddManualVideo = async () => {
@@ -1364,6 +1392,44 @@ function CampaignDashboard({ campaigns }) {
                     <span>Progression</span><span>{budgetPercentage.toFixed(0)}%</span>
                   </div>
                   <Progress value={budgetPercentage} className="h-2" />
+                </div>
+              )}
+              {/* Add budget */}
+              {!campaign.budget_unlimited && (
+                <div>
+                  {showAddBudget ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        value={addBudgetAmount}
+                        onChange={(e) => setAddBudgetAmount(e.target.value)}
+                        placeholder="Montant €"
+                        className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-8 text-sm"
+                        onKeyDown={(e) => { if (e.key === "Enter") handleAddBudget(); if (e.key === "Escape") setShowAddBudget(false); }}
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleAddBudget}
+                        disabled={addingBudget || !addBudgetAmount}
+                        className="px-3 h-8 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                      >
+                        {addingBudget ? "…" : "Ajouter"}
+                      </button>
+                      <button
+                        onClick={() => { setShowAddBudget(false); setAddBudgetAmount(""); }}
+                        className="px-2 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 text-xs transition-colors"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowAddBudget(true)}
+                      className="flex items-center gap-1.5 text-xs text-white/40 hover:text-[#FF007F] transition-colors"
+                    >
+                      <span className="text-base leading-none">＋</span> Ajouter du budget
+                    </button>
+                  )}
                 </div>
               )}
               {campaign.payment_model === "clicks" && campaign.destination_url && (

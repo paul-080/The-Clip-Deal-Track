@@ -1367,245 +1367,218 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
         </CardContent>
       </Card>
 
-      {/* Enriched account cards */}
+      {/* Compact account rows */}
       {localAccounts.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="font-display font-bold text-xl text-white">Mes comptes ({localAccounts.length})</h2>
-          {localAccounts.map((account) => {
+        <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/8">
+            <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Mes comptes ({localAccounts.length})</span>
+            <span className="text-[10px] text-white/25">Tracking auto toutes les 6h</span>
+          </div>
+          {localAccounts.map((account, idx) => {
             const color = platformColor[account.platform] || "#00E5FF";
             const isExpanded = expandedAccounts.has(account.account_id);
             const isRefreshing = refreshingAccounts.has(account.account_id);
+            const isScraping = scrapingAccounts.has(account.account_id);
             const videos = videosByAccount[account.account_id] || [];
             return (
-              <Card key={account.account_id} className="bg-[#121212] border-white/10 overflow-hidden">
-                <CardContent className="p-4">
-                  <div className="flex items-start gap-4">
-                    {/* Avatar */}
-                    <div className="w-14 h-14 rounded-full flex-shrink-0 overflow-hidden border-2"
-                      style={{ borderColor: color + "40" }}>
-                      {account.avatar_url
-                        ? <img src={imgSrc(account.avatar_url)} alt="" className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-xl font-bold"
-                            style={{ background: color + "20", color }}>
-                            {account.platform[0].toUpperCase()}
-                          </div>
-                      }
-                    </div>
-                    {/* Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge style={{ background: color + "20", color }} className="text-xs font-semibold border-0">
-                          {account.platform}
-                        </Badge>
-                        <span className="text-white font-semibold">@{account.username}</span>
-                        {account.display_name && (
-                          <span className="text-white/40 text-sm truncate">{account.display_name}</span>
-                        )}
-                      </div>
-                      {account.status === "pending" && (
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
-                          <span className="text-yellow-400 text-xs">Recherche du compte...</span>
+              <div key={account.account_id} className={idx < localAccounts.length - 1 || isExpanded ? "border-b border-white/6" : ""}>
+                {/* Compact row */}
+                <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/2 transition-colors">
+                  {/* Small avatar */}
+                  <div className="w-7 h-7 rounded-full flex-shrink-0 overflow-hidden border"
+                    style={{ borderColor: color + "40" }}>
+                    {account.avatar_url
+                      ? <img src={imgSrc(account.avatar_url)} alt="" className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-xs font-bold"
+                          style={{ background: color + "20", color }}>
+                          {account.platform[0].toUpperCase()}
                         </div>
-                      )}
-                      {account.status === "verified" && (
-                        <div className="flex items-center gap-4 mt-1">
-                          <span className="text-[#39FF14] text-xs flex items-center gap-1">
-                            <Check className="w-3 h-3" /> Vérifié
-                          </span>
-                          {account.follower_count != null && (
-                            <span className="text-white/50 text-xs">
-                              {fmt(account.follower_count)} abonnés
-                            </span>
-                          )}
-                          {account.verified_at && (
-                            <span className="text-white/30 text-xs">
-                              le {new Date(account.verified_at).toLocaleDateString("fr-FR")}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {account.status === "error" && (
-                        <div className="mt-1 max-w-md">
-                          <span className="text-red-400 text-xs flex items-start gap-1">
-                            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                            <span>{account.error_message || "Compte introuvable — vérifiez le nom d'utilisateur"}</span>
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    {/* Actions */}
-                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-                      {account.status === "verified" && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => toggleVideos(account.account_id)}
-                            className="text-white/50 hover:text-white text-xs gap-1"
-                          >
-                            <BarChart2 className="w-3 h-3" />
-                            {isExpanded ? "Masquer" : "Vidéos"}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleScrapeNow(account.account_id)}
-                            disabled={scrapingAccounts.has(account.account_id)}
-                            className="text-[#00E5FF]/70 hover:text-[#00E5FF] text-xs gap-1 border border-[#00E5FF]/20 hover:border-[#00E5FF]/50"
-                          >
-                            {scrapingAccounts.has(account.account_id) ? (
-                              <><div className="w-3 h-3 border border-[#00E5FF] border-t-transparent rounded-full animate-spin" /> Scraping...</>
-                            ) : (
-                              <><TrendingUp className="w-3 h-3" /> Scraper</>
-                            )}
-                          </Button>
-                          {account.platform === "tiktok" && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
-                                setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
-                              }}
-                              className="text-[#FF007F]/70 hover:text-[#FF007F] text-xs gap-1 border border-[#FF007F]/20 hover:border-[#FF007F]/40"
-                              title="Ajouter une vidéo manuellement"
-                            >
-                              <Plus className="w-3 h-3" /> Ajouter vidéo
-                            </Button>
-                          )}
-                        </>
-                      )}
-                      {(account.status === "error" || account.status === "pending") && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRefreshAccount(account.account_id)}
-                          disabled={isRefreshing || account.status === "pending"}
-                          className="text-yellow-400 hover:text-yellow-300 text-xs"
-                        >
-                          {isRefreshing ? "..." : "Réessayer"}
-                        </Button>
-                      )}
-                      {account.status === "verified" && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRefreshAccount(account.account_id)}
-                          disabled={isRefreshing}
-                          className="text-white/30 hover:text-white text-xs"
-                          title="Re-vérifier le compte"
-                        >
-                          ↻
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDeleteAccount(account.account_id)}
-                        className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
+                    }
                   </div>
 
-                  {/* Videos section (collapsible) */}
-                  {isExpanded && (
-                    <div className="mt-4 pt-4 border-t border-white/10">
-                      {/* Manual video URL input (TikTok only) */}
-                      {account.platform === "tiktok" && manualVideoAccount === account.account_id && (
-                        <div className="mb-4 p-3 rounded-lg bg-[#FF007F]/5 border border-[#FF007F]/20">
-                          <p className="text-[#FF007F] text-xs font-semibold mb-2">
-                            📎 Ajouter une vidéo TikTok manuellement
-                          </p>
-                          <p className="text-white/40 text-xs mb-2">
-                            Collez l'URL d'une de vos vidéos TikTok (ex: https://www.tiktok.com/@{account.username}/video/123…)
-                          </p>
-                          <div className="flex gap-2">
-                            <Input
-                              value={manualVideoUrl}
-                              onChange={(e) => setManualVideoUrl(e.target.value)}
-                              placeholder="https://www.tiktok.com/@.../video/..."
-                              className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/20 text-xs h-8"
-                              onKeyDown={(e) => e.key === "Enter" && handleAddVideoManually(account.account_id)}
-                            />
-                            <Button
-                              size="sm"
-                              onClick={() => handleAddVideoManually(account.account_id)}
-                              disabled={addingManualVideo || !manualVideoUrl.trim()}
-                              className="bg-[#FF007F]/80 hover:bg-[#FF007F] text-white text-xs h-8 px-3"
-                            >
-                              {addingManualVideo ? <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" /> : "Ajouter"}
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                      {videos.length === 0 ? (
-                        <div className="text-center py-6 space-y-3">
-                          <Video className="w-8 h-8 text-white/20 mx-auto" />
-                          <p className="text-white/40 text-sm">Aucune vidéo trackée pour l'instant</p>
-                          <div className="flex gap-2 justify-center flex-wrap">
+                  {/* Platform pill + username */}
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md flex-shrink-0"
+                      style={{ background: color + "20", color }}>
+                      {account.platform}
+                    </span>
+                    <span className="text-white text-sm font-medium truncate">@{account.username}</span>
+                    {account.display_name && (
+                      <span className="text-white/30 text-xs truncate hidden sm:block">{account.display_name}</span>
+                    )}
+                  </div>
+
+                  {/* Status + followers */}
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {account.status === "pending" && (
+                      <div className="flex items-center gap-1">
+                        <div className="w-2.5 h-2.5 border border-yellow-400 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-yellow-400 text-[10px]">Vérif…</span>
+                      </div>
+                    )}
+                    {account.status === "verified" && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#39FF14] text-[10px] flex items-center gap-0.5">
+                          <Check className="w-2.5 h-2.5" /> OK
+                        </span>
+                        {account.follower_count != null && (
+                          <span className="text-white/35 text-[10px]">{fmt(account.follower_count)} abn</span>
+                        )}
+                        {videos.length > 0 && (
+                          <span className="text-white/25 text-[10px]">{videos.length} vidéo{videos.length > 1 ? "s" : ""}</span>
+                        )}
+                      </div>
+                    )}
+                    {account.status === "error" && (
+                      <span className="text-red-400 text-[10px] flex items-center gap-0.5">
+                        <AlertTriangle className="w-2.5 h-2.5" /> Erreur
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Action icon buttons */}
+                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                    {account.status === "verified" && (
+                      <>
+                        {/* Toggle videos */}
+                        <button
+                          onClick={() => toggleVideos(account.account_id)}
+                          title={isExpanded ? "Masquer les vidéos" : "Voir les vidéos"}
+                          className={`w-6 h-6 rounded flex items-center justify-center transition-colors ${
+                            isExpanded ? "text-[#00E5FF] bg-[#00E5FF]/10" : "text-white/30 hover:text-white hover:bg-white/10"
+                          }`}
+                        >
+                          <BarChart2 className="w-3 h-3" />
+                        </button>
+                        {/* Scrape now */}
+                        <button
+                          onClick={() => handleScrapeNow(account.account_id)}
+                          disabled={isScraping}
+                          title="Scraper maintenant"
+                          className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors disabled:opacity-40"
+                        >
+                          {isScraping
+                            ? <div className="w-2.5 h-2.5 border border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
+                            : <TrendingUp className="w-3 h-3" />
+                          }
+                        </button>
+                        {/* Add video manually (TikTok only) */}
+                        {account.platform === "tiktok" && (
+                          <button
+                            onClick={() => {
+                              setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
+                              setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
+                            }}
+                            title="Ajouter une vidéo manuellement"
+                            className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#FF007F] hover:bg-[#FF007F]/10 transition-colors"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        )}
+                        {/* Re-verify */}
+                        <button
+                          onClick={() => handleRefreshAccount(account.account_id)}
+                          disabled={isRefreshing}
+                          title="Re-vérifier"
+                          className="w-6 h-6 rounded flex items-center justify-center text-white/20 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40 text-xs"
+                        >
+                          ↻
+                        </button>
+                      </>
+                    )}
+                    {(account.status === "error" || account.status === "pending") && (
+                      <button
+                        onClick={() => handleRefreshAccount(account.account_id)}
+                        disabled={isRefreshing || account.status === "pending"}
+                        title="Réessayer"
+                        className="w-6 h-6 rounded flex items-center justify-center text-yellow-400 hover:text-yellow-300 hover:bg-yellow-400/10 transition-colors disabled:opacity-40 text-xs"
+                      >
+                        ↻
+                      </button>
+                    )}
+                    {/* Delete */}
+                    <button
+                      onClick={() => handleDeleteAccount(account.account_id)}
+                      title="Supprimer"
+                      className="w-6 h-6 rounded flex items-center justify-center text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Expanded videos section */}
+                {isExpanded && (
+                  <div className="px-4 pb-3 pt-2 bg-white/2">
+                    {/* Manual video URL input (TikTok only) */}
+                    {account.platform === "tiktok" && manualVideoAccount === account.account_id && (
+                      <div className="mb-3 p-2.5 rounded-lg bg-[#FF007F]/5 border border-[#FF007F]/20">
+                        <p className="text-[#FF007F] text-[10px] font-semibold mb-1.5">📎 Ajouter une vidéo TikTok manuellement</p>
+                        <div className="flex gap-2">
+                          <Input
+                            value={manualVideoUrl}
+                            onChange={(e) => setManualVideoUrl(e.target.value)}
+                            placeholder="https://www.tiktok.com/@.../video/..."
+                            className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/20 text-xs h-7"
+                            onKeyDown={(e) => e.key === "Enter" && handleAddVideoManually(account.account_id)}
+                          />
                           <Button
                             size="sm"
-                            onClick={() => handleScrapeNow(account.account_id)}
-                            disabled={scrapingAccounts.has(account.account_id)}
-                            className="bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/30 text-xs"
+                            onClick={() => handleAddVideoManually(account.account_id)}
+                            disabled={addingManualVideo || !manualVideoUrl.trim()}
+                            className="bg-[#FF007F]/80 hover:bg-[#FF007F] text-white text-xs h-7 px-3"
                           >
-                            {scrapingAccounts.has(account.account_id) ? "Scraping en cours..." : "Lancer le scraping maintenant"}
+                            {addingManualVideo ? <div className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin" /> : "Ajouter"}
                           </Button>
-                          {account.platform === "tiktok" && (
-                            <Button
-                              size="sm"
-                              onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
-                              className="bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] border border-[#FF007F]/30 text-xs"
-                            >
-                              <Plus className="w-3 h-3 mr-1" /> Ajouter manuellement
-                            </Button>
-                          )}
-                          </div>
                         </div>
-                      ) : (
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                          {videos.map((v) => (
-                            <a key={v.video_id || v.platform_video_id} href={v.url} target="_blank" rel="noreferrer"
-                              data-video-id={v.video_id || v.platform_video_id}
-                              className="group block rounded-lg overflow-hidden bg-white/5 hover:bg-white/10 transition-colors">
-                              {v.thumbnail_url ? (
-                                <img src={imgSrc(v.thumbnail_url)} alt="" className="w-full aspect-video object-cover" />
-                              ) : (
-                                <div className="w-full aspect-video bg-white/10 flex items-center justify-center">
-                                  <Video className="w-6 h-6 text-white/20" />
-                                </div>
-                              )}
-                              <div className="p-2">
-                                {v.title && (
-                                  <p className="text-white text-xs font-medium line-clamp-2 mb-1">{v.title}</p>
-                                )}
-                                <div className="flex items-center gap-2 text-xs text-white/40">
-                                  <span>👁 {fmt(v.views)}</span>
-                                  <span>❤️ {fmt(v.likes)}</span>
-                                  {v.earnings > 0 && (
-                                    <span className="text-[#39FF14]">€{v.earnings.toFixed(2)}</span>
-                                  )}
-                                </div>
-                                {account.last_tracked_at && (
-                                  <p className="text-white/20 text-xs mt-1">
-                                    Mis à jour {(() => {
-                                      const h = Math.round((Date.now() - new Date(account.last_tracked_at)) / 3600000);
-                                      return h < 1 ? "à l'instant" : `il y a ${h}h`;
-                                    })()}
-                                  </p>
-                                )}
+                      </div>
+                    )}
+
+                    {videos.length === 0 ? (
+                      <div className="flex items-center gap-3 py-2">
+                        <p className="text-white/30 text-xs flex-1">Aucune vidéo trackée</p>
+                        <button
+                          onClick={() => handleScrapeNow(account.account_id)}
+                          disabled={isScraping}
+                          className="text-[#00E5FF] text-xs hover:underline disabled:opacity-50"
+                        >
+                          {isScraping ? "Scraping…" : "Lancer le scraping"}
+                        </button>
+                        {account.platform === "tiktok" && (
+                          <button
+                            onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
+                            className="text-[#FF007F] text-xs hover:underline"
+                          >
+                            + Ajouter manuellement
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+                        {videos.map((v) => (
+                          <a key={v.video_id || v.platform_video_id} href={v.url} target="_blank" rel="noreferrer"
+                            data-video-id={v.video_id || v.platform_video_id}
+                            className="group block rounded-lg overflow-hidden bg-white/5 hover:bg-white/10 transition-colors">
+                            {v.thumbnail_url ? (
+                              <img src={imgSrc(v.thumbnail_url)} alt="" className="w-full aspect-video object-cover" />
+                            ) : (
+                              <div className="w-full aspect-video bg-white/10 flex items-center justify-center">
+                                <Video className="w-4 h-4 text-white/20" />
                               </div>
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+                            )}
+                            <div className="p-1.5">
+                              <div className="flex items-center gap-1 text-[10px] text-white/40">
+                                <span>👁 {fmt(v.views)}</span>
+                                {v.earnings > 0 && <span className="text-[#39FF14]">€{v.earnings.toFixed(2)}</span>}
+                              </div>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

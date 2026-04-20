@@ -7121,6 +7121,30 @@ async def regenerate_click_link(campaign_id: str, clipper_id: str, user: dict = 
     link_doc.pop("_id", None)
     return link_doc
 
+class AddBudgetRequest(BaseModel):
+    amount: float  # montant en euros à ajouter
+
+@api_router.post("/campaigns/{campaign_id}/add-budget")
+async def add_campaign_budget(campaign_id: str, body: AddBudgetRequest, user: dict = Depends(get_current_user)):
+    """Agency: add more budget to an existing campaign."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Le montant doit être positif")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("agency_id") != user.get("user_id") and user.get("role") != "manager":
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    current_budget = campaign.get("budget_total") or 0
+    new_budget = round(current_budget + body.amount, 2)
+    await db.campaigns.update_one(
+        {"campaign_id": campaign_id},
+        {"$set": {"budget_total": new_budget, "budget_unlimited": False}}
+    )
+    updated = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    return {"budget_total": new_budget, "budget_used": updated.get("budget_used", 0)}
+
 # Include router
 app.include_router(api_router)
 
