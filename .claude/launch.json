@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "frontend",
-      "runtimeExecutable": "yarn",
+      "runtimeExecutable": "npm",
       "runtimeArgs": ["start"],
-      "cwd": "C:\\Users\\paula\\OneDrive\\Attachments\\Clipping\\The-Clip-Deal-main\\frontend",
-      "port": 3000
+      "port": 3001,
+      "cwd": "C:\\Users\\paula\\OneDrive\\Attachments\\Clipping\\The-Clip-Deal-main\\frontend"
     }
   ]
 }

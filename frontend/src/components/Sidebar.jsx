@@ -26,9 +26,9 @@ export default function Sidebar({ items, accentColor, role }) {
     return false;
   };
 
-  const renderItem = (item, depth = 0) => {
+  const renderItem = (item, depth = 0, itemIndex = 0) => {
     if (item.type === "divider") {
-      return <div key={`divider-${Math.random()}`} className="h-px bg-white/10 my-4" />;
+      return <div key={`divider-${itemIndex}`} className="h-px bg-white/10 my-4" />;
     }
 
     if (item.type === "section") {
@@ -143,7 +143,7 @@ export default function Sidebar({ items, accentColor, role }) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-1">
-        {items.map((item) => renderItem(item))}
+        {items.map((item, idx) => renderItem(item, 0, idx))}
       </nav>
 
       {/* User section */}

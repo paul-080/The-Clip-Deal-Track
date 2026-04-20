@@ -29,7 +29,7 @@ import {
   Home, Search, Plus, Link2, CreditCard, Settings, MessageCircle,
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
   TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
-  ChevronUp, ChevronDown, RefreshCw, Play
+  ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
@@ -40,6 +40,7 @@ import { Checkbox } from "../components/ui/checkbox";
 import { Badge } from "../components/ui/badge";
 import { Progress } from "../components/ui/progress";
 import ChatPanel from "../components/ChatPanel";
+import SupportPage from "../components/SupportPage";
 
 const ACCENT_COLOR = "#FF007F";
 
@@ -51,24 +52,28 @@ export default function AgencyDashboard() {
   const [announcements, setAnnouncements] = useState([]);
   const [loading, setLoading] = useState(true);
   const [unreadCounts, setUnreadCounts] = useState({});
+  const [supportUnread, setSupportUnread] = useState(0);
 
   useEffect(() => {
     fetchData();
     fetchUnreadCounts();
-    const interval = setInterval(fetchUnreadCounts, 30000); // refresh toutes les 30s
-    // Auto-start trial and show welcome page for new agencies
-    if (user && !user.trial_started_at && !user.subscription_status) {
-      fetch(`${API}/subscription/start-trial`, { method: "POST", credentials: "include" })
-        .then(r => r.ok ? r.json() : null)
-        .then(() => {
-          if (location.pathname === "/agency" || location.pathname === "/agency/") {
-            navigate("/agency/welcome");
-          }
-        })
-        .catch(() => {});
-    }
+    const interval = setInterval(fetchUnreadCounts, 30000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-start trial once for new agencies (runs when user is available)
+  useEffect(() => {
+    if (!user || user.trial_started_at || user.subscription_status) return;
+    fetch(`${API}/subscription/start-trial`, { method: "POST", credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(() => {
+        if (location.pathname === "/agency" || location.pathname === "/agency/") {
+          navigate("/agency/welcome");
+        }
+      })
+      .catch(() => {});
+  }, [user?.user_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchUnreadCounts = async () => {
     try {
@@ -76,6 +81,7 @@ export default function AgencyDashboard() {
       if (res.ok) {
         const data = await res.json();
         setUnreadCounts(data.unread || {});
+        setSupportUnread(data.support_unread || 0);
       }
     } catch {}
   };
@@ -126,6 +132,7 @@ export default function AgencyDashboard() {
     { type: "divider" },
     { id: "links", label: "Liens d'accès", icon: Link2, path: "/agency/links" },
     { id: "payment", label: "Paiement", icon: CreditCard, path: "/agency/payment" },
+    { id: "support", label: "Support", icon: HelpCircle, path: "/agency/support", badge: supportUnread },
     { id: "settings", label: "Paramètres", icon: Settings, path: "/agency/settings" },
   ];
 
@@ -146,6 +153,7 @@ export default function AgencyDashboard() {
           <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
           <Route path="links" element={<LinksPage />} />
           <Route path="payment" element={<PaymentPage />} />
+          <Route path="support" element={<SupportPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -563,6 +571,11 @@ function CreateCampaign({ onCreated }) {
     cadence: "1",
     application_form_enabled: false,
     application_questions: [],
+    // Modèle de rémunération
+    payment_model: "views",
+    rate_per_click: "",
+    destination_url: "",
+    unique_clicks_only: true,
   });
   const [customQuestion, setCustomQuestion] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -592,8 +605,16 @@ function CreateCampaign({ onCreated }) {
   };
 
   const handleSubmit = async () => {
-    if (!formData.name.trim() || !formData.rpm) {
-      toast.error("Veuillez remplir les champs obligatoires");
+    if (!formData.name.trim()) {
+      toast.error("Veuillez remplir le nom de la campagne");
+      return;
+    }
+    if (formData.payment_model === "views" && !formData.rpm) {
+      toast.error("Veuillez renseigner le RPM (€ par 1000 vues)");
+      return;
+    }
+    if (formData.payment_model === "clicks" && (!formData.rate_per_click || !formData.destination_url.trim())) {
+      toast.error("Veuillez renseigner le prix par clic et l'URL de destination");
       return;
     }
 
@@ -601,7 +622,9 @@ function CreateCampaign({ onCreated }) {
     try {
       const payload = {
         ...formData,
-        rpm: parseFloat(formData.rpm),
+        rpm: formData.payment_model === "views" ? parseFloat(formData.rpm) || 0 : 0,
+        rate_per_click: formData.payment_model === "clicks" ? parseFloat(formData.rate_per_click) || 0 : 0,
+        destination_url: formData.destination_url.trim() || null,
         budget_total: formData.budget_unlimited ? null : parseFloat(formData.budget_total) || null,
         min_view_payout: parseInt(formData.min_view_payout) || 0,
         max_view_payout: formData.max_view_payout ? parseInt(formData.max_view_payout) : null,
@@ -723,19 +746,109 @@ function CreateCampaign({ onCreated }) {
             Rémunération
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-5">
+
+          {/* Toggle modèle */}
           <div>
-            <label className="block text-sm text-white/70 mb-2">RPM (€ par 1000 vues) *</label>
-            <Input
-              type="number"
-              step="0.01"
-              value={formData.rpm}
-              onChange={(e) => handleChange("rpm", e.target.value)}
-              placeholder="3.50"
-              className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-              data-testid="campaign-rpm-input"
-            />
+            <label className="block text-sm text-white/70 mb-3">Modèle de rémunération *</label>
+            <div className="flex gap-2">
+              {[
+                { id: "views", label: "👁 Au nombre de vues", desc: "Payé selon les vues générées" },
+                { id: "clicks", label: "🔗 Au clic (lien bio)", desc: "Lien unique dans la bio — payé par clic" },
+              ].map(m => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => handleChange("payment_model", m.id)}
+                  className={`flex-1 p-3 rounded-xl border text-left transition-all ${
+                    formData.payment_model === m.id
+                      ? "bg-[#FF007F]/15 border-[#FF007F]/50 text-white"
+                      : "bg-white/5 border-white/10 text-white/50 hover:border-white/25"
+                  }`}
+                >
+                  <p className="text-sm font-semibold">{m.label}</p>
+                  <p className="text-xs mt-0.5 opacity-60">{m.desc}</p>
+                </button>
+              ))}
+            </div>
           </div>
+
+          {/* Champs spécifiques au modèle VUES */}
+          {formData.payment_model === "views" && (
+            <>
+              <div>
+                <label className="block text-sm text-white/70 mb-2">RPM (€ par 1000 vues) *</label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={formData.rpm}
+                  onChange={(e) => handleChange("rpm", e.target.value)}
+                  placeholder="3.50"
+                  className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                  data-testid="campaign-rpm-input"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-white/70 mb-2">Min. vues payout</label>
+                  <Input type="number" value={formData.min_view_payout} onChange={(e) => handleChange("min_view_payout", e.target.value)} placeholder="1000" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
+                <div>
+                  <label className="block text-sm text-white/70 mb-2">Max. vues payout</label>
+                  <Input type="number" value={formData.max_view_payout} onChange={(e) => handleChange("max_view_payout", e.target.value)} placeholder="1000000" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Champs spécifiques au modèle CLICS */}
+          {formData.payment_model === "clicks" && (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-white/70 mb-2">Prix par clic (€) *</label>
+                  <Input
+                    type="number"
+                    step="0.001"
+                    value={formData.rate_per_click}
+                    onChange={(e) => handleChange("rate_per_click", e.target.value)}
+                    placeholder="0.05"
+                    className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                  />
+                </div>
+                <div className="flex items-end pb-0.5">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <Checkbox
+                      checked={formData.unique_clicks_only}
+                      onCheckedChange={(checked) => handleChange("unique_clicks_only", checked)}
+                      className="border-white/30"
+                    />
+                    <div>
+                      <p className="text-white/70 text-sm">Clics uniques</p>
+                      <p className="text-white/30 text-xs">1 IP = 1 clic (anti-fraude)</p>
+                    </div>
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-white/70 mb-2">URL de destination *</label>
+                <Input
+                  type="url"
+                  value={formData.destination_url}
+                  onChange={(e) => handleChange("destination_url", e.target.value)}
+                  placeholder="https://monsite.com/produit"
+                  className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                />
+                <p className="text-white/30 text-xs mt-1.5">Les clippers mettent le lien de tracking dans leur bio — quand quelqu'un clique, il arrive sur cette URL.</p>
+              </div>
+              <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/20">
+                <p className="text-[#f0c040] text-xs font-medium mb-1">💡 Comment ça marche</p>
+                <p className="text-white/50 text-xs">Après création, génère les liens depuis l'onglet <strong className="text-white/70">Liens</strong> de la campagne. Chaque clipper reçoit un lien unique à mettre dans sa bio TikTok / Instagram / YouTube.</p>
+              </div>
+            </>
+          )}
+
+          {/* Budget (commun aux deux modèles) */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-white/70 mb-2">Budget total (€)</label>
@@ -757,28 +870,6 @@ function CreateCampaign({ onCreated }) {
                 />
                 <span className="text-white/70">Budget illimité</span>
               </label>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-white/70 mb-2">Min. vues payout</label>
-              <Input
-                type="number"
-                value={formData.min_view_payout}
-                onChange={(e) => handleChange("min_view_payout", e.target.value)}
-                placeholder="1000"
-                className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-white/70 mb-2">Max. vues payout</label>
-              <Input
-                type="number"
-                value={formData.max_view_payout}
-                onChange={(e) => handleChange("max_view_payout", e.target.value)}
-                placeholder="1000000"
-                className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-              />
             </div>
           </div>
         </CardContent>
@@ -925,8 +1016,13 @@ function CampaignDashboard({ campaigns }) {
   const [filterPlatform, setFilterPlatform] = useState("all");
   const [filterClipper, setFilterClipper] = useState("all");
   const [showManualVideoModal, setShowManualVideoModal] = useState(false);
-  const [manualVideoForm, setManualVideoForm] = useState({ user_id: "", url: "", views: "", platform: "tiktok", title: "" });
+  const [manualVideoForm, setManualVideoForm] = useState({ target: "", url: "", platform: "tiktok" });
   const [addingVideo, setAddingVideo] = useState(false);
+  const [trackResult, setTrackResult] = useState(null); // { views, title, earnings }
+  const [clickLinks, setClickLinks] = useState(null);      // { links, totals, rate_per_click }
+  const [generatingLinks, setGeneratingLinks] = useState(false);
+  const [copiedLinkId, setCopiedLinkId] = useState(null);
+  const [regeneratingLinkId, setRegeneratingLinkId] = useState(null);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -941,20 +1037,76 @@ function CampaignDashboard({ campaigns }) {
     }
   }, [campaignId]);
 
-  const handleAddManualVideo = async () => {
-    if (!manualVideoForm.user_id || !manualVideoForm.url) return;
-    setAddingVideo(true);
+  const fetchClickLinks = async () => {
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/manual-video`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/click-links`, { credentials: "include" });
+      if (res.ok) setClickLinks(await res.json());
+    } catch {}
+  };
+
+  const handleGenerateLinks = async () => {
+    setGeneratingLinks(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/generate-links`, {
+        method: "POST", credentials: "include"
+      });
+      if (res.ok) {
+        toast.success("Liens générés ✓");
+        fetchClickLinks();
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur lors de la génération");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setGeneratingLinks(false); }
+  };
+
+  const handleCopyLink = (url, linkId) => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedLinkId(linkId);
+      setTimeout(() => setCopiedLinkId(null), 2000);
+      toast.success("Lien copié !");
+    });
+  };
+
+  const handleRegenerateLink = async (clipperId, linkId) => {
+    setRegeneratingLinkId(linkId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/regenerate-link/${clipperId}`, {
+        method: "POST", credentials: "include"
+      });
+      if (res.ok) {
+        toast.success("Lien régénéré ✓");
+        fetchClickLinks();
+      } else toast.error("Erreur lors de la régénération");
+    } catch { toast.error("Erreur réseau"); }
+    finally { setRegeneratingLinkId(null); }
+  };
+
+  const handleAddManualVideo = async () => {
+    if (!manualVideoForm.url) return;
+    setAddingVideo(true);
+    setTrackResult(null);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/track-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ ...manualVideoForm, views: parseInt(manualVideoForm.views) || 0 }),
+        body: JSON.stringify({
+          url: manualVideoForm.url,
+          platform: manualVideoForm.platform,
+          target_user_id: manualVideoForm.target,
+        }),
       });
       if (res.ok) {
-        toast.success("Vidéo ajoutée avec succès ✓");
-        setShowManualVideoModal(false);
-        setManualVideoForm({ user_id: "", url: "", views: "", platform: "tiktok", title: "" });
+        const data = await res.json();
+        const v = data.video || {};
+        setTrackResult({
+          views: v.views || 0,
+          title: v.title || "Sans titre",
+          earnings: v.earnings || 0,
+        });
+        toast.success("Vidéo trackée avec succès ✓");
         fetchAllVideos();
       } else {
         const err = await res.json();
@@ -1107,9 +1259,14 @@ function CampaignDashboard({ campaigns }) {
           { id: "overview", label: "Vue d'ensemble" },
           { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length },
+          ...(campaign.payment_model === "clicks" ? [{ id: "liens", label: "🔗 Liens" }] : []),
         ].map(tab => (
           <button key={tab.id}
-            onClick={() => { setActiveTab(tab.id); if (tab.id === "candidatures") fetchPendingMembers(); }}
+            onClick={() => {
+              setActiveTab(tab.id);
+              if (tab.id === "candidatures") fetchPendingMembers();
+              if (tab.id === "liens") fetchClickLinks();
+            }}
             className={`relative flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === tab.id ? "bg-[#FF007F] text-white shadow-lg" : "text-white/50 hover:text-white"
             }`}>
@@ -1177,19 +1334,42 @@ function CampaignDashboard({ campaigns }) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Budget */}
             <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
-              <p className="text-white font-medium">Budget & RPM</p>
+              <p className="text-white font-medium">
+                {campaign.payment_model === "clicks" ? "Budget & Tarif clic" : "Budget & RPM"}
+              </p>
               <div className="grid grid-cols-2 gap-3">
-                <div><p className="text-xs text-white/40">RPM</p><p className="text-[#FF007F] font-mono font-bold text-lg">€{campaign.rpm}/1K</p></div>
-                {!campaign.budget_unlimited && campaign.budget_total && (
-                  <div><p className="text-xs text-white/40">Budget utilisé</p><p className="text-white font-mono font-bold text-lg">€{campaign.budget_used || 0} / €{campaign.budget_total}</p></div>
+                {campaign.payment_model === "clicks" ? (
+                  <>
+                    <div>
+                      <p className="text-xs text-white/40">Prix / clic</p>
+                      <p className="text-[#FF007F] font-mono font-bold text-lg">€{campaign.rate_per_click || 0}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-white/40">Type</p>
+                      <p className="text-white/70 text-sm font-medium mt-1">{campaign.unique_clicks_only ? "Clics uniques" : "Tous les clics"}</p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div><p className="text-xs text-white/40">RPM</p><p className="text-[#FF007F] font-mono font-bold text-lg">€{campaign.rpm}/1K</p></div>
+                    {!campaign.budget_unlimited && campaign.budget_total && (
+                      <div><p className="text-xs text-white/40">Budget utilisé</p><p className="text-white font-mono font-bold text-lg">€{campaign.budget_used || 0} / €{campaign.budget_total}</p></div>
+                    )}
+                  </>
                 )}
               </div>
-              {!campaign.budget_unlimited && campaign.budget_total && (
+              {campaign.payment_model !== "clicks" && !campaign.budget_unlimited && campaign.budget_total && (
                 <div>
                   <div className="flex justify-between text-xs text-white/40 mb-1">
                     <span>Progression</span><span>{budgetPercentage.toFixed(0)}%</span>
                   </div>
                   <Progress value={budgetPercentage} className="h-2" />
+                </div>
+              )}
+              {campaign.payment_model === "clicks" && campaign.destination_url && (
+                <div className="p-2.5 rounded-lg bg-white/4 border border-white/8">
+                  <p className="text-[10px] text-white/35 mb-0.5">URL de destination</p>
+                  <p className="text-white/60 text-xs font-mono truncate">{campaign.destination_url}</p>
                 </div>
               )}
             </div>
@@ -1253,9 +1433,9 @@ function CampaignDashboard({ campaigns }) {
               </select>
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
-            <button onClick={() => setShowManualVideoModal(true)}
+            <button onClick={() => { setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); setShowManualVideoModal(true); }}
               className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f0c040]/10 hover:bg-[#f0c040]/20 border border-[#f0c040]/30 text-[#f0c040] text-xs font-medium transition-all">
-              + Ajouter une vidéo manuellement
+              + Tracker une vidéo
             </button>
           </div>
 
@@ -1265,23 +1445,39 @@ function CampaignDashboard({ campaigns }) {
               <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl">
                 <div className="flex items-center justify-between mb-2">
                   <div>
-                    <h3 className="text-white font-semibold text-lg">Ajouter une vidéo</h3>
-                    <p className="text-white/40 text-xs mt-0.5">Pour les vidéos postées en dehors de la campagne — toujours comptabilisées dans la rémunération.</p>
+                    <h3 className="text-white font-semibold text-lg">Tracker une vidéo</h3>
+                    <p className="text-white/40 text-xs mt-0.5">Les stats sont récupérées automatiquement — toujours comptabilisées dans la rémunération.</p>
                   </div>
-                  <button onClick={() => setShowManualVideoModal(false)} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                  <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
                 </div>
 
-                {/* Clippeur */}
+                {/* Résultat après tracking */}
+                {trackResult && (
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-3 text-sm">
+                    <p className="text-green-400 font-medium mb-1">✓ Vidéo trackée</p>
+                    <p className="text-white/70 truncate">{trackResult.title}</p>
+                    <div className="flex gap-4 mt-1.5 text-xs text-white/50">
+                      <span>👁 {trackResult.views.toLocaleString("fr-FR")} vues</span>
+                      {trackResult.earnings > 0 && <span>💰 €{trackResult.earnings.toFixed(2)} générés</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Attribuer à */}
                 <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Clippeur *</label>
-                  <select value={manualVideoForm.user_id}
-                    onChange={e => setManualVideoForm(f => ({ ...f, user_id: e.target.value }))}
+                  <label className="text-xs text-white/50 block mb-1.5">Attribuer à</label>
+                  <select value={manualVideoForm.target}
+                    onChange={e => setManualVideoForm(f => ({ ...f, target: e.target.value }))}
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#f0c040]/50">
-                    <option value="">Sélectionner un clippeur</option>
+                    <option value="">— Aucun clippeur (vues seulement)</option>
+                    <option value="all">Tous les clippeurs actifs</option>
                     {activeMembers.map(m => (
                       <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
                     ))}
                   </select>
+                  {manualVideoForm.target === "all" && (
+                    <p className="text-xs text-amber-400/70 mt-1">⚠️ Les gains seront divisés entre tous les clippeurs actifs.</p>
+                  )}
                 </div>
 
                 {/* Plateforme */}
@@ -1306,37 +1502,16 @@ function CampaignDashboard({ campaigns }) {
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
                 </div>
 
-                {/* Titre (optionnel) */}
-                <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Titre <span className="text-white/20">(optionnel)</span></label>
-                  <input type="text" value={manualVideoForm.title}
-                    onChange={e => setManualVideoForm(f => ({ ...f, title: e.target.value }))}
-                    placeholder="Nom de la vidéo..."
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
-                </div>
-
-                {/* Vues */}
-                <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Nombre de vues actuelles</label>
-                  <input type="number" min="0" value={manualVideoForm.views}
-                    onChange={e => setManualVideoForm(f => ({ ...f, views: e.target.value }))}
-                    placeholder="0"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
-                  {manualVideoForm.views && campaign?.rpm ? (
-                    <p className="text-xs text-[#f0c040] mt-1">≈ €{((parseInt(manualVideoForm.views) || 0) / 1000 * campaign.rpm).toFixed(2)} de gains pour ce clippeur</p>
-                  ) : null}
-                </div>
-
                 {/* Actions */}
                 <div className="flex gap-3 pt-2">
-                  <button onClick={() => setShowManualVideoModal(false)}
+                  <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); }}
                     className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
-                    Annuler
+                    {trackResult ? "Fermer" : "Annuler"}
                   </button>
                   <button onClick={handleAddManualVideo}
-                    disabled={addingVideo || !manualVideoForm.user_id || !manualVideoForm.url}
+                    disabled={addingVideo || !manualVideoForm.url}
                     className="flex-1 py-2.5 rounded-xl bg-[#f0c040] text-black font-semibold text-sm hover:bg-[#f0c040]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
-                    {addingVideo ? "Ajout..." : "Ajouter"}
+                    {addingVideo ? "Tracking..." : "Tracker cette vidéo"}
                   </button>
                 </div>
               </div>
@@ -1493,6 +1668,22 @@ function CampaignDashboard({ campaigns }) {
                       {member.user_info?.email || ""}
                       {" · "}Postulé le {member.joined_at ? new Date(member.joined_at).toLocaleDateString("fr-FR") : "Date inconnue"}
                     </p>
+                    {member.global_stats && (
+                      <div className="flex items-center gap-3 mt-1.5">
+                        <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 text-white/50">
+                          👁 <span className="text-white/80 font-mono font-medium">
+                            {member.global_stats.total_views >= 1000000
+                              ? `${(member.global_stats.total_views / 1000000).toFixed(1)}M`
+                              : member.global_stats.total_views >= 1000
+                              ? `${(member.global_stats.total_views / 1000).toFixed(0)}K`
+                              : member.global_stats.total_views}
+                          </span> vues plateforme
+                        </span>
+                        <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 text-white/50">
+                          🎬 <span className="text-white/80 font-medium">{member.global_stats.video_count}</span> vidéo{member.global_stats.video_count !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-2 flex-shrink-0">
                     <button onClick={() => handleAcceptMember(member.member_id)} disabled={processingMember === member.member_id}
@@ -1507,6 +1698,145 @@ function CampaignDashboard({ campaigns }) {
           )}
         </div>
       )}
+
+      {/* ═══════════ LIENS TAB (modèle au clic) ═══════════ */}
+      {activeTab === "liens" && campaign.payment_model === "clicks" && (
+        <div className="space-y-5">
+          {/* Header + actions */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-white font-semibold text-lg flex items-center gap-2">
+                <Link2 className="w-5 h-5 text-[#FF007F]" /> Liens de tracking bio
+              </h3>
+              {campaign.destination_url && (
+                <p className="text-white/35 text-xs mt-0.5">
+                  Destination : <span className="text-white/60">{campaign.destination_url}</span>
+                </p>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={fetchClickLinks}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+              </button>
+              <button
+                onClick={handleGenerateLinks}
+                disabled={generatingLinks}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 text-white text-sm font-semibold transition-all disabled:opacity-50"
+              >
+                {generatingLinks
+                  ? <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Génération...</>
+                  : <><Link2 className="w-3.5 h-3.5" /> Générer les liens</>
+                }
+              </button>
+            </div>
+          </div>
+
+          {/* Totaux */}
+          {clickLinks?.totals && (
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: "Clics totaux", value: (clickLinks.totals.clicks || 0).toLocaleString("fr-FR"), color: "text-white" },
+                { label: "Clics uniques", value: (clickLinks.totals.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#00E5FF]" },
+                { label: "Gains générés", value: `€${(clickLinks.totals.earnings || 0).toFixed(2)}`, color: "text-[#f0c040]" },
+              ].map(kpi => (
+                <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4 text-center">
+                  <p className="text-xs text-white/35 mb-1">{kpi.label}</p>
+                  <p className={`font-mono font-bold text-2xl ${kpi.color}`}>{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Table des liens */}
+          {!clickLinks ? (
+            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
+              <p className="text-4xl mb-3">🔗</p>
+              <p className="text-sm mb-1">Aucun lien généré</p>
+              <p className="text-xs">Clique sur "Générer les liens" pour créer un lien unique par clippeur actif.</p>
+            </div>
+          ) : clickLinks.links.length === 0 ? (
+            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
+              <p className="text-4xl mb-3">👥</p>
+              <p className="text-sm">Aucun clippeur actif dans cette campagne</p>
+              <p className="text-xs mt-1">Accepte des candidatures d'abord.</p>
+            </div>
+          ) : (
+            <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/8">
+                    <th className="text-left text-white/40 text-xs font-medium px-5 py-3">Clippeur</th>
+                    <th className="text-right text-white/40 text-xs font-medium px-4 py-3">Clics</th>
+                    <th className="text-right text-white/40 text-xs font-medium px-4 py-3">Uniques</th>
+                    <th className="text-right text-white/40 text-xs font-medium px-4 py-3">Gains</th>
+                    <th className="text-left text-white/40 text-xs font-medium px-4 py-3">Lien de tracking</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clickLinks.links.map((lnk) => (
+                    <tr key={lnk.link_id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                      <td className="px-5 py-3">
+                        <p className="text-white font-medium">{lnk.clipper_name}</p>
+                        {lnk.last_clicked_at && (
+                          <p className="text-white/30 text-[10px] mt-0.5">
+                            Dernier clic : {new Date(lnk.last_clicked_at).toLocaleDateString("fr-FR")}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-mono text-white">{(lnk.click_count || 0).toLocaleString("fr-FR")}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-mono text-[#00E5FF]">{(lnk.unique_click_count || 0).toLocaleString("fr-FR")}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-mono font-bold text-[#f0c040]">€{(lnk.earnings || 0).toFixed(2)}</span>
+                      </td>
+                      <td className="px-4 py-3 max-w-[200px]">
+                        <p className="text-white/40 text-xs font-mono truncate" title={lnk.tracking_url}>
+                          {lnk.tracking_url}
+                        </p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleCopyLink(lnk.tracking_url, lnk.link_id)}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/8 hover:bg-white/15 transition-all text-white/50 hover:text-white"
+                            title="Copier le lien"
+                          >
+                            {copiedLinkId === lnk.link_id
+                              ? <Check className="w-3.5 h-3.5 text-[#39FF14]" />
+                              : <Copy className="w-3.5 h-3.5" />
+                            }
+                          </button>
+                          <button
+                            onClick={() => handleRegenerateLink(lnk.clipper_id, lnk.link_id)}
+                            disabled={regeneratingLinkId === lnk.link_id}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center bg-white/8 hover:bg-orange-500/20 transition-all text-white/50 hover:text-orange-400 disabled:opacity-40"
+                            title="Régénérer (invalide l'ancien)"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${regeneratingLinkId === lnk.link_id ? "animate-spin" : ""}`} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {clickLinks.rate_per_click > 0 && (
+                <div className="px-5 py-3 border-t border-white/5 text-xs text-white/30">
+                  Tarif : <span className="text-white/50 font-mono">€{clickLinks.rate_per_click} / clic {campaign.unique_clicks_only ? "(unique)" : "(total)"}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
     </motion.div>
   );
 }

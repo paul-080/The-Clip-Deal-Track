@@ -28,7 +28,7 @@ import { motion } from "framer-motion";
 import {
   Home, Search, Smartphone, CreditCard, Settings, MessageCircle,
   Video, TrendingUp, Eye, DollarSign, Plus, Trash2, Check, X, AlertTriangle,
-  Heart, Share2, BarChart2, Link2, ChevronRight
+  Heart, Share2, BarChart2, Link2, ChevronRight, HelpCircle, Copy, RefreshCw, MousePointerClick
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -36,6 +36,7 @@ import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
 import ChatPanel from "../components/ChatPanel";
+import SupportPage from "../components/SupportPage";
 
 const ACCENT_COLOR = "#00E5FF";
 
@@ -49,6 +50,7 @@ export default function ClipperDashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [unreadCounts, setUnreadCounts] = useState({});
+  const [supportUnread, setSupportUnread] = useState(0);
 
   useEffect(() => {
     fetchData();
@@ -63,6 +65,7 @@ export default function ClipperDashboard() {
       if (res.ok) {
         const data = await res.json();
         setUnreadCounts(data.unread || {});
+        setSupportUnread(data.support_unread || 0);
       }
     } catch {}
   };
@@ -123,6 +126,7 @@ export default function ClipperDashboard() {
     })),
     { type: "divider" },
     { id: "payment", label: "Paiement", icon: CreditCard, path: "/clipper/payment" },
+    { id: "support", label: "Support", icon: HelpCircle, path: "/clipper/support", badge: supportUnread },
     { id: "settings", label: "Paramètres", icon: Settings, path: "/clipper/settings" },
   ];
 
@@ -148,6 +152,7 @@ export default function ClipperDashboard() {
           <Route path="campaign/:campaignId" element={<CampaignDashboard campaigns={campaigns} />} />
           <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
           <Route path="payment" element={<PaymentPage stats={stats} />} />
+          <Route path="support" element={<SupportPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -988,7 +993,9 @@ function AllVideosPage() {
   );
 }
 
-function AccountsPage({ accounts, campaigns, onUpdate }) {
+function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
+  // Local copy of accounts for real-time status updates during verification polling
+  const [localAccounts, setLocalAccounts] = useState(propAccounts);
   const [newPlatform, setNewPlatform] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [isAdding, setIsAdding] = useState(false);
@@ -1002,12 +1009,26 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
   const [manualVideoAccount, setManualVideoAccount] = useState(null); // account_id
   const [addingManualVideo, setAddingManualVideo] = useState(false);
 
-  // Poll every 3s while any account is pending
+  // Sync local accounts when parent refreshes (e.g. after adding a new account)
+  useEffect(() => { setLocalAccounts(propAccounts); }, [propAccounts]);
+
+  // Poll ONLY the accounts endpoint every 3s while any is pending (lightweight — no full fetchData)
   useEffect(() => {
-    if (!accounts.some((a) => a.status === "pending")) return;
-    const t = setInterval(onUpdate, 3000);
+    if (!localAccounts.some((a) => a.status === "pending")) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/social-accounts`, { credentials: "include" });
+        if (res.ok) {
+          const data = await res.json();
+          const fetched = data.accounts || [];
+          setLocalAccounts(fetched);
+          // Once all verified/errored, trigger full parent refresh (updates sidebar etc.)
+          if (!fetched.some(a => a.status === "pending")) onUpdate();
+        }
+      } catch {}
+    }, 3000);
     return () => clearInterval(t);
-  }, [accounts, onUpdate]);
+  }, [localAccounts, onUpdate]);
 
   useEffect(() => {
     fetchCampaignAccounts();
@@ -1230,7 +1251,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
       </div>
 
       {/* TikTok tracking info banner */}
-      {accounts.some(a => a.platform === "tiktok" && a.status === "verified") && (
+      {localAccounts.some(a => a.platform === "tiktok" && a.status === "verified") && (
         <div className="rounded-xl border border-[#FF004F]/20 bg-[#FF004F]/5 p-4">
           <div className="flex items-start gap-3">
             <span className="text-xl flex-shrink-0">📡</span>
@@ -1304,10 +1325,10 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
       </Card>
 
       {/* Enriched account cards */}
-      {accounts.length > 0 && (
+      {localAccounts.length > 0 && (
         <div className="space-y-4">
-          <h2 className="font-display font-bold text-xl text-white">Mes comptes ({accounts.length})</h2>
-          {accounts.map((account) => {
+          <h2 className="font-display font-bold text-xl text-white">Mes comptes ({localAccounts.length})</h2>
+          {localAccounts.map((account) => {
             const color = platformColor[account.platform] || "#00E5FF";
             const isExpanded = expandedAccounts.has(account.account_id);
             const isRefreshing = refreshingAccounts.has(account.account_id);
@@ -1561,7 +1582,7 @@ function AccountsPage({ accounts, campaigns, onUpdate }) {
             {campaigns.map((campaign) => {
               const assignedAccounts = campaignAccounts[campaign.campaign_id] || [];
               // All verified accounts not already in THIS campaign
-              const verifiedAccounts = accounts.filter(
+              const verifiedAccounts = localAccounts.filter(
                 (a) => a.status === "verified" && !assignedAccounts.find((ca) => ca.account_id === a.account_id)
               );
               // For each, check if it's assigned to another campaign
@@ -1777,10 +1798,15 @@ function PaymentPage({ stats }) {
   const [paymentInfo, setPaymentInfo] = useState(user?.payment_info || "");
   const [savingInfo, setSavingInfo] = useState(false);
   const [campaignSummaries, setCampaignSummaries] = useState({});
+  const [clickLinks, setClickLinks] = useState({});   // { [campaign_id]: link }
+  const [copiedLinkId, setCopiedLinkId] = useState(null);
 
   useEffect(() => {
     if (stats?.campaign_stats) {
-      stats.campaign_stats.forEach(cs => fetchCampaignSummary(cs.campaign_id));
+      stats.campaign_stats.forEach(cs => {
+        fetchCampaignSummary(cs.campaign_id);
+        fetchMyClickLink(cs.campaign_id);
+      });
     }
   }, [stats]);
 
@@ -1792,6 +1818,25 @@ function PaymentPage({ stats }) {
         setCampaignSummaries(prev => ({ ...prev, [campaignId]: data }));
       }
     } catch {}
+  };
+
+  const fetchMyClickLink = async (campaignId) => {
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/my-click-link`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setClickLinks(prev => ({ ...prev, [campaignId]: data }));
+      }
+    } catch {}
+    // 404 = not a click campaign — silently ignored
+  };
+
+  const handleCopyLink = (url, id) => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedLinkId(id);
+      setTimeout(() => setCopiedLinkId(null), 2000);
+      toast.success("Lien copié !");
+    });
   };
 
   const handleSavePaymentInfo = async () => {
@@ -1820,9 +1865,9 @@ function PaymentPage({ stats }) {
 
       {/* Total banner */}
       <Card className="bg-[#121212] border-[#f0c040]/30">
-        <CardContent className="p-8 text-center">
-          <p className="text-sm text-white/50 mb-2">Total généré (toutes campagnes)</p>
-          <p className="font-mono font-black text-5xl text-[#f0c040]">
+        <CardContent className="p-5 sm:p-8 text-center">
+          <p className="text-xs sm:text-sm text-white/50 mb-1 sm:mb-2">Total généré (toutes campagnes)</p>
+          <p className="font-mono font-black text-3xl sm:text-4xl lg:text-5xl text-[#f0c040] break-all">
             €{stats?.total_earnings?.toFixed(2) || "0.00"}
           </p>
         </CardContent>
@@ -1865,15 +1910,72 @@ function PaymentPage({ stats }) {
             <div className="space-y-3">
               {stats.campaign_stats.map((cs) => {
                 const summary = campaignSummaries[cs.campaign_id];
+                const isClickModel = summary?.payment_model === "clicks";
+                const myLink = clickLinks[cs.campaign_id];
                 return (
                   <div key={cs.campaign_id} className="p-4 bg-white/5 rounded-xl space-y-3">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-white font-medium">{cs.campaign_name}</p>
-                        <p className="text-xs text-white/40">{fmt(cs.views)} vues</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-white font-medium">{cs.campaign_name}</p>
+                          {isClickModel && (
+                            <span className="flex items-center gap-0.5 text-[10px] px-2 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 font-medium">
+                              <MousePointerClick className="w-2.5 h-2.5" /> Au clic
+                            </span>
+                          )}
+                        </div>
+                        {isClickModel
+                          ? <p className="text-xs text-white/40">{(summary?.clicks || 0).toLocaleString("fr-FR")} clics · {(summary?.unique_clicks || 0).toLocaleString("fr-FR")} uniques</p>
+                          : <p className="text-xs text-white/40">{fmt(cs.views)} vues</p>
+                        }
                       </div>
                       <p className="font-mono font-bold text-[#00E5FF] text-lg">€{cs.earnings?.toFixed(2)}</p>
                     </div>
+
+                    {/* Lien bio pour campagnes au clic */}
+                    {isClickModel && myLink?.tracking_url && (
+                      <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/20 space-y-2">
+                        <div className="flex items-center gap-1.5">
+                          <Link2 className="w-3.5 h-3.5 text-[#f0c040]" />
+                          <p className="text-[#f0c040] text-xs font-semibold">Ton lien de tracking bio</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <p className="flex-1 font-mono text-xs text-white/70 bg-black/30 rounded-lg px-3 py-2 truncate">
+                            {myLink.tracking_url}
+                          </p>
+                          <button
+                            onClick={() => handleCopyLink(myLink.tracking_url, myLink.link_id)}
+                            className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/90 text-black text-xs font-bold transition-all"
+                          >
+                            {copiedLinkId === myLink.link_id
+                              ? <><Check className="w-3 h-3" /> Copié</>
+                              : <><Copy className="w-3 h-3" /> Copier</>
+                            }
+                          </button>
+                        </div>
+                        <p className="text-white/30 text-[10px]">
+                          Mets ce lien dans ta bio TikTok, Instagram, YouTube. Chaque clic est comptabilisé.
+                        </p>
+                        <div className="flex gap-3 pt-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <MousePointerClick className="w-3 h-3 text-white/30" />
+                            <span className="text-xs text-white/50">{(myLink.click_count || 0).toLocaleString("fr-FR")} clics total</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Eye className="w-3 h-3 text-[#00E5FF]/50" />
+                            <span className="text-xs text-[#00E5FF]/70">{(myLink.unique_click_count || 0).toLocaleString("fr-FR")} uniques</span>
+                          </div>
+                          {myLink.rate_per_click > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <DollarSign className="w-3 h-3 text-[#f0c040]/50" />
+                              <span className="text-xs text-[#f0c040]/70">€{myLink.rate_per_click} / clic</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Gains / paiements */}
                     {summary && (
                       <div className="grid grid-cols-2 gap-2">
                         <div className="bg-white/5 rounded-lg p-3 text-center">

@@ -92,7 +92,8 @@ def _get_instagram_session() -> str:
     _instagram_session_index += 1
     return cookie
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
-ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
+ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', '')
+CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
@@ -173,11 +174,16 @@ class Campaign(BaseModel):
     token_client: str
     created_at: datetime
     status: str = "active"
+    # Modèle de rémunération
+    payment_model: str = "views"  # "views" | "clicks"
+    rate_per_click: float = 0.0   # Prix par clic en euros
+    destination_url: Optional[str] = None  # URL de redirection pour liens bio
+    unique_clicks_only: bool = True        # Ne compter qu'un clic par IP/24h
 
 class CampaignCreate(BaseModel):
     name: str
     image_url: Optional[str] = None
-    rpm: float
+    rpm: float = 0.0
     budget_total: Optional[float] = None
     budget_unlimited: bool = False
     min_view_payout: int = 0
@@ -188,6 +194,11 @@ class CampaignCreate(BaseModel):
     cadence: int = 1
     application_form_enabled: bool = False
     application_questions: List[str] = []
+    # Modèle de rémunération
+    payment_model: str = "views"
+    rate_per_click: float = 0.0
+    destination_url: Optional[str] = None
+    unique_clicks_only: bool = True
 
 class CampaignMember(BaseModel):
     member_id: str
@@ -615,7 +626,7 @@ async def _send_verification_email(to_email: str, code: str):
 
 @api_router.post("/auth/register")
 async def email_register(req: EmailRegisterRequest):
-    """Register with email + password — stores a pending verification code, sends it by email."""
+    """Register with email + password — creates the account directly without email verification."""
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
     if len(req.password) < 6:
@@ -628,111 +639,43 @@ async def email_register(req: EmailRegisterRequest):
     if existing and existing.get("email_verified") is True:
         raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email")
 
-    code = str(random.randint(100000, 999999))
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-
-    # Upsert pending verification (replace any previous pending code for this email)
-    await db.email_verifications.update_one(
-        {"email": req.email.lower()},
-        {"$set": {
-            "email": req.email.lower(),
+    # Création directe sans vérification email
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {
+            "email_verified": True,
             "password_hash": _hash_password(req.password),
             "role": req.role,
             "display_name": req.display_name,
             "first_name": req.first_name,
             "last_name": req.last_name,
             "agency_name": req.agency_name,
-            "code": code,
-            "expires_at": expires_at.isoformat(),
+        }})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": req.email.lower(),
+            "name": req.display_name,
+            "picture": None,
+            "role": req.role,
+            "display_name": req.display_name,
+            "first_name": req.first_name,
+            "last_name": req.last_name,
+            "agency_name": req.agency_name,
+            "password_hash": _hash_password(req.password),
+            "email_verified": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=True
-    )
+            "settings": {}
+        })
 
-    # Si pas de service email → créer le compte directement sans vérification
-    if not RESEND_API_KEY:
-        logger.warning(f"RESEND_API_KEY absent — création directe du compte pour {req.email} (rôle: {req.role})")
-        existing_user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
-        if existing_user:
-            user_id = existing_user["user_id"]
-            await db.users.update_one({"user_id": user_id}, {"$set": {
-                "email_verified": True,
-                "password_hash": _hash_password(req.password),
-                "role": req.role,
-                "display_name": req.display_name,
-            }})
-        else:
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            await db.users.insert_one({
-                "user_id": user_id,
-                "email": req.email.lower(),
-                "name": req.display_name,
-                "picture": None,
-                "role": req.role,
-                "display_name": req.display_name,
-                "first_name": req.first_name,
-                "last_name": req.last_name,
-                "agency_name": req.agency_name,
-                "password_hash": _hash_password(req.password),
-                "email_verified": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "settings": {}
-            })
-        await db.email_verifications.delete_one({"email": req.email.lower()})
-        session_token = uuid.uuid4().hex
-        expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
-        await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
-            "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
-        user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-        return _make_session_response(user, session_token)
-
-    # Avec Resend : envoyer le code de vérification
-    # Si Resend échoue (domaine non vérifié, limite free plan, etc.) → créer directement le compte
-    email_sent = False
-    if RESEND_API_KEY:
-        try:
-            await _send_verification_email(req.email.lower(), code)
-            email_sent = True
-        except Exception as e:
-            logger.warning(f"Resend failed for {req.email} — fallback direct account creation: {e}")
-
-    if not email_sent:
-        # Fallback : créer le compte directement sans vérification email
-        existing_user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
-        if existing_user:
-            user_id = existing_user["user_id"]
-            await db.users.update_one({"user_id": user_id}, {"$set": {
-                "email_verified": True,
-                "password_hash": _hash_password(req.password),
-                "role": req.role,
-                "display_name": req.display_name,
-            }})
-        else:
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            await db.users.insert_one({
-                "user_id": user_id,
-                "email": req.email.lower(),
-                "name": req.display_name,
-                "picture": None,
-                "role": req.role,
-                "display_name": req.display_name,
-                "first_name": req.first_name,
-                "last_name": req.last_name,
-                "agency_name": req.agency_name,
-                "password_hash": _hash_password(req.password),
-                "email_verified": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "settings": {}
-            })
-        await db.email_verifications.delete_one({"email": req.email.lower()})
-        session_token = uuid.uuid4().hex
-        expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
-        await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
-            "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
-        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-        return _make_session_response(user_doc, session_token)
-
-    return {"message": f"Code envoyé à {req.email}"}
+    session_token = uuid.uuid4().hex
+    expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
+        "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    logger.info(f"Account created directly for {req.email} (role: {req.role})")
+    return _make_session_response(user, session_token)
 
 @api_router.post("/auth/verify-email")
 async def verify_email(req: VerifyEmailRequest):
@@ -1013,7 +956,12 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
         "token_manager": uuid.uuid4().hex,
         "token_client": uuid.uuid4().hex,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "status": "active"
+        "status": "active",
+        # Rémunération au clic
+        "payment_model": campaign_data.payment_model,
+        "rate_per_click": campaign_data.rate_per_click,
+        "destination_url": campaign_data.destination_url,
+        "unique_clicks_only": campaign_data.unique_clicks_only,
     }
     
     await db.campaigns.insert_one(campaign)
@@ -1085,14 +1033,19 @@ async def get_campaign(campaign_id: str, user: dict = Depends(get_current_user))
             {"campaign_id": campaign_id},
             {"_id": 0}
         ).to_list(100)
-        
+
+        # Batch fetch user infos and global stats in parallel (1 query each, not N)
+        member_ids = [m["user_id"] for m in members]
+        stats_map = await get_clippers_global_stats_batch(member_ids)
+
         for member in members:
             member_user = await db.users.find_one(
                 {"user_id": member["user_id"]},
                 {"_id": 0, "name": 1, "email": 1, "display_name": 1, "picture": 1}
             )
             member["user_info"] = member_user
-            
+            member["global_stats"] = stats_map.get(member["user_id"], {"total_views": 0, "video_count": 0})
+
             accounts = await db.campaign_social_accounts.find(
                 {"campaign_id": campaign_id, "user_id": member["user_id"]},
                 {"_id": 0}
@@ -1261,6 +1214,41 @@ async def join_as_manager(campaign_id: str, user: dict = Depends(get_current_use
         pass
     return {"message": "Demande envoyée à l'agence", "member": member}
 
+async def get_clipper_global_stats(user_id: str) -> dict:
+    """Get total views and video count for a clipper across all campaigns (tracked_videos)."""
+    pipeline = [
+        {"$match": {"user_id": user_id}},
+        {"$group": {
+            "_id": None,
+            "total_views": {"$sum": "$views"},
+            "video_count": {"$sum": 1}
+        }}
+    ]
+    result = await db.tracked_videos.aggregate(pipeline).to_list(1)
+    if result:
+        return {"total_views": result[0]["total_views"], "video_count": result[0]["video_count"]}
+    return {"total_views": 0, "video_count": 0}
+
+async def get_clippers_global_stats_batch(user_ids: list) -> dict:
+    """Batch version — 1 DB query for all user_ids at once. Returns {user_id: {total_views, video_count}}."""
+    if not user_ids:
+        return {}
+    pipeline = [
+        {"$match": {"user_id": {"$in": user_ids}}},
+        {"$group": {
+            "_id": "$user_id",
+            "total_views": {"$sum": "$views"},
+            "video_count": {"$sum": 1}
+        }}
+    ]
+    results = await db.tracked_videos.aggregate(pipeline).to_list(len(user_ids))
+    out = {r["_id"]: {"total_views": r["total_views"], "video_count": r["video_count"]} for r in results}
+    # Ensure all requested user_ids have an entry (even zero)
+    for uid in user_ids:
+        if uid not in out:
+            out[uid] = {"total_views": 0, "video_count": 0}
+    return out
+
 @api_router.get("/campaigns/{campaign_id}/pending-members")
 async def get_pending_members(campaign_id: str, user: dict = Depends(get_current_user)):
     """Get pending clippers who applied to this campaign (agency/manager only)"""
@@ -1283,9 +1271,14 @@ async def get_pending_members(campaign_id: str, user: dict = Depends(get_current
         {"_id": 0}
     ).to_list(100)
 
+    # Batch stats — 1 DB query for all pending members at once
+    member_ids = [m["user_id"] for m in members]
+    stats_map = await get_clippers_global_stats_batch(member_ids)
+
     for member in members:
         member_user = await db.users.find_one({"user_id": member["user_id"]}, {"_id": 0, "password_hash": 0})
         member["user_info"] = member_user
+        member["global_stats"] = stats_map.get(member["user_id"], {"total_views": 0, "video_count": 0})
 
     return {"members": members}
 
@@ -1310,6 +1303,48 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
         {"member_id": member_id},
         {"$set": {"status": "active", "accepted_at": datetime.now(timezone.utc).isoformat()}}
     )
+
+    # Auto-generate a click tracking link if this is a click-based campaign
+    if campaign.get("payment_model") == "clicks":
+        existing_link = await db.click_links.find_one({
+            "campaign_id": campaign_id,
+            "clipper_id": member["user_id"],
+            "is_active": True
+        })
+        if not existing_link:
+            clipper_user = await db.users.find_one(
+                {"user_id": member["user_id"]},
+                {"_id": 0, "display_name": 1, "name": 1}
+            )
+            for _ in range(10):
+                short_code = _gen_short_code()
+                if not await db.click_links.find_one({"short_code": short_code}):
+                    break
+            link_id = f"lnk_{uuid.uuid4().hex[:12]}"
+            backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+            link_doc = {
+                "link_id": link_id,
+                "short_code": short_code,
+                "campaign_id": campaign_id,
+                "clipper_id": member["user_id"],
+                "clipper_name": (clipper_user or {}).get("display_name") or (clipper_user or {}).get("name", "?"),
+                "destination_url": campaign.get("destination_url", ""),
+                "is_active": True,
+                "click_count": 0,
+                "unique_click_count": 0,
+                "earnings": 0.0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_clicked_at": None,
+                "tracking_url": f"{backend_url}/track/{short_code}",
+            }
+            await db.click_links.insert_one(link_doc)
+            # Notify clipper with their tracking link
+            await manager.send_to_user(member["user_id"], {
+                "type": "click_link_ready",
+                "campaign_id": campaign_id,
+                "campaign_name": campaign.get("name", ""),
+                "tracking_url": link_doc["tracking_url"],
+            })
 
     # Notify the clipper
     await manager.send_to_user(member["user_id"], {
@@ -3878,6 +3913,83 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
         })
     return result
 
+async def _fetch_single_tiktok_video(url: str) -> dict:
+    """Fetch stats for a single TikTok video URL via TikWm API."""
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get("https://www.tikwm.com/api/", params={"url": url, "count": 1})
+        data = r.json()
+    if data.get("code") != 0:
+        raise ValueError(f"TikWm: {data.get('msg', 'Erreur inconnue')}")
+    vid = data.get("data", {})
+    create_time = vid.get("create_time")
+    return {
+        "platform_video_id": str(vid.get("id", f"tk_{uuid.uuid4().hex[:8]}")),
+        "url": url,
+        "title": (vid.get("title") or "")[:200] or None,
+        "thumbnail_url": vid.get("cover") or vid.get("origin_cover"),
+        "views": int(vid.get("play_count", 0)),
+        "likes": int(vid.get("digg_count", 0)),
+        "comments": int(vid.get("comment_count", 0)),
+        "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+    }
+
+async def _fetch_single_youtube_video(url: str) -> dict:
+    """Fetch stats for a single YouTube video URL via YouTube Data API."""
+    if not YOUTUBE_API_KEY:
+        raise ValueError("YOUTUBE_API_KEY non configurée")
+    m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+    if not m:
+        raise ValueError("URL YouTube invalide — impossible d'extraire l'ID vidéo")
+    video_id = m.group(1)
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"id": video_id, "part": "statistics,snippet", "key": YOUTUBE_API_KEY}
+        )
+        data = r.json()
+    items = data.get("items", [])
+    if not items:
+        raise ValueError("Vidéo YouTube introuvable ou privée")
+    item = items[0]
+    stats = item.get("statistics", {})
+    snip = item.get("snippet", {})
+    return {
+        "platform_video_id": video_id,
+        "url": url,
+        "title": snip.get("title", "")[:200] or None,
+        "thumbnail_url": snip.get("thumbnails", {}).get("medium", {}).get("url"),
+        "views": int(stats.get("viewCount", 0)),
+        "likes": int(stats.get("likeCount", 0)),
+        "comments": int(stats.get("commentCount", 0)),
+        "published_at": snip.get("publishedAt"),
+    }
+
+async def _fetch_single_instagram_video(url: str) -> dict:
+    """Best-effort: extract shortcode, return partial info."""
+    m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+    shortcode = m.group(1) if m else None
+    return {
+        "platform_video_id": shortcode or f"ig_{uuid.uuid4().hex[:8]}",
+        "url": url,
+        "title": None,
+        "thumbnail_url": None,
+        "views": 0,
+        "likes": 0,
+        "comments": 0,
+        "published_at": None,
+    }
+
+async def fetch_single_video_by_url(url: str, platform: str) -> dict:
+    """Dispatcher: fetch video stats from a URL by platform."""
+    platform = platform.lower()
+    if platform == "tiktok":
+        return await _fetch_single_tiktok_video(url)
+    elif platform == "youtube":
+        return await _fetch_single_youtube_video(url)
+    elif platform == "instagram":
+        return await _fetch_single_instagram_video(url)
+    raise ValueError(f"Plateforme non supportée: {platform}")
+
 async def fetch_videos(platform: str, username: str, account: dict, since_days: int = 30) -> list:
     if platform == "youtube":
         channel_id = account.get("platform_channel_id")
@@ -3910,7 +4022,20 @@ async def run_video_tracking():
             platform = account["platform"]
             username = account["username"]
             try:
-                videos = await fetch_videos(platform, username, account, since_days=30)
+                # Compute since_days dynamically from last_tracked_at
+                last_tracked = account.get("last_tracked_at")
+                if last_tracked:
+                    try:
+                        lt_dt = datetime.fromisoformat(last_tracked.replace("Z", "+00:00"))
+                        if lt_dt.tzinfo is None:
+                            lt_dt = lt_dt.replace(tzinfo=timezone.utc)
+                        delta_days = (datetime.now(timezone.utc) - lt_dt).total_seconds() / 86400
+                        since_days = max(2, int(delta_days) + 2)
+                    except Exception:
+                        since_days = 30
+                else:
+                    since_days = 30
+                videos = await fetch_videos(platform, username, account, since_days)
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
                     await db.social_accounts.update_one(
@@ -3956,6 +4081,82 @@ async def run_video_tracking():
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.warning(f"Tracking failed for {platform}/@{username}: {e}")
+        # Re-fetch manually added videos to keep views updated
+        try:
+            manual_vids = await db.tracked_videos.find(
+                {"campaign_id": campaign_id, "manually_added": True, "url": {"$ne": None}},
+                {"_id": 0, "video_id": 1, "url": 1, "platform": 1, "user_id": 1}
+            ).to_list(50)
+            for mv in manual_vids:
+                try:
+                    mv_url = mv.get("url", "")
+                    mv_platform = mv.get("platform", "")
+                    if not mv_url or not mv_platform:
+                        continue
+                    fresh = await fetch_single_video_by_url(mv_url, mv_platform)
+                    mv_earnings = round((fresh["views"] / 1000) * rpm, 2) if mv.get("user_id") else 0
+                    await db.tracked_videos.update_one(
+                        {"video_id": mv["video_id"]},
+                        {"$set": {
+                            "views": fresh["views"],
+                            "likes": fresh.get("likes", 0),
+                            "comments": fresh.get("comments", 0),
+                            "earnings": mv_earnings,
+                            "fetched_at": datetime.now(timezone.utc).isoformat(),
+                        }}
+                    )
+                except Exception as e:
+                    logger.debug(f"Manual video re-fetch skipped: {e}")
+                await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.warning(f"Manual videos re-fetch error for {campaign_id}: {e}")
+        # Update budget_used and store daily snapshot
+        try:
+            agg = await db.tracked_videos.aggregate([
+                {"$match": {"campaign_id": campaign_id}},
+                {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+            ]).to_list(1)
+            total_campaign_views = agg[0]["total_views"] if agg else 0
+            budget_used = round((total_campaign_views / 1000) * rpm, 2)
+            await db.campaigns.update_one(
+                {"campaign_id": campaign_id},
+                {"$set": {"budget_used": budget_used}}
+            )
+            # Daily snapshot for chart
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            await db.views_snapshots.update_one(
+                {"campaign_id": campaign_id, "date": today_str},
+                {"$set": {
+                    "campaign_id": campaign_id,
+                    "date": today_str,
+                    "total_views": total_campaign_views,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update budget/snapshot for {campaign_id}: {e}")
+    # Global daily snapshot (all campaigns)
+    try:
+        agg_all = await db.tracked_videos.aggregate([
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}, "total_videos": {"$sum": 1}}}
+        ]).to_list(1)
+        total_global_views = agg_all[0]["total_views"] if agg_all else 0
+        total_global_videos = agg_all[0]["total_videos"] if agg_all else 0
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        await db.views_snapshots.update_one(
+            {"campaign_id": "__global__", "date": today_str},
+            {"$set": {
+                "campaign_id": "__global__",
+                "date": today_str,
+                "total_views": total_global_views,
+                "total_videos": total_global_videos,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }},
+            upsert=True
+        )
+    except Exception as e:
+        logger.warning(f"Failed to store global snapshot: {e}")
     logger.info("Video tracking run complete.")
 
 async def track_videos_loop():
@@ -3964,7 +4165,7 @@ async def track_videos_loop():
             await run_video_tracking()
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(30 * 60)
 
 # ================= SOCIAL ACCOUNTS =================
 
@@ -4367,6 +4568,48 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
     }
 
 
+@api_router.get("/campaigns/{campaign_id}/views-chart")
+async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
+    """Daily views snapshots for a campaign chart. Falls back to tracked_videos grouping."""
+    from datetime import timedelta
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+
+    # Try stored snapshots first
+    snapshots = await db.views_snapshots.find(
+        {"campaign_id": campaign_id, "date": {"$gte": start.strftime("%Y-%m-%d")}},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(days + 1)
+
+    if snapshots:
+        data_by_day = {s["date"]: s["total_views"] for s in snapshots}
+        timeline = []
+        current = start
+        while current <= end:
+            day = current.strftime("%Y-%m-%d")
+            timeline.append({"date": day, "views": data_by_day.get(day, 0)})
+            current += timedelta(days=1)
+        return {"timeline": timeline, "source": "snapshots"}
+
+    # Fallback: group by published_at from tracked_videos
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id, "published_at": {"$gte": start.isoformat()}}},
+        {"$group": {
+            "_id": {"$substr": ["$published_at", 0, 10]},
+            "views": {"$sum": "$views"}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    results = await db.tracked_videos.aggregate(pipeline).to_list(days + 1)
+    data_by_day = {r["_id"]: r["views"] for r in results}
+    timeline = []
+    current = start
+    while current <= end:
+        day = current.strftime("%Y-%m-%d")
+        timeline.append({"date": day, "views": data_by_day.get(day, 0)})
+        current += timedelta(days=1)
+    return {"timeline": timeline, "source": "fallback"}
+
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
     """All tracked videos for a campaign (agency view)"""
@@ -4380,6 +4623,109 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
         raise HTTPException(status_code=403, detail="Agency/Manager only")
     asyncio.create_task(run_video_tracking())
     return {"message": "Tracking lancé en arrière-plan"}
+
+@api_router.post("/campaigns/{campaign_id}/track-video")
+async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """
+    Agency adds a video URL to track automatically.
+    - Auto-fetches current stats from the platform
+    - Stored as manually_added=True (bypasses joined_at filter)
+    - target: specific user_id | "all" (all active clippers) | "" (no clipper)
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    url = (body.get("url") or "").strip()
+    platform = (body.get("platform") or "").lower().strip()
+    target = (body.get("target") or "").strip()  # user_id | "all" | ""
+
+    if not url:
+        raise HTTPException(status_code=400, detail="URL requise")
+    if platform not in ("tiktok", "youtube", "instagram"):
+        raise HTTPException(status_code=400, detail="Plateforme invalide")
+
+    # Fetch video stats from platform
+    try:
+        vid_info = await fetch_single_video_by_url(url, platform)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Impossible de récupérer la vidéo : {e}")
+
+    rpm = campaign.get("rpm", 0)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Determine target users
+    if target == "all":
+        members = await db.campaign_members.find(
+            {"campaign_id": campaign_id, "status": "active", "role": "clipper"},
+            {"_id": 0, "user_id": 1}
+        ).to_list(100)
+        target_users = [m["user_id"] for m in members]
+        if not target_users:
+            raise HTTPException(status_code=400, detail="Aucun clippeur actif dans cette campagne")
+    elif target:
+        # Verify clipper is in campaign
+        member = await db.campaign_members.find_one(
+            {"campaign_id": campaign_id, "user_id": target, "role": "clipper"}
+        )
+        if not member:
+            raise HTTPException(status_code=400, detail="Ce clippeur ne fait pas partie de cette campagne")
+        target_users = [target]
+    else:
+        target_users = [None]  # No clipper association
+
+    saved = []
+    for uid in target_users:
+        earnings = round((vid_info["views"] / 1000) * rpm, 2) if uid else 0
+        video_id = f"vid_{uuid.uuid4().hex[:12]}"
+        doc = {
+            "video_id": video_id,
+            "platform_video_id": vid_info["platform_video_id"],
+            "account_id": None,
+            "user_id": uid,
+            "campaign_id": campaign_id,
+            "platform": platform,
+            "url": url,
+            "title": vid_info.get("title"),
+            "thumbnail_url": vid_info.get("thumbnail_url"),
+            "views": vid_info["views"],
+            "likes": vid_info.get("likes", 0),
+            "comments": vid_info.get("comments", 0),
+            "published_at": vid_info.get("published_at"),
+            "fetched_at": now_iso,
+            "created_at": now_iso,
+            "earnings": earnings,
+            "manually_added": True,
+            "added_by": user["user_id"],
+        }
+        upsert_key = {"campaign_id": campaign_id, "platform_video_id": vid_info["platform_video_id"]}
+        if uid:
+            upsert_key["user_id"] = uid
+        try:
+            await db.tracked_videos.update_one(
+                upsert_key,
+                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                upsert=True
+            )
+            saved.append(doc)
+        except Exception as e:
+            logger.warning(f"track_video upsert error: {e}")
+
+    return {
+        "message": f"Vidéo trackée avec succès ({vid_info['views']:,} vues)",
+        "video": {
+            "url": url,
+            "title": vid_info.get("title"),
+            "views": vid_info["views"],
+            "platform": platform,
+            "target_count": len([u for u in target_users if u]),
+        }
+    }
 
 @api_router.post("/campaigns/{campaign_id}/manual-video")
 async def add_manual_video(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
@@ -4499,7 +4845,12 @@ async def get_unread_counts(user: dict = Depends(get_current_user)):
         count = await db.messages.count_documents(query)
         if count > 0:
             counts[cid] = count
-    return {"unread": counts}
+
+    # Support unread count (admin replies not yet read by user)
+    support_unread = await db.support_messages.count_documents({
+        "user_id": uid, "from_admin": True, "read_by_user": False
+    })
+    return {"unread": counts, "support_unread": support_unread}
 
 @api_router.post("/campaigns/{campaign_id}/mark-read")
 async def mark_campaign_read(campaign_id: str, user: dict = Depends(get_current_user)):
@@ -5106,6 +5457,55 @@ async def get_payment_history(user: dict = Depends(get_current_user)):
 
 # ================= PAIEMENTS DIRECTS (sans Stripe) =================
 
+async def _calc_clicks_for_member(campaign_id: str, user_id: str, rate_per_click: float, unique_only: bool) -> dict:
+    """Calculate click-based earnings for a clipper on a click-model campaign."""
+    link = await db.click_links.find_one(
+        {"campaign_id": campaign_id, "clipper_id": user_id, "is_active": True},
+        {"_id": 0}
+    )
+    if not link:
+        # No link generated yet
+        clicks = 0
+        unique_clicks = 0
+        earnings = 0.0
+        tracking_url = None
+    else:
+        clicks = link.get("click_count", 0)
+        unique_clicks = link.get("unique_click_count", 0)
+        billable = unique_clicks if unique_only else clicks
+        earnings = round(billable * rate_per_click, 2)
+        backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+        tracking_url = link.get("tracking_url") or f"{backend_url}/track/{link['short_code']}"
+
+    # Confirmed payments (same table as views model)
+    confirmed = await db.payments.find(
+        {"user_id": user_id, "campaign_id": campaign_id, "type": "direct_payment", "status": "confirmed"},
+        {"_id": 0, "amount_eur": 1, "confirmed_at": 1}
+    ).sort("confirmed_at", -1).to_list(100)
+    paid = round(sum(p.get("amount_eur", 0) for p in confirmed), 2)
+    last_payment = confirmed[0] if confirmed else None
+
+    membership = await db.campaign_members.find_one(
+        {"campaign_id": campaign_id, "user_id": user_id},
+        {"_id": 0, "joined_at": 1}
+    )
+    joined_at_str = None
+    if membership and membership.get("joined_at"):
+        jat = membership["joined_at"]
+        joined_at_str = jat if isinstance(jat, str) else jat.isoformat()
+
+    return {
+        "clicks": clicks,
+        "unique_clicks": unique_clicks,
+        "views": 0,  # compatibility field
+        "earned": earnings,
+        "paid": paid,
+        "owed": round(max(earnings - paid, 0), 2),
+        "last_payment": last_payment,
+        "joined_at": joined_at_str,
+        "tracking_url": tracking_url,
+    }
+
 async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) -> dict:
     """
     Calculate total views and earnings for a clipper on a campaign.
@@ -5130,15 +5530,23 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
     def _after_joined(published_at, manually_added=False):
         """Retourne True si la vidéo doit être comptabilisée."""
         if manually_added:
-            return True  # Les vidéos ajoutées manuellement par l'agence sont toujours comptées
-        if not joined_at_str:
-            return True  # Pas de date d'entrée → tout compter
-        if not published_at:
-            return True  # Date inconnue → bénéfice du doute
-        try:
-            return str(published_at)[:19] >= joined_at_str[:19]
-        except Exception:
             return True
+        if not joined_at_str:
+            return True
+        if not published_at:
+            return True
+        try:
+            pub_str = str(published_at).replace("Z", "+00:00")
+            join_str = joined_at_str.replace("Z", "+00:00")
+            pub = datetime.fromisoformat(pub_str)
+            joined = datetime.fromisoformat(join_str)
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=timezone.utc)
+            if joined.tzinfo is None:
+                joined = joined.replace(tzinfo=timezone.utc)
+            return pub >= joined
+        except Exception:
+            return str(published_at)[:19] >= joined_at_str[:19]
 
     seen_video_ids = set()
     total_views = 0
@@ -5213,11 +5621,21 @@ async def get_campaign_payment_summary(campaign_id: str, user: dict = Depends(ge
     """Payment summary for a campaign.
     - Agency/manager: returns all clippers with earnings + owed
     - Clipper: returns only their own summary
+    Supports both payment_model = 'views' and 'clicks'.
     """
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    payment_model = campaign.get("payment_model", "views")
     rpm = campaign.get("rpm", 0)
+    rate_per_click = campaign.get("rate_per_click", 0.0)
+    unique_only = campaign.get("unique_clicks_only", True)
+
+    async def _calc(uid):
+        if payment_model == "clicks":
+            return await _calc_clicks_for_member(campaign_id, uid, rate_per_click, unique_only)
+        return await _calc_earnings_for_member(campaign_id, uid, rpm)
 
     if user.get("role") in ["agency", "manager"]:
         members = await db.campaign_members.find(
@@ -5232,17 +5650,26 @@ async def get_campaign_payment_summary(campaign_id: str, user: dict = Depends(ge
             )
             if not clipper:
                 continue
-            data = await _calc_earnings_for_member(campaign_id, m["user_id"], rpm)
+            data = await _calc(m["user_id"])
             result.append({**clipper, **data})
         result.sort(key=lambda x: x["earned"], reverse=True)
-        return {"role": "agency", "clippers": result, "campaign_name": campaign.get("name"), "rpm": rpm}
+        return {
+            "role": "agency",
+            "clippers": result,
+            "campaign_name": campaign.get("name"),
+            "rpm": rpm,
+            "payment_model": payment_model,
+            "rate_per_click": rate_per_click,
+        }
 
     else:  # clipper view
-        data = await _calc_earnings_for_member(campaign_id, user["user_id"], rpm)
+        data = await _calc(user["user_id"])
         return {
             "role": "clipper",
             "campaign_name": campaign.get("name"),
             "rpm": rpm,
+            "payment_model": payment_model,
+            "rate_per_click": rate_per_click,
             **data
         }
 
@@ -5260,6 +5687,9 @@ async def get_owed_payments(user: dict = Depends(get_current_user)):
     rows = []
     for campaign in campaigns:
         rpm = campaign.get("rpm", 0)
+        payment_model = campaign.get("payment_model", "views")
+        rate_per_click = campaign.get("rate_per_click", 0.0)
+        unique_only = campaign.get("unique_clicks_only", True)
         members = await db.campaign_members.find(
             {"campaign_id": campaign["campaign_id"], "role": "clipper"},
             {"_id": 0, "user_id": 1}
@@ -5271,13 +5701,18 @@ async def get_owed_payments(user: dict = Depends(get_current_user)):
             )
             if not clipper:
                 continue
-            data = await _calc_earnings_for_member(campaign["campaign_id"], m["user_id"], rpm)
+            if payment_model == "clicks":
+                data = await _calc_clicks_for_member(campaign["campaign_id"], m["user_id"], rate_per_click, unique_only)
+            else:
+                data = await _calc_earnings_for_member(campaign["campaign_id"], m["user_id"], rpm)
             if data["earned"] > 0:
                 rows.append({
                     **clipper,
                     "campaign_id": campaign["campaign_id"],
                     "campaign_name": campaign.get("name"),
+                    "payment_model": payment_model,
                     "rpm": rpm,
+                    "rate_per_click": rate_per_click,
                     **data,
                 })
     rows.sort(key=lambda x: x["earned"], reverse=True)
@@ -5547,6 +5982,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 
 async def verify_admin_code(request: Request):
     """Dependency: verify X-Admin-Code header against env var."""
+    if not ADMIN_SECRET_CODE:
+        raise HTTPException(status_code=503, detail="ADMIN_SECRET_CODE non configuré sur le serveur")
     code = request.headers.get("X-Admin-Code", "")
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
         raise HTTPException(status_code=403, detail="Code admin invalide")
@@ -5818,6 +6255,148 @@ async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
         "campaign_members": members_count,
         "total_earnings_eur": round(total_earnings, 2),
     }
+
+@api_router.get("/admin/stats/videos-timeline")
+async def admin_videos_timeline(request: Request, _: bool = Depends(verify_admin_code)):
+    """Tracked videos count grouped by day for the last 30 days."""
+    from datetime import timedelta
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=30)
+    pipeline = [
+        {"$match": {"created_at": {"$gte": start.isoformat()}}},
+        {"$group": {
+            "_id": {"$substr": ["$created_at", 0, 10]},
+            "count": {"$sum": 1},
+            "views": {"$sum": "$views"}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    results = await db.tracked_videos.aggregate(pipeline).to_list(31)
+    data_by_day = {r["_id"]: r for r in results}
+    timeline = []
+    current = start
+    while current <= end:
+        day = current.strftime("%Y-%m-%d")
+        d = data_by_day.get(day, {})
+        timeline.append({"date": day, "videos": d.get("count", 0), "views": d.get("views", 0)})
+        current += timedelta(days=1)
+    return {"timeline": timeline}
+
+# ─── SUPPORT CHAT ────────────────────────────────────────────────────────────
+
+@api_router.get("/support/messages")
+async def get_user_support_messages(user: dict = Depends(get_current_user)):
+    """User fetches their support messages with admin."""
+    msgs = await db.support_messages.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    await db.support_messages.update_many(
+        {"user_id": user["user_id"], "from_admin": True, "read_by_user": False},
+        {"$set": {"read_by_user": True}}
+    )
+    return {"messages": msgs}
+
+@api_router.post("/support/message")
+async def send_user_support_message(request: Request, user: dict = Depends(get_current_user)):
+    """User sends a message to admin support."""
+    body = await request.json()
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
+    msg = {
+        "message_id": f"smsg_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "user_name": user.get("display_name") or user.get("name", "Utilisateur"),
+        "user_role": user.get("role", ""),
+        "from_admin": False,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "read_by_admin": False,
+        "read_by_user": True
+    }
+    await db.support_messages.insert_one(msg)
+    msg.pop("_id", None)
+
+    # Auto-reply on first user message (if no admin reply exists yet)
+    uid = user["user_id"]
+    user_count = await db.support_messages.count_documents({"user_id": uid, "from_admin": False})
+    admin_count = await db.support_messages.count_documents({"user_id": uid, "from_admin": True})
+    if user_count == 1 and admin_count == 0:
+        auto_reply = {
+            "message_id": f"smsg_{uuid.uuid4().hex[:12]}",
+            "user_id": uid,
+            "user_name": "Support The Clip Deal",
+            "user_role": "admin",
+            "from_admin": True,
+            "content": "L'équipe reviendra vers vous dans les 48 heures à venir.",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "read_by_admin": True,
+            "read_by_user": False,
+        }
+        await db.support_messages.insert_one(auto_reply)
+
+    return msg
+
+@api_router.get("/admin/support/conversations")
+async def admin_get_support_conversations(request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin: list all users with support messages + unread count."""
+    pipeline = [
+        {"$sort": {"created_at": 1}},
+        {"$group": {
+            "_id": "$user_id",
+            "user_name": {"$last": "$user_name"},
+            "user_role": {"$last": "$user_role"},
+            "last_message": {"$last": "$content"},
+            "last_from_admin": {"$last": "$from_admin"},
+            "last_message_time": {"$last": "$created_at"},
+            "unread_count": {"$sum": {"$cond": [
+                {"$and": [{"$eq": ["$from_admin", False]}, {"$eq": ["$read_by_admin", False]}]},
+                1, 0
+            ]}}
+        }},
+        {"$sort": {"last_message_time": -1}}
+    ]
+    conversations = await db.support_messages.aggregate(pipeline).to_list(200)
+    for conv in conversations:
+        u = await db.users.find_one({"user_id": conv["_id"]}, {"_id": 0, "display_name": 1, "name": 1, "email": 1, "role": 1})
+        conv["user_info"] = u or {}
+        conv["user_id"] = conv.pop("_id")
+    return {"conversations": conversations}
+
+@api_router.get("/admin/support/messages/{user_id}")
+async def admin_get_support_messages(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin: get all support messages with a specific user."""
+    msgs = await db.support_messages.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    await db.support_messages.update_many(
+        {"user_id": user_id, "from_admin": False, "read_by_admin": False},
+        {"$set": {"read_by_admin": True}}
+    )
+    return {"messages": msgs}
+
+@api_router.post("/admin/support/send/{user_id}")
+async def admin_send_support_message(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin sends a support message to a user."""
+    body = await request.json()
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content required")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "display_name": 1, "name": 1, "role": 1})
+    msg = {
+        "message_id": f"smsg_{uuid.uuid4().hex[:12]}",
+        "user_id": user_id,
+        "user_name": (target.get("display_name") or target.get("name", "")) if target else "",
+        "user_role": target.get("role", "") if target else "",
+        "from_admin": True,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "read_by_admin": True,
+        "read_by_user": False
+    }
+    await db.support_messages.insert_one(msg)
+    msg.pop("_id", None)
+    try:
+        await manager.send_to_user(user_id, {"type": "support_message", "content": content, "created_at": msg["created_at"]})
+    except Exception:
+        pass
+    return msg
 
 @api_router.get("/admin/users")
 async def admin_list_users(request: Request, _: bool = Depends(verify_admin_code)):
@@ -6205,8 +6784,7 @@ async def admin_list_videos(request: Request, _: bool = Depends(verify_admin_cod
     return videos
 
 @api_router.get("/admin/posts")
-async def admin_get_posts(request: Request):
-    verify_admin_code(request)
+async def admin_get_posts(request: Request, _: bool = Depends(verify_admin_code)):
     posts = await db.announcements.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     for p in posts:
         agency = await db.users.find_one({"user_id": p.get("agency_id")}, {"_id": 0, "display_name": 1})
@@ -6214,16 +6792,14 @@ async def admin_get_posts(request: Request):
     return posts
 
 @api_router.delete("/admin/posts/{post_id}")
-async def admin_delete_post(post_id: str, request: Request):
-    verify_admin_code(request)
+async def admin_delete_post(post_id: str, request: Request, _: bool = Depends(verify_admin_code)):
     result = await db.announcements.delete_one({"announcement_id": post_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Post introuvable")
     return {"message": "Post supprimé"}
 
 @api_router.get("/admin/all-campaigns")
-async def admin_get_all_campaigns(request: Request):
-    verify_admin_code(request)
+async def admin_get_all_campaigns(request: Request, _: bool = Depends(verify_admin_code)):
     campaigns = await db.campaigns.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for c in campaigns:
         agency = await db.users.find_one({"user_id": c.get("agency_id")}, {"_id": 0, "display_name": 1})
@@ -6301,6 +6877,233 @@ async def tracking_status():
         },
     }
 
+# ================= CLICK TRACKING =================
+
+def _hash_ip(ip: str) -> str:
+    """Hash an IP address with salt — never store raw IPs (GDPR)."""
+    return hashlib.sha256(f"{CLICK_SALT}:{ip}".encode()).hexdigest()
+
+def _gen_short_code() -> str:
+    """Generate an 8-char alphanumeric short code."""
+    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
+                               clipper_id: str, ip_hash: str, user_agent: str,
+                               referrer: str, rate_per_click: float, unique_only: bool):
+    """Fire-and-forget: record click event + update counters + recalc earnings."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        # Deduplication: check if same ip_hash clicked this link in the last 24h
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        existing = await db.click_events.find_one({
+            "link_id": link_id,
+            "ip_hash": ip_hash,
+            "clicked_at": {"$gte": cutoff}
+        })
+        is_unique = existing is None
+
+        # Insert click event
+        await db.click_events.insert_one({
+            "event_id": f"clk_{uuid.uuid4().hex[:12]}",
+            "link_id": link_id,
+            "short_code": short_code,
+            "campaign_id": campaign_id,
+            "clipper_id": clipper_id,
+            "ip_hash": ip_hash,
+            "user_agent": user_agent[:300] if user_agent else "",
+            "referrer": referrer[:500] if referrer else "",
+            "is_unique": is_unique,
+            "clicked_at": now,
+        })
+
+        # Increment counters on the link
+        inc_fields = {"click_count": 1}
+        if is_unique:
+            inc_fields["unique_click_count"] = 1
+        await db.click_links.update_one(
+            {"link_id": link_id},
+            {"$inc": inc_fields, "$set": {"last_clicked_at": now}}
+        )
+
+        # Recalculate earnings on the link
+        link = await db.click_links.find_one({"link_id": link_id}, {"_id": 0})
+        if link:
+            billable = link["unique_click_count"] if unique_only else link["click_count"]
+            earnings = round(billable * rate_per_click, 4)
+            await db.click_links.update_one({"link_id": link_id}, {"$set": {"earnings": earnings}})
+    except Exception as e:
+        logger.warning(f"Click record error for {link_id}: {e}")
+
+@app.get("/track/{short_code}")
+async def track_click(short_code: str, request: Request):
+    """
+    Public redirect endpoint — no auth required.
+    Records the click and instantly redirects to the campaign destination URL.
+    """
+    from starlette.responses import RedirectResponse
+    link = await db.click_links.find_one({"short_code": short_code, "is_active": True}, {"_id": 0})
+    if not link:
+        return RedirectResponse(url="https://theclipdealtrack.com", status_code=302)
+
+    campaign = await db.campaigns.find_one({"campaign_id": link["campaign_id"]}, {"_id": 0})
+    destination = link.get("destination_url") or (campaign.get("destination_url") if campaign else None) or "https://theclipdealtrack.com"
+    rate_per_click = (campaign.get("rate_per_click", 0)) if campaign else 0
+    unique_only = (campaign.get("unique_clicks_only", True)) if campaign else True
+
+    # Get client IP
+    forwarded = request.headers.get("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    ip_hash = _hash_ip(ip)
+    user_agent = request.headers.get("user-agent", "")
+    referrer = request.headers.get("referer", "")
+
+    # Record asynchronously — don't block the redirect
+    asyncio.create_task(_record_click_async(
+        link["link_id"], short_code, link["campaign_id"],
+        link["clipper_id"], ip_hash, user_agent, referrer,
+        rate_per_click, unique_only
+    ))
+
+    return RedirectResponse(url=destination, status_code=302)
+
+@api_router.post("/campaigns/{campaign_id}/generate-links")
+async def generate_click_links(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Agency: generate a unique tracking link for each active clipper (idempotent)."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("payment_model") != "clicks":
+        raise HTTPException(status_code=400, detail="Cette campagne n'est pas au modèle 'clics'")
+
+    members = await db.campaign_members.find(
+        {"campaign_id": campaign_id, "role": "clipper", "status": "active"},
+        {"_id": 0, "user_id": 1}
+    ).to_list(200)
+
+    generated = []
+    for m in members:
+        existing = await db.click_links.find_one(
+            {"campaign_id": campaign_id, "clipper_id": m["user_id"], "is_active": True},
+            {"_id": 0}
+        )
+        if existing:
+            generated.append(existing)
+            continue
+        clipper = await db.users.find_one({"user_id": m["user_id"]}, {"_id": 0, "display_name": 1, "name": 1})
+        # Generate unique short code (retry if collision)
+        for _ in range(10):
+            short_code = _gen_short_code()
+            collision = await db.click_links.find_one({"short_code": short_code})
+            if not collision:
+                break
+        link_id = f"lnk_{uuid.uuid4().hex[:12]}"
+        backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+        link_doc = {
+            "link_id": link_id,
+            "short_code": short_code,
+            "campaign_id": campaign_id,
+            "clipper_id": m["user_id"],
+            "clipper_name": (clipper or {}).get("display_name") or (clipper or {}).get("name", "?"),
+            "destination_url": campaign.get("destination_url", ""),
+            "is_active": True,
+            "click_count": 0,
+            "unique_click_count": 0,
+            "earnings": 0.0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_clicked_at": None,
+            "tracking_url": f"{backend_url}/track/{short_code}",
+        }
+        await db.click_links.insert_one(link_doc)
+        link_doc.pop("_id", None)
+        generated.append(link_doc)
+
+    return {"links": generated, "count": len(generated)}
+
+@api_router.get("/campaigns/{campaign_id}/click-links")
+async def get_click_links(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Agency: get all tracking links + click stats for a campaign."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    links = await db.click_links.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0}
+    ).sort("clipper_name", 1).to_list(500)
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    rate = (campaign.get("rate_per_click", 0)) if campaign else 0
+    dest = (campaign.get("destination_url", "")) if campaign else ""
+    backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+    for lnk in links:
+        if not lnk.get("tracking_url"):
+            lnk["tracking_url"] = f"{backend_url}/track/{lnk['short_code']}"
+
+    total_clicks = sum(l.get("click_count", 0) for l in links)
+    total_unique = sum(l.get("unique_click_count", 0) for l in links)
+    total_earnings = round(sum(l.get("earnings", 0) for l in links), 2)
+
+    return {
+        "links": links,
+        "destination_url": dest,
+        "rate_per_click": rate,
+        "totals": {"clicks": total_clicks, "unique_clicks": total_unique, "earnings": total_earnings}
+    }
+
+@api_router.get("/campaigns/{campaign_id}/my-click-link")
+async def get_my_click_link(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Clipper: get their own tracking link for a click-based campaign."""
+    link = await db.click_links.find_one(
+        {"campaign_id": campaign_id, "clipper_id": user["user_id"], "is_active": True},
+        {"_id": 0}
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Lien introuvable — demande à ton agence de générer les liens")
+    backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+    if not link.get("tracking_url"):
+        link["tracking_url"] = f"{backend_url}/track/{link['short_code']}"
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "rate_per_click": 1, "destination_url": 1})
+    link["rate_per_click"] = (campaign.get("rate_per_click", 0)) if campaign else 0
+    return link
+
+@api_router.post("/campaigns/{campaign_id}/regenerate-link/{clipper_id}")
+async def regenerate_click_link(campaign_id: str, clipper_id: str, user: dict = Depends(get_current_user)):
+    """Agency: invalidate old link + create a fresh one for a clipper."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    # Deactivate old link
+    await db.click_links.update_many(
+        {"campaign_id": campaign_id, "clipper_id": clipper_id},
+        {"$set": {"is_active": False}}
+    )
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    clipper = await db.users.find_one({"user_id": clipper_id}, {"_id": 0, "display_name": 1, "name": 1})
+    for _ in range(10):
+        short_code = _gen_short_code()
+        if not await db.click_links.find_one({"short_code": short_code}):
+            break
+    link_id = f"lnk_{uuid.uuid4().hex[:12]}"
+    backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+    link_doc = {
+        "link_id": link_id,
+        "short_code": short_code,
+        "campaign_id": campaign_id,
+        "clipper_id": clipper_id,
+        "clipper_name": (clipper or {}).get("display_name") or (clipper or {}).get("name", "?"),
+        "destination_url": (campaign or {}).get("destination_url", ""),
+        "is_active": True,
+        "click_count": 0,
+        "unique_click_count": 0,
+        "earnings": 0.0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_clicked_at": None,
+        "tracking_url": f"{backend_url}/track/{short_code}",
+    }
+    await db.click_links.insert_one(link_doc)
+    link_doc.pop("_id", None)
+    return link_doc
+
 # Include router
 app.include_router(api_router)
 
@@ -6330,6 +7133,13 @@ async def startup_event():
     try:
         await db.message_reads.create_index([("user_id", 1), ("campaign_id", 1)], unique=True)
         await db.messages.create_index([("campaign_id", 1), ("created_at", 1)])
+    except Exception:
+        pass
+    try:
+        await db.click_links.create_index([("short_code", 1)], unique=True)
+        await db.click_links.create_index([("campaign_id", 1), ("clipper_id", 1)])
+        await db.click_events.create_index([("link_id", 1), ("ip_hash", 1), ("clicked_at", 1)])
+        await db.click_events.create_index([("campaign_id", 1), ("clicked_at", -1)])
     except Exception:
         pass
 

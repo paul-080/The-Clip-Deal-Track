@@ -4,8 +4,10 @@ import {
   LayoutDashboard, Users, Play, Building2, Briefcase, UserCircle,
   Plug, Settings, LogOut, RefreshCw, Trash2, Ban, CheckCircle2,
   XCircle, AlertCircle, Clock, Database, Youtube, Zap, CreditCard,
-  Globe, ChevronRight, Eye, ExternalLink, Shield, AlertTriangle
+  Globe, ChevronRight, Eye, ExternalLink, Shield, AlertTriangle,
+  MessageCircle, Send
 } from "lucide-react";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { API } from "../App";
 
 const ADMIN_CODE_KEY = "admin_code";
@@ -143,12 +145,16 @@ function CodeGate({ onUnlock }) {
 function OverviewTab() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [timeline, setTimeline] = useState([]);
 
   useEffect(() => {
     adminFetch("/admin/stats")
       .then(setStats)
       .catch((e) => toast.error(e.message))
       .finally(() => setLoading(false));
+    adminFetch("/admin/stats/videos-timeline")
+      .then((d) => setTimeline(d.timeline || []))
+      .catch(() => {});
   }, []);
 
   if (loading) return <div className="text-white/40 text-sm">Chargement...</div>;
@@ -164,6 +170,8 @@ function OverviewTab() {
     { label: "Revenus total", value: `${stats.total_earnings_eur} €`, icon: CreditCard, color: "text-[#00E5FF]" },
   ];
 
+  const hasData = timeline.some(d => d.videos > 0);
+
   return (
     <div>
       <h2 className="text-xl font-semibold text-white mb-6">Vue d'ensemble</h2>
@@ -177,6 +185,44 @@ function OverviewTab() {
             <div className="text-2xl font-bold text-white">{card.value}</div>
           </div>
         ))}
+      </div>
+
+      {/* Chart */}
+      <div className="mt-8 bg-[#1a1a1a] border border-white/10 rounded-xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <p className="text-white font-medium">Vues trackées — 30 derniers jours</p>
+          {!hasData && <span className="text-white/30 text-xs">Aucune donnée récente</span>}
+        </div>
+        {hasData ? (
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={timeline} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="colorVids" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }}
+                tickFormatter={(d) => d.slice(5)}
+                interval={4}
+              />
+              <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }}
+                labelStyle={{ color: "rgba(255,255,255,0.5)" }}
+                formatter={(v, name) => [v.toLocaleString("fr-FR"), "Vues"]}
+              />
+              <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#colorVids)" strokeWidth={2} dot={false} name="views" />
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-[200px] flex items-center justify-center text-white/20 text-sm">
+            Les données apparaîtront après le premier tracking
+          </div>
+        )}
       </div>
     </div>
   );
@@ -846,6 +892,192 @@ function SettingsTab() {
   );
 }
 
+// ─── SupportTab ───────────────────────────────────────────────────────────────
+
+function SupportTab() {
+  const [conversations, setConversations] = useState([]);
+  const [loadingConvs, setLoadingConvs] = useState(true);
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [newMessage, setNewMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const fetchConversations = useCallback(() => {
+    setLoadingConvs(true);
+    adminFetch("/admin/support/conversations")
+      .then((d) => setConversations(d.conversations || []))
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoadingConvs(false));
+  }, []);
+
+  useEffect(() => { fetchConversations(); }, [fetchConversations]);
+
+  const openConversation = useCallback(async (userId) => {
+    setSelectedUserId(userId);
+    setLoadingMsgs(true);
+    try {
+      const d = await adminFetch(`/admin/support/messages/${userId}`);
+      setMessages(d.messages || []);
+      // Refresh convs to update unread counts
+      fetchConversations();
+    } catch (e) { toast.error(e.message); }
+    finally { setLoadingMsgs(false); }
+  }, [fetchConversations]);
+
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!newMessage.trim() || !selectedUserId) return;
+    setSending(true);
+    try {
+      const msg = await adminFetch(`/admin/support/send/${selectedUserId}`, {
+        method: "POST",
+        body: JSON.stringify({ content: newMessage.trim() }),
+      });
+      setMessages((prev) => [...prev, msg]);
+      setNewMessage("");
+    } catch (e) { toast.error(e.message); }
+    finally { setSending(false); }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+  };
+
+  const handleMsgChange = (e) => setNewMessage(e.target.value);
+
+  const selectedConv = conversations.find((c) => c.user_id === selectedUserId);
+
+  return (
+    <div className="flex gap-0 h-[calc(100vh-130px)] min-h-[500px]">
+      {/* Left: conversations list */}
+      <div className="w-72 flex-shrink-0 border-r border-white/10 flex flex-col">
+        <div className="p-4 border-b border-white/10 flex items-center justify-between">
+          <h2 className="text-base font-semibold text-white">Support</h2>
+          <button onClick={fetchConversations} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white transition-all">
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loadingConvs ? (
+            <p className="text-white/30 text-sm text-center py-8">Chargement...</p>
+          ) : conversations.length === 0 ? (
+            <div className="text-center py-12 px-4">
+              <MessageCircle className="w-8 h-8 text-white/20 mx-auto mb-3" />
+              <p className="text-white/30 text-sm">Aucune conversation</p>
+              <p className="text-white/20 text-xs mt-1">Les messages des utilisateurs apparaîtront ici</p>
+            </div>
+          ) : (
+            conversations.map((conv) => (
+              <button
+                key={conv.user_id}
+                onClick={() => openConversation(conv.user_id)}
+                className={`w-full text-left px-4 py-3.5 border-b border-white/5 hover:bg-white/5 transition-all ${selectedUserId === conv.user_id ? "bg-[#00E5FF]/10 border-l-2 border-l-[#00E5FF]" : ""}`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-7 h-7 rounded-full bg-[#00E5FF]/20 flex items-center justify-center text-xs font-bold text-[#00E5FF] flex-shrink-0">
+                    {(conv.user_info?.display_name || conv.user_name || "?")[0]?.toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-xs font-medium truncate">
+                      {conv.user_info?.display_name || conv.user_name || conv.user_id}
+                    </p>
+                    <p className="text-white/30 text-[10px]">{conv.user_role}</p>
+                  </div>
+                  {conv.unread_count > 0 && (
+                    <span className="bg-[#00E5FF] text-black text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      {conv.unread_count}
+                    </span>
+                  )}
+                </div>
+                <p className="text-white/40 text-[11px] truncate pl-9">
+                  {conv.last_from_admin ? "Vous : " : ""}{conv.last_message}
+                </p>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Right: chat */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {!selectedUserId ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center">
+              <MessageCircle className="w-12 h-12 text-white/10 mx-auto mb-4" />
+              <p className="text-white/30 text-sm">Sélectionnez une conversation</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Header */}
+            <div className="px-5 py-3.5 border-b border-white/10 flex items-center gap-3 flex-shrink-0">
+              <div className="w-8 h-8 rounded-full bg-[#00E5FF]/20 flex items-center justify-center text-xs font-bold text-[#00E5FF]">
+                {(selectedConv?.user_info?.display_name || "?")[0]?.toUpperCase()}
+              </div>
+              <div>
+                <p className="text-white text-sm font-medium">
+                  {selectedConv?.user_info?.display_name || selectedConv?.user_name || selectedUserId}
+                </p>
+                <p className="text-white/30 text-xs">{selectedConv?.user_info?.email || selectedConv?.user_role}</p>
+              </div>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {loadingMsgs ? (
+                <p className="text-white/30 text-sm text-center py-8">Chargement...</p>
+              ) : messages.length === 0 ? (
+                <p className="text-white/20 text-sm text-center py-8">Aucun message — démarrez la conversation</p>
+              ) : (
+                messages.map((msg) => (
+                  <div key={msg.message_id} className={`flex ${msg.from_admin ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed ${
+                      msg.from_admin
+                        ? "bg-[#00E5FF] text-black rounded-br-sm"
+                        : "bg-white/10 text-white rounded-bl-sm"
+                    }`}>
+                      <p>{msg.content}</p>
+                      <p className={`text-[10px] mt-1 ${msg.from_admin ? "text-black/50" : "text-white/30"}`}>
+                        {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="px-4 py-3 border-t border-white/10 flex gap-2 flex-shrink-0">
+              <input
+                value={newMessage}
+                onChange={handleMsgChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Répondre au support..."
+                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+              <button
+                onClick={handleSend}
+                disabled={sending || !newMessage.trim()}
+                className="px-4 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black rounded-xl transition-all"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── ConfirmModal ─────────────────────────────────────────────────────────────
 
 function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onCancel }) {
@@ -886,6 +1118,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "preview-manager", label: "Preview Manager", icon: Briefcase },
     { id: "preview-client", label: "Preview Client", icon: UserCircle },
     { id: "api-status", label: "Connexions API", icon: Plug },
+    { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
   ];
 
@@ -980,6 +1213,7 @@ export default function AdminDashboard() {
     if (active === "campaigns") return <AdminCampaignsTab />;
     if (active === "api-status") return <ApiStatusTab />;
     if (active === "settings") return <SettingsTab />;
+    if (active === "support") return <SupportTab />;
     if (previewRoles[active]) {
       const p = previewRoles[active];
       return <PreviewTab role={p.role} label={p.label} icon={p.icon} color={p.color} />;

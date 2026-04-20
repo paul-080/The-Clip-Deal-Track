@@ -1,16 +1,161 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth, API } from "../App";
 import { motion } from "framer-motion";
 import {
   Send, HelpCircle, Lightbulb, DollarSign, Eye, EyeOff,
   CheckCircle, CreditCard, ChevronLeft, User, AlertCircle,
-  MessageSquare, ExternalLink
+  MessageSquare, ExternalLink, MousePointerClick, Copy, Check
 } from "lucide-react";
-import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
-import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
+
+// ─── Sub-components defined OUTSIDE ChatPanel to prevent re-mounting ──────────
+// (If defined inside, React recreates the function reference on every render,
+//  unmounts + remounts the component, and the focused input loses focus.)
+
+function getRoleColor(role) {
+  return { clipper: "#00E5FF", agency: "#FF007F", manager: "#39FF14", client: "#FFB300" }[role] || "#fff";
+}
+
+function MessageBubble({ msg, userId, isAgency }) {
+  const isOwn = msg.sender_id === userId;
+  const roleColor = getRoleColor(msg.sender_role);
+  const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
+      {!isOwn && (
+        <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
+          {msg.sender_picture
+            ? <img src={msg.sender_picture} alt="" className="w-full h-full object-cover" />
+            : <span className="text-[10px] font-bold text-white/60">{(msg.sender_name || "?")[0].toUpperCase()}</span>
+          }
+        </div>
+      )}
+      <div className={`max-w-[70%] ${isOwn
+        ? isAgency
+          ? "bg-[#FF007F]/15 border border-[#FF007F]/25 rounded-2xl rounded-tr-sm"
+          : "bg-[#00E5FF]/10 border border-[#00E5FF]/20 rounded-2xl rounded-tr-sm"
+        : "bg-white/8 border border-white/10 rounded-2xl rounded-tl-sm"
+      } px-4 py-2.5`}>
+        {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+        <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+        <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+      </div>
+    </div>
+  );
+}
+
+function PaymentMessageBubble({ msg, userId }) {
+  const isOwn = msg.sender_id === userId;
+  const roleColor = getRoleColor(msg.sender_role);
+  const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
+      {!isOwn && (
+        <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
+          {msg.sender_picture
+            ? <img src={msg.sender_picture} alt="" className="w-full h-full object-cover" />
+            : <span className="text-[10px] font-bold text-white/60">{(msg.sender_name || "?")[0].toUpperCase()}</span>
+          }
+        </div>
+      )}
+      <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 ${isOwn
+        ? "bg-[#f0c040]/10 border border-[#f0c040]/20 rounded-tr-sm"
+        : "bg-white/8 border border-white/10 rounded-tl-sm"
+      }`}>
+        {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+        <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+        <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+      </div>
+    </div>
+  );
+}
+
+// ChatInput MUST be outside the parent component — being inside causes focus loss on every keystroke
+const ChatInput = memo(function ChatInput({ value, onChange, onKeyDown, onSend, sending, placeholder, buttonColor }) {
+  return (
+    <div className="flex-shrink-0 flex items-center gap-3 p-4 border-t border-white/10 bg-[#0d0d0d]">
+      <input
+        value={value}
+        onChange={onChange}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder || "Écrire un message..."}
+        className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-2xl px-4 py-3 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 transition-colors"
+      />
+      <button
+        onClick={onSend}
+        disabled={sending || !value.trim()}
+        className="w-10 h-10 rounded-xl flex items-center justify-center transition-all disabled:opacity-30"
+        style={{ backgroundColor: buttonColor }}
+      >
+        <Send className="w-4 h-4 text-white" />
+      </button>
+    </div>
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+function fmt(n) {
+  if (!n) return "0";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return Math.round(n / 1000) + "K";
+  if (n >= 1e3) return (n / 1000).toFixed(1) + "K";
+  return n.toLocaleString("fr-FR");
+}
+
+function formatTime(h) {
+  return h < 24 ? `${Math.round(h)}h` : `${Math.floor(h / 24)}j`;
+}
+
+const ClipperSidebarItem = memo(function ClipperSidebarItem({ c, idx, isSelected, onClick, activeTab, paymentSummary, messages }) {
+  const payData = paymentSummary?.clippers?.find(p => p.user_id === c.user_id);
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2.5 p-3 rounded-xl mb-1 text-left transition-all w-full border ${
+        isSelected
+          ? "bg-white/10 border-white/15"
+          : "border-transparent hover:bg-white/5 hover:border-white/8"
+      }`}
+    >
+      <div className="relative flex-shrink-0">
+        <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center">
+          {c.picture
+            ? <img src={c.picture} alt="" className="w-full h-full object-cover" />
+            : <span className="text-xs font-bold text-[#00E5FF]">{(c.display_name || c.name || "?")[0].toUpperCase()}</span>
+          }
+        </div>
+        {activeTab === "paiement" && (
+          <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-[#f0c040] text-black text-[8px] font-black flex items-center justify-center">
+            {idx + 1}
+          </span>
+        )}
+        {activeTab === "conseils" && c.needs_advice && (
+          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#FF007F] border border-[#0d0d0d]" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-white text-sm font-medium truncate">{c.display_name || c.name}</p>
+        {activeTab === "paiement" && payData && (
+          <p className={`text-xs truncate font-mono ${payData.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
+            {payData.owed > 0 ? `€${payData.owed.toFixed(2)} dû` : "✓ À jour"}
+          </p>
+        )}
+        {activeTab === "conseils" && (
+          <p className={`text-xs truncate ${c.needs_advice ? "text-[#FF007F]" : "text-white/30"}`}>
+            {c.needs_advice ? "Besoin de conseil" : c.hours_since_advice ? `il y a ${formatTime(c.hours_since_advice)}` : "Jamais conseillé"}
+          </p>
+        )}
+        {activeTab === "questions" && (
+          <p className="text-xs text-white/30 truncate">
+            {messages.filter(m => m.sender_id === c.user_id).length} msg
+          </p>
+        )}
+      </div>
+    </button>
+  );
+});
 
 export default function ChatPanel({ campaigns }) {
   const location = useLocation();
@@ -35,6 +180,10 @@ export default function ChatPanel({ campaigns }) {
   const remunerationEndRef = useRef(null);
   const messagesEndRef = useRef(null);
   const wsRef = useRef(null);
+  // Ref to always have the latest activeTab in the WebSocket callback (avoids stale closure)
+  const activeTabRef = useRef("questions");
+  // Ref to prevent WebSocket reconnection after component unmounts
+  const mountedRef = useRef(true);
 
   // ── Helpers localStorage pour "vu jusqu'à" par onglet ──────────────────
   const lsKey = (tab) => `chatSeen_${campaignId}_${tab}_${user?.user_id}`;
@@ -50,6 +199,12 @@ export default function ChatPanel({ campaigns }) {
   const isClipper = user?.role === "clipper";
   const accentColor = isAgency ? "#FF007F" : "#00E5FF";
 
+  // Keep mountedRef alive for the lifetime of the component
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   useEffect(() => {
     if (!campaignId) return;
     fetchMessages();
@@ -61,17 +216,18 @@ export default function ChatPanel({ campaigns }) {
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, [campaignId]);
 
+  // Sync activeTabRef so WebSocket handler always reads the latest tab (no stale closure)
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+
+  // Scroll to bottom — only for the currently active tab
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (activeTab === "questions") messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    else if (activeTab === "remuneration" || activeTab === "paiement") remunerationEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    remunerationEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
-    conseilsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [receivedAdvices, messages]);
+    if (activeTab === "conseils") conseilsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [receivedAdvices]);
 
   // ── Calcul non-lus Questions ────────────────────────────────────────────
   useEffect(() => {
@@ -170,31 +326,37 @@ export default function ChatPanel({ campaigns }) {
           setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
           const msgType = data.message.message_type || "question";
           if (data.message.sender_id !== user?.user_id) {
+            // Use activeTabRef.current — never stale, always reflects latest tab
+            const curTab = activeTabRef.current;
             if (msgType === "question" || msgType === "chat" || !msgType) {
               setTabUnread(prev => ({
                 ...prev,
-                questions: activeTab === "questions" ? 0 : (prev.questions || 0) + 1,
+                questions: curTab === "questions" ? 0 : (prev.questions || 0) + 1,
               }));
-              if (activeTab === "questions") saveLastSeen("questions");
+              if (curTab === "questions") saveLastSeen("questions");
             } else if (msgType === "conseil") {
               setTabUnread(prev => ({
                 ...prev,
-                conseils: activeTab === "conseils" ? 0 : (prev.conseils || 0) + 1,
+                conseils: curTab === "conseils" ? 0 : (prev.conseils || 0) + 1,
               }));
-              if (activeTab === "conseils") saveLastSeen("conseils");
+              if (curTab === "conseils") saveLastSeen("conseils");
             }
           }
         }
         if (data.type === "new_advice" && isClipper) {
           fetchReceivedAdvices();
-          if (activeTab !== "conseils") {
+          const curTab = activeTabRef.current;
+          if (curTab !== "conseils") {
             setTabUnread(prev => ({ ...prev, conseils: (prev.conseils || 0) + 1 }));
           } else {
             saveLastSeen("conseils");
           }
         }
       };
-      wsRef.current.onclose = () => setTimeout(connectWebSocket, 3000);
+      // Only reconnect if the component is still mounted (prevents memory leak)
+      wsRef.current.onclose = () => {
+        if (mountedRef.current) setTimeout(connectWebSocket, 3000);
+      };
     } catch {}
   };
 
@@ -224,10 +386,13 @@ export default function ChatPanel({ campaigns }) {
     finally { setSending(false); }
   };
 
+  // Fix Bug 2: also post to /messages with message_type "conseil" so the agency
+  // can see their own sent advices in the Conseils tab (visibleConseilMessages).
   const handleSendAdvice = async () => {
     if (!adviceContent.trim() || !selectedClipper) return;
     setSending(true);
     try {
+      // 1. Post to /advices → clipper receives the nice advice card notification
       const res = await fetch(`${API}/advices`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -235,6 +400,17 @@ export default function ChatPanel({ campaigns }) {
         body: JSON.stringify({ campaign_id: campaignId, recipient_ids: [selectedClipper.user_id], content: adviceContent.trim() }),
       });
       if (res.ok) {
+        // 2. Also post to /messages with type "conseil" → agency sees it in their view
+        const msgRes = await fetch(`${API}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ campaign_id: campaignId, content: adviceContent.trim(), message_type: "conseil" }),
+        });
+        if (msgRes.ok) {
+          const newMsg = await msgRes.json();
+          setMessages(prev => prev.find(m => m.message_id === newMsg.message_id) ? prev : [...prev, newMsg]);
+        }
         toast.success(`Conseil envoyé à ${selectedClipper.display_name || selectedClipper.name}`);
         setAdviceContent("");
         fetchClippers();
@@ -299,17 +475,6 @@ export default function ChatPanel({ campaigns }) {
     finally { setClaimingPayment(false); }
   };
 
-  const fmt = (n) => {
-    if (!n) return "0";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e4) return Math.round(n / 1000) + "K";
-    if (n >= 1e3) return (n / 1000).toFixed(1) + "K";
-    return n.toLocaleString("fr-FR");
-  };
-
-  const getRoleColor = (role) => ({ clipper: "#00E5FF", agency: "#FF007F", manager: "#39FF14", client: "#FFB300" }[role] || "#fff");
-  const formatTime = (h) => h < 24 ? `${Math.round(h)}h` : `${Math.floor(h / 24)}j`;
-
   const sidebarClippers = () => {
     if (activeTab === "paiement" && paymentSummary?.clippers) {
       return [...paymentSummary.clippers].sort((a, b) => b.earned - a.earned);
@@ -332,9 +497,17 @@ export default function ChatPanel({ campaigns }) {
     ? questionMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
     : questionMessages;
 
+  // For agency Conseils: show messages of type "conseil" for the selected clipper
+  // (includes both advices the agency sent + clipper's replies)
   const visibleConseilMessages = selectedClipper
     ? conseilChatMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
     : conseilChatMessages;
+
+  // ── Stable handler refs for ChatInput (useCallback prevents focus loss) ───
+  const handleMsgChange = useCallback((e) => setNewMessage(e.target.value), []);
+  const handleMsgKeyDown = useCallback((e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }
+  }, [handleSendMessage]);
 
   if (!campaignId) {
     return (
@@ -353,139 +526,6 @@ export default function ChatPanel({ campaigns }) {
     ...(isAgencyOnly ? [{ id: "paiement", label: "Paiement", icon: DollarSign }] : []),
     ...(isClipper ? [{ id: "remuneration", label: "Rémunération", icon: DollarSign }] : []),
   ];
-
-  // ── Shared sub-components ──────────────────────────────────────────────
-
-  const MessageBubble = ({ msg }) => {
-    const isOwn = msg.sender_id === user?.user_id;
-    const roleColor = getRoleColor(msg.sender_role);
-    const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-
-    return (
-      <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
-        {!isOwn && (
-          <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
-            {msg.sender_picture
-              ? <img src={msg.sender_picture} alt="" className="w-full h-full object-cover" />
-              : <span className="text-[10px] font-bold text-white/60">
-                  {(msg.sender_name || "?")[0].toUpperCase()}
-                </span>
-            }
-          </div>
-        )}
-        <div className={`max-w-[70%] ${isOwn
-          ? isAgency
-            ? "bg-[#FF007F]/15 border border-[#FF007F]/25 rounded-2xl rounded-tr-sm"
-            : "bg-[#00E5FF]/10 border border-[#00E5FF]/20 rounded-2xl rounded-tr-sm"
-          : "bg-white/8 border border-white/10 rounded-2xl rounded-tl-sm"
-        } px-4 py-2.5`}>
-          {!isOwn && (
-            <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>
-              {msg.sender_name}
-            </p>
-          )}
-          <p className="text-white text-sm leading-relaxed">{msg.content}</p>
-          <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
-        </div>
-      </div>
-    );
-  };
-
-  const PaymentMessageBubble = ({ msg }) => {
-    const isOwn = msg.sender_id === user?.user_id;
-    const roleColor = getRoleColor(msg.sender_role);
-    const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-
-    return (
-      <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
-        {!isOwn && (
-          <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
-            {msg.sender_picture
-              ? <img src={msg.sender_picture} alt="" className="w-full h-full object-cover" />
-              : <span className="text-[10px] font-bold text-white/60">{(msg.sender_name || "?")[0].toUpperCase()}</span>
-            }
-          </div>
-        )}
-        <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 ${isOwn
-          ? "bg-[#f0c040]/10 border border-[#f0c040]/20 rounded-tr-sm"
-          : "bg-white/8 border border-white/10 rounded-tl-sm"
-        }`}>
-          {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
-          <p className="text-white text-sm leading-relaxed">{msg.content}</p>
-          <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
-        </div>
-      </div>
-    );
-  };
-
-  const ChatInput = ({ placeholder, buttonColor }) => (
-    <div className="flex items-center gap-3 p-4 border-t border-white/10 bg-[#0d0d0d]">
-      <input
-        value={newMessage}
-        onChange={e => setNewMessage(e.target.value)}
-        onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
-        placeholder={placeholder || "Écrire un message..."}
-        className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-2xl px-4 py-3 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 transition-colors"
-      />
-      <button
-        onClick={handleSendMessage}
-        disabled={sending || !newMessage.trim()}
-        className="w-10 h-10 rounded-xl flex items-center justify-center transition-all disabled:opacity-30"
-        style={{ backgroundColor: buttonColor || accentColor }}
-      >
-        <Send className="w-4 h-4 text-white" />
-      </button>
-    </div>
-  );
-
-  const ClipperSidebarItem = ({ c, idx, isSelected, onClick }) => {
-    const payData = paymentSummary?.clippers?.find(p => p.user_id === c.user_id);
-    return (
-      <button
-        onClick={onClick}
-        className={`flex items-center gap-2.5 p-3 rounded-xl mb-1 text-left transition-all w-full border ${
-          isSelected
-            ? "bg-white/10 border-white/15"
-            : "border-transparent hover:bg-white/5 hover:border-white/8"
-        }`}
-      >
-        <div className="relative flex-shrink-0">
-          <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center">
-            {c.picture
-              ? <img src={c.picture} alt="" className="w-full h-full object-cover" />
-              : <span className="text-xs font-bold text-[#00E5FF]">{(c.display_name || c.name || "?")[0].toUpperCase()}</span>
-            }
-          </div>
-          {activeTab === "paiement" && (
-            <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-[#f0c040] text-black text-[8px] font-black flex items-center justify-center">
-              {idx + 1}
-            </span>
-          )}
-          {activeTab === "conseils" && c.needs_advice && (
-            <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#FF007F] border border-[#0d0d0d]" />
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-white text-sm font-medium truncate">{c.display_name || c.name}</p>
-          {activeTab === "paiement" && payData && (
-            <p className={`text-xs truncate font-mono ${payData.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
-              {payData.owed > 0 ? `€${payData.owed.toFixed(2)} dû` : "✓ À jour"}
-            </p>
-          )}
-          {activeTab === "conseils" && (
-            <p className={`text-xs truncate ${c.needs_advice ? "text-[#FF007F]" : "text-white/30"}`}>
-              {c.needs_advice ? "Besoin de conseil" : c.hours_since_advice ? `il y a ${formatTime(c.hours_since_advice)}` : "Jamais conseillé"}
-            </p>
-          )}
-          {activeTab === "questions" && (
-            <p className="text-xs text-white/30 truncate">
-              {messages.filter(m => m.sender_id === c.user_id).length} msg
-            </p>
-          )}
-        </div>
-      </button>
-    );
-  };
 
   // ── Loading state ──────────────────────────────────────────────────────
   if (loading) {
@@ -573,6 +613,9 @@ export default function ChatPanel({ campaigns }) {
                     setSelectedClipper(selectedClipper?.user_id === c.user_id ? null : c);
                     setIbanVisible(false);
                   }}
+                  activeTab={activeTab}
+                  paymentSummary={paymentSummary}
+                  messages={messages}
                 />
               ))
             )}
@@ -596,8 +639,7 @@ export default function ChatPanel({ campaigns }) {
                   <p className="text-white/20 text-xs mt-1">pour voir et répondre à ses questions</p>
                 </div>
               ) : (
-                <div className="flex flex-col h-full min-h-0">
-                  {/* Subheader when clipper selected */}
+                <div className="flex-1 flex flex-col min-h-0">
                   {isAgency && selectedClipper && (
                     <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/8 flex-shrink-0">
                       <div className="w-6 h-6 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
@@ -606,13 +648,32 @@ export default function ChatPanel({ campaigns }) {
                           : <span className="text-[9px] font-bold text-[#00E5FF]">{(selectedClipper.display_name || "?")[0].toUpperCase()}</span>
                         }
                       </div>
-                      <p className="text-white/60 text-xs">
+                      <p className="text-white/60 text-xs flex-1 min-w-0">
                         Conversation avec <span className="text-white font-medium">{selectedClipper.display_name || selectedClipper.name}</span>
                       </p>
+                      {selectedClipper.social_accounts?.length > 0 && (
+                        <div className="flex gap-1 flex-shrink-0">
+                          {selectedClipper.social_accounts.map((acc, i) => {
+                            const link = acc.account_url || (
+                              acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
+                              acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
+                              `https://youtube.com/@${acc.username}`
+                            );
+                            const colors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
+                            return (
+                              <a key={i} href={link} target="_blank" rel="noopener noreferrer"
+                                className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/10 transition-all"
+                                style={{ color: colors[acc.platform] || "#fff" }}
+                                title={`@${acc.username} (${acc.platform})`}>
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Messages */}
                   <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
                     {visibleMessages.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-full text-center">
@@ -623,13 +684,22 @@ export default function ChatPanel({ campaigns }) {
                         <p className="text-white/15 text-xs mt-1">Soyez le premier à écrire</p>
                       </div>
                     ) : (
-                      visibleMessages.map(msg => <MessageBubble key={msg.message_id} msg={msg} />)
+                      visibleMessages.map(msg => (
+                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} />
+                      ))
                     )}
                     <div ref={messagesEndRef} />
                   </div>
 
-                  {/* Input */}
-                  <ChatInput placeholder={isClipper ? "Poser une question..." : "Répondre..."} buttonColor={accentColor} />
+                  <ChatInput
+                    value={newMessage}
+                    onChange={handleMsgChange}
+                    onKeyDown={handleMsgKeyDown}
+                    onSend={handleSendMessage}
+                    sending={sending}
+                    placeholder={isClipper ? "Poser une question..." : "Répondre..."}
+                    buttonColor={accentColor}
+                  />
                 </div>
               )}
             </>
@@ -649,7 +719,7 @@ export default function ChatPanel({ campaigns }) {
                   <p className="text-white/20 text-xs mt-1">pour lui envoyer un conseil personnalisé</p>
                 </div>
               ) : (
-                <div className="flex flex-col h-full min-h-0">
+                <div className="flex-1 flex flex-col min-h-0">
                   {/* Clipper header */}
                   <div className="flex items-center gap-3 px-4 py-3 border-b border-white/8 flex-shrink-0">
                     <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
@@ -668,7 +738,6 @@ export default function ChatPanel({ campaigns }) {
                             : "Jamais conseillé"}
                       </p>
                     </div>
-                    {/* Social links */}
                     {selectedClipper.social_accounts?.length > 0 && (
                       <div className="flex gap-1">
                         {selectedClipper.social_accounts.map((acc, i) => {
@@ -691,22 +760,25 @@ export default function ChatPanel({ campaigns }) {
                     )}
                   </div>
 
-                  {/* Historique conseils envoyés */}
+                  {/* Historique des conseils envoyés — maintenant visibles côté agence aussi */}
                   <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-0">
                     {visibleConseilMessages.length === 0 ? (
                       <div className="flex flex-col items-center justify-center h-full text-center">
                         <Lightbulb className="w-8 h-8 text-white/10 mb-3" />
                         <p className="text-white/25 text-xs">Aucun conseil envoyé à ce clippeur</p>
+                        <p className="text-white/15 text-[10px] mt-1">Utilisez le champ ci-dessous pour envoyer un conseil</p>
                       </div>
                     ) : (
-                      visibleConseilMessages.map(msg => <MessageBubble key={msg.message_id} msg={msg} />)
+                      visibleConseilMessages.map(msg => (
+                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} />
+                      ))
                     )}
                     <div ref={conseilsEndRef} />
                   </div>
 
-                  {/* Textarea conseil */}
+                  {/* Textarea conseil + quick reply */}
                   <div className="flex-shrink-0 border-t border-white/8 p-4 space-y-3">
-                    <Textarea
+                    <textarea
                       value={adviceContent}
                       onChange={e => setAdviceContent(e.target.value)}
                       placeholder={`Écrire un conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
@@ -722,12 +794,11 @@ export default function ChatPanel({ campaigns }) {
                         <Lightbulb className="w-4 h-4" />
                         Envoyer le conseil
                       </button>
-                      {/* Quick message */}
                       <div className="flex items-center gap-2 flex-1">
                         <input
                           value={newMessage}
-                          onChange={e => setNewMessage(e.target.value)}
-                          onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
+                          onChange={handleMsgChange}
+                          onKeyDown={handleMsgKeyDown}
                           placeholder="Message rapide..."
                           className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
                         />
@@ -750,139 +821,131 @@ export default function ChatPanel({ campaigns }) {
               ONGLET CONSEILS — CLIPPER
           ════════════════════════════════════════════════════════════ */}
           {activeTab === "conseils" && isClipper && (
-            <div className="flex flex-col h-full min-h-0">
+            <div className="flex-1 flex flex-col min-h-0">
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 min-h-0">
-                {receivedAdvices.length === 0 ? (
+                {receivedAdvices.length === 0 && conseilChatMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center h-32 text-center">
                     <Lightbulb className="w-10 h-10 text-white/10 mb-3" />
                     <p className="text-white/30 text-sm">Aucun conseil reçu</p>
                     <p className="text-white/15 text-xs mt-1">Ton agence t'enverra des conseils ici</p>
                   </div>
                 ) : (
-                  receivedAdvices.map((adv) => (
-                    <div key={adv.advice_id} className="bg-white/5 border border-[#FF007F]/15 rounded-xl p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 overflow-hidden flex items-center justify-center flex-shrink-0">
-                          {adv.sender?.picture
-                            ? <img src={adv.sender.picture} alt="" className="w-full h-full object-cover" />
-                            : <Lightbulb className="w-3 h-3 text-[#FF007F]" />
-                          }
+                  <>
+                    {/* Advice cards */}
+                    {receivedAdvices.map((adv) => (
+                      <div key={adv.advice_id} className="bg-white/5 border border-[#FF007F]/15 rounded-xl p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 overflow-hidden flex items-center justify-center flex-shrink-0">
+                            {adv.sender?.picture
+                              ? <img src={adv.sender.picture} alt="" className="w-full h-full object-cover" />
+                              : <Lightbulb className="w-3 h-3 text-[#FF007F]" />
+                            }
+                          </div>
+                          <p className="text-xs text-[#FF007F] font-semibold">{adv.sender?.display_name || "Manager"}</p>
+                          <p className="text-[10px] text-white/25 ml-auto">
+                            {new Date(adv.created_at).toLocaleDateString("fr-FR")}
+                          </p>
                         </div>
-                        <p className="text-xs text-[#FF007F] font-semibold">{adv.sender?.display_name || "Manager"}</p>
-                        <p className="text-[10px] text-white/25 ml-auto">
-                          {new Date(adv.created_at).toLocaleDateString("fr-FR")}
-                        </p>
+                        <p className="text-white/80 text-sm leading-relaxed">{adv.content}</p>
                       </div>
-                      <p className="text-white/80 text-sm leading-relaxed">{adv.content}</p>
-                    </div>
-                  ))
-                )}
+                    ))}
 
-                {/* Conversation conseils */}
-                {conseilChatMessages.length > 0 && (
-                  <div className="pt-3 mt-1 border-t border-white/8 space-y-3">
-                    <p className="text-[10px] text-white/20 uppercase tracking-widest font-medium text-center">Conversation</p>
-                    {conseilChatMessages.map(msg => <MessageBubble key={msg.message_id} msg={msg} />)}
-                  </div>
+                    {/* Fil de conversation (réponses clipper ↔ agence) */}
+                    {conseilChatMessages.length > 0 && (
+                      <div className="pt-3 mt-1 border-t border-white/8 space-y-3">
+                        <p className="text-[10px] text-white/20 uppercase tracking-widest font-medium text-center">Conversation</p>
+                        {conseilChatMessages.map(msg => (
+                          <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={false} />
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
                 <div ref={conseilsEndRef} />
               </div>
 
-              <ChatInput placeholder="Répondre à ton agence..." buttonColor="#FF007F" />
+              <ChatInput
+                value={newMessage}
+                onChange={handleMsgChange}
+                onKeyDown={handleMsgKeyDown}
+                onSend={handleSendMessage}
+                sending={sending}
+                placeholder="Répondre à ton agence..."
+                buttonColor="#FF007F"
+              />
             </div>
           )}
 
           {/* ════════════════════════════════════════════════════════════
-              ONGLET RÉMUNÉRATION — CLIPPER
+              ONGLET RÉMUNÉRATION — CLIPPER  (chat-first)
           ════════════════════════════════════════════════════════════ */}
           {activeTab === "remuneration" && isClipper && (
-            <div className="flex flex-col h-full min-h-0">
-              {!paymentSummary ? (
-                <div className="flex items-center justify-center h-32">
-                  <div className="w-6 h-6 border-2 border-white/10 border-t-[#f0c040] rounded-full animate-spin" />
-                </div>
-              ) : (
-                <>
-                  {/* Stats card */}
-                  <div className="flex-shrink-0 mx-4 mt-4 mb-3 rounded-2xl bg-[#1a1a1a] border border-white/8 p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <DollarSign className="w-4 h-4 text-[#f0c040]" />
-                      <p className="text-xs text-white/40 font-medium uppercase tracking-wider">À percevoir</p>
-                    </div>
-                    <p className="text-3xl font-bold text-[#f0c040] font-mono mb-3">
-                      €{paymentSummary.owed?.toFixed(2) || "0.00"}
-                    </p>
-                    <div className="h-px bg-white/8 mb-3" />
-                    <div className="flex items-center gap-3 text-xs text-white/40 flex-wrap">
-                      <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{fmt(paymentSummary.views)} vues</span>
-                      <span className="text-white/15">·</span>
-                      <span>€{paymentSummary.earned?.toFixed(2) || "0.00"} total</span>
-                      {paymentSummary.paid > 0 && (
-                        <>
-                          <span className="text-white/15">·</span>
-                          <span className="text-[#39FF14]">€{paymentSummary.paid.toFixed(2)} payé</span>
-                        </>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-white/20 mt-2">
-                      {fmt(paymentSummary.views)} vues × €{paymentSummary.rpm}/1 000 vues = €{paymentSummary.earned?.toFixed(2) || "0.00"}
-                    </p>
-
-                    {/* CTA */}
-                    <div className="mt-3">
-                      {paymentSummary.owed > 0 ? (
-                        <button
-                          onClick={handleClaimPayment}
-                          disabled={claimingPayment}
-                          className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#f0c040] hover:bg-[#f0c040]/90 disabled:opacity-50 text-black font-bold text-sm transition-all"
-                        >
-                          {claimingPayment
-                            ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />Envoi...</>
-                            : <>💰 Demander à être payé (€{paymentSummary.owed.toFixed(2)})</>
-                          }
-                        </button>
-                      ) : (
-                        <div className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#39FF14]/10 border border-[#39FF14]/20">
-                          <CheckCircle className="w-4 h-4 text-[#39FF14]" />
-                          <p className="text-[#39FF14] text-sm font-medium">Tout est à jour</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Erreur RIB */}
-                  {noRibError && (
-                    <div className="mx-4 mb-3 bg-red-500/8 border border-red-500/25 rounded-xl p-3 flex-shrink-0">
-                      <div className="flex items-start gap-2 mb-2">
-                        <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                        <p className="text-red-400 text-xs font-medium">IBAN / PayPal manquant</p>
-                      </div>
-                      <button
-                        onClick={() => navigate("/clipper/settings")}
-                        className="w-full py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium transition-all border border-red-500/20"
-                      >
-                        → Paramètres — renseigner mon IBAN / PayPal
-                      </button>
-                    </div>
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* ── Micro-barre : tout en une seule ligne ── */}
+              {paymentSummary && (
+                <div className="flex-shrink-0 flex items-center gap-1.5 mx-3 mt-2 px-2.5 py-1.5 rounded-lg bg-white/4 border border-white/8 text-[11px]">
+                  {paymentSummary.payment_model === "clicks"
+                    ? <MousePointerClick className="w-3 h-3 text-[#f0c040] flex-shrink-0" />
+                    : <DollarSign className="w-3 h-3 text-[#f0c040] flex-shrink-0" />
+                  }
+                  <span className="font-mono font-bold text-[#f0c040]">€{paymentSummary.owed?.toFixed(2) || "0.00"}</span>
+                  <span className="text-white/20">·</span>
+                  {paymentSummary.payment_model === "clicks"
+                    ? <span className="text-white/35">{(paymentSummary.unique_clicks || paymentSummary.clicks || 0).toLocaleString("fr-FR")} clics</span>
+                    : <span className="text-white/35">{fmt(paymentSummary.views)} vues</span>
+                  }
+                  {paymentSummary.paid > 0 && (
+                    <><span className="text-white/20">·</span><span className="text-[#39FF14]">€{paymentSummary.paid.toFixed(2)} payé</span></>
                   )}
-
-                  {/* Chat rémunération */}
-                  <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 min-h-0">
-                    {remunerationMessages.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center h-full text-center">
-                        <CreditCard className="w-8 h-8 text-white/10 mb-3" />
-                        <p className="text-white/25 text-xs">Ton fil de paiement</p>
-                        <p className="text-white/15 text-[10px] mt-1">Réclame ton argent ou échange avec l'agence ici</p>
-                      </div>
+                  <div className="ml-auto flex-shrink-0">
+                    {paymentSummary.owed > 0 ? (
+                      <button onClick={handleClaimPayment} disabled={claimingPayment}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-bold text-[11px] transition-all disabled:opacity-50">
+                        {claimingPayment
+                          ? <div className="w-2.5 h-2.5 border border-black/30 border-t-black rounded-full animate-spin" />
+                          : "💰 Percevoir"}
+                      </button>
                     ) : (
-                      remunerationMessages.map(msg => <PaymentMessageBubble key={msg.message_id} msg={msg} />)
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#39FF14]/10 text-[#39FF14] text-[10px] font-medium">
+                        <CheckCircle className="w-2.5 h-2.5" /> À jour
+                      </span>
                     )}
-                    <div ref={remunerationEndRef} />
                   </div>
-
-                  <ChatInput placeholder="Message à l'agence..." buttonColor="#f0c040" />
-                </>
+                </div>
               )}
+              {noRibError && (
+                <div className="flex-shrink-0 flex items-center justify-between gap-2 mx-3 mt-1 px-2.5 py-1.5 rounded-lg bg-red-500/8 border border-red-500/25">
+                  <div className="flex items-center gap-1.5">
+                    <AlertCircle className="w-3 h-3 text-red-400 flex-shrink-0" />
+                    <p className="text-red-400 text-[10px]">IBAN/PayPal manquant</p>
+                  </div>
+                  <button onClick={() => navigate("/clipper/settings")} className="text-[10px] text-red-400 underline flex-shrink-0">→ Paramètres</button>
+                </div>
+              )}
+              {/* Chat = tout l'espace restant */}
+              <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+                {remunerationMessages.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <CreditCard className="w-7 h-7 text-white/8 mb-2" />
+                    <p className="text-white/20 text-xs">Fil de paiement</p>
+                    <p className="text-white/12 text-[10px] mt-0.5">Réclame tes gains ou échange ici</p>
+                  </div>
+                ) : (
+                  remunerationMessages.map(msg => (
+                    <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} />
+                  ))
+                )}
+                <div ref={remunerationEndRef} />
+              </div>
+              <ChatInput
+                value={newMessage}
+                onChange={handleMsgChange}
+                onKeyDown={handleMsgKeyDown}
+                onSend={handleSendMessage}
+                sending={sending}
+                placeholder="Message à l'agence..."
+                buttonColor="#f0c040"
+              />
             </div>
           )}
 
@@ -893,8 +956,7 @@ export default function ChatPanel({ campaigns }) {
             <>
               {!selectedClipper ? (
                 /* Vue liste */
-                <div className="flex flex-col h-full min-h-0">
-                  {/* Summary header */}
+                <div className="flex-1 flex flex-col min-h-0">
                   {paymentSummary?.clippers?.length > 0 && (
                     <div className="flex-shrink-0 mx-4 mt-4 mb-4 grid grid-cols-2 gap-3">
                       <div className="bg-white/5 border border-white/8 rounded-xl p-3 text-center">
@@ -913,7 +975,7 @@ export default function ChatPanel({ campaigns }) {
                   )}
 
                   <p className="text-[10px] text-white/20 uppercase tracking-widest font-medium px-4 mb-2">
-                    Cliquezur un clippeur pour gérer son paiement
+                    Cliquez sur un clippeur pour gérer son paiement
                   </p>
 
                   <div className="flex-1 overflow-y-auto px-4 space-y-2 pb-4">
@@ -963,78 +1025,54 @@ export default function ChatPanel({ campaigns }) {
               ) : (() => {
                 const pd = paymentSummary?.clippers?.find(c => c.user_id === selectedClipper.user_id);
                 return (
-                  <div className="flex flex-col h-full min-h-0">
-                    {/* Back button */}
-                    <div className="flex-shrink-0 px-4 pt-3 pb-2">
+                  <div className="flex-1 flex flex-col min-h-0">
+                    {/* ── Barre compacte : back + avatar + nom + stats + statut ── */}
+                    <div className="flex-shrink-0 mx-3 mt-2 mb-2 p-2.5 bg-white/4 border border-white/8 rounded-xl flex items-center gap-2 min-w-0">
                       <button
                         onClick={() => setSelectedClipper(null)}
-                        className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors"
+                        className="flex-shrink-0 text-white/30 hover:text-white/70 transition-colors"
+                        title="Retour"
                       >
-                        <ChevronLeft className="w-3.5 h-3.5" />
-                        Tous les clippeurs
+                        <ChevronLeft className="w-4 h-4" />
                       </button>
-                    </div>
-
-                    {/* Clipper card + IBAN */}
-                    <div className="flex-shrink-0 mx-4 mb-3 p-3.5 bg-white/4 border border-white/8 rounded-2xl flex items-center gap-3">
-                      <div className="w-11 h-11 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
+                      <div className="w-7 h-7 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
                         {selectedClipper.picture
                           ? <img src={selectedClipper.picture} alt="" className="w-full h-full object-cover" />
-                          : <span className="text-sm font-bold text-[#00E5FF]">{(selectedClipper.display_name || "?")[0].toUpperCase()}</span>
+                          : <span className="text-[10px] font-bold text-[#00E5FF]">{(selectedClipper.display_name || "?")[0].toUpperCase()}</span>
                         }
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-white font-semibold text-sm">{selectedClipper.display_name || selectedClipper.name}</p>
+                        <p className="text-white font-semibold text-xs truncate">{selectedClipper.display_name || selectedClipper.name}</p>
                         {pd?.payment_info ? (
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            <CreditCard className="w-3 h-3 text-[#f0c040] flex-shrink-0" />
+                          <div className="flex items-center gap-1">
+                            <CreditCard className="w-2.5 h-2.5 text-[#f0c040] flex-shrink-0" />
                             <span
-                              className="text-xs font-mono text-[#f0c040] truncate transition-all"
-                              style={!ibanVisible ? { filter: "blur(5px)", userSelect: "none" } : {}}
+                              className="text-[10px] font-mono text-[#f0c040] truncate transition-all"
+                              style={!ibanVisible ? { filter: "blur(4px)", userSelect: "none" } : {}}
                             >
                               {pd.payment_info}
                             </span>
-                            <button
-                              onClick={() => setIbanVisible(v => !v)}
-                              className="text-white/30 hover:text-white/60 transition-colors flex-shrink-0 ml-1"
-                            >
-                              {ibanVisible ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            <button onClick={() => setIbanVisible(v => !v)} className="text-white/25 hover:text-white/60 transition-colors flex-shrink-0">
+                              {ibanVisible ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
                             </button>
                           </div>
                         ) : (
-                          <p className="text-xs text-white/20 italic mt-0.5">Pas d'IBAN/PayPal renseigné</p>
+                          <p className="text-[10px] text-white/20 italic">Pas d'IBAN/PayPal</p>
                         )}
                       </div>
-                      {pd?.owed > 0 ? (
-                        <span className="flex-shrink-0 text-xs font-mono font-bold text-[#f0c040] bg-[#f0c040]/12 border border-[#f0c040]/20 px-2 py-1 rounded-lg">
-                          €{pd.owed.toFixed(2)}
-                        </span>
-                      ) : (
-                        <span className="flex-shrink-0 text-xs font-mono text-[#39FF14] bg-[#39FF14]/10 border border-[#39FF14]/20 px-2 py-1 rounded-lg">
-                          ✓
-                        </span>
+                      {/* Stats inline */}
+                      {pd && (
+                        <div className="flex items-center gap-2 flex-shrink-0 text-[10px]">
+                          <span className="text-white/40">{fmt(pd.views)} vues</span>
+                          <span className="text-white/15">·</span>
+                          <span className="text-[#00E5FF] font-mono">€{pd.earned?.toFixed(2)}</span>
+                          <span className="text-white/15">·</span>
+                          <span className={`font-mono font-bold ${pd.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
+                            {pd.owed > 0 ? `€${pd.owed.toFixed(2)} dû` : "✓ Payé"}
+                          </span>
+                        </div>
                       )}
                     </div>
-
-                    {/* Stats 3 colonnes */}
-                    {pd && (
-                      <div className="flex-shrink-0 mx-4 mb-3 grid grid-cols-3 gap-2">
-                        <div className="bg-white/4 border border-white/8 rounded-xl p-2.5 text-center">
-                          <p className="text-[9px] text-white/30 uppercase tracking-wider mb-1">Vues</p>
-                          <p className="text-white font-mono font-bold text-sm">{fmt(pd.views)}</p>
-                        </div>
-                        <div className="bg-[#00E5FF]/5 border border-[#00E5FF]/15 rounded-xl p-2.5 text-center">
-                          <p className="text-[9px] text-white/30 uppercase tracking-wider mb-1">Gagné</p>
-                          <p className="text-[#00E5FF] font-mono font-bold text-sm">€{pd.earned?.toFixed(2)}</p>
-                        </div>
-                        <div className={`rounded-xl p-2.5 text-center border ${pd.owed > 0 ? "bg-[#f0c040]/8 border-[#f0c040]/20" : "bg-[#39FF14]/8 border-[#39FF14]/20"}`}>
-                          <p className="text-[9px] text-white/30 uppercase tracking-wider mb-1">À payer</p>
-                          <p className={`font-mono font-bold text-sm ${pd.owed > 0 ? "text-[#f0c040]" : "text-[#39FF14]"}`}>
-                            {pd.owed > 0 ? `€${pd.owed.toFixed(2)}` : "✓"}
-                          </p>
-                        </div>
-                      </div>
-                    )}
 
                     {/* Chat rémunération scrollable */}
                     <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 min-h-0">
@@ -1045,58 +1083,49 @@ export default function ChatPanel({ campaigns }) {
                           <p className="text-white/12 text-[10px] mt-0.5">Les messages de paiement apparaissent ici</p>
                         </div>
                       ) : (
-                        remunerationMessages.map(msg => <PaymentMessageBubble key={msg.message_id} msg={msg} />)
+                        remunerationMessages.map(msg => (
+                          <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} />
+                        ))
                       )}
                       <div ref={remunerationEndRef} />
                     </div>
 
-                    {/* Actions fixes en bas */}
-                    <div className="flex-shrink-0 border-t border-white/8 p-4 space-y-3">
-                      {pd?.owed > 0 ? (
-                        <div>
-                          <button
-                            onClick={handleConfirmPayment}
-                            disabled={confirmingPayment}
-                            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#f0c040] hover:bg-[#f0c040]/90 disabled:opacity-50 text-black font-bold text-sm transition-all"
-                          >
-                            {confirmingPayment
-                              ? <><div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />Confirmation...</>
-                              : <>✅ J'ai effectué le virement de €{pd.owed.toFixed(2)}</>
-                            }
-                          </button>
-                          <p className="text-[10px] text-white/20 text-center mt-1.5">
-                            Faites le virement depuis votre banque/PayPal AVANT de cliquer
-                          </p>
+                    {/* Actions fixes en bas — ultra-compact */}
+                    <div className="flex-shrink-0 border-t border-white/8 px-3 pt-1.5 pb-2 space-y-1.5">
+                      {pd?.owed > 0 && (
+                        <button
+                          onClick={handleConfirmPayment}
+                          disabled={confirmingPayment}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/90 disabled:opacity-50 text-black font-bold text-xs transition-all"
+                        >
+                          {confirmingPayment
+                            ? <><div className="w-2.5 h-2.5 border border-black/30 border-t-black rounded-full animate-spin" />Confirmation...</>
+                            : <>✅ Virement effectué — €{pd.owed.toFixed(2)}</>
+                          }
+                        </button>
+                      )}
+                      {!pd?.owed && pd?.earned > 0 && (
+                        <div className="flex items-center justify-center gap-1 py-1 rounded-lg bg-[#39FF14]/8 border border-[#39FF14]/15">
+                          <CheckCircle className="w-2.5 h-2.5 text-[#39FF14]" />
+                          <p className="text-[#39FF14] text-[11px] font-medium">À jour</p>
                         </div>
-                      ) : pd?.earned > 0 ? (
-                        <div className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#39FF14]/8 border border-[#39FF14]/15">
-                          <CheckCircle className="w-4 h-4 text-[#39FF14]" />
-                          <p className="text-[#39FF14] text-sm font-medium">Ce clippeur est à jour</p>
-                        </div>
-                      ) : null}
-
-                      <div className="flex items-center gap-3">
+                      )}
+                      <div className="flex items-center gap-2">
                         <input
                           value={newMessage}
-                          onChange={e => setNewMessage(e.target.value)}
-                          onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
+                          onChange={handleMsgChange}
+                          onKeyDown={handleMsgKeyDown}
                           placeholder="Message de paiement..."
-                          className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-2xl px-4 py-3 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 transition-colors"
+                          className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-2xl px-3 py-2 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 transition-colors"
                         />
                         <button
                           onClick={handleSendMessage}
                           disabled={sending || !newMessage.trim()}
-                          className="w-10 h-10 rounded-xl bg-[#f0c040]/20 hover:bg-[#f0c040]/40 border border-[#f0c040]/30 disabled:opacity-30 flex items-center justify-center transition-all"
+                          className="w-8 h-8 rounded-xl bg-[#f0c040]/20 hover:bg-[#f0c040]/40 border border-[#f0c040]/30 disabled:opacity-30 flex items-center justify-center transition-all"
                         >
-                          <Send className="w-4 h-4 text-[#f0c040]" />
+                          <Send className="w-3 h-3 text-[#f0c040]" />
                         </button>
                       </div>
-
-                      {pd && (
-                        <p className="text-[10px] text-white/15 text-center">
-                          {fmt(pd.views)} vues × €{paymentSummary?.rpm}/1 000 vues = €{pd.earned?.toFixed(2)}
-                        </p>
-                      )}
                     </div>
                   </div>
                 );

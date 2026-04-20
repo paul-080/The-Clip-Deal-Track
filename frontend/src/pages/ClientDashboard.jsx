@@ -3,11 +3,12 @@ import { Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, API } from "../App";
 import Sidebar from "../components/Sidebar";
 import { motion } from "framer-motion";
-import { Settings, MessageCircle, Video, Eye, Users, TrendingUp, Heart, ExternalLink, Film } from "lucide-react";
+import { Settings, MessageCircle, Video, Eye, Users, TrendingUp, Heart, ExternalLink, Film, HelpCircle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import ChatPanel from "../components/ChatPanel";
+import SupportPage from "../components/SupportPage";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const ACCENT_COLOR = "#FFB300";
@@ -27,8 +28,24 @@ export default function ClientDashboard() {
   const { user } = useAuth();
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [supportUnread, setSupportUnread] = useState(0);
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => {
+    fetchData();
+    fetchUnreadCounts();
+    const interval = setInterval(fetchUnreadCounts, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchUnreadCounts = async () => {
+    try {
+      const res = await fetch(`${API}/messages/unread-counts`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setSupportUnread(data.support_unread || 0);
+      }
+    } catch {}
+  };
 
   const fetchData = async () => {
     try {
@@ -56,6 +73,7 @@ export default function ClientDashboard() {
       ],
     })),
     { type: "divider" },
+    { id: "support", label: "Support", icon: HelpCircle, path: "/client/support", badge: supportUnread },
     { id: "settings", label: "Paramètres", icon: Settings, path: "/client/settings" },
   ];
 
@@ -67,6 +85,7 @@ export default function ClientDashboard() {
           <Route index element={<ClientHome campaigns={campaigns} loading={loading} />} />
           <Route path="campaign/:campaignId" element={<CampaignView campaigns={campaigns} />} />
           <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
+          <Route path="support" element={<SupportPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Routes>
       </main>
