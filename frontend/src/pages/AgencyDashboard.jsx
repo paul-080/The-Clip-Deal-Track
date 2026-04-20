@@ -407,9 +407,8 @@ function DiscoverPage() {
                   {campaign.payment_model === "clicks" ? (
                     <>
                       <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-0.5 rounded-md">
-                        🔗 {campaign.rate_per_click || 0}€ / clic
+                        🔗 {campaign.rate_per_click || 0}€ / 1K clics
                       </span>
-                      <span className="text-[10px] text-white/30 bg-white/5 px-1.5 py-0.5 rounded-md">Au clic</span>
                     </>
                   ) : (
                     <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-0.5 rounded-md">
@@ -623,7 +622,7 @@ function CreateCampaign({ onCreated }) {
       return;
     }
     if (formData.payment_model === "clicks" && (!formData.rate_per_click || !formData.destination_url.trim())) {
-      toast.error("Veuillez renseigner le prix par clic et l'URL de destination");
+      toast.error("Veuillez renseigner le prix pour 1 000 clics et l'URL de destination");
       return;
     }
 
@@ -815,15 +814,16 @@ function CreateCampaign({ onCreated }) {
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm text-white/70 mb-2">Prix par clic (€) *</label>
+                  <label className="block text-sm text-white/70 mb-2">Prix pour 1 000 clics (€) *</label>
                   <Input
                     type="number"
-                    step="0.001"
+                    step="0.01"
                     value={formData.rate_per_click}
                     onChange={(e) => handleChange("rate_per_click", e.target.value)}
-                    placeholder="0.05"
+                    placeholder="50"
                     className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
                   />
+                  <p className="text-white/30 text-xs mt-1">Ex : 50 = €50 pour 1 000 clics (soit €0.05/clic)</p>
                 </div>
                 <div className="flex items-end pb-0.5">
                   <label className="flex items-center gap-2 cursor-pointer">
@@ -852,7 +852,7 @@ function CreateCampaign({ onCreated }) {
               </div>
               <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/20">
                 <p className="text-[#f0c040] text-xs font-medium mb-1">💡 Comment ça marche</p>
-                <p className="text-white/50 text-xs">Après création, génère les liens depuis l'onglet <strong className="text-white/70">Liens</strong> de la campagne. Chaque clipper reçoit un lien unique à mettre dans sa bio TikTok / Instagram / YouTube.</p>
+                <p className="text-white/50 text-xs">Chaque clipper reçoit un lien unique à mettre dans sa bio. Les gains = <strong className="text-white/70">(clics / 1 000) × tarif</strong>. Génère les liens depuis l'onglet <strong className="text-white/70">Liens</strong> après création.</p>
               </div>
             </>
           )}
@@ -1378,7 +1378,7 @@ function CampaignDashboard({ campaigns }) {
                 {campaign.payment_model === "clicks" ? (
                   <>
                     <div>
-                      <p className="text-xs text-white/40">Prix / clic</p>
+                      <p className="text-xs text-white/40">Prix / 1K clics</p>
                       <p className="text-[#FF007F] font-mono font-bold text-lg">€{campaign.rate_per_click || 0}</p>
                     </div>
                     <div>
@@ -1904,7 +1904,8 @@ function CampaignDashboard({ campaigns }) {
               </table>
               {clickLinks.rate_per_click > 0 && (
                 <div className="px-5 py-3 border-t border-white/5 text-xs text-white/30">
-                  Tarif : <span className="text-white/50 font-mono">€{clickLinks.rate_per_click} / clic {campaign.unique_clicks_only ? "(unique)" : "(total)"}</span>
+                  Tarif : <span className="text-white/50 font-mono">€{clickLinks.rate_per_click} / 1K clics {campaign.unique_clicks_only ? "(clics uniques)" : "(tous les clics)"}</span>
+                  <span className="ml-2 text-white/20">— soit €{(clickLinks.rate_per_click / 1000).toFixed(4)}/clic</span>
                 </div>
               )}
             </div>

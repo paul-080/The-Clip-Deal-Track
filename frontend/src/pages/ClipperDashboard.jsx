@@ -718,7 +718,7 @@ function DiscoverCampaigns({ onJoin }) {
                 {selectedCampaign.payment_model === "clicks" ? (
                   <p className="text-sm text-white/50 mt-1">
                     🔗 <span className="text-[#f0c040] font-mono font-bold">€{selectedCampaign.rate_per_click || 0}</span>
-                    <span className="text-white/30"> / clic</span>
+                    <span className="text-white/30"> / 1K clics</span>
                     {selectedCampaign.unique_clicks_only && <span className="ml-2 text-[10px] text-white/30 border border-white/10 px-1.5 py-0.5 rounded-md">Clics uniques</span>}
                   </p>
                 ) : (
@@ -735,7 +735,7 @@ function DiscoverCampaigns({ onJoin }) {
                 <p className="text-[#f0c040] text-xs font-semibold mb-1">🔗 Campagne au clic</p>
                 <p className="text-white/50 text-xs">
                   Après acceptation, tu recevras un <strong className="text-white/70">lien de tracking unique</strong> à mettre dans ta bio.
-                  Chaque visiteur qui clique te rapporte <strong className="text-[#f0c040]">€{selectedCampaign.rate_per_click || 0}</strong>{selectedCampaign.unique_clicks_only ? " (1 IP = 1 clic)" : ""}.
+                  Gains = <strong className="text-[#f0c040]">(clics / 1 000) × €{selectedCampaign.rate_per_click || 0}</strong>{selectedCampaign.unique_clicks_only ? " — 1 IP = 1 clic" : ""}.
                 </p>
               </div>
             )}
@@ -841,14 +841,9 @@ function DiscoverCampaigns({ onJoin }) {
                 {/* Payment model badge */}
                 <div className="flex items-center gap-2 flex-wrap">
                   {c.payment_model === "clicks" ? (
-                    <>
-                      <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-md">
-                        🔗 {c.rate_per_click || 0}€ / clic
-                      </span>
-                      <span className="text-[10px] text-[#f0c040]/60 border border-[#f0c040]/20 px-1.5 py-0.5 rounded-md">
-                        Lien bio
-                      </span>
-                    </>
+                    <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-md">
+                      🔗 {c.rate_per_click || 0}€ / 1K clics
+                    </span>
                   ) : (
                     <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-md">
                       💰 {c.rpm || 0}€ / 1K vues
@@ -2017,7 +2012,7 @@ function PaymentPage({ stats }) {
                           {myLink.rate_per_click > 0 && (
                             <div className="flex items-center gap-1.5">
                               <DollarSign className="w-3 h-3 text-[#f0c040]/50" />
-                              <span className="text-xs text-[#f0c040]/70">€{myLink.rate_per_click} / clic</span>
+                              <span className="text-xs text-[#f0c040]/70">€{myLink.rate_per_click} / 1K clics</span>
                             </div>
                           )}
                         </div>

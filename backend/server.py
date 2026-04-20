@@ -5490,7 +5490,7 @@ async def _calc_clicks_for_member(campaign_id: str, user_id: str, rate_per_click
         clicks = link.get("click_count", 0)
         unique_clicks = link.get("unique_click_count", 0)
         billable = unique_clicks if unique_only else clicks
-        earnings = round(billable * rate_per_click, 2)
+        earnings = round((billable / 1000) * rate_per_click, 2)  # €/1K clics
         backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
         tracking_url = link.get("tracking_url") or f"{backend_url}/track/{link['short_code']}"
 
