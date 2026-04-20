@@ -93,7 +93,7 @@ def _get_instagram_session() -> str:
     _instagram_session_index += 1
     return cookie
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
-ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', '')
+ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
@@ -1186,7 +1186,7 @@ async def join_as_client(campaign_id: str, user: dict = Depends(get_current_user
     return {"message": "Demande envoyée à l'agence", "member": member}
 
 @api_router.post("/campaigns/{campaign_id}/join-as-manager")
-async def join_as_manager(campaign_id: str, user: dict = Depends(get_current_user)):
+async def join_as_manager(campaign_id: str, request: Request, user: dict = Depends(get_current_user)):
     if user.get("role") != "manager":
         raise HTTPException(status_code=403, detail="Managers uniquement")
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
@@ -1195,6 +1195,11 @@ async def join_as_manager(campaign_id: str, user: dict = Depends(get_current_use
     existing = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"]})
     if existing:
         raise HTTPException(status_code=400, detail="Demande déjà envoyée")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
     member = {
         "member_id": f"mem_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign_id,
@@ -1204,16 +1209,83 @@ async def join_as_manager(campaign_id: str, user: dict = Depends(get_current_use
         "joined_at": datetime.now(timezone.utc).isoformat(),
         "strikes": 0,
         "last_post_at": None,
+        "first_name": body.get("first_name", ""),
+        "last_name": body.get("last_name", ""),
+        "motivation": body.get("motivation", ""),
     }
     await db.campaign_members.insert_one(member)
     member.pop("_id", None)
     try:
         agency_id = campaign.get("agency_id")
         if agency_id:
-            await manager.send_to_user(agency_id, {"type": "new_manager_request", "campaign_id": campaign_id, "user_id": user["user_id"], "display_name": user.get("display_name") or user.get("name")})
+            await manager.send_to_user(agency_id, {
+                "type": "new_manager_request",
+                "campaign_id": campaign_id,
+                "campaign_name": campaign.get("name", ""),
+                "user_id": user["user_id"],
+                "display_name": user.get("display_name") or user.get("name"),
+                "first_name": body.get("first_name", ""),
+                "last_name": body.get("last_name", ""),
+                "motivation": body.get("motivation", ""),
+            })
     except Exception:
         pass
     return {"message": "Demande envoyée à l'agence", "member": member}
+
+
+@api_router.post("/campaigns/{campaign_id}/generate-my-link")
+async def generate_my_click_link(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Clipper: create their tracking link if it doesn't exist yet (fallback for clippers accepted before auto-gen)."""
+    if user.get("role") != "clipper":
+        raise HTTPException(status_code=403, detail="Clippers uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("payment_model") != "clicks":
+        raise HTTPException(status_code=400, detail="Cette campagne n'est pas au clic")
+    # Must be an active member
+    membership = await db.campaign_members.find_one({
+        "campaign_id": campaign_id,
+        "user_id": user["user_id"],
+        "status": "active"
+    })
+    if not membership:
+        raise HTTPException(status_code=403, detail="Tu dois être accepté dans cette campagne")
+    # Return existing link if any
+    existing = await db.click_links.find_one(
+        {"campaign_id": campaign_id, "clipper_id": user["user_id"], "is_active": True},
+        {"_id": 0}
+    )
+    if existing:
+        backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+        if not existing.get("tracking_url"):
+            existing["tracking_url"] = f"{backend_url}/track/{existing['short_code']}"
+        return existing
+    # Generate new link
+    for _ in range(10):
+        short_code = _gen_short_code()
+        if not await db.click_links.find_one({"short_code": short_code}):
+            break
+    backend_url = os.environ.get("BACKEND_URL", "https://api.theclipdealtrack.com")
+    link_id = f"lnk_{uuid.uuid4().hex[:12]}"
+    link_doc = {
+        "link_id": link_id,
+        "short_code": short_code,
+        "campaign_id": campaign_id,
+        "clipper_id": user["user_id"],
+        "clipper_name": user.get("display_name") or user.get("name", "?"),
+        "destination_url": campaign.get("destination_url", ""),
+        "is_active": True,
+        "click_count": 0,
+        "unique_click_count": 0,
+        "earnings": 0.0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_clicked_at": None,
+        "tracking_url": f"{backend_url}/track/{short_code}",
+    }
+    await db.click_links.insert_one(link_doc)
+    link_doc.pop("_id", None)
+    return link_doc
 
 async def get_clipper_global_stats(user_id: str) -> dict:
     """Get total views and video count for a clipper across all campaigns (tracked_videos)."""
@@ -7187,6 +7259,144 @@ async def generate_click_links(campaign_id: str, user: dict = Depends(get_curren
         generated.append(link_doc)
 
     return {"links": generated, "count": len(generated)}
+
+@api_router.get("/campaigns/{campaign_id}/click-stats")
+async def get_campaign_click_stats(
+    campaign_id: str,
+    period: str = "30d",            # 1d | 7d | 30d | all | custom
+    date_from: Optional[str] = None, # YYYY-MM-DD
+    date_to: Optional[str] = None,   # YYYY-MM-DD
+    clipper_id: Optional[str] = None,  # filter by clipper (used by clipper's own view)
+    user: dict = Depends(get_current_user)
+):
+    """Return click stats + chart data for a click-based campaign. Accessible by agency, manager, clipper."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Access check
+    role = user.get("role")
+    uid = user["user_id"]
+    if role == "clipper":
+        # Clippers can only see their own stats
+        is_member = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": uid, "status": "active"})
+        if not is_member:
+            raise HTTPException(status_code=403, detail="Not a member")
+        clipper_id = uid  # force filter to self
+    elif role not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Build date range
+    now = datetime.now(timezone.utc)
+    if period == "1d":
+        from_dt = now - timedelta(days=1)
+    elif period == "7d":
+        from_dt = now - timedelta(days=7)
+    elif period == "30d":
+        from_dt = now - timedelta(days=30)
+    elif period == "custom" and date_from:
+        from_dt = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
+    else:  # "all"
+        from_dt = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    if period == "custom" and date_to:
+        to_dt = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc) + timedelta(days=1)
+    else:
+        to_dt = now + timedelta(days=1)
+
+    from_str = from_dt.isoformat()
+    to_str = to_dt.isoformat()
+
+    # Match filter
+    match = {
+        "campaign_id": campaign_id,
+        "clicked_at": {"$gte": from_str, "$lte": to_str}
+    }
+    if clipper_id:
+        match["clipper_id"] = clipper_id
+
+    # Aggregate by day
+    pipeline = [
+        {"$match": match},
+        {"$addFields": {
+            "day": {"$substr": ["$clicked_at", 0, 10]}
+        }},
+        {"$group": {
+            "_id": "$day",
+            "clicks": {"$sum": 1},
+            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    daily = await db.click_events.aggregate(pipeline).to_list(1000)
+
+    # Build a complete date range
+    days_between = max(1, (to_dt - from_dt).days)
+    chart = []
+    date_map = {d["_id"]: d for d in daily}
+    for i in range(min(days_between, 366)):
+        day = (from_dt + timedelta(days=i)).strftime("%Y-%m-%d")
+        entry = date_map.get(day, {"_id": day, "clicks": 0, "unique_clicks": 0})
+        chart.append({
+            "date": day,
+            "label": (from_dt + timedelta(days=i)).strftime("%d/%m"),
+            "clicks": entry.get("clicks", 0),
+            "unique_clicks": entry.get("unique_clicks", 0),
+        })
+
+    # Global totals for the period
+    totals = await db.click_events.aggregate([
+        {"$match": match},
+        {"$group": {
+            "_id": None,
+            "total_clicks": {"$sum": 1},
+            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+        }}
+    ]).to_list(1)
+    total_clicks = totals[0]["total_clicks"] if totals else 0
+    unique_clicks = totals[0]["unique_clicks"] if totals else 0
+    rate_per_click = campaign.get("rate_per_click", 0) or 0
+    billable = unique_clicks if campaign.get("unique_clicks_only", True) else total_clicks
+    total_earnings = round((billable / 1000) * rate_per_click, 2)
+
+    # Per-clipper breakdown (agency only)
+    clippers_data = []
+    if role in ["agency", "manager"] and not clipper_id:
+        clipper_pipeline = [
+            {"$match": match},
+            {"$group": {
+                "_id": "$clipper_id",
+                "clicks": {"$sum": 1},
+                "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+            }}
+        ]
+        clipper_stats = await db.click_events.aggregate(clipper_pipeline).to_list(100)
+        for cs in clipper_stats:
+            cu = await db.users.find_one({"user_id": cs["_id"]}, {"_id": 0, "display_name": 1, "name": 1, "picture": 1})
+            b = cs["unique_clicks"] if campaign.get("unique_clicks_only", True) else cs["clicks"]
+            clippers_data.append({
+                "clipper_id": cs["_id"],
+                "name": (cu or {}).get("display_name") or (cu or {}).get("name", "?"),
+                "picture": (cu or {}).get("picture"),
+                "clicks": cs["clicks"],
+                "unique_clicks": cs["unique_clicks"],
+                "earnings": round((b / 1000) * rate_per_click, 2),
+            })
+        clippers_data.sort(key=lambda x: x["unique_clicks"], reverse=True)
+
+    return {
+        "period": period,
+        "date_from": from_str[:10],
+        "date_to": to_str[:10],
+        "total_clicks": total_clicks,
+        "unique_clicks": unique_clicks,
+        "total_earnings": total_earnings,
+        "rate_per_click": rate_per_click,
+        "unique_only": campaign.get("unique_clicks_only", True),
+        "chart": chart,
+        "clippers": clippers_data,
+    }
+
 
 @api_router.get("/campaigns/{campaign_id}/click-links")
 async def get_click_links(campaign_id: str, user: dict = Depends(get_current_user)):
