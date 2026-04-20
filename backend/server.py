@@ -5300,14 +5300,22 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
             {"_id": 0}
         )
         if campaign:
+            payment_model = campaign.get("payment_model", "views")
             rpm = campaign.get("rpm", 0)
-            # Réutilise le calcul unifié (tracked_videos + manual posts)
-            calc = await _calc_earnings_for_member(campaign["campaign_id"], user["user_id"], rpm)
-            views = calc["views"]
+            rate_per_click = campaign.get("rate_per_click", 0.0)
+            unique_only = campaign.get("unique_clicks_only", True)
+
+            if payment_model == "clicks":
+                calc = await _calc_clicks_for_member(campaign["campaign_id"], user["user_id"], rate_per_click, unique_only)
+            else:
+                calc = await _calc_earnings_for_member(campaign["campaign_id"], user["user_id"], rpm)
+
+            views = calc.get("views", 0)
             earnings = calc["earned"]
             total_earnings += earnings
             total_views += views
-            campaign_stats.append({
+
+            stat = {
                 "campaign_id": campaign["campaign_id"],
                 "campaign_name": campaign["name"],
                 "views": views,
@@ -5315,8 +5323,17 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
                 "paid": calc["paid"],
                 "owed": calc["owed"],
                 "strikes": membership.get("strikes", 0),
-                "status": membership.get("status", "active")
-            })
+                "status": membership.get("status", "active"),
+                "payment_model": payment_model,
+                "rate_per_click": rate_per_click,
+            }
+            # For click-based campaigns, include the tracking link directly
+            if payment_model == "clicks":
+                stat["clicks"] = calc.get("clicks", 0)
+                stat["unique_clicks"] = calc.get("unique_clicks", 0)
+                stat["tracking_url"] = calc.get("tracking_url")
+
+            campaign_stats.append(stat)
 
     return {
         "total_earnings": round(total_earnings, 2),

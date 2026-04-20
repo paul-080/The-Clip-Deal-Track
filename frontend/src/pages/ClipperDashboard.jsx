@@ -477,6 +477,7 @@ function PostComposer({ user, onPosted }) {
 function ClipperHome({ announcements: initialAnnouncements, stats }) {
   const { user } = useAuth();
   const [feed, setFeed] = useState(initialAnnouncements);
+  const [copiedLink, setCopiedLink] = useState(null);
 
   useEffect(() => { setFeed(initialAnnouncements); }, [initialAnnouncements]);
 
@@ -485,6 +486,14 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
       const r = await fetch(`${API}/announcements`, { credentials: "include" });
       if (r.ok) { const d = await r.json(); setFeed(d.announcements || []); }
     } catch {}
+  };
+
+  const handleCopyTrackingLink = (url, id) => {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedLink(id);
+      setTimeout(() => setCopiedLink(null), 2000);
+      toast.success("Lien copié !");
+    });
   };
 
   const displayFeed = feed;
@@ -517,7 +526,7 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
         </div>
       )}
 
-      {/* My Campaigns with status badges */}
+      {/* My Campaigns with status badges + tracking links */}
       {stats?.campaign_stats && stats.campaign_stats.length > 0 && (
         <Card className="bg-[#121212] border-white/10">
           <CardHeader className="pb-2">
@@ -525,22 +534,56 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
           </CardHeader>
           <CardContent className="space-y-2">
             {stats.campaign_stats.map((cs) => (
-              <div key={cs.campaign_id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                <span className="text-white text-sm font-medium truncate mr-3">{cs.campaign_name}</span>
-                {cs.status === "pending" && (
-                  <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
-                    ⏳ En attente de validation
-                  </span>
+              <div key={cs.campaign_id} className="rounded-lg overflow-hidden">
+                {/* Ligne principale */}
+                <div className="flex items-center justify-between p-3 bg-white/5">
+                  <div className="flex items-center gap-2 min-w-0 mr-3">
+                    <span className="text-white text-sm font-medium truncate">{cs.campaign_name}</span>
+                    {cs.payment_model === "clicks" && (
+                      <span className="flex-shrink-0 flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 font-medium">
+                        <MousePointerClick className="w-2.5 h-2.5" /> Clic
+                      </span>
+                    )}
+                  </div>
+                  {cs.status === "pending" && (
+                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
+                      ⏳ En attente
+                    </span>
+                  )}
+                  {cs.status === "active" && (
+                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-green-500/15 text-green-400 border border-green-500/30 font-medium">
+                      ✅ Actif
+                    </span>
+                  )}
+                  {cs.status === "rejected" && (
+                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-medium">
+                      ❌ Refusée
+                    </span>
+                  )}
+                </div>
+
+                {/* Lien de tracking bio — visible uniquement si campagne active au clic */}
+                {cs.payment_model === "clicks" && cs.status === "active" && cs.tracking_url && (
+                  <div className="px-3 py-2.5 bg-[#f0c040]/6 border-t border-[#f0c040]/15 flex items-center gap-2">
+                    <Link2 className="w-3.5 h-3.5 text-[#f0c040] flex-shrink-0" />
+                    <p className="flex-1 font-mono text-xs text-white/60 truncate">{cs.tracking_url}</p>
+                    <button
+                      onClick={() => handleCopyTrackingLink(cs.tracking_url, cs.campaign_id)}
+                      className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/90 text-black text-xs font-bold transition-all"
+                    >
+                      {copiedLink === cs.campaign_id
+                        ? <><Check className="w-3 h-3" /> Copié</>
+                        : <><Copy className="w-3 h-3" /> Copier</>
+                      }
+                    </button>
+                  </div>
                 )}
-                {cs.status === "active" && (
-                  <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-green-500/15 text-green-400 border border-green-500/30 font-medium">
-                    ✅ Actif
-                  </span>
-                )}
-                {cs.status === "rejected" && (
-                  <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-medium">
-                    ❌ Refusée
-                  </span>
+
+                {/* Message si campagne au clic mais lien pas encore généré */}
+                {cs.payment_model === "clicks" && cs.status === "active" && !cs.tracking_url && (
+                  <div className="px-3 py-2 bg-white/3 border-t border-white/5">
+                    <p className="text-white/30 text-xs">Lien en cours de génération par l'agence…</p>
+                  </div>
                 )}
               </div>
             ))}
