@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
@@ -6952,11 +6953,157 @@ async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
     except Exception as e:
         logger.warning(f"Click record error for {link_id}: {e}")
 
+_IN_APP_UA_SIGNATURES = [
+    "TikTok", "BytedanceWebview", "musical_ly", "aweme",      # TikTok
+    "Instagram",                                                # Instagram
+    "FBAN", "FBAV", "FB_IAB", "FB4A",                         # Facebook
+    "GSA",                                                      # Google (YouTube app iOS)
+    "Line/",                                                    # LINE
+    "Snapchat",                                                 # Snapchat
+]
+
+def _is_inapp_browser(ua: str) -> bool:
+    return any(sig.lower() in ua.lower() for sig in _IN_APP_UA_SIGNATURES)
+
+def _build_breakout_page(destination: str) -> str:
+    """Return an HTML page that tries to escape in-app WebViews."""
+    dest_safe = destination.replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;")
+    dest_no_proto = destination.replace("https://", "").replace("http://", "")
+    return f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Ouverture dans votre navigateur…</title>
+  <style>
+    *{{margin:0;padding:0;box-sizing:border-box}}
+    body{{
+      min-height:100vh;background:#0d0d0d;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      color:#fff;padding:28px;text-align:center
+    }}
+    .icon{{font-size:52px;margin-bottom:20px}}
+    h1{{font-size:22px;font-weight:700;margin-bottom:10px;letter-spacing:-0.3px}}
+    .sub{{font-size:14px;color:rgba(255,255,255,.45);margin-bottom:36px;line-height:1.6;max-width:300px}}
+    .btn{{
+      display:block;width:100%;max-width:320px;padding:17px 24px;
+      background:#f0c040;color:#0d0d0d;font-weight:800;font-size:16px;
+      border-radius:14px;text-decoration:none;margin:0 auto 20px;
+      letter-spacing:-0.2px
+    }}
+    .btn:active{{opacity:.85}}
+    .hint{{font-size:12px;color:rgba(255,255,255,.25);max-width:280px;line-height:1.7;margin-bottom:24px}}
+    .steps{{
+      background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
+      border-radius:14px;padding:18px 20px;max-width:320px;text-align:left;margin-top:8px
+    }}
+    .steps-title{{font-size:11px;font-weight:600;color:rgba(255,255,255,.4);
+      text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}}
+    .step{{font-size:13px;color:rgba(255,255,255,.6);margin-bottom:6px;line-height:1.5}}
+    .step strong{{color:rgba(255,255,255,.85)}}
+    .spinner{{
+      width:28px;height:28px;border:3px solid rgba(255,255,255,.1);
+      border-top-color:#f0c040;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 28px
+    }}
+    @keyframes spin{{to{{transform:rotate(360deg)}}}}
+    #ios-tip,#android-tip,#generic-tip{{display:none}}
+  </style>
+</head>
+<body>
+  <div class="spinner" id="spinner"></div>
+  <div class="icon" id="icon" style="display:none">🔗</div>
+  <h1 id="title">Redirection en cours…</h1>
+  <p class="sub" id="subtitle">Nous vous redirigeons vers la page.</p>
+
+  <a class="btn" id="open-btn" href="{dest_safe}" style="display:none">
+    Ouvrir dans le navigateur →
+  </a>
+
+  <p class="hint" id="hint" style="display:none"></p>
+
+  <div class="steps" id="ios-tip">
+    <div class="steps-title">📱 Comment ouvrir dans Safari</div>
+    <div class="step">1. Appuyez sur <strong>···</strong> ou <strong>⋮</strong> en bas ou en haut</div>
+    <div class="step">2. Sélectionnez <strong>« Ouvrir dans Safari »</strong></div>
+    <div class="step">3. Ou appuyez directement sur le bouton doré ci-dessus</div>
+  </div>
+
+  <div class="steps" id="android-tip">
+    <div class="steps-title">📱 Ouverture dans Chrome…</div>
+    <div class="step">Si Chrome ne s'ouvre pas automatiquement,<br>appuyez sur le bouton doré ci-dessus.</div>
+  </div>
+
+  <div class="steps" id="generic-tip">
+    <div class="steps-title">💡 Astuce</div>
+    <div class="step">Copiez l'URL et ouvrez-la dans votre navigateur préféré.</div>
+  </div>
+
+  <script>
+    var dest = "{dest_safe}";
+    var destNoProto = "{dest_no_proto}";
+    var ua = navigator.userAgent || '';
+
+    var isIOS     = /iPhone|iPad|iPod/.test(ua);
+    var isAndroid = /Android/.test(ua);
+    var isTikTok  = /TikTok|BytedanceWebview|musical_ly|aweme/i.test(ua);
+    var isInstagram = /Instagram/i.test(ua);
+    var isFacebook  = /FBAN|FBAV|FB_IAB/i.test(ua);
+    var isLine      = /Line\\//i.test(ua);
+    var isInApp = isTikTok || isInstagram || isFacebook || isLine ||
+                  (/Android/.test(ua) && !/Chrome/.test(ua) && /Version\\//.test(ua));
+
+    function showBtn(hintText, tipsId) {{
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('icon').style.display = 'block';
+      document.getElementById('title').textContent = 'Ouvrir dans votre navigateur';
+      document.getElementById('subtitle').textContent = 'Pour voir cette page correctement, ouvrez-la dans votre navigateur.';
+      document.getElementById('open-btn').style.display = 'block';
+      if (hintText) {{
+        document.getElementById('hint').textContent = hintText;
+        document.getElementById('hint').style.display = 'block';
+      }}
+      if (tipsId) document.getElementById(tipsId).style.display = 'block';
+    }}
+
+    if (!isInApp) {{
+      // Normal browser — redirect immediately
+      window.location.replace(dest);
+    }} else if (isAndroid) {{
+      showBtn('', 'android-tip');
+      // Try intent URL to open Chrome directly
+      var intentUrl = 'intent://' + destNoProto + '#Intent;scheme=https;package=com.android.chrome;end;';
+      setTimeout(function() {{
+        window.location.href = intentUrl;
+        // Fallback after 1.5s
+        setTimeout(function() {{ window.location.href = dest; }}, 1500);
+      }}, 300);
+    }} else if (isIOS) {{
+      showBtn('Sur TikTok / Instagram iOS, appuyez sur \\'···\\' puis \\'Ouvrir dans Safari\\'.', 'ios-tip');
+      // Try to open via link click (sometimes escapes WebView on iOS)
+      setTimeout(function() {{
+        try {{
+          var a = document.createElement('a');
+          a.href = dest;
+          a.rel = 'noreferrer noopener';
+          document.body.appendChild(a);
+          a.click();
+        }} catch(e) {{}}
+      }}, 300);
+    }} else {{
+      showBtn('', 'generic-tip');
+      setTimeout(function() {{ window.location.href = dest; }}, 500);
+    }}
+  </script>
+</body>
+</html>"""
+
 @app.get("/track/{short_code}")
 async def track_click(short_code: str, request: Request):
     """
     Public redirect endpoint — no auth required.
-    Records the click and instantly redirects to the campaign destination URL.
+    Records the click and serves a page that escapes in-app WebViews (TikTok/Instagram/YouTube).
+    Normal browsers get an immediate JS redirect. In-app browsers get a breakout page.
     """
     from starlette.responses import RedirectResponse
     link = await db.click_links.find_one({"short_code": short_code, "is_active": True}, {"_id": 0})
@@ -6975,14 +7122,16 @@ async def track_click(short_code: str, request: Request):
     user_agent = request.headers.get("user-agent", "")
     referrer = request.headers.get("referer", "")
 
-    # Record asynchronously — don't block the redirect
+    # Record click asynchronously — don't block the response
     asyncio.create_task(_record_click_async(
         link["link_id"], short_code, link["campaign_id"],
         link["clipper_id"], ip_hash, user_agent, referrer,
         rate_per_click, unique_only
     ))
 
-    return RedirectResponse(url=destination, status_code=302)
+    # Always serve the HTML page — JS handles in-app vs normal browser
+    html = _build_breakout_page(destination)
+    return HTMLResponse(content=html, status_code=200)
 
 @api_router.post("/campaigns/{campaign_id}/generate-links")
 async def generate_click_links(campaign_id: str, user: dict = Depends(get_current_user)):
