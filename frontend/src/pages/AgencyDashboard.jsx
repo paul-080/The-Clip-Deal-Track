@@ -403,10 +403,19 @@ function DiscoverPage() {
               <div className="p-4 space-y-2">
                 {campaign.agency_name && <p className="text-xs text-white/40">{campaign.agency_name}</p>}
                 <h3 className="text-white font-bold text-sm leading-tight group-hover:text-[#FF007F] transition-colors">{campaign.name}</h3>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-0.5 rounded-md">
-                    💰 {campaign.rpm || 0}€ / 1K vues
-                  </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {campaign.payment_model === "clicks" ? (
+                    <>
+                      <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-0.5 rounded-md">
+                        🔗 {campaign.rate_per_click || 0}€ / clic
+                      </span>
+                      <span className="text-[10px] text-white/30 bg-white/5 px-1.5 py-0.5 rounded-md">Au clic</span>
+                    </>
+                  ) : (
+                    <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-0.5 rounded-md">
+                      💰 {campaign.rpm || 0}€ / 1K vues
+                    </span>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs text-white/40">

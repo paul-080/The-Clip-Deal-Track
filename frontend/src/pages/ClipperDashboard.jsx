@@ -715,18 +715,40 @@ function DiscoverCampaigns({ onJoin }) {
             <div className="flex items-start justify-between">
               <div>
                 <h2 className="font-bold text-xl text-white">{selectedCampaign.name}</h2>
-                <p className="text-sm text-white/50 mt-1">RPM : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm}</span></p>
+                {selectedCampaign.payment_model === "clicks" ? (
+                  <p className="text-sm text-white/50 mt-1">
+                    🔗 <span className="text-[#f0c040] font-mono font-bold">€{selectedCampaign.rate_per_click || 0}</span>
+                    <span className="text-white/30"> / clic</span>
+                    {selectedCampaign.unique_clicks_only && <span className="ml-2 text-[10px] text-white/30 border border-white/10 px-1.5 py-0.5 rounded-md">Clics uniques</span>}
+                  </p>
+                ) : (
+                  <p className="text-sm text-white/50 mt-1">RPM : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm}</span></p>
+                )}
               </div>
               <button onClick={() => setSelectedCampaign(null)} className="text-white/40 hover:text-white transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
+            {/* Click campaign info box */}
+            {selectedCampaign.payment_model === "clicks" && (
+              <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/25">
+                <p className="text-[#f0c040] text-xs font-semibold mb-1">🔗 Campagne au clic</p>
+                <p className="text-white/50 text-xs">
+                  Après acceptation, tu recevras un <strong className="text-white/70">lien de tracking unique</strong> à mettre dans ta bio.
+                  Chaque visiteur qui clique te rapporte <strong className="text-[#f0c040]">€{selectedCampaign.rate_per_click || 0}</strong>{selectedCampaign.unique_clicks_only ? " (1 IP = 1 clic)" : ""}.
+                </p>
+              </div>
+            )}
             {selectedCampaign.application_form_enabled === false ? (
               <p className="text-sm text-[#39FF14]/80 bg-[#39FF14]/10 rounded-lg px-3 py-2">
                 ⚡ Rejoindre instantanément — aucun formulaire requis
               </p>
             ) : (
-              <p className="text-sm text-white/60">Renseigne tes comptes sociaux pour postuler. Ils seront trackés automatiquement dès ton acceptation.</p>
+              <p className="text-sm text-white/60">
+                {selectedCampaign.payment_model === "clicks"
+                  ? "Renseigne tes comptes sociaux (facultatif pour les campagnes au clic)."
+                  : "Renseigne tes comptes sociaux pour postuler. Ils seront trackés automatiquement dès ton acceptation."}
+              </p>
             )}
             {selectedCampaign.application_form_enabled !== false && (
               <div className="space-y-3">
@@ -816,11 +838,22 @@ function DiscoverCampaigns({ onJoin }) {
                   <p className="text-white/50 text-xs leading-relaxed line-clamp-2">{c.description}</p>
                 )}
 
-                {/* RPM badge */}
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-md">
-                    💰 {c.rpm || 0}€ / 1K vues
-                  </span>
+                {/* Payment model badge */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {c.payment_model === "clicks" ? (
+                    <>
+                      <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-md">
+                        🔗 {c.rate_per_click || 0}€ / clic
+                      </span>
+                      <span className="text-[10px] text-[#f0c040]/60 border border-[#f0c040]/20 px-1.5 py-0.5 rounded-md">
+                        Lien bio
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-md">
+                      💰 {c.rpm || 0}€ / 1K vues
+                    </span>
+                  )}
                 </div>
 
                 {/* Budget bar */}
