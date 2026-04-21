@@ -1322,37 +1322,6 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
         <p className="text-white/50">Gérez vos comptes réseaux sociaux</p>
       </div>
 
-      {/* TikTok tracking info banner */}
-      {localAccounts.some(a => a.platform === "tiktok" && a.status === "verified") && (
-        <div className="rounded-xl border border-[#FF004F]/20 bg-[#FF004F]/5 p-4">
-          <div className="flex items-start gap-3">
-            <span className="text-xl flex-shrink-0">📡</span>
-            <div>
-              <p className="text-white font-semibold text-sm mb-1">Tracking TikTok automatique</p>
-              <p className="text-white/50 text-xs leading-relaxed">
-                Le scraping TikTok automatique est limité à quelques vidéos depuis les serveurs cloud (IPs bloquées par TikTok).
-                Pour un tracking complet et automatique de <strong className="text-white/70">toutes vos vidéos</strong> :
-              </p>
-              <div className="mt-2 space-y-1 text-xs text-white/40">
-                <p>
-                  <span className="text-[#FF004F]">→</span>{" "}
-                  <strong className="text-white/60">Solution rapide :</strong> Collez vos URLs TikTok via le bouton{" "}
-                  <span className="bg-[#FF007F]/20 text-[#FF007F] px-1.5 py-0.5 rounded text-xs font-medium">+ Ajouter vidéo</span>{" "}
-                  (vues réelles en temps réel)
-                </p>
-                <p>
-                  <span className="text-[#FF004F]">→</span>{" "}
-                  <strong className="text-white/60">Solution permanente :</strong> Inscrivez-vous gratuitement sur{" "}
-                  <a href="https://tikwm.com" target="_blank" rel="noreferrer" className="text-[#00E5FF] underline">tikwm.com</a>{" "}
-                  → récupérez votre clé API → ajoutez{" "}
-                  <code className="bg-white/10 px-1 py-0.5 rounded">TIKWM_API_KEY</code> dans Railway → tracking 100% automatique ✓
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Add account form */}
       <Card className="bg-[#121212] border-white/10">
         <CardHeader>

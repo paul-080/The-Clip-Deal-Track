@@ -179,7 +179,12 @@ class Campaign(BaseModel):
     payment_model: str = "views"  # "views" | "clicks"
     rate_per_click: float = 0.0   # Prix par clic en euros
     destination_url: Optional[str] = None  # URL de redirection pour liens bio
-    unique_clicks_only: bool = True        # Ne compter qu'un clic par IP/24h
+    unique_clicks_only: bool = True        # Ne compter qu'un clic par IP/24h (dérivé de click_billing_mode)
+    # Mode de déduplication des clics :
+    #   "all"              = tous les clics facturés (pas de dédup)
+    #   "unique_24h"       = 1 clic unique par IP / 24h (rolling — re-engagement possible le lendemain)
+    #   "unique_lifetime"  = 1 clic unique par IP pour toute la durée de la campagne (anti-fraude strict)
+    click_billing_mode: str = "unique_24h"
 
 class CampaignCreate(BaseModel):
     name: str
@@ -200,6 +205,7 @@ class CampaignCreate(BaseModel):
     rate_per_click: float = 0.0
     destination_url: Optional[str] = None
     unique_clicks_only: bool = True
+    click_billing_mode: str = "unique_24h"
 
 class CampaignMember(BaseModel):
     member_id: str
@@ -970,7 +976,10 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
         "payment_model": campaign_data.payment_model,
         "rate_per_click": campaign_data.rate_per_click,
         "destination_url": campaign_data.destination_url,
-        "unique_clicks_only": campaign_data.unique_clicks_only,
+        # click_billing_mode = "all" | "unique_24h" | "unique_lifetime"
+        # unique_clicks_only est dérivé : True si mode != "all"
+        "click_billing_mode": campaign_data.click_billing_mode,
+        "unique_clicks_only": campaign_data.click_billing_mode != "all",
     }
     
     await db.campaigns.insert_one(campaign)
@@ -3457,8 +3466,9 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
             )
             return
 
-        if via_url:
+        if via_url or platform in ("instagram", "youtube"):
             # Fallback via URL : GET request + parse body to confirm account existence
+            # For instagram/youtube we always try this (we can construct the URL from the username)
             profile_urls = {
                 "instagram": f"https://www.instagram.com/{username}/",
                 "youtube": f"https://www.youtube.com/@{username}",
@@ -3517,6 +3527,19 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                     http_ok = False
 
             if http_ok:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "verified_at": datetime.now(timezone.utc).isoformat(),
+                        "error_message": None,
+                        "display_name": username,
+                        "follower_count": None,
+                        "avatar_url": None,
+                    }}
+                )
+            elif platform == "instagram":
+                # Instagram IPs are blocked from cloud — accept account without stats
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
                     {"$set": {
@@ -7261,18 +7284,37 @@ def _gen_short_code() -> str:
 
 async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
                                clipper_id: str, ip_hash: str, user_agent: str,
-                               referrer: str, rate_per_click: float, unique_only: bool):
-    """Fire-and-forget: record click event + update counters + recalc earnings."""
+                               referrer: str, rate_per_click: float, unique_only: bool,
+                               click_billing_mode: str = "unique_24h"):
+    """Fire-and-forget: record click event + update counters + recalc earnings.
+    click_billing_mode:
+      "all"              = tous les clics facturés, pas de dédup
+      "unique_24h"       = 1 unique par IP / 24h (rolling window)
+      "unique_lifetime"  = 1 unique par IP pour toute la campagne
+    """
     try:
         now = datetime.now(timezone.utc).isoformat()
-        # Deduplication: check if same ip_hash clicked this link in the last 24h
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        existing = await db.click_events.find_one({
-            "link_id": link_id,
-            "ip_hash": ip_hash,
-            "clicked_at": {"$gte": cutoff}
-        })
-        is_unique = existing is None
+
+        # Deduplication window based on billing mode
+        if click_billing_mode == "all":
+            # No dedup — every click is unique for billing
+            is_unique = True
+        elif click_billing_mode == "unique_lifetime":
+            # Check ALL previous clicks from this IP on this link (no time cutoff)
+            existing = await db.click_events.find_one({
+                "link_id": link_id,
+                "ip_hash": ip_hash,
+            })
+            is_unique = existing is None
+        else:
+            # "unique_24h" (default) — rolling 24h window
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            existing = await db.click_events.find_one({
+                "link_id": link_id,
+                "ip_hash": ip_hash,
+                "clicked_at": {"$gte": cutoff}
+            })
+            is_unique = existing is None
 
         # Insert click event
         await db.click_events.insert_one({
@@ -7466,7 +7508,8 @@ async def track_click(short_code: str, request: Request):
     campaign = await db.campaigns.find_one({"campaign_id": link["campaign_id"]}, {"_id": 0})
     destination = link.get("destination_url") or (campaign.get("destination_url") if campaign else None) or "https://theclipdealtrack.com"
     rate_per_click = (campaign.get("rate_per_click", 0)) if campaign else 0
-    unique_only = (campaign.get("unique_clicks_only", True)) if campaign else True
+    click_billing_mode = (campaign.get("click_billing_mode", "unique_24h")) if campaign else "unique_24h"
+    unique_only = click_billing_mode != "all"
 
     # Get client IP
     forwarded = request.headers.get("x-forwarded-for")
@@ -7479,7 +7522,7 @@ async def track_click(short_code: str, request: Request):
     asyncio.create_task(_record_click_async(
         link["link_id"], short_code, link["campaign_id"],
         link["clipper_id"], ip_hash, user_agent, referrer,
-        rate_per_click, unique_only
+        rate_per_click, unique_only, click_billing_mode
     ))
 
     # Always serve the HTML page — JS handles in-app vs normal browser

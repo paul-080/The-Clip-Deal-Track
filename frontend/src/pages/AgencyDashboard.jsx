@@ -583,7 +583,7 @@ function CreateCampaign({ onCreated }) {
     payment_model: "views",
     rate_per_click: "",
     destination_url: "",
-    unique_clicks_only: true,
+    click_billing_mode: "unique_24h",
   });
   const [customQuestion, setCustomQuestion] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -825,24 +825,58 @@ function CreateCampaign({ onCreated }) {
                   />
                   <p className="text-white/30 text-xs mt-1">Ex : 50 = €50 pour 1 000 clics (soit €0.05/clic)</p>
                 </div>
-                <div className="flex items-start pb-0.5">
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <Checkbox
-                      checked={formData.unique_clicks_only}
-                      onCheckedChange={(checked) => handleChange("unique_clicks_only", checked)}
-                      className="border-white/30 mt-0.5"
-                    />
-                    <div>
-                      <p className="text-white/70 text-sm font-medium flex items-center gap-1.5">
-                        Compter uniquement les clics uniques
-                        <span className="text-[10px] bg-green-500/20 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded font-medium">Recommandé</span>
-                      </p>
-                      <p className="text-white/40 text-xs mt-0.5">1 seul clic facturé par personne / 24h — évite les clics répétés depuis la même IP (fraude, spam, clics artificiels)</p>
-                      {!formData.unique_clicks_only && (
-                        <p className="text-amber-400/80 text-xs mt-1">⚠️ Désactivé : tous les clics seront facturés, y compris les doublons</p>
-                      )}
-                    </div>
-                  </label>
+                <div>
+                  <label className="block text-sm text-white/70 mb-2">Anti-spam &amp; déduplication des clics</label>
+                  <div className="space-y-2">
+                    {[
+                      {
+                        value: "unique_24h",
+                        label: "1 clic unique / 24h",
+                        badge: "Recommandé",
+                        badgeColor: "bg-green-500/20 text-green-400 border-green-500/30",
+                        desc: "1 seul clic facturé par personne toutes les 24h — la même personne peut générer un nouveau clic le lendemain",
+                      },
+                      {
+                        value: "unique_lifetime",
+                        label: "1 clic unique à vie",
+                        badge: "Anti-fraude strict",
+                        badgeColor: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+                        desc: "1 seul clic facturé par personne pour toute la durée de la campagne — même des semaines après, pas de doublon",
+                      },
+                      {
+                        value: "all",
+                        label: "Tous les clics",
+                        badge: "Non recommandé",
+                        badgeColor: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+                        desc: "⚠️ Chaque clic est facturé sans déduplication — expose aux fraudes et clics répétés artificiels",
+                      },
+                    ].map((opt) => (
+                      <label
+                        key={opt.value}
+                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                          formData.click_billing_mode === opt.value
+                            ? "border-[#FF007F]/40 bg-[#FF007F]/5"
+                            : "border-white/10 hover:border-white/20"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="click_billing_mode"
+                          value={opt.value}
+                          checked={formData.click_billing_mode === opt.value}
+                          onChange={() => handleChange("click_billing_mode", opt.value)}
+                          className="mt-1 accent-[#FF007F]"
+                        />
+                        <div>
+                          <p className="text-white/80 text-sm font-medium flex items-center gap-1.5">
+                            {opt.label}
+                            <span className={`text-[10px] border px-1.5 py-0.5 rounded font-medium ${opt.badgeColor}`}>{opt.badge}</span>
+                          </p>
+                          <p className="text-white/40 text-xs mt-0.5">{opt.desc}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div>
@@ -1473,7 +1507,9 @@ function CampaignDashboard({ campaigns }) {
                 </div>
                 <div>
                   <p className="text-xs text-white/40">Comptage</p>
-                  <p className="text-white/70 text-sm font-medium mt-1">{campaign.unique_clicks_only ? "Clics uniques" : "Tous les clics"}</p>
+                  <p className="text-white/70 text-sm font-medium mt-1">
+                    {campaign.click_billing_mode === "unique_lifetime" ? "Unique à vie" : campaign.click_billing_mode === "all" ? "Tous les clics" : "Unique / 24h"}
+                  </p>
                 </div>
               </div>
               {!campaign.budget_unlimited && campaign.budget_total && (
@@ -1606,7 +1642,9 @@ function CampaignDashboard({ campaigns }) {
                     </div>
                     <div>
                       <p className="text-xs text-white/40">Type</p>
-                      <p className="text-white/70 text-sm font-medium mt-1">{campaign.unique_clicks_only ? "Clics uniques" : "Tous les clics"}</p>
+                      <p className="text-white/70 text-sm font-medium mt-1">
+                        {campaign.click_billing_mode === "unique_lifetime" ? "Unique à vie" : campaign.click_billing_mode === "all" ? "Tous les clics" : "Unique / 24h"}
+                      </p>
                     </div>
                   </>
                 ) : (
@@ -2142,7 +2180,7 @@ function CampaignDashboard({ campaigns }) {
               </table>
               {clickLinks.rate_per_click > 0 && (
                 <div className="px-5 py-3 border-t border-white/5 text-xs text-white/30">
-                  Tarif : <span className="text-white/50 font-mono">€{clickLinks.rate_per_click} / 1K clics {campaign.unique_clicks_only ? "(clics uniques)" : "(tous les clics)"}</span>
+                  Tarif : <span className="text-white/50 font-mono">€{clickLinks.rate_per_click} / 1K clics ({campaign.click_billing_mode === "unique_lifetime" ? "unique à vie" : campaign.click_billing_mode === "all" ? "tous les clics" : "unique/24h"})</span>
                   <span className="ml-2 text-white/20">— soit €{(clickLinks.rate_per_click / 1000).toFixed(4)}/clic</span>
                 </div>
               )}
