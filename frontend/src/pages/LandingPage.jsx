@@ -333,7 +333,7 @@ export default function LandingPage() {
               className="inline-flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-4 py-2 mb-8"
             >
               <span className="w-2 h-2 rounded-full bg-[#39FF14] animate-pulse" />
-              <span className="text-sm text-white/70">Plateforme de clipping vidéo #1</span>
+              <span className="text-sm text-white/70">En route pour devenir l'app #1 du clipping</span>
             </motion.div>
 
             <motion.h1
@@ -388,9 +388,9 @@ export default function LandingPage() {
               className="grid grid-cols-3 gap-8 mt-20 max-w-2xl"
             >
               {[
-                { value: "500+", label: "Clippeurs actifs" },
-                { value: "2M+", label: "Vues générées" },
-                { value: "€50k+", label: "Payés aux clippeurs" },
+                { value: "🚀", label: "Lancement en cours" },
+                { value: "100%", label: "Tracking automatique" },
+                { value: "0€", label: "Commission plateforme" },
               ].map((stat, i) => (
                 <div key={i} className="text-left">
                   <div className="font-display font-black text-3xl lg:text-4xl text-white tracking-tight">
