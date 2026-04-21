@@ -825,16 +825,22 @@ function CreateCampaign({ onCreated }) {
                   />
                   <p className="text-white/30 text-xs mt-1">Ex : 50 = €50 pour 1 000 clics (soit €0.05/clic)</p>
                 </div>
-                <div className="flex items-end pb-0.5">
-                  <label className="flex items-center gap-2 cursor-pointer">
+                <div className="flex items-start pb-0.5">
+                  <label className="flex items-start gap-3 cursor-pointer">
                     <Checkbox
                       checked={formData.unique_clicks_only}
                       onCheckedChange={(checked) => handleChange("unique_clicks_only", checked)}
-                      className="border-white/30"
+                      className="border-white/30 mt-0.5"
                     />
                     <div>
-                      <p className="text-white/70 text-sm">Clics uniques</p>
-                      <p className="text-white/30 text-xs">1 IP = 1 clic (anti-fraude)</p>
+                      <p className="text-white/70 text-sm font-medium flex items-center gap-1.5">
+                        Compter uniquement les clics uniques
+                        <span className="text-[10px] bg-green-500/20 text-green-400 border border-green-500/30 px-1.5 py-0.5 rounded font-medium">Recommandé</span>
+                      </p>
+                      <p className="text-white/40 text-xs mt-0.5">1 seul clic facturé par personne / 24h — évite les clics répétés depuis la même IP (fraude, spam, clics artificiels)</p>
+                      {!formData.unique_clicks_only && (
+                        <p className="text-amber-400/80 text-xs mt-1">⚠️ Désactivé : tous les clics seront facturés, y compris les doublons</p>
+                      )}
                     </div>
                   </label>
                 </div>

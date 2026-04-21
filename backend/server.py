@@ -6447,22 +6447,41 @@ async def debug_youtube(handle: str):
 async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
     users_count = await db.users.count_documents({})
     campaigns_count = await db.campaigns.count_documents({})
+    click_campaigns_count = await db.campaigns.count_documents({"payment_model": "clicks"})
     videos_count = await db.tracked_videos.count_documents({})
     accounts_count = await db.social_accounts.count_documents({})
     messages_count = await db.messages.count_documents({})
     members_count = await db.campaign_members.count_documents({})
-    # Revenue: sum of earnings in euros
-    pipeline = [{"$group": {"_id": None, "total": {"$sum": "$amount"}}}]
-    result = await db.earnings.aggregate(pipeline).to_list(1)
-    total_earnings = result[0]["total"] if result else 0
+    # Views earnings
+    earnings_agg = await db.earnings.aggregate([{"$group": {"_id": None, "total": {"$sum": "$amount"}}}]).to_list(1)
+    total_earnings = earnings_agg[0]["total"] if earnings_agg else 0
+    # Click stats (from click_links)
+    click_agg = await db.click_links.aggregate([
+        {"$group": {"_id": None,
+            "total_clicks": {"$sum": "$click_count"},
+            "total_unique": {"$sum": "$unique_click_count"},
+            "click_earnings": {"$sum": "$earnings"}
+        }}
+    ]).to_list(1)
+    ck = click_agg[0] if click_agg else {}
+    # Total views across all tracked_videos
+    views_agg = await db.tracked_videos.aggregate([
+        {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+    ]).to_list(1)
+    total_views = views_agg[0]["total_views"] if views_agg else 0
     return {
         "users": users_count,
         "campaigns": campaigns_count,
+        "click_campaigns": click_campaigns_count,
         "tracked_videos": videos_count,
+        "total_views": total_views,
         "social_accounts": accounts_count,
         "messages": messages_count,
         "campaign_members": members_count,
-        "total_earnings_eur": round(total_earnings, 2),
+        "total_earnings_eur": round(total_earnings + ck.get("click_earnings", 0), 2),
+        "total_clicks": ck.get("total_clicks", 0),
+        "total_unique_clicks": ck.get("total_unique", 0),
+        "click_earnings_eur": round(ck.get("click_earnings", 0), 2),
     }
 
 @api_router.get("/admin/stats/videos-timeline")
@@ -6490,6 +6509,136 @@ async def admin_videos_timeline(request: Request, _: bool = Depends(verify_admin
         timeline.append({"date": day, "videos": d.get("count", 0), "views": d.get("views", 0)})
         current += timedelta(days=1)
     return {"timeline": timeline}
+
+@api_router.get("/admin/stats/clicks-timeline")
+async def admin_clicks_timeline(request: Request, _: bool = Depends(verify_admin_code)):
+    """Click events grouped by day for the last 30 days."""
+    from datetime import timedelta as _td
+    end = datetime.now(timezone.utc)
+    start = end - _td(days=30)
+    pipeline = [
+        {"$match": {"clicked_at": {"$gte": start.isoformat()}}},
+        {"$group": {
+            "_id": {"$substr": ["$clicked_at", 0, 10]},
+            "clicks": {"$sum": 1},
+            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+        }},
+        {"$sort": {"_id": 1}}
+    ]
+    results = await db.click_events.aggregate(pipeline).to_list(31)
+    data_by_day = {r["_id"]: r for r in results}
+    timeline = []
+    current = start
+    while current <= end:
+        day = current.strftime("%Y-%m-%d")
+        d = data_by_day.get(day, {})
+        timeline.append({"date": day, "clicks": d.get("clicks", 0), "unique_clicks": d.get("unique_clicks", 0)})
+        current += _td(days=1)
+    return {"timeline": timeline}
+
+@api_router.get("/admin/campaigns/{campaign_id}/detail")
+async def admin_campaign_detail(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin: full campaign detail — stats, members, messages."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Agency info
+    agency = await db.users.find_one({"user_id": campaign.get("agency_id")}, {"_id": 0, "display_name": 1, "name": 1, "email": 1})
+    campaign["agency_name"] = (agency or {}).get("display_name") or (agency or {}).get("name", "—")
+    campaign["agency_email"] = (agency or {}).get("email", "")
+
+    # Members + user info (batch)
+    members = await db.campaign_members.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(200)
+    member_ids = [m["user_id"] for m in members]
+    user_docs = await db.users.find(
+        {"user_id": {"$in": member_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "email": 1, "picture": 1, "role": 1}
+    ).to_list(200)
+    users_map = {u["user_id"]: u for u in user_docs}
+    for m in members:
+        m["user_info"] = users_map.get(m["user_id"], {})
+
+    # Payment-model–specific stats
+    if campaign.get("payment_model") == "clicks":
+        links = await db.click_links.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(200)
+        # Attach clipper info to each link
+        link_clipper_ids = [l.get("clipper_id") for l in links if l.get("clipper_id")]
+        link_user_docs = await db.users.find(
+            {"user_id": {"$in": link_clipper_ids}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+        ).to_list(200)
+        link_users_map = {u["user_id"]: u for u in link_user_docs}
+        for lnk in links:
+            info = link_users_map.get(lnk.get("clipper_id"), {})
+            lnk["clipper_display_name"] = info.get("display_name") or info.get("name") or lnk.get("clipper_name", "?")
+            lnk["clipper_picture"] = info.get("picture")
+        total_clicks = sum(l.get("click_count", 0) for l in links)
+        unique_clicks = sum(l.get("unique_click_count", 0) for l in links)
+        earnings = round(sum(l.get("earnings", 0) for l in links), 2)
+        campaign["click_stats"] = {
+            "total_clicks": total_clicks,
+            "unique_clicks": unique_clicks,
+            "earnings": earnings,
+            "links": links,
+            "rate_per_click": campaign.get("rate_per_click", 0),
+            "unique_clicks_only": campaign.get("unique_clicks_only", True),
+        }
+    else:
+        agg = await db.tracked_videos.aggregate([
+            {"$match": {"campaign_id": campaign_id}},
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}, "video_count": {"$sum": 1}}}
+        ]).to_list(1)
+        s = agg[0] if agg else {}
+        campaign["view_stats"] = {
+            "total_views": s.get("total_views", 0),
+            "video_count": s.get("video_count", 0),
+            "budget_used": round((s.get("total_views", 0) / 1000) * campaign.get("rpm", 0), 2),
+        }
+
+    # Last 60 messages
+    messages = await db.messages.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).sort("created_at", 1).limit(100).to_list(100)
+    sender_ids = list({m["sender_id"] for m in messages if m.get("sender_id")})
+    sender_docs = await db.users.find(
+        {"user_id": {"$in": sender_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1, "role": 1}
+    ).to_list(200)
+    senders_map = {u["user_id"]: u for u in sender_docs}
+    for msg in messages:
+        s = senders_map.get(msg.get("sender_id"), {})
+        msg["sender_display_name"] = s.get("display_name") or s.get("name") or msg.get("sender_name", "?")
+        msg["sender_picture"] = s.get("picture")
+        msg["sender_role_resolved"] = s.get("role") or msg.get("sender_role", "")
+
+    campaign["members"] = members
+    campaign["messages"] = messages
+    return campaign
+
+@api_router.post("/admin/campaigns/{campaign_id}/send-message")
+async def admin_send_campaign_message(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin sends a message into a campaign chat (visible to all members)."""
+    body = await request.json()
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content requis")
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+        "campaign_id": campaign_id,
+        "sender_id": "admin",
+        "sender_name": "Admin The Clip Deal",
+        "sender_role": "admin",
+        "content": content,
+        "created_at": now,
+        "is_admin": True,
+    }
+    await db.messages.insert_one(msg)
+    msg.pop("_id", None)
+    # Broadcast to campaign members via WebSocket
+    await manager.broadcast_to_campaign(campaign_id, {"type": "new_message", "message": msg})
+    return msg
 
 # ─── SUPPORT CHAT ────────────────────────────────────────────────────────────
 
@@ -7010,10 +7159,23 @@ async def admin_delete_post(post_id: str, request: Request, _: bool = Depends(ve
 @api_router.get("/admin/all-campaigns")
 async def admin_get_all_campaigns(request: Request, _: bool = Depends(verify_admin_code)):
     campaigns = await db.campaigns.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Batch agency names + member counts (2 queries instead of N×2)
+    agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
+    agency_docs = await db.users.find(
+        {"user_id": {"$in": agency_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1}
+    ).to_list(500)
+    agency_map = {a["user_id"]: (a.get("display_name") or a.get("name", "—")) for a in agency_docs}
+    # Member counts via aggregation
+    cids = [c["campaign_id"] for c in campaigns]
+    member_agg = await db.campaign_members.aggregate([
+        {"$match": {"campaign_id": {"$in": cids}}},
+        {"$group": {"_id": "$campaign_id", "count": {"$sum": 1}}}
+    ]).to_list(500)
+    member_counts = {m["_id"]: m["count"] for m in member_agg}
     for c in campaigns:
-        agency = await db.users.find_one({"user_id": c.get("agency_id")}, {"_id": 0, "display_name": 1})
-        c["agency_name"] = agency.get("display_name") if agency else "—"
-        c["member_count"] = await db.campaign_members.count_documents({"campaign_id": c["campaign_id"]})
+        c["agency_name"] = agency_map.get(c.get("agency_id"), "—")
+        c["member_count"] = member_counts.get(c["campaign_id"], 0)
     return campaigns
 
 # ================= HEALTH & ROOT =================

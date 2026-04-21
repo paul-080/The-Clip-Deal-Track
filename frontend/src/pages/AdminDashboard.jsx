@@ -4,10 +4,10 @@ import {
   LayoutDashboard, Users, Play, Building2, Briefcase, UserCircle,
   Plug, Settings, LogOut, RefreshCw, Trash2, Ban, CheckCircle2,
   XCircle, AlertCircle, Clock, Database, Youtube, Zap, CreditCard,
-  Globe, ChevronRight, Eye, ExternalLink, Shield, AlertTriangle,
-  MessageCircle, Send
+  Globe, Eye, ExternalLink, Shield, AlertTriangle,
+  MessageCircle, Send, MousePointerClick, TrendingUp, X, ChevronDown
 } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from "recharts";
 import { API } from "../App";
 
 const ADMIN_CODE_KEY = "admin_code";
@@ -142,85 +142,176 @@ function CodeGate({ onUnlock }) {
 
 // ─── OverviewTab ─────────────────────────────────────────────────────────────
 
+function fmtNum(n) {
+  if (n === undefined || n === null) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString("fr-FR");
+}
+
 function OverviewTab() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [timeline, setTimeline] = useState([]);
+  const [viewsTimeline, setViewsTimeline] = useState([]);
+  const [clicksTimeline, setClicksTimeline] = useState([]);
+  const [activeChart, setActiveChart] = useState("views"); // "views" | "clicks"
 
   useEffect(() => {
-    adminFetch("/admin/stats")
-      .then(setStats)
-      .catch((e) => toast.error(e.message))
-      .finally(() => setLoading(false));
-    adminFetch("/admin/stats/videos-timeline")
-      .then((d) => setTimeline(d.timeline || []))
-      .catch(() => {});
+    Promise.all([
+      adminFetch("/admin/stats"),
+      adminFetch("/admin/stats/videos-timeline").catch(() => ({ timeline: [] })),
+      adminFetch("/admin/stats/clicks-timeline").catch(() => ({ timeline: [] })),
+    ]).then(([s, vt, ct]) => {
+      setStats(s);
+      setViewsTimeline(vt.timeline || []);
+      setClicksTimeline(ct.timeline || []);
+    }).catch((e) => toast.error(e.message))
+    .finally(() => setLoading(false));
   }, []);
 
   if (loading) return <div className="text-white/40 text-sm">Chargement...</div>;
   if (!stats) return null;
 
-  const cards = [
-    { label: "Utilisateurs", value: stats.users, icon: Users, color: "text-blue-400" },
-    { label: "Campagnes", value: stats.campaigns, icon: Play, color: "text-purple-400" },
-    { label: "Vidéos trackées", value: stats.tracked_videos, icon: Eye, color: "text-green-400" },
-    { label: "Comptes sociaux", value: stats.social_accounts, icon: Globe, color: "text-amber-400" },
-    { label: "Messages", value: stats.messages, icon: Briefcase, color: "text-pink-400" },
-    { label: "Membres campagne", value: stats.campaign_members, icon: UserCircle, color: "text-cyan-400" },
-    { label: "Revenus total", value: `${stats.total_earnings_eur} €`, icon: CreditCard, color: "text-[#00E5FF]" },
+  const topCards = [
+    { label: "Utilisateurs", value: stats.users, icon: Users, color: "text-blue-400", bg: "bg-blue-400/10" },
+    { label: "Campagnes (total)", value: stats.campaigns, icon: Play, color: "text-purple-400", bg: "bg-purple-400/10" },
+    { label: "Campagnes au clic", value: stats.click_campaigns || 0, icon: MousePointerClick, color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
+    { label: "Membres campagne", value: stats.campaign_members, icon: UserCircle, color: "text-cyan-400", bg: "bg-cyan-400/10" },
+    { label: "Revenus total", value: `${(stats.total_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-green-400", bg: "bg-green-400/10" },
+    { label: "Messages", value: stats.messages, icon: MessageCircle, color: "text-pink-400", bg: "bg-pink-400/10" },
   ];
 
-  const hasData = timeline.some(d => d.videos > 0);
+  const viewsCards = [
+    { label: "Vues totales", value: fmtNum(stats.total_views || 0), icon: Eye, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
+    { label: "Vidéos trackées", value: stats.tracked_videos, icon: TrendingUp, color: "text-indigo-400", bg: "bg-indigo-400/10" },
+    { label: "Comptes sociaux", value: stats.social_accounts, icon: Globe, color: "text-amber-400", bg: "bg-amber-400/10" },
+  ];
+
+  const clickCards = [
+    { label: "Clics totaux", value: fmtNum(stats.total_clicks || 0), icon: MousePointerClick, color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
+    { label: "Clics uniques", value: fmtNum(stats.total_unique_clicks || 0), icon: Shield, color: "text-green-400", bg: "bg-green-400/10" },
+    { label: "Revenus au clic", value: `${(stats.click_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-purple-400", bg: "bg-purple-400/10" },
+  ];
+
+  const hasViews = viewsTimeline.some(d => d.views > 0);
+  const hasClicks = clicksTimeline.some(d => d.clicks > 0);
+  const chartData = activeChart === "views" ? viewsTimeline : clicksTimeline;
+  const chartHasData = activeChart === "views" ? hasViews : hasClicks;
 
   return (
     <div>
       <h2 className="text-xl font-semibold text-white mb-6">Vue d'ensemble</h2>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {cards.map((card) => (
-          <div key={card.label} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-5">
-            <div className="flex items-center gap-3 mb-3">
-              <card.icon className={`w-5 h-5 ${card.color}`} />
-              <span className="text-white/50 text-xs">{card.label}</span>
+
+      {/* Top row — general stats */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        {topCards.map((card) => (
+          <div key={card.label} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
+            <div className={`w-8 h-8 rounded-lg ${card.bg} flex items-center justify-center mb-3`}>
+              <card.icon className={`w-4 h-4 ${card.color}`} />
             </div>
-            <div className="text-2xl font-bold text-white">{card.value}</div>
+            <div className="text-xl font-bold text-white">{typeof card.value === "number" ? card.value.toLocaleString("fr-FR") : card.value}</div>
+            <div className="text-white/40 text-xs mt-1">{card.label}</div>
           </div>
         ))}
       </div>
 
-      {/* Chart */}
-      <div className="mt-8 bg-[#1a1a1a] border border-white/10 rounded-xl p-6">
-        <div className="flex items-center justify-between mb-5">
-          <p className="text-white font-medium">Vues trackées — 30 derniers jours</p>
-          {!hasData && <span className="text-white/30 text-xs">Aucune donnée récente</span>}
+      {/* Second row — views vs clicks */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        {/* Views section */}
+        <div className="bg-[#1a1a1a] border border-[#00E5FF]/20 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Eye className="w-4 h-4 text-[#00E5FF]" />
+            <p className="text-white font-medium text-sm">Statistiques Vues</p>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {viewsCards.map(c => (
+              <div key={c.label} className={`${c.bg} rounded-lg p-3`}>
+                <c.icon className={`w-4 h-4 ${c.color} mb-2`} />
+                <div className="text-lg font-bold text-white">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                <div className="text-white/40 text-[10px] mt-0.5">{c.label}</div>
+              </div>
+            ))}
+          </div>
         </div>
-        {hasData ? (
+
+        {/* Clicks section */}
+        <div className="bg-[#1a1a1a] border border-[#f0c040]/20 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <MousePointerClick className="w-4 h-4 text-[#f0c040]" />
+            <p className="text-white font-medium text-sm">Statistiques Clics</p>
+            <span className="ml-auto text-[10px] text-white/30 bg-white/5 px-2 py-0.5 rounded-full">Anti-spam actif</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {clickCards.map(c => (
+              <div key={c.label} className={`${c.bg} rounded-lg p-3`}>
+                <c.icon className={`w-4 h-4 ${c.color} mb-2`} />
+                <div className="text-lg font-bold text-white">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                <div className="text-white/40 text-[10px] mt-0.5">{c.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Chart — toggle views / clicks */}
+      <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <p className="text-white font-medium">Activité — 30 derniers jours</p>
+          <div className="flex gap-1 bg-white/5 rounded-lg p-1">
+            <button
+              onClick={() => setActiveChart("views")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "views" ? "bg-[#00E5FF] text-black" : "text-white/50 hover:text-white"}`}
+            >
+              <Eye className="w-3 h-3" /> Vues
+            </button>
+            <button
+              onClick={() => setActiveChart("clicks")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "clicks" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}
+            >
+              <MousePointerClick className="w-3 h-3" /> Clics
+            </button>
+          </div>
+        </div>
+        {chartHasData ? (
           <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={timeline} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="colorVids" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis
-                dataKey="date"
-                tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }}
-                tickFormatter={(d) => d.slice(5)}
-                interval={4}
-              />
-              <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
-              <Tooltip
-                contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }}
-                labelStyle={{ color: "rgba(255,255,255,0.5)" }}
-                formatter={(v, name) => [v.toLocaleString("fr-FR"), "Vues"]}
-              />
-              <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#colorVids)" strokeWidth={2} dot={false} name="views" />
-            </AreaChart>
+            {activeChart === "views" ? (
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gradViews" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={(d) => d.slice(5)} interval={4} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
+                <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#gradViews)" strokeWidth={2} dot={false} name="Vues" />
+              </AreaChart>
+            ) : (
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gradClicks" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gradUniq" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#39FF14" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="#39FF14" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={(d) => d.slice(5)} interval={4} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
+                <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
+                <Area type="monotone" dataKey="clicks" stroke="#f0c040" fill="url(#gradClicks)" strokeWidth={2} dot={false} name="Clics totaux" />
+                <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" fill="url(#gradUniq)" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="Clics uniques" />
+              </AreaChart>
+            )}
           </ResponsiveContainer>
         ) : (
           <div className="h-[200px] flex items-center justify-center text-white/20 text-sm">
-            Les données apparaîtront après le premier tracking
+            {activeChart === "views" ? "Les données apparaîtront après le premier tracking" : "Aucun clic enregistré pour l'instant"}
           </div>
         )}
       </div>
@@ -658,6 +749,283 @@ function PostsTab() {
   );
 }
 
+// ─── AdminCampaignDetailPanel ─────────────────────────────────────────────────
+
+function AdminCampaignDetailPanel({ campaignId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("stats"); // stats | chat | membres
+  const [newMsg, setNewMsg] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    setLoading(true);
+    adminFetch(`/admin/campaigns/${campaignId}/detail`)
+      .then(setData)
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, [campaignId]);
+
+  useEffect(() => {
+    if (tab === "chat" && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [tab, data?.messages]);
+
+  const handleSendMsg = async () => {
+    if (!newMsg.trim()) return;
+    setSending(true);
+    try {
+      const msg = await adminFetch(`/admin/campaigns/${campaignId}/send-message`, {
+        method: "POST",
+        body: JSON.stringify({ content: newMsg.trim() }),
+      });
+      setData(d => d ? { ...d, messages: [...(d.messages || []), msg] } : d);
+      setNewMsg("");
+      toast.success("Message envoyé");
+    } catch (e) { toast.error(e.message); }
+    finally { setSending(false); }
+  };
+
+  const isClick = data?.payment_model === "clicks";
+  const cs = data?.click_stats || {};
+  const vs = data?.view_stats || {};
+
+  const statusColors = { active: "bg-green-500/20 text-green-400 border-green-500/30", paused: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30", ended: "bg-red-500/20 text-red-400 border-red-500/30", draft: "bg-white/5 text-white/40 border-white/10" };
+  const roleColors = { clipper: "text-blue-300", agency: "text-purple-300", manager: "text-amber-300", client: "text-green-300" };
+
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      {/* Backdrop */}
+      <div className="flex-1 bg-black/60" onClick={onClose} />
+      {/* Panel */}
+      <div className="w-full max-w-2xl bg-[#0d0d0d] border-l border-white/10 flex flex-col h-full overflow-hidden">
+        {/* Header */}
+        <div className="flex items-start justify-between p-5 border-b border-white/10 flex-shrink-0">
+          {loading ? (
+            <div className="text-white/40 text-sm">Chargement...</div>
+          ) : (
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-white font-semibold truncate">{data?.name || "—"}</h3>
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded border ${statusColors[data?.status] || statusColors.draft}`}>{data?.status}</span>
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded border ${isClick ? "bg-yellow-400/15 text-yellow-300 border-yellow-400/30" : "bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/30"}`}>
+                  {isClick ? "Au clic" : "Aux vues"}
+                </span>
+              </div>
+              <p className="text-white/40 text-xs mt-1">Agence : {data?.agency_name} · {data?.agency_email}</p>
+            </div>
+          )}
+          <button onClick={onClose} className="ml-4 p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white transition-all flex-shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-white/10 flex-shrink-0">
+          {[
+            { id: "stats", label: isClick ? "Clics & Stats" : "Vues & Stats" },
+            { id: "chat", label: `Chat (${data?.messages?.length || 0})` },
+            { id: "membres", label: `Membres (${data?.members?.length || 0})` },
+          ].map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`px-5 py-3 text-sm font-medium transition-all border-b-2 ${tab === t.id ? "border-[#00E5FF] text-[#00E5FF]" : "border-transparent text-white/40 hover:text-white"}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="p-8 text-white/40 text-sm text-center">Chargement des données...</div>
+          ) : !data ? null : (
+
+            // ── STATS TAB ──
+            tab === "stats" ? (
+              <div className="p-5 space-y-4">
+                {isClick ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { label: "Clics totaux", value: (cs.total_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
+                        { label: "Clics uniques", value: (cs.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-green-400", bg: "bg-green-400/10" },
+                        { label: "Gains générés", value: `€${(cs.earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
+                      ].map(c => (
+                        <div key={c.label} className={`${c.bg} rounded-xl p-4`}>
+                          <div className={`text-xl font-bold ${c.color}`}>{c.value}</div>
+                          <div className="text-white/40 text-xs mt-1">{c.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="bg-white/5 rounded-xl p-4 text-xs text-white/50">
+                      <span className="text-white/70 font-medium">Tarif : </span>€{cs.rate_per_click || 0}/clic ·
+                      <span className="text-white/70 font-medium ml-2">Mode : </span>
+                      {cs.unique_clicks_only ? "Clics uniques uniquement (anti-spam)" : "Tous les clics"}
+                    </div>
+                    {/* Liens de tracking */}
+                    {cs.links?.length > 0 && (
+                      <div>
+                        <p className="text-white/50 text-xs uppercase tracking-wider font-medium mb-3">Liens des clippeurs</p>
+                        <div className="space-y-2">
+                          {cs.links.map(lnk => (
+                            <div key={lnk.link_id} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
+                              <div className="w-7 h-7 rounded-full bg-[#f0c040]/20 flex items-center justify-center text-xs font-bold text-[#f0c040] flex-shrink-0">
+                                {(lnk.clipper_display_name || "?")[0]?.toUpperCase()}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-white text-xs font-medium truncate">{lnk.clipper_display_name}</p>
+                                <p className="text-white/30 text-[10px] font-mono truncate">{lnk.tracking_url}</p>
+                              </div>
+                              <div className="text-right flex-shrink-0">
+                                <p className="text-[#f0c040] font-mono text-xs">{(lnk.click_count || 0).toLocaleString("fr-FR")} clics</p>
+                                <p className="text-[#39FF14] font-mono text-[10px]">{(lnk.unique_click_count || 0).toLocaleString("fr-FR")} uniques</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { label: "Vues totales", value: fmtNum(vs.total_views || 0), color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
+                        { label: "Vidéos", value: vs.video_count || 0, color: "text-indigo-400", bg: "bg-indigo-400/10" },
+                        { label: "Budget consommé", value: `€${(vs.budget_used || 0).toFixed(2)}`, color: "text-green-400", bg: "bg-green-400/10" },
+                      ].map(c => (
+                        <div key={c.label} className={`${c.bg} rounded-xl p-4`}>
+                          <div className={`text-xl font-bold ${c.color}`}>{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                          <div className="text-white/40 text-xs mt-1">{c.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="bg-white/5 rounded-xl p-4 text-xs text-white/50">
+                      <span className="text-white/70 font-medium">RPM : </span>€{data.rpm || 0}/1K vues ·
+                      <span className="text-white/70 font-medium ml-2">Budget total : </span>
+                      {data.budget_unlimited ? "Illimité" : `€${data.budget_total || 0}`}
+                    </div>
+                  </>
+                )}
+                {/* Budget bar */}
+                {!data.budget_unlimited && data.budget_total > 0 && (
+                  <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
+                    <div className="flex justify-between text-xs text-white/50 mb-2">
+                      <span>Budget consommé</span>
+                      <span className="font-mono">{Math.round(((isClick ? cs.earnings : vs.budget_used) / data.budget_total) * 100)}%</span>
+                    </div>
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#00E5FF] to-[#f0c040] rounded-full transition-all"
+                        style={{ width: `${Math.min(100, ((isClick ? cs.earnings : vs.budget_used) / data.budget_total) * 100)}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-white/30 mt-1.5">
+                      <span>€{(isClick ? cs.earnings : vs.budget_used || 0).toFixed(2)}</span>
+                      <span>€{data.budget_total}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+
+            // ── CHAT TAB ──
+            : tab === "chat" ? (
+              <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {data.messages?.length === 0 && (
+                    <p className="text-white/20 text-sm text-center py-12">Aucun message dans ce chat</p>
+                  )}
+                  {data.messages?.map(msg => (
+                    <div key={msg.message_id} className={`flex ${msg.sender_id === "admin" || msg.is_admin ? "justify-end" : "justify-start"}`}>
+                      <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed ${
+                        msg.is_admin ? "bg-[#00E5FF] text-black rounded-br-sm" :
+                        msg.sender_role_resolved === "agency" || msg.sender_role === "agency" ? "bg-purple-500/20 text-white rounded-bl-sm" :
+                        "bg-white/10 text-white rounded-bl-sm"
+                      }`}>
+                        <p className={`text-[10px] font-medium mb-1 ${msg.is_admin ? "text-black/60" : roleColors[msg.sender_role_resolved || msg.sender_role] || "text-white/50"}`}>
+                          {msg.is_admin ? "Admin" : msg.sender_display_name || msg.sender_name || "?"}
+                        </p>
+                        <p>{msg.content}</p>
+                        <p className={`text-[9px] mt-1 ${msg.is_admin ? "text-black/40" : "text-white/30"}`}>
+                          {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={messagesEndRef} />
+                </div>
+                {/* Admin send */}
+                <div className="p-4 border-t border-white/10 flex gap-2 flex-shrink-0">
+                  <input
+                    value={newMsg}
+                    onChange={e => setNewMsg(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMsg(); } }}
+                    placeholder="Envoyer un message admin dans le chat..."
+                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+                  />
+                  <button
+                    onClick={handleSendMsg}
+                    disabled={sending || !newMsg.trim()}
+                    className="px-4 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black rounded-xl transition-all"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )
+
+            // ── MEMBRES TAB ──
+            : (
+              <div className="p-5">
+                {data.members?.length === 0 && (
+                  <p className="text-white/30 text-sm text-center py-12">Aucun membre</p>
+                )}
+                <div className="space-y-2">
+                  {data.members?.map(m => (
+                    <div key={m.member_id} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0">
+                        {m.user_info?.picture ? (
+                          <img src={m.user_info.picture} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/50">
+                            {(m.user_info?.display_name || m.user_info?.name || "?")[0]?.toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium truncate">
+                          {m.user_info?.display_name || m.user_info?.name || m.user_id}
+                        </p>
+                        <p className="text-white/30 text-xs truncate">{m.user_info?.email}</p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className={`text-xs font-medium ${roleColors[m.role] || "text-white/50"}`}>{m.role}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${
+                          m.status === "active" ? "bg-green-500/15 text-green-400 border-green-500/25" :
+                          m.status === "pending" ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" :
+                          "bg-white/5 text-white/30 border-white/10"
+                        }`}>{m.status}</span>
+                        {m.strikes > 0 && (
+                          <span className="text-[10px] bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded font-mono">
+                            {m.strikes} strike{m.strikes > 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── AdminCampaignsTab ────────────────────────────────────────────────────────
 
 function AdminCampaignsTab() {
@@ -665,6 +1033,7 @@ function AdminCampaignsTab() {
   const [loading, setLoading] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [search, setSearch] = useState("");
+  const [detailId, setDetailId] = useState(null); // campaign_id of open detail panel
 
   const fetchCampaigns = useCallback(() => {
     setLoading(true);
@@ -681,6 +1050,7 @@ function AdminCampaignsTab() {
       await adminFetch(`/admin/campaigns/${campaignId}`, { method: "DELETE" });
       toast.success("Campagne supprimée");
       setConfirmDelete(null);
+      if (detailId === campaignId) setDetailId(null);
       fetchCampaigns();
     } catch (e) { toast.error(e.message); }
   };
@@ -694,7 +1064,7 @@ function AdminCampaignsTab() {
   );
 
   return (
-    <div>
+    <div className="relative">
       <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
         <h2 className="text-xl font-semibold text-white">Campagnes ({filtered.length}/{campaigns.length})</h2>
         <div className="flex gap-3">
@@ -718,28 +1088,50 @@ function AdminCampaignsTab() {
               <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
                 <th className="text-left py-3 px-4">Campagne</th>
                 <th className="text-left py-3 px-4">Agence</th>
+                <th className="text-left py-3 px-4">Type</th>
                 <th className="text-left py-3 px-4">Statut</th>
                 <th className="text-left py-3 px-4">Membres</th>
-                <th className="text-left py-3 px-4">RPM</th>
+                <th className="text-left py-3 px-4">Tarif</th>
                 <th className="text-left py-3 px-4">Créée le</th>
                 <th className="text-right py-3 px-4">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((c) => (
-                <tr key={c.campaign_id} data-campaign-id={c.campaign_id} data-campaign-name={c.name} className="border-b border-white/5 hover:bg-white/3 transition-colors">
+                <tr key={c.campaign_id} className={`border-b border-white/5 hover:bg-white/3 transition-colors cursor-pointer ${detailId === c.campaign_id ? "bg-[#00E5FF]/5" : ""}`}
+                  onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}>
                   <td className="py-3 px-4 text-white font-medium">{c.name}</td>
                   <td className="py-3 px-4 text-white/60">{c.agency_name}</td>
+                  <td className="py-3 px-4">
+                    {c.payment_model === "clicks" ? (
+                      <span className="flex items-center gap-1 text-[#f0c040] text-xs font-medium">
+                        <MousePointerClick className="w-3 h-3" /> Clic
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[#00E5FF] text-xs font-medium">
+                        <Eye className="w-3 h-3" /> Vue
+                      </span>
+                    )}
+                  </td>
                   <td className="py-3 px-4">
                     <span className={`text-xs font-medium ${statusColors[c.status] || "text-white/40"}`}>
                       {c.status}
                     </span>
                   </td>
                   <td className="py-3 px-4 text-white/60">{c.member_count || 0}</td>
-                  <td className="py-3 px-4 text-[#39FF14] font-mono text-xs">€{c.rpm || 0}/1K</td>
+                  <td className="py-3 px-4 text-[#39FF14] font-mono text-xs">
+                    {c.payment_model === "clicks" ? `€${c.rate_per_click || 0}/clic` : `€${c.rpm || 0}/1K`}
+                  </td>
                   <td className="py-3 px-4 text-white/40">{formatDate(c.created_at)}</td>
-                  <td className="py-3 px-4">
+                  <td className="py-3 px-4" onClick={e => e.stopPropagation()}>
                     <div className="flex gap-2 justify-end">
+                      <button
+                        onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}
+                        className={`p-1.5 rounded transition-all ${detailId === c.campaign_id ? "bg-[#00E5FF]/20 text-[#00E5FF]" : "bg-white/5 hover:bg-white/10 text-white/50 hover:text-white"}`}
+                        title="Voir détail"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         onClick={() => setConfirmDelete(c)}
                         className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
@@ -752,7 +1144,7 @@ function AdminCampaignsTab() {
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={7} className="py-12 text-center text-white/30 text-sm">Aucune campagne</td></tr>
+                <tr><td colSpan={8} className="py-12 text-center text-white/30 text-sm">Aucune campagne</td></tr>
               )}
             </tbody>
           </table>
@@ -766,6 +1158,13 @@ function AdminCampaignsTab() {
           danger
           onConfirm={() => handleDelete(confirmDelete.campaign_id)}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+      {/* Campaign detail slide-over panel */}
+      {detailId && (
+        <AdminCampaignDetailPanel
+          campaignId={detailId}
+          onClose={() => setDetailId(null)}
         />
       )}
     </div>
@@ -1111,12 +1510,12 @@ function AdminSidebar({ active, setActive, onLogout }) {
   const items = [
     { id: "overview", label: "Vue d'ensemble", icon: LayoutDashboard },
     { id: "users", label: "Utilisateurs", icon: Users },
-    { id: "posts", label: "Tous les posts", icon: Eye },
     { id: "campaigns", label: "Campagnes", icon: Play },
-    { id: "preview-clipper", label: "Preview Clippeur", icon: Play },
-    { id: "preview-agency", label: "Preview Agence", icon: Building2 },
-    { id: "preview-manager", label: "Preview Manager", icon: Briefcase },
-    { id: "preview-client", label: "Preview Client", icon: UserCircle },
+    { id: "posts", label: "Tous les posts", icon: Eye },
+    { id: "preview-clipper", label: "Preview Clippeur", icon: TrendingUp, preview: true },
+    { id: "preview-agency", label: "Preview Agence", icon: Building2, preview: true },
+    { id: "preview-manager", label: "Preview Manager", icon: Briefcase, preview: true },
+    { id: "preview-client", label: "Preview Client", icon: UserCircle, preview: true },
     { id: "api-status", label: "Connexions API", icon: Plug },
     { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
@@ -1137,7 +1536,6 @@ function AdminSidebar({ active, setActive, onLogout }) {
       <nav className="flex-1 p-3 space-y-0.5">
         {items.map((item) => {
           const isActive = active === item.id;
-          const isPreview = item.id.startsWith("preview-");
           return (
             <button
               key={item.id}
@@ -1146,11 +1544,11 @@ function AdminSidebar({ active, setActive, onLogout }) {
                 isActive
                   ? "bg-[#00E5FF]/15 text-[#00E5FF]"
                   : "text-white/50 hover:text-white hover:bg-white/5"
-              } ${isPreview && !isActive ? "opacity-75" : ""}`}
+              } ${item.preview && !isActive ? "opacity-80" : ""}`}
             >
               <item.icon className="w-4 h-4 flex-shrink-0" />
               {item.label}
-              {isPreview && <ExternalLink className="w-3 h-3 ml-auto opacity-50" />}
+              {item.preview && <ExternalLink className="w-3 h-3 ml-auto opacity-40" />}
             </button>
           );
         })}
