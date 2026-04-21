@@ -1081,6 +1081,9 @@ function CampaignDashboard({ campaigns }) {
   // ── Click campaign stats ───────────────────────────────────────────────────
   const [clickStats, setClickStats] = useState(null);
   const [clickStatsLoading, setClickStatsLoading] = useState(false);
+  const [viewsTimeline, setViewsTimeline] = useState(null);
+  const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
+  const [viewsPeriod, setViewsPeriod] = useState("30");
   const [period, setPeriod] = useState("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -1098,6 +1101,15 @@ function CampaignDashboard({ campaigns }) {
     }
   }, [campaignId]);
 
+  const fetchViewsTimeline = async (d = viewsPeriod) => {
+    setViewsTimelineLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/views-chart?days=${d}`, { credentials: "include" });
+      if (res.ok) setViewsTimeline(await res.json());
+    } catch {}
+    finally { setViewsTimelineLoading(false); }
+  };
+
   const fetchClickStats = async (p = period, cFrom = customFrom, cTo = customTo) => {
     setClickStatsLoading(true);
     try {
@@ -1113,6 +1125,11 @@ function CampaignDashboard({ campaigns }) {
   // Auto-fetch click stats when campaign is loaded and is click-based
   useEffect(() => {
     if (campaign?.payment_model === "clicks") fetchClickStats();
+  }, [campaign?.campaign_id, campaign?.payment_model]);
+
+  // Auto-fetch views timeline when campaign is loaded and is views-based
+  useEffect(() => {
+    if (campaign?.payment_model === "views") fetchViewsTimeline();
   }, [campaign?.campaign_id, campaign?.payment_model]);
 
   const handlePeriodChange = (p) => {
@@ -1631,33 +1648,58 @@ function CampaignDashboard({ campaigns }) {
             ))}
           </div>
 
-          {/* Views chart */}
+          {/* Views timeline chart */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-white font-medium">Vues par jour (30 derniers jours)</p>
-              <p className="text-white/30 text-xs">Basé sur la date de publication des vidéos</p>
-            </div>
-            {chartData.some(d => d.views > 0) ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="viewsGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#FF007F" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#FF007F" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} interval={4} />
-                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
-                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }} labelStyle={{ color: "white", fontSize: 11 }} formatter={(v) => [fmt(v), "Vues"]} />
-                  <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsGrad)" dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-48 flex items-center justify-center">
-                <p className="text-white/20 text-sm">Aucune donnée de vues disponible — lancez un scraping</p>
+              <p className="text-white font-medium">Vues par jour</p>
+              <div className="flex items-center gap-2">
+                {/* Period selector */}
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {[["7","7j"], ["30","30j"], ["90","90j"]].map(([val, label]) => (
+                    <button key={val}
+                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />}
               </div>
-            )}
+            </div>
+            {(() => {
+              const tlData = (viewsTimeline?.timeline || []).map(d => ({
+                ...d,
+                label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+              }));
+              const hasData = tlData.some(d => d.views > 0);
+              return hasData ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="viewsTimelineGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#FF007F" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#FF007F" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
+                      interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
+                    <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
+                    <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
+                      labelStyle={{ color: "white", fontSize: 11 }}
+                      formatter={(v) => [fmt(v), "Vues"]} />
+                    <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-48 flex items-center justify-center">
+                  {viewsTimelineLoading
+                    ? <div className="w-6 h-6 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />
+                    : <p className="text-white/20 text-sm">Aucune donnée — les vues s'accumulent au fur et à mesure du tracking</p>
+                  }
+                </div>
+              );
+            })()}
           </div>
 
           {/* Budget + Clippers ranking */}

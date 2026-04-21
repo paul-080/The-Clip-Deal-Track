@@ -4049,8 +4049,11 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
 
 async def _fetch_single_tiktok_video(url: str) -> dict:
     """Fetch stats for a single TikTok video URL via TikWm API."""
+    params = {"url": url, "count": 1}
+    if TIKWM_API_KEY:
+        params["key"] = TIKWM_API_KEY
     async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get("https://www.tikwm.com/api/", params={"url": url, "count": 1})
+        r = await c.get("https://www.tikwm.com/api/", params=params)
         data = r.json()
     if data.get("code") != 0:
         raise ValueError(f"TikWm: {data.get('msg', 'Erreur inconnue')}")
@@ -4070,7 +4073,16 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
 async def _fetch_single_youtube_video(url: str) -> dict:
     """Fetch stats for a single YouTube video URL via YouTube Data API."""
     if not YOUTUBE_API_KEY:
-        raise ValueError("YOUTUBE_API_KEY non configurée")
+        # No API key — extract video ID and save with 0 views (will be updated by tracking loop)
+        m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+        video_id = m.group(1) if m else f"yt_{uuid.uuid4().hex[:8]}"
+        return {
+            "platform_video_id": video_id,
+            "url": url,
+            "title": None,
+            "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg" if m else None,
+            "views": 0, "likes": 0, "comments": 0, "published_at": None,
+        }
     m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
     if not m:
         raise ValueError("URL YouTube invalide — impossible d'extraire l'ID vidéo")
@@ -4756,13 +4768,19 @@ async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict 
             current += timedelta(days=1)
         return {"timeline": timeline, "source": "snapshots"}
 
-    # Fallback: group by published_at from tracked_videos
+    # Fallback: group by fetched_at (tracking date) — more accurate than published_at
+    # Uses $ifNull to coalesce fetched_at -> published_at -> today
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     pipeline = [
-        {"$match": {"campaign_id": campaign_id, "published_at": {"$gte": start.isoformat()}}},
-        {"$group": {
-            "_id": {"$substr": ["$published_at", 0, 10]},
-            "views": {"$sum": "$views"}
+        {"$match": {"campaign_id": campaign_id}},
+        {"$addFields": {
+            "day": {"$substr": [
+                {"$ifNull": ["$fetched_at", {"$ifNull": ["$published_at", today_iso]}]},
+                0, 10
+            ]}
         }},
+        {"$match": {"day": {"$gte": start.strftime("%Y-%m-%d")}}},
+        {"$group": {"_id": "$day", "views": {"$sum": "$views"}}},
         {"$sort": {"_id": 1}}
     ]
     results = await db.tracked_videos.aggregate(pipeline).to_list(days + 1)
@@ -4813,13 +4831,27 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     if platform not in ("tiktok", "youtube", "instagram"):
         raise HTTPException(status_code=400, detail="Plateforme invalide")
 
-    # Fetch video stats from platform
+    # Fetch video stats from platform — fallback to 0 views so the video is always saved
     try:
         vid_info = await fetch_single_video_by_url(url, platform)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Impossible de récupérer la vidéo : {e}")
+        logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {e}")
+        # Extract video ID from URL as best effort
+        vid_id = None
+        if platform == "tiktok":
+            m = re.search(r'/video/(\d+)', url)
+            vid_id = m.group(1) if m else None
+        elif platform == "youtube":
+            m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+            vid_id = m.group(1) if m else None
+        elif platform == "instagram":
+            m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+            vid_id = m.group(1) if m else None
+        vid_info = {
+            "platform_video_id": vid_id or f"{platform[:2]}_{uuid.uuid4().hex[:8]}",
+            "url": url, "title": None, "thumbnail_url": None,
+            "views": 0, "likes": 0, "comments": 0, "published_at": None,
+        }
 
     rpm = campaign.get("rpm", 0)
     now_iso = datetime.now(timezone.utc).isoformat()
