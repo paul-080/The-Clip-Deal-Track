@@ -315,18 +315,24 @@ export default function ChatPanel({ campaigns }) {
   };
 
   const connectWebSocket = () => {
-    if (!user?.user_id) return;
+    if (!user?.user_id || !mountedRef.current) return;
+    // Close any existing connection before creating a new one
+    if (wsRef.current && wsRef.current.readyState < 2) {
+      wsRef.current.onclose = null; // prevent reconnect loop
+      wsRef.current.close();
+    }
     const wsUrl = (process.env.REACT_APP_BACKEND_URL || "http://localhost:8000")
       .replace("https://", "wss://").replace("http://", "ws://");
     try {
-      wsRef.current = new WebSocket(`${wsUrl}/ws/${user.user_id}`);
-      wsRef.current.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+      const ws = new WebSocket(`${wsUrl}/ws/${user.user_id}`);
+      wsRef.current = ws;
+      ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; } // ignore malformed frames
         if (data.type === "new_message" && data.message.campaign_id === campaignId) {
           setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
           const msgType = data.message.message_type || "question";
           if (data.message.sender_id !== user?.user_id) {
-            // Use activeTabRef.current — never stale, always reflects latest tab
             const curTab = activeTabRef.current;
             if (msgType === "question" || msgType === "chat" || !msgType) {
               setTabUnread(prev => ({
@@ -353,9 +359,14 @@ export default function ChatPanel({ campaigns }) {
           }
         }
       };
-      // Only reconnect if the component is still mounted (prevents memory leak)
-      wsRef.current.onclose = () => {
-        if (mountedRef.current) setTimeout(connectWebSocket, 3000);
+      ws.onclose = () => {
+        // Only reconnect if still mounted AND this is still the active ws
+        if (mountedRef.current && wsRef.current === ws) {
+          setTimeout(connectWebSocket, 3000);
+        }
+      };
+      ws.onerror = () => {
+        // Let onclose handle reconnect
       };
     } catch {}
   };

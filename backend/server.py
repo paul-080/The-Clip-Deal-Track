@@ -333,14 +333,22 @@ class ConnectionManager:
             self.active_connections[user_id] = [
                 ws for ws in self.active_connections[user_id] if ws != websocket
             ]
+            # Clean up empty lists to prevent unbounded memory growth
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
 
     async def send_to_user(self, user_id: str, message: dict):
-        if user_id in self.active_connections:
-            for ws in self.active_connections[user_id]:
-                try:
-                    await ws.send_json(message)
-                except:
-                    pass
+        if user_id not in self.active_connections:
+            return
+        dead = []
+        for ws in self.active_connections[user_id]:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        # Remove dead connections detected during send
+        for ws in dead:
+            self.disconnect(ws, user_id)
 
     async def broadcast_to_campaign(self, campaign_id: str, message: dict):
         members = await db.campaign_members.find(
@@ -1000,26 +1008,39 @@ async def get_campaigns(user: dict = Depends(get_current_user)):
 
 @api_router.get("/campaigns/discover")
 async def discover_campaigns(user: dict = Depends(get_current_user)):
-    """Get all active campaigns for discovery"""
+    """Get all active campaigns for discovery — batch DB lookups."""
     campaigns = await db.campaigns.find(
         {"status": "active"},
         {"_id": 0, "token_clipper": 0, "token_manager": 0, "token_client": 0}
     ).to_list(100)
-    
+
+    if not campaigns:
+        return {"campaigns": []}
+
     user_id = user.get("user_id")
+
+    # Batch 1: fetch all agency users at once
+    agency_ids = list(set(c["agency_id"] for c in campaigns))
+    agency_docs = await db.users.find(
+        {"user_id": {"$in": agency_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "picture": 1}
+    ).to_list(len(agency_ids))
+    agency_map = {a["user_id"]: a for a in agency_docs}
+
+    # Batch 2: fetch user's memberships for all these campaigns at once
+    campaign_ids = [c["campaign_id"] for c in campaigns]
+    membership_map: dict = {}
+    if user_id:
+        members = await db.campaign_members.find(
+            {"user_id": user_id, "campaign_id": {"$in": campaign_ids}},
+            {"_id": 0, "campaign_id": 1, "status": 1}
+        ).to_list(200)
+        membership_map = {m["campaign_id"]: m["status"] for m in members}
+
     for campaign in campaigns:
-        agency = await db.users.find_one(
-            {"user_id": campaign["agency_id"]},
-            {"_id": 0, "display_name": 1, "picture": 1}
-        )
-        campaign["agency_name"] = agency.get("display_name") if agency else "Unknown"
-        # Add user's membership status for this campaign
-        if user_id:
-            member = await db.campaign_members.find_one(
-                {"campaign_id": campaign["campaign_id"], "user_id": user_id},
-                {"_id": 0, "status": 1}
-            )
-            campaign["user_status"] = member.get("status") if member else None
+        agency = agency_map.get(campaign["agency_id"], {})
+        campaign["agency_name"] = agency.get("display_name", "Unknown")
+        campaign["user_status"] = membership_map.get(campaign["campaign_id"])
 
     return {"campaigns": campaigns}
 
@@ -1035,28 +1056,39 @@ async def get_campaign(campaign_id: str, user: dict = Depends(get_current_user))
             {"_id": 0}
         ).to_list(100)
 
-        # Batch fetch user infos and global stats in parallel (1 query each, not N)
+        # Batch fetch: users + global stats + social accounts (4 queries total, not N×4)
         member_ids = [m["user_id"] for m in members]
         stats_map = await get_clippers_global_stats_batch(member_ids)
 
-        for member in members:
-            member_user = await db.users.find_one(
-                {"user_id": member["user_id"]},
-                {"_id": 0, "name": 1, "email": 1, "display_name": 1, "picture": 1}
-            )
-            member["user_info"] = member_user
-            member["global_stats"] = stats_map.get(member["user_id"], {"total_views": 0, "video_count": 0})
+        user_docs_gc = await db.users.find(
+            {"user_id": {"$in": member_ids}},
+            {"_id": 0, "user_id": 1, "name": 1, "email": 1, "display_name": 1, "picture": 1}
+        ).to_list(200)
+        users_map_gc = {u["user_id"]: u for u in user_docs_gc}
 
-            accounts = await db.campaign_social_accounts.find(
-                {"campaign_id": campaign_id, "user_id": member["user_id"]},
-                {"_id": 0}
-            ).to_list(50)
-            account_ids = [a["account_id"] for a in accounts]
-            social_accounts = await db.social_accounts.find(
-                {"account_id": {"$in": account_ids}},
-                {"_id": 0}
-            ).to_list(50)
-            member["social_accounts"] = social_accounts
+        # Batch campaign_social_accounts + social_accounts
+        csa_docs = await db.campaign_social_accounts.find(
+            {"campaign_id": campaign_id, "user_id": {"$in": member_ids}},
+            {"_id": 0}
+        ).to_list(1000)
+        csa_account_ids = [a["account_id"] for a in csa_docs]
+        sa_docs = await db.social_accounts.find(
+            {"account_id": {"$in": csa_account_ids}},
+            {"_id": 0}
+        ).to_list(1000)
+        sa_map = {s["account_id"]: s for s in sa_docs}
+        # Group social accounts by user_id
+        socials_by_user: dict = {}
+        for csa in csa_docs:
+            sa = sa_map.get(csa["account_id"])
+            if sa:
+                socials_by_user.setdefault(csa["user_id"], []).append(sa)
+
+        for member in members:
+            uid = member["user_id"]
+            member["user_info"] = users_map_gc.get(uid)
+            member["global_stats"] = stats_map.get(uid, {"total_views": 0, "video_count": 0})
+            member["social_accounts"] = socials_by_user.get(uid, [])
         
         campaign["members"] = members
         return campaign
@@ -1348,9 +1380,15 @@ async def get_pending_members(campaign_id: str, user: dict = Depends(get_current
     member_ids = [m["user_id"] for m in members]
     stats_map = await get_clippers_global_stats_batch(member_ids)
 
+    # Batch user fetch — 1 query for all users at once
+    user_docs = await db.users.find(
+        {"user_id": {"$in": member_ids}},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(200)
+    users_map = {u["user_id"]: u for u in user_docs}
+
     for member in members:
-        member_user = await db.users.find_one({"user_id": member["user_id"]}, {"_id": 0, "password_hash": 0})
-        member["user_info"] = member_user
+        member["user_info"] = users_map.get(member["user_id"])
         member["global_stats"] = stats_map.get(member["user_id"], {"total_views": 0, "video_count": 0})
 
     return {"members": members}
@@ -4821,8 +4859,11 @@ async def add_manual_video(campaign_id: str, body: dict, user: dict = Depends(ge
 
     clipper_id = body.get("user_id", "").strip()
     url = body.get("url", "").strip()
-    views = max(0, int(body.get("views", 0)))
-    platform = body.get("platform", "tiktok").lower()
+    try:
+        views = max(0, int(body.get("views", 0)))
+    except (TypeError, ValueError):
+        views = 0
+    platform = (body.get("platform") or "tiktok").lower()
     title = (body.get("title") or "Vidéo ajoutée manuellement").strip()
 
     if not clipper_id or not url:
@@ -4895,34 +4936,62 @@ async def get_messages(campaign_id: str, user: dict = Depends(get_current_user))
 
 @api_router.get("/messages/unread-counts")
 async def get_unread_counts(user: dict = Depends(get_current_user)):
-    """Retourne le nombre de messages non lus par campagne depuis le dernier vu."""
+    """Retourne le nombre de messages non lus par campagne — 2 requêtes DB (batch)."""
     uid = user["user_id"]
-    # Récupérer les campagnes de l'utilisateur
+
+    # 1 query: all memberships
     memberships = await db.campaign_members.find(
         {"user_id": uid}, {"_id": 0, "campaign_id": 1}
     ).to_list(200)
     campaign_ids = list(set(m["campaign_id"] for m in memberships))
-    # Pour les agences, ajouter leurs propres campagnes
+
+    # For agencies add their own campaigns (1 query)
     if user.get("role") == "agency":
         own = await db.campaigns.find({"agency_id": uid}, {"_id": 0, "campaign_id": 1}).to_list(200)
         campaign_ids = list(set(campaign_ids + [c["campaign_id"] for c in own]))
 
-    counts = {}
-    for cid in campaign_ids:
-        # Récupérer la date du dernier "vu" de cet utilisateur pour cette campagne
-        seen_doc = await db.message_reads.find_one({"user_id": uid, "campaign_id": cid}, {"_id": 0})
-        last_seen = seen_doc.get("last_seen_at") if seen_doc else None
-        query = {"campaign_id": cid, "sender_id": {"$ne": uid}}
-        if last_seen:
-            query["created_at"] = {"$gt": last_seen}
-        count = await db.messages.count_documents(query)
-        if count > 0:
-            counts[cid] = count
+    if not campaign_ids:
+        support_unread = await db.support_messages.count_documents(
+            {"user_id": uid, "from_admin": True, "read_by_user": False}
+        )
+        return {"unread": {}, "support_unread": support_unread}
 
-    # Support unread count (admin replies not yet read by user)
-    support_unread = await db.support_messages.count_documents({
-        "user_id": uid, "from_admin": True, "read_by_user": False
-    })
+    # 1 query: all last_seen timestamps for this user
+    seen_docs = await db.message_reads.find(
+        {"user_id": uid, "campaign_id": {"$in": campaign_ids}},
+        {"_id": 0, "campaign_id": 1, "last_seen_at": 1}
+    ).to_list(500)
+    seen_map = {d["campaign_id"]: d.get("last_seen_at") for d in seen_docs}
+
+    # 1 aggregation: count unread per campaign
+    pipeline = [
+        {"$match": {
+            "campaign_id": {"$in": campaign_ids},
+            "sender_id": {"$ne": uid},
+        }},
+        {"$group": {
+            "_id": "$campaign_id",
+            "latest": {"$max": "$created_at"},
+            "count": {"$sum": 1},
+            "msgs": {"$push": {"created_at": "$created_at"}}
+        }},
+    ]
+    raw = await db.messages.aggregate(pipeline).to_list(500)
+
+    counts = {}
+    for row in raw:
+        cid = row["_id"]
+        last_seen = seen_map.get(cid)
+        if last_seen:
+            unread = sum(1 for m in row["msgs"] if m["created_at"] > last_seen)
+        else:
+            unread = row["count"]
+        if unread > 0:
+            counts[cid] = unread
+
+    support_unread = await db.support_messages.count_documents(
+        {"user_id": uid, "from_admin": True, "read_by_user": False}
+    )
     return {"unread": counts, "support_unread": support_unread}
 
 @api_router.post("/campaigns/{campaign_id}/mark-read")
@@ -5148,47 +5217,65 @@ async def get_clippers_advice_status(campaign_id: str, user: dict = Depends(get_
         {"_id": 0}
     ).to_list(100)
     
-    clippers = []
-    for member in members:
-        clipper_user = await db.users.find_one(
-            {"user_id": member["user_id"]},
-            {"_id": 0, "user_id": 1, "name": 1, "email": 1, "display_name": 1, "picture": 1}
-        )
-        
-        if clipper_user:
-            # Get last advice for this clipper in this campaign
-            last_advice = await db.advices.find_one(
-                {
-                    "campaign_id": campaign_id,
-                    "recipient_ids": member["user_id"]
-                },
-                {"_id": 0},
-                sort=[("created_at", -1)]
-            )
-            
-            hours_since_advice = None
-            needs_advice = True
-            
-            if last_advice:
-                last_time = datetime.fromisoformat(last_advice["created_at"])
-                if last_time.tzinfo is None:
-                    last_time = last_time.replace(tzinfo=timezone.utc)
-                hours_since_advice = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
-                needs_advice = hours_since_advice >= 72
-            
-            # Get social accounts for this clipper
-            clipper_social_accounts = await db.social_accounts.find(
-                {"user_id": member["user_id"]},
-                {"_id": 0, "platform": 1, "username": 1, "account_url": 1, "status": 1}
-            ).to_list(20)
+    # Batch fetch: users + social accounts + latest advice per clipper (3 queries total)
+    member_ids = [m["user_id"] for m in members]
 
-            clippers.append({
-                **clipper_user,
-                "hours_since_advice": round(hours_since_advice, 1) if hours_since_advice else None,
-                "needs_advice": needs_advice,
-                "last_advice_at": last_advice["created_at"] if last_advice else None,
-                "social_accounts": clipper_social_accounts
-            })
+    user_docs = await db.users.find(
+        {"user_id": {"$in": member_ids}},
+        {"_id": 0, "user_id": 1, "name": 1, "email": 1, "display_name": 1, "picture": 1}
+    ).to_list(200)
+    users_map = {u["user_id"]: u for u in user_docs}
+
+    social_docs = await db.social_accounts.find(
+        {"user_id": {"$in": member_ids}},
+        {"_id": 0, "user_id": 1, "platform": 1, "username": 1, "account_url": 1, "status": 1}
+    ).to_list(1000)
+    socials_map: dict = {}
+    for s in social_docs:
+        socials_map.setdefault(s["user_id"], []).append(s)
+
+    # Latest advice per clipper for this campaign (aggregation — 1 query)
+    advice_pipeline = [
+        {"$match": {"campaign_id": campaign_id, "recipient_ids": {"$in": member_ids}}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$recipient_ids", "last_advice": {"$first": "$$ROOT"}}},
+    ]
+    # recipient_ids is an array field, so we unwind first
+    advice_pipeline2 = [
+        {"$match": {"campaign_id": campaign_id}},
+        {"$unwind": "$recipient_ids"},
+        {"$match": {"recipient_ids": {"$in": member_ids}}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$recipient_ids", "created_at": {"$first": "$created_at"}}},
+    ]
+    advice_agg = await db.advices.aggregate(advice_pipeline2).to_list(200)
+    latest_advice_map = {a["_id"]: a["created_at"] for a in advice_agg}
+
+    clippers = []
+    now_utc = datetime.now(timezone.utc)
+    for member in members:
+        uid = member["user_id"]
+        clipper_user = users_map.get(uid)
+        if not clipper_user:
+            continue
+
+        hours_since_advice = None
+        needs_advice = True
+        last_advice_at = latest_advice_map.get(uid)
+        if last_advice_at:
+            last_time = datetime.fromisoformat(last_advice_at.replace("Z", "+00:00"))
+            if last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            hours_since_advice = (now_utc - last_time).total_seconds() / 3600
+            needs_advice = hours_since_advice >= 72
+
+        clippers.append({
+            **clipper_user,
+            "hours_since_advice": round(hours_since_advice, 1) if hours_since_advice is not None else None,
+            "needs_advice": needs_advice,
+            "last_advice_at": last_advice_at,
+            "social_accounts": socials_map.get(uid, [])
+        })
     
     # Sort: those needing advice first, then by hours since last advice (descending)
     clippers.sort(key=lambda x: (not x["needs_advice"], -(x["hours_since_advice"] or 9999)))
@@ -5233,29 +5320,37 @@ async def get_campaign_stats(campaign_id: str, user: dict = Depends(get_current_
         {"_id": 0}
     ).to_list(100)
 
+    # Batch: aggregate views per clipper (1 query) + batch user fetch (1 query)
+    member_ids = [m["user_id"] for m in members]
+
+    posts_agg = await db.posts.aggregate([
+        {"$match": {"campaign_id": campaign_id, "user_id": {"$in": member_ids}}},
+        {"$group": {"_id": "$user_id", "total_views": {"$sum": "$views"}, "post_count": {"$sum": 1}}}
+    ]).to_list(200)
+    posts_map = {p["_id"]: {"views": p["total_views"], "post_count": p["post_count"]} for p in posts_agg}
+
+    user_docs = await db.users.find(
+        {"user_id": {"$in": member_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+    ).to_list(200)
+    users_map_stats = {u["user_id"]: u for u in user_docs}
+
     total_views = 0
     clipper_stats = []
 
     for member in members:
-        # Aggregate real views from posts
-        posts = await db.posts.find(
-            {"campaign_id": campaign_id, "user_id": member["user_id"]},
-            {"_id": 0, "views": 1}
-        ).to_list(10000)
-        views = sum(p.get("views", 0) for p in posts)
-        earnings = (views / 1000) * campaign["rpm"]
-
-        clipper_user = await db.users.find_one(
-            {"user_id": member["user_id"]},
-            {"_id": 0, "display_name": 1, "name": 1, "picture": 1}
-        )
+        uid = member["user_id"]
+        p_data = posts_map.get(uid, {"views": 0, "post_count": 0})
+        views = p_data["views"]
+        earnings = (views / 1000) * campaign.get("rpm", 0)
+        clipper_user = users_map_stats.get(uid, {})
 
         clipper_stats.append({
-            "user_id": member["user_id"],
-            "display_name": clipper_user.get("display_name") or clipper_user.get("name") if clipper_user else member["user_id"],
-            "picture": clipper_user.get("picture") if clipper_user else None,
+            "user_id": uid,
+            "display_name": clipper_user.get("display_name") or clipper_user.get("name") or uid,
+            "picture": clipper_user.get("picture"),
             "views": views,
-            "post_count": len(posts),
+            "post_count": p_data["post_count"],
             "earnings": round(earnings, 2),
             "strikes": member.get("strikes", 0),
             "status": member.get("status", "active")
@@ -5292,15 +5387,20 @@ async def get_campaign_stats(campaign_id: str, user: dict = Depends(get_current_
         views_chart.append({"date": d, "views": views_by_day.get(d, 0)})
 
     # ── Videos for client view (no RPM/earnings) ──
-    # Attach clipper name to each video
-    user_cache: dict = {}
+    # Batch-fetch any video uploaders not already in users_map_stats
+    video_user_ids = {v.get("user_id") for v in all_videos if v.get("user_id") and v.get("user_id") not in users_map_stats}
+    if video_user_ids:
+        extra_users = await db.users.find(
+            {"user_id": {"$in": list(video_user_ids)}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+        ).to_list(200)
+        for u in extra_users:
+            users_map_stats[u["user_id"]] = u
+
     videos_client = []
     for vid in sorted(all_videos, key=lambda v: v.get("published_at") or v.get("fetched_at") or "", reverse=True)[:200]:
         uid = vid.get("user_id")
-        if uid and uid not in user_cache:
-            u = await db.users.find_one({"user_id": uid}, {"_id": 0, "display_name": 1, "name": 1, "picture": 1})
-            user_cache[uid] = u or {}
-        clipper_info = user_cache.get(uid, {})
+        clipper_info = users_map_stats.get(uid, {})
         videos_client.append({
             "video_id": vid.get("video_id"),
             "url": vid.get("url"),
@@ -5774,31 +5874,43 @@ async def get_owed_payments(user: dict = Depends(get_current_user)):
         {"_id": 0}
     ).to_list(200)
 
+    # Batch: fetch all members for all campaigns + all clipper users in 2 queries
+    campaign_ids = [c["campaign_id"] for c in campaigns]
+    all_members = await db.campaign_members.find(
+        {"campaign_id": {"$in": campaign_ids}, "role": "clipper"},
+        {"_id": 0, "user_id": 1, "campaign_id": 1}
+    ).to_list(2000)
+    all_clipper_ids = list({m["user_id"] for m in all_members})
+    clipper_docs = await db.users.find(
+        {"user_id": {"$in": all_clipper_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1, "payment_info": 1}
+    ).to_list(1000)
+    clippers_map = {c["user_id"]: c for c in clipper_docs}
+
+    # Group members by campaign for O(1) lookup
+    members_by_campaign: dict = {}
+    for m in all_members:
+        members_by_campaign.setdefault(m["campaign_id"], []).append(m)
+
     rows = []
     for campaign in campaigns:
         rpm = campaign.get("rpm", 0)
         payment_model = campaign.get("payment_model", "views")
         rate_per_click = campaign.get("rate_per_click", 0.0)
         unique_only = campaign.get("unique_clicks_only", True)
-        members = await db.campaign_members.find(
-            {"campaign_id": campaign["campaign_id"], "role": "clipper"},
-            {"_id": 0, "user_id": 1}
-        ).to_list(200)
-        for m in members:
-            clipper = await db.users.find_one(
-                {"user_id": m["user_id"]},
-                {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1, "payment_info": 1}
-            )
+        cid = campaign["campaign_id"]
+        for m in members_by_campaign.get(cid, []):
+            clipper = clippers_map.get(m["user_id"])
             if not clipper:
                 continue
             if payment_model == "clicks":
-                data = await _calc_clicks_for_member(campaign["campaign_id"], m["user_id"], rate_per_click, unique_only)
+                data = await _calc_clicks_for_member(cid, m["user_id"], rate_per_click, unique_only)
             else:
-                data = await _calc_earnings_for_member(campaign["campaign_id"], m["user_id"], rpm)
+                data = await _calc_earnings_for_member(cid, m["user_id"], rpm)
             if data["earned"] > 0:
                 rows.append({
                     **clipper,
-                    "campaign_id": campaign["campaign_id"],
+                    "campaign_id": cid,
                     "campaign_name": campaign.get("name"),
                     "payment_model": payment_model,
                     "rpm": rpm,
@@ -5817,7 +5929,10 @@ async def confirm_payment(body: dict, user: dict = Depends(get_current_user)):
 
     clipper_user_id = body.get("user_id")
     campaign_id = body.get("campaign_id")
-    amount = float(body.get("amount", 0))
+    try:
+        amount = float(body.get("amount", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Montant invalide")
 
     if not clipper_user_id or not campaign_id or amount <= 0:
         raise HTTPException(status_code=400, detail="Paramètres invalides")
@@ -6061,11 +6176,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
-            
+            try:
+                message = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                continue  # ignore malformed frames, don't crash
             if message.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
+        manager.disconnect(websocket, user_id)
+    except Exception:
         manager.disconnect(websocket, user_id)
 
 # ================= ADMIN ROUTES =================
@@ -7359,7 +7478,7 @@ async def get_campaign_click_stats(
     billable = unique_clicks if campaign.get("unique_clicks_only", True) else total_clicks
     total_earnings = round((billable / 1000) * rate_per_click, 2)
 
-    # Per-clipper breakdown (agency only)
+    # Per-clipper breakdown (agency only) — batch user lookup
     clippers_data = []
     if role in ["agency", "manager"] and not clipper_id:
         clipper_pipeline = [
@@ -7371,13 +7490,20 @@ async def get_campaign_click_stats(
             }}
         ]
         clipper_stats = await db.click_events.aggregate(clipper_pipeline).to_list(100)
+        # Batch fetch all clipper users in one query
+        clipper_ids = [cs["_id"] for cs in clipper_stats if cs["_id"]]
+        user_docs = await db.users.find(
+            {"user_id": {"$in": clipper_ids}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+        ).to_list(len(clipper_ids))
+        user_map = {u["user_id"]: u for u in user_docs}
         for cs in clipper_stats:
-            cu = await db.users.find_one({"user_id": cs["_id"]}, {"_id": 0, "display_name": 1, "name": 1, "picture": 1})
+            cu = user_map.get(cs["_id"], {})
             b = cs["unique_clicks"] if campaign.get("unique_clicks_only", True) else cs["clicks"]
             clippers_data.append({
                 "clipper_id": cs["_id"],
-                "name": (cu or {}).get("display_name") or (cu or {}).get("name", "?"),
-                "picture": (cu or {}).get("picture"),
+                "name": cu.get("display_name") or cu.get("name", "?"),
+                "picture": cu.get("picture"),
                 "clicks": cs["clicks"],
                 "unique_clicks": cs["unique_clicks"],
                 "earnings": round((b / 1000) * rate_per_click, 2),
@@ -7524,24 +7650,68 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    # ── MongoDB indexes — idempotent, safe to re-run ───────────────────────
+    indexes = [
+        # tracked_videos
+        (db.tracked_videos, [("account_id", 1), ("platform_video_id", 1)], {"unique": True}),
+        (db.tracked_videos, [("user_id", 1)], {}),
+        (db.tracked_videos, [("campaign_id", 1)], {}),
+        # messages
+        (db.message_reads, [("user_id", 1), ("campaign_id", 1)], {"unique": True}),
+        (db.messages, [("campaign_id", 1), ("created_at", 1)], {}),
+        (db.messages, [("sender_id", 1)], {}),
+        # click tracking
+        (db.click_links, [("short_code", 1)], {"unique": True}),
+        (db.click_links, [("campaign_id", 1), ("clipper_id", 1)], {}),
+        (db.click_links, [("clipper_id", 1), ("is_active", 1)], {}),
+        (db.click_events, [("link_id", 1), ("ip_hash", 1), ("clicked_at", 1)], {}),
+        (db.click_events, [("campaign_id", 1), ("clicked_at", -1)], {}),
+        (db.click_events, [("clipper_id", 1), ("clicked_at", -1)], {}),
+        # campaigns + members
+        (db.campaigns, [("agency_id", 1)], {}),
+        (db.campaigns, [("status", 1)], {}),
+        (db.campaign_members, [("user_id", 1), ("status", 1)], {}),
+        (db.campaign_members, [("campaign_id", 1), ("status", 1)], {}),
+        # sessions — TTL: auto-delete expired sessions after 8 days
+        (db.user_sessions, [("expires_at", 1)], {"expireAfterSeconds": 0, "name": "sessions_ttl"}),
+        (db.user_sessions, [("session_token", 1)], {"unique": True}),
+        # social accounts
+        (db.social_accounts, [("user_id", 1)], {}),
+        (db.social_accounts, [("status", 1)], {}),
+        # announcements
+        (db.announcements, [("created_at", -1)], {}),
+        # posts (for views aggregation)
+        (db.posts, [("campaign_id", 1), ("user_id", 1)], {}),
+        (db.posts, [("user_id", 1)], {}),
+        # advices (for manager reminder batch query)
+        (db.advices, [("campaign_id", 1), ("recipient_ids", 1), ("created_at", -1)], {}),
+        (db.advices, [("manager_id", 1), ("created_at", -1)], {}),
+        # users (primary key lookup)
+        (db.users, [("user_id", 1)], {"unique": True}),
+        (db.users, [("email", 1)], {"unique": True}),
+        # campaign_social_accounts
+        (db.campaign_social_accounts, [("campaign_id", 1)], {}),
+        (db.campaign_social_accounts, [("user_id", 1)], {}),
+        # views_snapshots
+        (db.views_snapshots, [("campaign_id", 1), ("date", -1)], {}),
+        # payments
+        (db.payments, [("user_id", 1), ("campaign_id", 1)], {}),
+        (db.payments, [("agency_id", 1)], {}),
+    ]
+    for collection, keys, opts in indexes:
+        try:
+            await collection.create_index(keys, **opts)
+        except Exception as e:
+            logger.debug(f"Index already exists or minor error: {e}")
+
+    # ── Clean up expired sessions (belt + suspenders alongside TTL index) ──
     try:
-        await db.tracked_videos.create_index(
-            [("account_id", 1), ("platform_video_id", 1)], unique=True
-        )
-    except Exception:
-        pass
-    try:
-        await db.message_reads.create_index([("user_id", 1), ("campaign_id", 1)], unique=True)
-        await db.messages.create_index([("campaign_id", 1), ("created_at", 1)])
-    except Exception:
-        pass
-    try:
-        await db.click_links.create_index([("short_code", 1)], unique=True)
-        await db.click_links.create_index([("campaign_id", 1), ("clipper_id", 1)])
-        await db.click_events.create_index([("link_id", 1), ("ip_hash", 1), ("clicked_at", 1)])
-        await db.click_events.create_index([("campaign_id", 1), ("clicked_at", -1)])
-    except Exception:
-        pass
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await db.user_sessions.delete_many({"expires_at": {"$lt": now_iso}})
+        if res.deleted_count:
+            logger.info(f"Startup: purged {res.deleted_count} expired sessions.")
+    except Exception as e:
+        logger.warning(f"Session cleanup failed: {e}")
 
     # Purge all simulated/fake videos that may have been inserted by old code versions.
     # Simulated videos have simulated=True OR platform_video_id starting with "sim_".

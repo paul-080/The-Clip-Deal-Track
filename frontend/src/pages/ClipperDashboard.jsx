@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
@@ -149,7 +150,7 @@ export default function ClipperDashboard() {
             />
           } />
           <Route path="videos" element={<AllVideosPage />} />
-          <Route path="campaign/:campaignId" element={<CampaignDashboard campaigns={campaigns} />} />
+          <Route path="campaign/:campaignId" element={<CampaignDashboard campaigns={campaigns} clipperStats={stats} />} />
           <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
           <Route path="payment" element={<PaymentPage stats={stats} />} />
           <Route path="support" element={<SupportPage />} />
@@ -1717,27 +1718,75 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
 }
 
 // Campaign Dashboard
-function CampaignDashboard({ campaigns }) {
+function CampaignDashboard({ campaigns, clipperStats }) {
   const location = useLocation();
   const campaignId = location.pathname.split("/")[3];
   const campaign = campaigns.find((c) => c.campaign_id === campaignId);
-  const [stats, setStats] = useState(null);
+  const [clickLink, setClickLink] = useState(null);
+  const [loadingLink, setLoadingLink] = useState(false);
+  const [generatingLink, setGeneratingLink] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [clickStats, setClickStats] = useState(null);
+  const [clickPeriod, setClickPeriod] = useState("30d");
+
+  // Stats perso depuis le parent (déjà fetchées)
+  const myStats = clipperStats?.campaign_stats?.find((s) => s.campaign_id === campaignId);
+  const isClickCampaign = campaign?.payment_model === "clicks";
 
   useEffect(() => {
-    if (campaignId) {
-      fetchStats();
+    if (campaignId && isClickCampaign) {
+      fetchClickLink();
+      fetchClickStats("30d");
     }
-  }, [campaignId]);
+  }, [campaignId, isClickCampaign]);
 
-  const fetchStats = async () => {
+  const fetchClickStats = async (p = clickPeriod) => {
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/stats`, { credentials: "include" });
+      const res = await fetch(`${API}/campaigns/${campaignId}/click-stats?period=${p}`, { credentials: "include" });
+      if (res.ok) setClickStats(await res.json());
+    } catch {}
+  };
+
+  const fetchClickLink = async () => {
+    setLoadingLink(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/my-click-link`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
-        setStats(data);
+        setClickLink(data);
       }
-    } catch (error) {
-      console.error("Error:", error);
+    } catch {}
+    finally { setLoadingLink(false); }
+  };
+
+  const handleCopy = () => {
+    if (!clickLink?.tracking_url) return;
+    navigator.clipboard.writeText(clickLink.tracking_url).then(() => {
+      setCopied(true);
+      toast.success("Lien copié !");
+      setTimeout(() => setCopied(false), 2500);
+    });
+  };
+
+  const handleGenerateLink = async () => {
+    setGeneratingLink(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/generate-my-link`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setClickLink(data);
+        toast.success("Lien de tracking généré !");
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Impossible de générer le lien");
+      }
+    } catch {
+      toast.error("Erreur de connexion");
+    } finally {
+      setGeneratingLink(false);
     }
   };
 
@@ -1749,81 +1798,243 @@ function CampaignDashboard({ campaigns }) {
     );
   }
 
-  const myStats = stats?.clipper_stats?.find((s) => true); // First one for demo
-
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="space-y-8"
+      className="space-y-6"
       data-testid="campaign-dashboard"
     >
-      <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">{campaign.name}</h1>
-        <p className="text-white/50">Votre tableau de bord pour cette campagne</p>
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <h1 className="font-display font-bold text-3xl text-white">{campaign.name}</h1>
+            {isClickCampaign && (
+              <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 font-medium">
+                <MousePointerClick className="w-3 h-3" /> Campagne au clic
+              </span>
+            )}
+          </div>
+          <p className="text-white/50">Votre tableau de bord pour cette campagne</p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <p className="text-sm text-white/50 mb-1">Votre classement</p>
-            <p className="font-mono font-bold text-3xl text-white">
-              #{myStats?.rank || "-"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <p className="text-sm text-white/50 mb-1">Vos vues</p>
-            <p className="font-mono font-bold text-3xl text-white">
-              {myStats?.views?.toLocaleString() || "0"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-6">
-            <p className="text-sm text-white/50 mb-1">Gains en attente</p>
-            <p className="font-mono font-bold text-3xl text-[#00E5FF]">
-              €{myStats?.earnings?.toFixed(2) || "0.00"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      {/* ═══ LIEN DE TRACKING — visible uniquement pour campagnes au clic ═══ */}
+      {isClickCampaign && (
+        <div className="rounded-2xl border border-[#f0c040]/30 bg-[#f0c040]/6 p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-5 h-5 text-[#f0c040]" />
+            <h2 className="text-[#f0c040] font-bold text-base">Ton lien de tracking personnalisé</h2>
+          </div>
+          <p className="text-white/50 text-sm">
+            Mets ce lien dans ta bio TikTok / Instagram / YouTube. Chaque clic unique est comptabilisé et rémunéré{" "}
+            <strong className="text-[#f0c040]">€{campaign.rate_per_click || 0} / 1 000 clics</strong>.
+          </p>
 
+          {loadingLink ? (
+            <div className="h-10 bg-white/5 rounded-xl animate-pulse" />
+          ) : clickLink?.tracking_url ? (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-[#0A0A0A] border border-white/10 rounded-xl px-4 py-2.5 font-mono text-sm text-white/80 truncate select-all">
+                {clickLink.tracking_url}
+              </div>
+              <button
+                onClick={handleCopy}
+                className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-bold text-sm transition-all"
+              >
+                {copied ? <><Check className="w-4 h-4" /> Copié</> : <><Copy className="w-4 h-4" /> Copier</>}
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <p className="text-white/40 text-sm flex-1">Ton lien de tracking n'a pas encore été généré.</p>
+              <button
+                onClick={handleGenerateLink}
+                disabled={generatingLink}
+                className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#f0c040]/20 hover:bg-[#f0c040]/30 border border-[#f0c040]/40 text-[#f0c040] font-bold text-sm transition-all disabled:opacity-50"
+              >
+                {generatingLink
+                  ? <><div className="w-4 h-4 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" /> Génération...</>
+                  : <><Link2 className="w-4 h-4" /> Générer mon lien</>
+                }
+              </button>
+            </div>
+          )}
+
+          {/* Destination */}
+          {clickLink?.destination_url && (
+            <p className="text-xs text-white/30">
+              Redirige vers : <span className="text-white/50">{clickLink.destination_url}</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Stats cards */}
+      {isClickCampaign ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Clics totaux</p>
+              <p className="font-mono font-bold text-3xl text-white">
+                {(clickLink?.click_count ?? myStats?.clicks ?? 0).toLocaleString("fr-FR")}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Clics uniques</p>
+              <p className="font-mono font-bold text-3xl text-[#f0c040]">
+                {(clickLink?.unique_click_count ?? myStats?.unique_clicks ?? 0).toLocaleString("fr-FR")}
+              </p>
+              <p className="text-xs text-white/30 mt-1">Facturables</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Gains générés</p>
+              <p className="font-mono font-bold text-3xl text-[#00E5FF]">
+                €{(clickLink?.earnings ?? myStats?.earnings ?? 0).toFixed(2)}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Classement</p>
+              <p className="font-mono font-bold text-3xl text-white">#{myStats?.rank || "-"}</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Vues totales</p>
+              <p className="font-mono font-bold text-3xl text-white">
+                {fmtViews(myStats?.views || 0)}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-6">
+              <p className="text-sm text-white/50 mb-1">Gains générés</p>
+              <p className="font-mono font-bold text-3xl text-[#00E5FF]">
+                €{(myStats?.earnings || 0).toFixed(2)}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Click chart — only for click campaigns */}
+      {isClickCampaign && (
+        <Card className="bg-[#121212] border-white/10">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-white text-base flex items-center gap-2">
+                <MousePointerClick className="w-4 h-4 text-[#f0c040]" /> Tes clics dans le temps
+              </CardTitle>
+              {/* Period pills */}
+              <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                {[{ id: "1d", label: "1j" }, { id: "7d", label: "7j" }, { id: "30d", label: "30j" }, { id: "all", label: "Tout" }].map(p => (
+                  <button key={p.id}
+                    onClick={() => { setClickPeriod(p.id); fetchClickStats(p.id); }}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${clickPeriod === p.id ? "bg-[#f0c040] text-black" : "text-white/40 hover:text-white"}`}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {clickStats?.chart?.some(d => d.clicks > 0) ? (
+              <ResponsiveContainer width="100%" height={160}>
+                <AreaChart data={clickStats.chart} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="myClicksGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f0c040" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="myUniqueGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
+                    interval={Math.max(0, Math.floor((clickStats.chart?.length || 1) / 8) - 1)} />
+                  <YAxis tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
+                    formatter={(v, name) => [v.toLocaleString("fr-FR"), name === "clicks" ? "Clics" : "Clics uniques"]} />
+                  <Area type="monotone" dataKey="clicks" stroke="#f0c040" strokeWidth={2} fill="url(#myClicksGrad)" dot={false} />
+                  <Area type="monotone" dataKey="unique_clicks" stroke="#00E5FF" strokeWidth={1.5} fill="url(#myUniqueGrad)" dot={false} strokeDasharray="4 2" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-32 flex items-center justify-center">
+                <p className="text-white/20 text-sm">Aucun clic enregistré sur cette période</p>
+              </div>
+            )}
+            <div className="flex items-center gap-4 mt-2">
+              <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-[#f0c040]" /><span className="text-white/30 text-xs">Tous tes clics</span></div>
+              <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-[#00E5FF]" style={{ borderTop: "1.5px dashed #00E5FF", height: 0 }} /><span className="text-white/30 text-xs">Clics uniques</span></div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Strikes */}
       {myStats?.strikes > 0 && (
         <Card className="bg-red-500/10 border-red-500/30">
           <CardContent className="p-4 flex items-center gap-3">
             <AlertTriangle className="w-5 h-5 text-red-400" />
             <span className="text-red-400">
-              Vous avez {myStats.strikes} strike(s) actif(s)
+              Tu as {myStats.strikes} strike(s) actif(s) sur cette campagne
             </span>
           </CardContent>
         </Card>
       )}
 
+      {/* Détails campagne */}
       <Card className="bg-[#121212] border-white/10">
         <CardHeader>
-          <CardTitle className="text-white">Détails de la campagne</CardTitle>
+          <CardTitle className="text-white text-base">Détails de la campagne</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {isClickCampaign ? (
+              <>
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Tarif</p>
+                  <p className="font-mono text-lg text-[#f0c040]">€{campaign.rate_per_click || 0}<span className="text-xs text-white/40"> / 1K clics</span></p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Comptage</p>
+                  <p className="text-sm text-white">{campaign.unique_clicks_only ? "Clics uniques" : "Tous les clics"}</p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wide mb-1">RPM</p>
+                  <p className="font-mono text-lg text-white">€{campaign.rpm || 0}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Min. vues payout</p>
+                  <p className="font-mono text-lg text-white">{campaign.min_view_payout || "-"}</p>
+                </div>
+              </>
+            )}
             <div>
-              <p className="text-sm text-white/50">RPM</p>
-              <p className="font-mono text-lg text-white">€{campaign.rpm}</p>
+              <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Statut</p>
+              <p className="text-sm text-white capitalize">{myStats?.status || "actif"}</p>
             </div>
             <div>
-              <p className="text-sm text-white/50">Min. vues payout</p>
-              <p className="font-mono text-lg text-white">{campaign.min_view_payout}</p>
-            </div>
-            <div>
-              <p className="text-sm text-white/50">Max. vues payout</p>
-              <p className="font-mono text-lg text-white">{campaign.max_view_payout || "∞"}</p>
-            </div>
-            <div>
-              <p className="text-sm text-white/50">Plateformes</p>
-              <div className="flex gap-1 mt-1">
-                {campaign.platforms?.map((p) => (
-                  <Badge key={p} variant="outline" className="text-xs">
+              <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Plateformes</p>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {(campaign.platforms || []).map((p) => (
+                  <Badge key={p} variant="outline" className="text-xs border-white/20 text-white/60">
                     {p}
                   </Badge>
                 ))}

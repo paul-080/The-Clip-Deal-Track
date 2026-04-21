@@ -233,6 +233,7 @@ function DiscoverCampaigns({ onJoin }) {
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [applying, setApplying] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [applyForm, setApplyForm] = useState({ first_name: "", last_name: "", motivation: "" });
 
   useEffect(() => {
     fetchCampaigns();
@@ -253,22 +254,31 @@ function DiscoverCampaigns({ onJoin }) {
   };
 
   const handleApply = async () => {
+    if (!applyForm.first_name.trim() || !applyForm.last_name.trim() || !applyForm.motivation.trim()) {
+      toast.error("Remplis tous les champs obligatoires");
+      return;
+    }
     setApplying(true);
     try {
-      const res = await fetch(`${API}/campaigns/${selectedCampaign.campaign_id}/join`, {
+      const res = await fetch(`${API}/campaigns/${selectedCampaign.campaign_id}/join-as-manager`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          first_name: applyForm.first_name.trim(),
+          last_name: applyForm.last_name.trim(),
+          motivation: applyForm.motivation.trim(),
+        }),
       });
       if (res.ok) {
-        toast.success("Candidature envoyée ! En attente de validation.");
+        toast.success("Candidature envoyée ! L'agence va examiner ta demande.");
         setCampaigns(prev => prev.map(c =>
           c.campaign_id === selectedCampaign.campaign_id
             ? { ...c, user_status: "pending" }
             : c
         ));
         setSelectedCampaign(null);
+        setApplyForm({ first_name: "", last_name: "", motivation: "" });
         if (onJoin) onJoin();
       } else {
         const err = await res.json();
@@ -351,18 +361,49 @@ function DiscoverCampaigns({ onJoin }) {
               )}
             </div>
 
-            <p className="text-sm text-white/60">
-              Votre candidature sera examinée par l'agence. Vous serez notifié par message dès validation.
-            </p>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">Prénom <span className="text-red-400">*</span></label>
+                  <input
+                    value={applyForm.first_name}
+                    onChange={e => setApplyForm(p => ({ ...p, first_name: e.target.value }))}
+                    placeholder="Jean"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#39FF14]/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-white/50 mb-1">Nom <span className="text-red-400">*</span></label>
+                  <input
+                    value={applyForm.last_name}
+                    onChange={e => setApplyForm(p => ({ ...p, last_name: e.target.value }))}
+                    placeholder="Dupont"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#39FF14]/50"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-white/50 mb-1">Pourquoi veux-tu manager cette campagne ? <span className="text-red-400">*</span></label>
+                <textarea
+                  value={applyForm.motivation}
+                  onChange={e => setApplyForm(p => ({ ...p, motivation: e.target.value }))}
+                  placeholder="Décris ton expérience en gestion de clippers, tes méthodes de travail..."
+                  rows={3}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder:text-white/30 focus:outline-none focus:border-[#39FF14]/50 resize-none"
+                />
+              </div>
+            </div>
+
+            <p className="text-xs text-white/30">Ta candidature sera examinée par l'agence. Tu seras notifié dès validation.</p>
 
             <div className="flex gap-3 pt-2">
-              <Button variant="ghost" onClick={() => setSelectedCampaign(null)} className="flex-1 text-white/50 hover:text-white border-white/10">
+              <Button variant="ghost" onClick={() => { setSelectedCampaign(null); setApplyForm({ first_name: "", last_name: "", motivation: "" }); }} className="flex-1 text-white/50 hover:text-white border-white/10">
                 Annuler
               </Button>
               <Button
                 onClick={handleApply}
-                disabled={applying}
-                className="flex-1 bg-[#39FF14] hover:bg-[#39FF14]/80 text-black font-bold"
+                disabled={applying || !applyForm.first_name.trim() || !applyForm.last_name.trim() || !applyForm.motivation.trim()}
+                className="flex-1 bg-[#39FF14] hover:bg-[#39FF14]/80 text-black font-bold disabled:opacity-50"
               >
                 {applying ? "Envoi..." : "Postuler comme Manager"}
               </Button>

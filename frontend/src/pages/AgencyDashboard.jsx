@@ -29,7 +29,7 @@ import {
   Home, Search, Plus, Link2, CreditCard, Settings, MessageCircle,
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
   TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
-  ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle
+  ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle, MousePointerClick, Calendar
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
@@ -1035,6 +1035,12 @@ function CampaignDashboard({ campaigns }) {
   const [showAddBudget, setShowAddBudget] = useState(false);
   const [addBudgetAmount, setAddBudgetAmount] = useState("");
   const [addingBudget, setAddingBudget] = useState(false);
+  // ── Click campaign stats ───────────────────────────────────────────────────
+  const [clickStats, setClickStats] = useState(null);
+  const [clickStatsLoading, setClickStatsLoading] = useState(false);
+  const [period, setPeriod] = useState("30d");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -1048,6 +1054,32 @@ function CampaignDashboard({ campaigns }) {
       fetchAllVideos();
     }
   }, [campaignId]);
+
+  const fetchClickStats = async (p = period, cFrom = customFrom, cTo = customTo) => {
+    setClickStatsLoading(true);
+    try {
+      let url = `${API}/campaigns/${campaignId}/click-stats?period=${p}`;
+      if (p === "custom" && cFrom) url += `&date_from=${cFrom}`;
+      if (p === "custom" && cTo) url += `&date_to=${cTo}`;
+      const res = await fetch(url, { credentials: "include" });
+      if (res.ok) setClickStats(await res.json());
+    } catch {}
+    finally { setClickStatsLoading(false); }
+  };
+
+  // Auto-fetch click stats when campaign is loaded and is click-based
+  useEffect(() => {
+    if (campaign?.payment_model === "clicks") fetchClickStats();
+  }, [campaign?.campaign_id, campaign?.payment_model]);
+
+  const handlePeriodChange = (p) => {
+    setPeriod(p);
+    if (p !== "custom") fetchClickStats(p);
+  };
+
+  const handleCustomApply = () => {
+    if (customFrom) fetchClickStats("custom", customFrom, customTo);
+  };
 
   const fetchClickLinks = async () => {
     try {
@@ -1319,7 +1351,192 @@ function CampaignDashboard({ campaigns }) {
       </div>
 
       {/* ═══════════ OVERVIEW TAB ═══════════ */}
-      {activeTab === "overview" && (
+      {activeTab === "overview" && campaign.payment_model === "clicks" ? (
+        /* ── CLICK CAMPAIGN OVERVIEW ── */
+        <div className="space-y-5">
+          {/* Period filter */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              {[
+                { id: "1d", label: "Dernier jour" },
+                { id: "7d", label: "7 jours" },
+                { id: "30d", label: "30 jours" },
+                { id: "all", label: "Depuis le début" },
+                { id: "custom", label: <span className="flex items-center gap-1"><Calendar className="w-3 h-3" /> Personnalisé</span> },
+              ].map(p => (
+                <button key={p.id} onClick={() => handlePeriodChange(p.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${period === p.id ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {period === "custom" && (
+              <div className="flex items-center gap-2">
+                <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#f0c040]/50" />
+                <span className="text-white/30 text-xs">→</span>
+                <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                  className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#f0c040]/50" />
+                <button onClick={handleCustomApply}
+                  className="px-3 py-1.5 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/80 text-black text-xs font-bold transition-all">
+                  Appliquer
+                </button>
+              </div>
+            )}
+            {clickStatsLoading && <div className="w-4 h-4 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" />}
+          </div>
+
+          {/* KPI row — clics */}
+          {clickStats && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { label: "Clics totaux", value: (clickStats.total_clicks || 0).toLocaleString("fr-FR"), color: "text-white" },
+                { label: "Clics uniques", value: (clickStats.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]" },
+                { label: "Taux unicité", value: clickStats.total_clicks > 0 ? `${Math.round((clickStats.unique_clicks / clickStats.total_clicks) * 100)}%` : "—", color: "text-[#39FF14]" },
+                { label: "Gains estimés", value: `€${(clickStats.total_earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]" },
+                { label: "Prix / 1K clics", value: `€${clickStats.rate_per_click || 0}`, color: "text-[#FF007F]" },
+                { label: "Moy. clics/jour", value: clickStats.chart?.length > 0 ? Math.round(clickStats.total_clicks / Math.max(1, clickStats.chart.filter(d => d.clicks > 0).length)).toLocaleString("fr-FR") : "0", color: "text-white/70" },
+              ].map(kpi => (
+                <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                  <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                  <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Clicks chart */}
+          <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-white font-medium flex items-center gap-2">
+                <MousePointerClick className="w-4 h-4 text-[#f0c040]" /> Clics par jour
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-0.5 bg-[#f0c040]" /><span className="text-white/30 text-xs">Tous les clics</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-0.5 bg-[#39FF14]" /><span className="text-white/30 text-xs">Clics uniques</span>
+                </div>
+              </div>
+            </div>
+            {clickStatsLoading ? (
+              <div className="h-48 flex items-center justify-center">
+                <div className="w-6 h-6 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" />
+              </div>
+            ) : clickStats?.chart?.some(d => d.clicks > 0) ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={clickStats.chart} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="clicksGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
+                      <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="uniqueGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#39FF14" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="#39FF14" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
+                    interval={Math.max(0, Math.floor((clickStats.chart?.length || 1) / 10) - 1)} />
+                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} />
+                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
+                    labelStyle={{ color: "white", fontSize: 11 }}
+                    formatter={(v, name) => [v.toLocaleString("fr-FR"), name === "clicks" ? "Clics totaux" : "Clics uniques"]} />
+                  <Area type="monotone" dataKey="clicks" stroke="#f0c040" strokeWidth={2} fill="url(#clicksGrad)" dot={false} />
+                  <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" strokeWidth={1.5} fill="url(#uniqueGrad)" dot={false} strokeDasharray="4 2" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-48 flex items-center justify-center">
+                <p className="text-white/20 text-sm">Aucun clic enregistré sur cette période</p>
+              </div>
+            )}
+          </div>
+
+          {/* Budget + Clippers ranking for clicks */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Budget click */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+              <p className="text-white font-medium">Budget & Tarif clic</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-xs text-white/40">Prix / 1K clics</p>
+                  <p className="text-[#f0c040] font-mono font-bold text-lg">€{campaign.rate_per_click || 0}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-white/40">Comptage</p>
+                  <p className="text-white/70 text-sm font-medium mt-1">{campaign.unique_clicks_only ? "Clics uniques" : "Tous les clics"}</p>
+                </div>
+              </div>
+              {!campaign.budget_unlimited && campaign.budget_total && (
+                <div>
+                  <div className="flex justify-between text-xs text-white/40 mb-1">
+                    <span>Budget utilisé</span>
+                    <span>€{campaign.budget_used || 0} / €{campaign.budget_total}</span>
+                  </div>
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full bg-[#f0c040] rounded-full transition-all" style={{ width: `${Math.min(100, ((campaign.budget_used || 0) / campaign.budget_total) * 100)}%` }} />
+                  </div>
+                </div>
+              )}
+              {!campaign.budget_unlimited && (
+                <div>
+                  {showAddBudget ? (
+                    <div className="flex items-center gap-2">
+                      <Input type="number" value={addBudgetAmount} onChange={e => setAddBudgetAmount(e.target.value)}
+                        placeholder="Montant €" className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-8 text-sm"
+                        onKeyDown={e => { if (e.key === "Enter") handleAddBudget(); if (e.key === "Escape") setShowAddBudget(false); }} autoFocus />
+                      <button onClick={handleAddBudget} disabled={addingBudget || !addBudgetAmount}
+                        className="px-3 h-8 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/80 text-black text-xs font-semibold disabled:opacity-50">{addingBudget ? "…" : "Ajouter"}</button>
+                      <button onClick={() => { setShowAddBudget(false); setAddBudgetAmount(""); }}
+                        className="px-2 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 text-xs">✕</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowAddBudget(true)} className="flex items-center gap-1.5 text-xs text-white/40 hover:text-[#f0c040] transition-colors">
+                      <span className="text-base leading-none">＋</span> Ajouter du budget
+                    </button>
+                  )}
+                </div>
+              )}
+              {campaign.destination_url && (
+                <div className="p-2.5 rounded-lg bg-white/4 border border-white/8">
+                  <p className="text-[10px] text-white/35 mb-0.5">URL de destination</p>
+                  <p className="text-white/60 text-xs font-mono truncate">{campaign.destination_url}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Clippers ranking — by clicks */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+              <p className="text-white font-medium mb-3">Classement des clippeurs <span className="text-white/30 text-xs font-normal">(clics uniques)</span></p>
+              {!clickStats?.clippers?.length ? (
+                <p className="text-white/30 text-sm text-center py-4">Aucun clic enregistré</p>
+              ) : (
+                <div className="space-y-2">
+                  {clickStats.clippers.map((c, idx) => (
+                    <div key={c.clipper_id} className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5">
+                      <span className="font-mono text-sm text-white/30 w-6">#{idx + 1}</span>
+                      <div className="w-7 h-7 rounded-full bg-[#f0c040]/20 flex items-center justify-center text-xs font-bold text-[#f0c040] flex-shrink-0">
+                        {(c.name || "?")[0].toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm truncate">{c.name}</p>
+                        <p className="text-white/30 text-xs">{c.total_clicks || c.clicks} clics · {c.unique_clicks} uniques</p>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-[#f0c040] font-mono text-sm font-bold">{c.unique_clicks.toLocaleString("fr-FR")}</p>
+                        <p className="text-white/40 text-xs">€{c.earnings.toFixed(2)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : activeTab === "overview" && (
         <div className="space-y-5">
           {/* KPI row */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -1743,6 +1960,21 @@ function CampaignDashboard({ campaigns }) {
                       {member.user_info?.email || ""}
                       {" · "}Postulé le {member.joined_at ? new Date(member.joined_at).toLocaleDateString("fr-FR") : "Date inconnue"}
                     </p>
+                    {/* Manager motivation */}
+                    {isManager && (member.first_name || member.last_name || member.motivation) && (
+                      <div className="mt-2 space-y-0.5">
+                        {(member.first_name || member.last_name) && (
+                          <p className="text-white/60 text-xs">
+                            👤 {[member.first_name, member.last_name].filter(Boolean).join(" ")}
+                          </p>
+                        )}
+                        {member.motivation && (
+                          <p className="text-white/50 text-xs italic">
+                            💬 "{member.motivation}"
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {member.global_stats && (
                       <div className="flex items-center gap-3 mt-1.5">
                         <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 text-white/50">
