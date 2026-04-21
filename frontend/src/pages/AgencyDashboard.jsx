@@ -1058,6 +1058,9 @@ function CampaignDashboard({ campaigns }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [pendingMembers, setPendingMembers] = useState([]);
   const [processingMember, setProcessingMember] = useState(null);
+  const [kickingMember, setKickingMember] = useState(null);
+  const [deletingVideo, setDeletingVideo] = useState(null);
+  const [expandedMembers, setExpandedMembers] = useState(new Set());
   const [allVideos, setAllVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
   const [sortField, setSortField] = useState("published_at");
@@ -1279,6 +1282,37 @@ function CampaignDashboard({ campaigns }) {
       else toast.error("Erreur lors du refus");
     } catch { toast.error("Erreur réseau"); }
     setProcessingMember(null);
+  };
+
+  const handleKickMember = async (userId) => {
+    if (!window.confirm("Retirer ce clippeur de la campagne ?")) return;
+    setKickingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}`, { method: "DELETE", credentials: "include" });
+      if (res.ok) { toast.success("Clippeur retiré"); fetchCampaign(); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setKickingMember(null);
+  };
+
+  const handleDeleteVideo = async (videoId) => {
+    if (!window.confirm("Supprimer cette vidéo ?")) return;
+    setDeletingVideo(videoId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/videos/${videoId}`, { method: "DELETE", credentials: "include" });
+      if (res.ok) { toast.success("Vidéo supprimée"); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setDeletingVideo(null);
+  };
+
+  const handleRemoveSocialAccount = async (accountId) => {
+    if (!window.confirm("Retirer ce compte de la campagne ?")) return;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}`, { method: "DELETE", credentials: "include" });
+      if (res.ok) { toast.success("Compte retiré"); fetchCampaign(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
   };
 
   // ── Chart data: aggregate views per day from published_at ──────────────────
@@ -1722,19 +1756,52 @@ function CampaignDashboard({ campaigns }) {
                     const memberViews = memberVideos.reduce((s, v) => s + (v.views || 0), 0);
                     const memberEarnings = memberVideos.reduce((s, v) => s + (v.earnings || 0), 0);
                     return (
-                      <div key={member.member_id} className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5">
-                        <span className="font-mono text-sm text-white/30 w-6">#{index+1}</span>
-                        <div className="w-7 h-7 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-xs font-bold text-[#FF007F] flex-shrink-0">
-                          {(member.user_info?.display_name || "?")[0].toUpperCase()}
+                      <div key={member.member_id} className="rounded-lg bg-white/5 overflow-hidden">
+                        <div className="flex items-center gap-3 p-2.5">
+                          <span className="font-mono text-sm text-white/30 w-6">#{index+1}</span>
+                          <div className="w-7 h-7 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-xs font-bold text-[#FF007F] flex-shrink-0">
+                            {(member.user_info?.display_name || "?")[0].toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white text-sm truncate">{member.user_info?.display_name || member.user_info?.name}</p>
+                            <p className="text-white/30 text-xs">{memberVideos.length} vidéo{memberVideos.length !== 1 ? "s" : ""}</p>
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            <p className="text-white text-sm font-mono">{fmt(memberViews)}</p>
+                            <p className="text-[#FF007F] text-xs">€{memberEarnings.toFixed(2)}</p>
+                          </div>
+                          <button
+                            onClick={() => setExpandedMembers(prev => { const s = new Set(prev); s.has(member.user_id) ? s.delete(member.user_id) : s.add(member.user_id); return s; })}
+                            className="text-white/20 hover:text-white/60 text-xs px-1.5 transition-colors"
+                            title="Gérer"
+                          >⋯</button>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white text-sm truncate">{member.user_info?.display_name || member.user_info?.name}</p>
-                          <p className="text-white/30 text-xs">{memberVideos.length} vidéo{memberVideos.length !== 1 ? "s" : ""}</p>
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="text-white text-sm font-mono">{fmt(memberViews)}</p>
-                          <p className="text-[#FF007F] text-xs">€{memberEarnings.toFixed(2)}</p>
-                        </div>
+                        {expandedMembers.has(member.user_id) && (
+                          <div className="border-t border-white/5 px-3 py-2 space-y-1.5">
+                            {(member.social_accounts || []).length > 0 && (
+                              <div className="space-y-1">
+                                {(member.social_accounts || []).map(acc => (
+                                  <div key={acc.account_id} className="flex items-center gap-2 text-xs text-white/40">
+                                    <span>{acc.platform === "tiktok" ? "🎵" : acc.platform === "instagram" ? "📸" : "▶️"}</span>
+                                    <span className="flex-1">@{acc.username}</span>
+                                    <button
+                                      onClick={() => handleRemoveSocialAccount(acc.account_id)}
+                                      className="text-red-400/50 hover:text-red-400 transition-colors"
+                                      title="Retirer ce compte"
+                                    >✕</button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <button
+                              onClick={() => handleKickMember(member.user_id)}
+                              disabled={kickingMember === member.user_id}
+                              className="w-full py-1 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium border border-red-500/20 transition-colors disabled:opacity-50"
+                            >
+                              {kickingMember === member.user_id ? "Retrait..." : "🚫 Retirer de la campagne"}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1867,7 +1934,7 @@ function CampaignDashboard({ campaigns }) {
           ) : (
             <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
               {/* Table header */}
-              <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/10 text-xs text-white/40 font-medium">
+              <div className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_auto] gap-4 px-4 py-3 border-b border-white/10 text-xs text-white/40 font-medium">
                 <button className="flex items-center gap-1 text-left hover:text-white/70 transition-colors" onClick={() => toggleSort("title")}>
                   Vidéo <SortIcon field="title" />
                 </button>
@@ -1886,6 +1953,7 @@ function CampaignDashboard({ campaigns }) {
                 <button className="flex items-center gap-1 hover:text-white/70 transition-colors" onClick={() => toggleSort("published_at")}>
                   Date <SortIcon field="published_at" />
                 </button>
+                <div></div>
               </div>
 
               {/* Table rows */}
@@ -1896,7 +1964,7 @@ function CampaignDashboard({ campaigns }) {
                   const clipperName = activeMembers.find(m => m.user_id === video.user_id)?.user_info?.display_name || null;
                   return (
                     <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
-                      className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr] gap-4 px-4 py-3 hover:bg-white/5 transition-all group items-center">
+                      className="grid grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_auto] gap-4 px-4 py-3 hover:bg-white/5 transition-all group items-center">
 
                       {/* Thumbnail + title */}
                       <div className="flex items-center gap-3 min-w-0">
@@ -1954,6 +2022,15 @@ function CampaignDashboard({ campaigns }) {
                         {video.published_at
                           ? new Date(video.published_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" })
                           : "—"}
+                      </div>
+                      {/* Delete */}
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteVideo(video.video_id); }}
+                          disabled={deletingVideo === video.video_id}
+                          className="p-1 rounded hover:bg-red-500/20 text-red-400/50 hover:text-red-400 transition-colors disabled:opacity-30"
+                          title="Supprimer la vidéo"
+                        >🗑</button>
                       </div>
                     </a>
                   );

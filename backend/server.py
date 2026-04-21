@@ -4444,14 +4444,45 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
 
 @api_router.delete("/campaigns/{campaign_id}/social-accounts/{account_id}")
 async def remove_account_from_campaign(campaign_id: str, account_id: str, user: dict = Depends(get_current_user)):
-    result = await db.campaign_social_accounts.delete_one({
-        "campaign_id": campaign_id,
-        "account_id": account_id,
-        "user_id": user["user_id"]
-    })
+    query = {"campaign_id": campaign_id, "account_id": account_id}
+    # Agency/Manager can remove any account; clipper can only remove their own
+    if user.get("role") not in ["agency", "manager"]:
+        query["user_id"] = user["user_id"]
+    result = await db.campaign_social_accounts.delete_one(query)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Assignment not found")
     return {"message": "Account removed from campaign"}
+
+@api_router.delete("/campaigns/{campaign_id}/members/{member_user_id}")
+async def kick_member_from_campaign(campaign_id: str, member_user_id: str, user: dict = Depends(get_current_user)):
+    """Agency/Manager kicks a clipper or manager out of a campaign."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    result = await db.campaign_members.delete_one({
+        "campaign_id": campaign_id,
+        "user_id": member_user_id
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Membre introuvable")
+    # Also remove their social account assignments from this campaign
+    await db.campaign_social_accounts.delete_many({
+        "campaign_id": campaign_id,
+        "user_id": member_user_id
+    })
+    return {"message": "Membre retiré de la campagne"}
+
+@api_router.delete("/campaigns/{campaign_id}/videos/{video_id}")
+async def delete_campaign_video(campaign_id: str, video_id: str, user: dict = Depends(get_current_user)):
+    """Agency/Manager deletes any tracked video from a campaign."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    result = await db.tracked_videos.delete_one({
+        "video_id": video_id,
+        "campaign_id": campaign_id,
+    })
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable")
+    return {"message": "Vidéo supprimée"}
 
 @api_router.post("/social-accounts/{account_id}/refresh")
 async def refresh_social_account(account_id: str, user: dict = Depends(get_current_user)):
