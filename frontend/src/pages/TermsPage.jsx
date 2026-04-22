@@ -21,9 +21,19 @@ export default function TermsPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0d0d0d]/95 backdrop-blur-sm">
         <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-4">
-          <button onClick={() => { if (window.history.length > 1) navigate(-1); else navigate('/'); }} className="flex items-center gap-2 text-white/50 hover:text-white transition-colors text-sm">
+          <button
+            onClick={() => {
+              if (window.history.length <= 1) {
+                // Opened in a new tab (from CGU link) — close this tab to return to sign-up
+                window.close();
+              } else {
+                navigate(-1);
+              }
+            }}
+            className="flex items-center gap-2 text-white/50 hover:text-white transition-colors text-sm"
+          >
             <ArrowLeft className="w-4 h-4" />
-            Retour
+            {window.history.length <= 1 ? "Fermer" : "Retour"}
           </button>
           <div className="h-4 w-px bg-white/10" />
           <div className="flex items-center gap-2">
