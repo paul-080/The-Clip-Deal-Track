@@ -185,19 +185,11 @@ export default function LandingPage() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Erreur lors de l'inscription");
 
-      // Backend a créé le compte directement (pas de vérification email) → connexion directe
-      if (data.session_token && data.user) {
-        setUser(data.user);
-        toast.success(`Bienvenue ${data.user.display_name} !`);
-        setShowRoleModal(false);
-        navigate(`/${data.user.role}`);
-        return;
-      }
-
-      // Sinon → étape vérification code email
-      setEmailPending(emailForm.email.trim().toLowerCase());
+      // Backend sends verification email → go to step 3
+      const email = emailForm.email.trim().toLowerCase();
+      setEmailPending(email);
       setVerificationCode("");
-      toast.success(`Code envoyé à ${emailForm.email} — vérifiez vos mails`);
+      toast.success(`Code envoyé à ${email} — vérifiez vos mails (et les spams)`);
       setStep(3);
     } catch (e) {
       toast.error(e.message);
@@ -607,57 +599,44 @@ export default function LandingPage() {
             </h2>
             <p className="text-white/50 text-base">HT · 2 semaines offertes à l'inscription</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            {/* Petite */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center max-w-2xl mx-auto">
+            {/* Starter */}
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 space-y-4 hover:border-white/20 transition-all">
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Petite</p>
-                <p className="text-3xl font-bold text-white">79€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/50 text-sm font-medium mb-1">Starter</p>
+                <p className="text-3xl font-bold text-white">150€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
               </div>
               <ul className="space-y-2 text-sm text-white/60">
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 1 campagne active</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Jusqu'à 10 clippers</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking toutes les 24h</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Jusqu'à 15 clippers</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking automatique</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Chat avec les clippeurs</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support standard</li>
               </ul>
               <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
                 Commencer l'essai gratuit
               </Button>
             </div>
-            {/* Assez Grosse — FEATURED */}
+            {/* Full — FEATURED */}
             <div className="bg-[#121212] border-2 border-[#FF007F] rounded-2xl p-6 space-y-4 relative">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#FF007F] text-white text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
                 Recommandé
               </div>
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Assez Grosse</p>
-                <p className="text-3xl font-bold text-white">199€<span className="text-base text-white/40 font-normal">/mois</span></p>
-              </div>
-              <ul className="space-y-2 text-sm text-white/60">
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 3 campagnes actives</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Jusqu'à 15 clippers/campagne</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking toutes les 6h</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Analytics avancés</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support prioritaire</li>
-              </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#FF007F]/80 text-white rounded-lg py-2 text-sm font-semibold transition-colors">
-                Commencer l'essai gratuit
-              </Button>
-            </div>
-            {/* Illimitée */}
-            <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 space-y-4 hover:border-white/20 transition-all">
-              <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Illimitée</p>
-                <p className="text-3xl font-bold text-white">599€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/50 text-sm font-medium mb-1">Full</p>
+                <p className="text-3xl font-bold text-white">350€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
               </div>
               <ul className="space-y-2 text-sm text-white/60">
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Campagnes illimitées</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Clippers illimités</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking en temps réel</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> API dédiée</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support premium 24/7</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking automatique</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Analytics avancés</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support prioritaire</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Liens de tracking bio</li>
               </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+              <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#FF007F]/80 text-white rounded-lg py-2 text-sm font-semibold transition-colors">
                 Commencer l'essai gratuit
               </Button>
             </div>
@@ -999,19 +978,11 @@ export default function LandingPage() {
                   <button
                     onClick={async () => {
                       try {
-                        const r = await fetch(`${API}/auth/register`, {
+                        const r = await fetch(`${API}/auth/resend-code`, {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           credentials: "include",
-                          body: JSON.stringify({
-                            email: emailPending,
-                            password: emailForm.password,
-                            role: selectedRole,
-                            display_name: getDisplayName(),
-                            first_name: formData.firstName,
-                            last_name: formData.lastName,
-                            agency_name: formData.agencyName,
-                          }),
+                          body: JSON.stringify({ email: emailPending }),
                         });
                         const data = await r.json();
                         if (!r.ok) throw new Error(data.detail);

@@ -599,10 +599,7 @@ def _make_session_response(user: dict, session_token: str) -> Response:
     return resp
 
 async def _send_verification_email(to_email: str, code: str):
-    """Send verification code via Resend HTTP API (works on Railway)."""
-    if not RESEND_API_KEY:
-        logger.warning(f"RESEND_API_KEY not set — verification code for {to_email}: {code}")
-        return
+    """Send verification code. Priority: Resend API → SMTP → log fallback."""
 
     html = f"""
     <div style="font-family:Inter,Arial,sans-serif;background:#0A0A0A;padding:40px;max-width:480px;margin:0 auto;border-radius:12px;">
@@ -620,28 +617,65 @@ async def _send_verification_email(to_email: str, code: str):
     </div>
     """
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": RESEND_FROM,
-                "to": [to_email],
-                "subject": f"{code} — Votre code de vérification The Clip Deal Track",
-                "html": html,
-            },
-        )
-    if resp.status_code not in (200, 201):
-        logger.error(f"Resend API error {resp.status_code}: {resp.text}")
-        raise Exception(f"Resend error {resp.status_code}: {resp.text}")
-    logger.info(f"Email sent via Resend to {to_email} — id={resp.json().get('id')}")
+    # ── Priorité 1 : Resend API ───────────────────────────────────────────────
+    if RESEND_API_KEY:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": RESEND_FROM,
+                    "to": [to_email],
+                    "subject": f"{code} — Votre code de vérification The Clip Deal Track",
+                    "html": html,
+                },
+            )
+        if resp.status_code not in (200, 201):
+            logger.error(f"Resend API error {resp.status_code}: {resp.text}")
+            asyncio.create_task(_track_api_call("resend", success=False))
+            raise Exception(f"Resend error {resp.status_code}: {resp.text}")
+        logger.info(f"Email sent via Resend to {to_email} — id={resp.json().get('id')}")
+        asyncio.create_task(_track_api_call("resend", success=True))
+        return
+
+    # ── Priorité 2 : SMTP (Gmail ou autre) ────────────────────────────────────
+    if SMTP_USER and SMTP_PASSWORD:
+        import asyncio as _asyncio
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        smtp_from = os.environ.get('SMTP_FROM', f'The Clip Deal Track <{SMTP_USER}>')
+
+        def _send_smtp():
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = f"{code} — Votre code de vérification The Clip Deal Track"
+            msg["From"] = smtp_from
+            msg["To"] = to_email
+            msg.attach(MIMEText(f"Votre code de vérification est : {code}\nIl expire dans 15 minutes.", "plain"))
+            msg.attach(MIMEText(html, "html"))
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+                s.ehlo()
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASSWORD)
+                s.sendmail(smtp_from, [to_email], msg.as_string())
+
+        loop = _asyncio.get_event_loop()
+        await loop.run_in_executor(None, _send_smtp)
+        logger.info(f"Email sent via SMTP to {to_email}")
+        return
+
+    # ── Fallback : log seulement (dev sans config email) ─────────────────────
+    logger.warning(
+        f"⚠️  Aucun service email configuré (RESEND_API_KEY ou SMTP_USER manquant). "
+        f"Code de vérification pour {to_email} : {code}"
+    )
 
 @api_router.post("/auth/register")
 async def email_register(req: EmailRegisterRequest):
-    """Register with email + password — creates the account directly without email verification."""
+    """Register with email + password — sends a 6-digit verification code by email."""
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
     if len(req.password) < 6:
@@ -649,16 +683,38 @@ async def email_register(req: EmailRegisterRequest):
     if "@" not in req.email or "." not in req.email:
         raise HTTPException(status_code=400, detail="Adresse email invalide")
 
-    existing = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
+    email_lc = req.email.lower().strip()
+    existing = await db.users.find_one({"email": email_lc}, {"_id": 0})
     # Block if a fully verified account already exists with this email
     if existing and existing.get("email_verified") is True:
         raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email")
 
-    # Création directe sans vérification email
+    # Generate 6-digit code and store pending verification
+    import random
+    code = str(random.randint(100000, 999999))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    await db.email_verifications.update_one(
+        {"email": email_lc},
+        {"$set": {
+            "email": email_lc,
+            "code": code,
+            "password_hash": _hash_password(req.password),
+            "role": req.role,
+            "display_name": req.display_name,
+            "first_name": req.first_name,
+            "last_name": req.last_name,
+            "agency_name": req.agency_name,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True
+    )
+
+    # Create or update the user account with email_verified=False
     if existing:
-        user_id = existing["user_id"]
-        await db.users.update_one({"user_id": user_id}, {"$set": {
-            "email_verified": True,
+        await db.users.update_one({"email": email_lc}, {"$set": {
+            "email_verified": False,
             "password_hash": _hash_password(req.password),
             "role": req.role,
             "display_name": req.display_name,
@@ -667,10 +723,9 @@ async def email_register(req: EmailRegisterRequest):
             "agency_name": req.agency_name,
         }})
     else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
         await db.users.insert_one({
-            "user_id": user_id,
-            "email": req.email.lower(),
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "email": email_lc,
             "name": req.display_name,
             "picture": None,
             "role": req.role,
@@ -679,18 +734,48 @@ async def email_register(req: EmailRegisterRequest):
             "last_name": req.last_name,
             "agency_name": req.agency_name,
             "password_hash": _hash_password(req.password),
-            "email_verified": True,
+            "email_verified": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "settings": {}
         })
 
-    session_token = uuid.uuid4().hex
-    expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one({"user_id": user_id, "session_token": session_token,
-        "expires_at": expires_at_session.isoformat(), "created_at": datetime.now(timezone.utc).isoformat()})
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-    logger.info(f"Account created directly for {req.email} (role: {req.role})")
-    return _make_session_response(user, session_token)
+    # Send verification email (non-blocking — log code if RESEND not configured)
+    try:
+        await _send_verification_email(email_lc, code)
+    except Exception as e:
+        logger.warning(f"Email send failed for {email_lc}: {e} — code={code}")
+
+    logger.info(f"Verification code sent to {email_lc} (role: {req.role})")
+    return {"email_pending": True, "email": email_lc}
+
+
+@api_router.post("/auth/resend-code")
+async def resend_verification_code(request: Request):
+    """Resend a fresh 6-digit verification code to the given email."""
+    body = await request.json()
+    email_lc = (body.get("email") or "").lower().strip()
+    if not email_lc:
+        raise HTTPException(status_code=400, detail="Email manquant")
+
+    pending = await db.email_verifications.find_one({"email": email_lc}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Aucune inscription en attente pour cet email. Recommencez l'inscription.")
+
+    import random
+    code = str(random.randint(100000, 999999))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    await db.email_verifications.update_one(
+        {"email": email_lc},
+        {"$set": {"code": code, "expires_at": expires_at.isoformat()}}
+    )
+
+    try:
+        await _send_verification_email(email_lc, code)
+    except Exception as e:
+        logger.warning(f"Resend email failed for {email_lc}: {e} — code={code}")
+
+    return {"sent": True}
 
 @api_router.post("/auth/verify-email")
 async def verify_email(req: VerifyEmailRequest):
@@ -815,6 +900,31 @@ async def email_login(request: Request):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
 
     if not user.get("email_verified", False):
+        # Auto-send a fresh verification code so the user can complete verification
+        import random as _r
+        code = str(_r.randint(100000, 999999))
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        existing_pending = await db.email_verifications.find_one({"email": email}, {"_id": 0})
+        pw_hash = user.get("password_hash") or _hash_password(password)
+        await db.email_verifications.update_one(
+            {"email": email},
+            {"$set": {
+                "email": email,
+                "code": code,
+                "password_hash": pw_hash,
+                "role": user.get("role", ""),
+                "display_name": user.get("display_name", user.get("name", "")),
+                "first_name": user.get("first_name"),
+                "last_name": user.get("last_name"),
+                "agency_name": user.get("agency_name"),
+                "expires_at": expires_at.isoformat(),
+            }},
+            upsert=True
+        )
+        try:
+            await _send_verification_email(email, code)
+        except Exception as e:
+            logger.warning(f"Login resend email failed for {email}: {e} — code={code}")
         raise HTTPException(status_code=403, detail="email_not_verified")
 
     session_token = uuid.uuid4().hex
@@ -948,6 +1058,15 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
     if user.get("role") != "agency":
         raise HTTPException(status_code=403, detail="Only agencies can create campaigns")
     _check_agency_subscription(user)
+    # Check campaign limit for current plan
+    limits = _get_plan_limits(user)
+    if limits["campaigns"] is not None:
+        active_count = await db.campaigns.count_documents({"agency_id": user["user_id"], "status": "active"})
+        if active_count >= limits["campaigns"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Limite atteinte : votre plan Starter autorise {limits['campaigns']} campagne(s) active(s). Passez au plan Full pour continuer."
+            )
     campaign_id = f"camp_{uuid.uuid4().hex[:12]}"
     
     campaign = {
@@ -1418,6 +1537,22 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
     member = await db.campaign_members.find_one({"member_id": member_id, "campaign_id": campaign_id})
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
+
+    # Check clipper limit for agency's plan
+    agency_id = campaign.get("agency_id")
+    if agency_id:
+        agency_user = await db.users.find_one({"user_id": agency_id}, {"_id": 0})
+        if agency_user:
+            limits = _get_plan_limits(agency_user)
+            if limits["clippers"] is not None:
+                current_clippers = await db.campaign_members.count_documents({
+                    "campaign_id": campaign_id, "status": "active", "role": "clipper"
+                })
+                if current_clippers >= limits["clippers"]:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Limite atteinte : votre plan autorise {limits['clippers']} clippeurs par campagne. Passez au plan Full pour en ajouter davantage."
+                    )
 
     await db.campaign_members.update_one(
         {"member_id": member_id},
@@ -3422,19 +3557,45 @@ async def _verify_instagram(username: str) -> dict:
     )
 
 
+async def _track_api_call(service: str, success: bool = True):
+    """Log one API call into hourly usage buckets (non-blocking)."""
+    try:
+        now = datetime.now(timezone.utc)
+        await db.api_usage.update_one(
+            {"service": service, "date": now.strftime("%Y-%m-%d"), "hour": now.hour},
+            {"$inc": {"calls": 1, "errors": (0 if success else 1)},
+             "$set": {"service": service}},
+            upsert=True
+        )
+    except Exception:
+        pass
+
+
 async def verify_account(platform: str, username: str) -> dict:
-    if platform == "youtube":
-        return await _verify_youtube(username)
-    elif platform == "tiktok":
-        return await _verify_tiktok(username)
-    elif platform == "instagram":
-        return await _verify_instagram(username)
-    else:
-        raise ValueError(f"Plateforme inconnue: {platform}")
+    service_map = {"youtube": "youtube", "tiktok": "tikwm", "instagram": "instagram"}
+    success = True
+    try:
+        if platform == "youtube":
+            result = await _verify_youtube(username)
+        elif platform == "tiktok":
+            result = await _verify_tiktok(username)
+        elif platform == "instagram":
+            result = await _verify_instagram(username)
+        else:
+            raise ValueError(f"Plateforme inconnue: {platform}")
+        return result
+    except Exception:
+        success = False
+        raise
+    finally:
+        asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
 async def _verify_and_update_account(account_id: str, platform: str, username: str, via_url: bool = False):
+    verified_ok = False
+    channel_id = None
     try:
         info = await verify_account(platform, username)
+        channel_id = info.get("platform_channel_id")
         await db.social_accounts.update_one(
             {"account_id": account_id},
             {"$set": {
@@ -3442,11 +3603,12 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                 "display_name": info.get("display_name"),
                 "avatar_url": info.get("avatar_url"),
                 "follower_count": info.get("follower_count"),
-                "platform_channel_id": info.get("platform_channel_id"),
+                "platform_channel_id": channel_id,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
                 "error_message": None,
             }}
         )
+        verified_ok = True
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
 
@@ -3561,6 +3723,60 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                 {"account_id": account_id},
                 {"$set": {"status": "error", "error_message": f"Compte @{username} introuvable sur {platform}"}}
             )
+        return  # failed — no tracking
+
+    # After successful verification, trigger immediate video tracking for all campaigns
+    # where this account is already assigned (handles the re-verify case)
+    if verified_ok:
+        try:
+            acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+            if acc:
+                assignments = await db.campaign_social_accounts.find(
+                    {"account_id": account_id}, {"_id": 0}
+                ).to_list(50)
+                for asn in assignments:
+                    cid = asn["campaign_id"]
+                    uid = asn["user_id"]
+                    campaign = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+                    rpm = (campaign or {}).get("rpm", 0)
+                    videos = await fetch_videos(platform, username, acc, since_days=90)
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    for vid in videos:
+                        if not vid.get("platform_video_id"):
+                            continue
+                        earnings = (vid["views"] / 1000) * rpm
+                        doc = {
+                            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+                            "platform_video_id": vid["platform_video_id"],
+                            "account_id": account_id,
+                            "user_id": uid,
+                            "campaign_id": cid,
+                            "platform": platform,
+                            "url": vid.get("url", ""),
+                            "title": vid.get("title"),
+                            "thumbnail_url": vid.get("thumbnail_url"),
+                            "views": vid["views"],
+                            "likes": vid.get("likes", 0),
+                            "comments": vid.get("comments", 0),
+                            "published_at": vid.get("published_at"),
+                            "fetched_at": now_iso,
+                            "earnings": round(earnings, 4),
+                            "manually_added": False,
+                            "simulated": False,
+                        }
+                        try:
+                            await db.tracked_videos.update_one(
+                                {"account_id": account_id, "platform_video_id": vid["platform_video_id"]},
+                                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}}
+                    )
+        except Exception as e:
+            logger.debug(f"Post-verify tracking failed for {account_id}: {e}")
 
 # ---------- Video fetching ----------
 
@@ -4137,15 +4353,23 @@ async def fetch_single_video_by_url(url: str, platform: str) -> dict:
     raise ValueError(f"Plateforme non supportée: {platform}")
 
 async def fetch_videos(platform: str, username: str, account: dict, since_days: int = 30) -> list:
-    if platform == "youtube":
-        channel_id = account.get("platform_channel_id")
-        return await _fetch_youtube_videos(channel_id, since_days)
-    elif platform == "tiktok":
-        return await _fetch_tiktok_videos_async(username, since_days, account.get("platform_channel_id"))
-    elif platform == "instagram":
-        platform_channel_id = account.get("platform_channel_id")
-        return await _fetch_instagram_videos_async(username, platform_channel_id, since_days)
-    return []
+    service_map = {"youtube": "youtube", "tiktok": "tikwm", "instagram": "instagram"}
+    success = True
+    try:
+        if platform == "youtube":
+            channel_id = account.get("platform_channel_id")
+            return await _fetch_youtube_videos(channel_id, since_days)
+        elif platform == "tiktok":
+            return await _fetch_tiktok_videos_async(username, since_days, account.get("platform_channel_id"))
+        elif platform == "instagram":
+            platform_channel_id = account.get("platform_channel_id")
+            return await _fetch_instagram_videos_async(username, platform_channel_id, since_days)
+        return []
+    except Exception:
+        success = False
+        raise
+    finally:
+        asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
 async def run_video_tracking():
     logger.info("Starting video tracking run...")
@@ -4450,8 +4674,55 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
         "account_id": account_id,
         "assigned_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.campaign_social_accounts.insert_one(assignment)
+
+    # Trigger immediate tracking for this account+campaign (background, non-blocking)
+    async def _immediate_track(acc_id: str, cid: str, uid: str):
+        try:
+            acc = await db.social_accounts.find_one({"account_id": acc_id, "status": "verified"}, {"_id": 0})
+            if not acc:
+                return
+            campaign = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+            rpm = (campaign or {}).get("rpm", 0)
+            videos = await fetch_videos(acc["platform"], acc["username"], acc, since_days=90)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for vid in videos:
+                if not vid.get("platform_video_id"):
+                    continue
+                earnings = (vid["views"] / 1000) * rpm
+                doc = {
+                    "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+                    "platform_video_id": vid["platform_video_id"],
+                    "account_id": acc_id,
+                    "user_id": uid,
+                    "campaign_id": cid,
+                    "platform": acc["platform"],
+                    "url": vid.get("url", ""),
+                    "title": vid.get("title"),
+                    "thumbnail_url": vid.get("thumbnail_url"),
+                    "views": vid["views"],
+                    "likes": vid["likes"],
+                    "comments": vid["comments"],
+                    "published_at": vid.get("published_at"),
+                    "fetched_at": now_iso,
+                    "earnings": round(earnings, 4),
+                    "manually_added": False,
+                    "simulated": False,
+                }
+                try:
+                    await db.tracked_videos.update_one(
+                        {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
+                        {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+            await db.social_accounts.update_one({"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}})
+        except Exception as e:
+            logger.debug(f"Immediate track on assign failed for {acc_id}: {e}")
+
+    asyncio.create_task(_immediate_track(account_id, campaign_id, user["user_id"]))
     return {"message": "Account assigned"}
 
 @api_router.delete("/campaigns/{campaign_id}/social-accounts/{account_id}")
@@ -4507,117 +4778,187 @@ async def refresh_social_account(account_id: str, user: dict = Depends(get_curre
     return {"message": "Vérification relancée"}
 
 
+async def _background_scrape_account(account_id: str, user_id: str):
+    """Background task: scrapes videos for a social account and saves them to DB.
+    Updates scrape_status to 'done' or 'error' when finished.
+    """
+    try:
+        account = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+        if not account:
+            return
+        platform = account["platform"]
+        username = account.get("username") or account.get("account_url") or ""
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        scrape_error = None
+        videos = []
+        try:
+            # Timeout global 50s pour éviter le blocage sur Railway
+            videos = await asyncio.wait_for(
+                fetch_videos(platform, username, account, since_days=3650),
+                timeout=50
+            )
+        except asyncio.TimeoutError:
+            scrape_error = f"Timeout: le scraping de {platform} a dépassé 50s. Essayez 'Ajouter vidéo' manuellement."
+            logger.warning(f"Scrape timeout for {platform}/@{username}")
+        except Exception as e:
+            scrape_error = str(e)
+            logger.warning(f"Scrape error for {platform}/@{username}: {e}")
+
+        if not videos and scrape_error:
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {
+                    "scrape_status": "error",
+                    "scrape_status_message": scrape_error,
+                    "last_tracked_at": now_iso,
+                }}
+            )
+            return
+
+        if not videos:
+            platform_tips = {
+                "tiktok": (
+                    "Aucune vidéo trouvée. TikTok bloque le scraping depuis les serveurs cloud. "
+                    "Utilisez 'Ajouter vidéo' pour coller l'URL manuellement, "
+                    "ou configurez TIKWM_API_KEY (gratuit sur tikwm.com) dans Railway."
+                ),
+                "instagram": (
+                    "Aucune vidéo trouvée. Vérifiez que le compte Instagram est public et a des Reels. "
+                    "Instagram bloque souvent le scraping cloud — utilisez 'Ajouter vidéo' manuellement."
+                ),
+                "youtube": (
+                    "Aucune vidéo trouvée. Vérifiez que YOUTUBE_API_KEY est configurée dans Railway "
+                    "et que la chaîne a des vidéos publiques."
+                ),
+            }
+            msg = platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}.")
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {
+                    "scrape_status": "error",
+                    "scrape_status_message": msg,
+                    "last_tracked_at": now_iso,
+                }}
+            )
+            return
+
+        # Chercher les campagnes auxquelles ce compte est assigné
+        assignments = await db.campaign_social_accounts.find(
+            {"account_id": account_id}, {"_id": 0, "campaign_id": 1}
+        ).to_list(50)
+        linked_campaign_ids = [a["campaign_id"] for a in assignments]
+
+        campaign_rpms = {}
+        for cid in linked_campaign_ids:
+            camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0, "rpm": 1})
+            if camp:
+                campaign_rpms[cid] = camp.get("rpm", 0)
+
+        primary_campaign_id = linked_campaign_ids[0] if linked_campaign_ids else None
+        primary_rpm = campaign_rpms.get(primary_campaign_id, 0) if primary_campaign_id else 0
+
+        saved = 0
+        for vid in videos:
+            if not vid.get("platform_video_id"):
+                continue
+            vid_views = vid.get("views", 0)
+            earnings = round((vid_views / 1000) * primary_rpm, 4) if primary_rpm else 0
+            doc = {
+                "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+                "platform_video_id": vid["platform_video_id"],
+                "account_id": account_id,
+                "user_id": user_id,
+                "campaign_id": primary_campaign_id,
+                "platform": platform,
+                "url": vid.get("url", ""),
+                "title": vid.get("title"),
+                "thumbnail_url": vid.get("thumbnail_url"),
+                "views": vid_views,
+                "likes": vid.get("likes", 0),
+                "comments": vid.get("comments", 0),
+                "published_at": vid.get("published_at"),
+                "fetched_at": now_iso,
+                "earnings": earnings,
+            }
+            try:
+                await db.tracked_videos.update_one(
+                    {"account_id": account_id, "platform_video_id": vid["platform_video_id"]},
+                    {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                    upsert=True
+                )
+                saved += 1
+            except Exception:
+                pass
+
+        partial_note = ""
+        if platform == "tiktok" and saved < 10:
+            partial_note = (
+                f" (résultats partiels — {saved} vidéo(s) via TikWm). "
+                "Pour toutes vos vidéos : utilisez 'Ajouter vidéo' manuellement "
+                "ou configurez TIKWM_API_KEY dans Railway."
+            )
+
+        await db.social_accounts.update_one(
+            {"account_id": account_id},
+            {"$set": {
+                "scrape_status": "done",
+                "scrape_status_message": f"{saved} vidéo(s) importée(s){partial_note}",
+                "last_tracked_at": now_iso,
+            }}
+        )
+        logger.info(f"Background scrape done: {saved} videos saved for {platform}/@{username}")
+
+    except Exception as e:
+        logger.error(f"Background scrape fatal error for {account_id}: {e}")
+        try:
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {"scrape_status": "error", "scrape_status_message": str(e)}}
+            )
+        except Exception:
+            pass
+
+
 @api_router.post("/social-accounts/{account_id}/scrape-now")
 async def scrape_account_now(account_id: str, user: dict = Depends(get_current_user)):
-    """Immediately scrape videos for a verified social account (useful for testing)."""
+    """Launch background scraping for a verified social account. Returns immediately."""
     account = await db.social_accounts.find_one(
         {"account_id": account_id, "user_id": user["user_id"], "status": "verified"}, {"_id": 0}
     )
     if not account:
         raise HTTPException(status_code=404, detail="Compte introuvable ou non vérifié")
-    platform = account["platform"]
-    username = account.get("username") or account.get("account_url") or ""
-    now_iso = datetime.now(timezone.utc).isoformat()
 
-    scrape_error = None
-    try:
-        # Récupère TOUTES les vidéos (3650 jours = 10 ans = historique complet)
-        videos = await fetch_videos(platform, username, account, since_days=3650)
-    except Exception as e:
-        logger.warning(f"Scraping failed for {platform}/@{username}: {e}")
-        scrape_error = str(e)
-        videos = []
+    # Mark as running immediately so frontend can poll
+    await db.social_accounts.update_one(
+        {"account_id": account_id},
+        {"$set": {"scrape_status": "running", "scrape_status_message": "Scraping en cours…"}}
+    )
 
-    if not videos and scrape_error:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Le scraping a échoué pour {platform}/@{username}. "
-                   f"Vérifiez que le compte est bien public. Erreur : {scrape_error}"
-        )
+    # Launch background task — returns immediately, no timeout on the HTTP request
+    asyncio.create_task(_background_scrape_account(account_id, user["user_id"]))
 
-    if not videos:
-        platform_tips = {
-            "tiktok": (
-                f"Aucune vidéo trouvée pour @{username} sur TikTok. "
-                "TikTok bloque le scraping automatique depuis les serveurs cloud. "
-                "Solution : 1) Utilisez le bouton 'Ajouter vidéo' pour coller l'URL de chaque vidéo manuellement. "
-                "2) Ou configurez une clé API TikWm gratuite (tikwm.com) dans les variables Railway."
-            ),
-            "instagram": (
-                "Aucune vidéo trouvée. Instagram bloque le scraping automatique depuis les serveurs cloud. "
-                "Vérifiez que le compte Instagram est public et a des Reels/vidéos publiés."
-            ),
-            "youtube": "Aucune vidéo trouvée. Vérifiez que la chaîne YouTube a des vidéos publiques et que YOUTUBE_API_KEY est configurée.",
-        }
-        raise HTTPException(
-            status_code=422,
-            detail=platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}. Compte privé ou vide ?")
-        )
-
-    # Chercher les campagnes auxquelles ce compte est assigné
-    assignments = await db.campaign_social_accounts.find(
-        {"account_id": account_id}, {"_id": 0, "campaign_id": 1}
-    ).to_list(50)
-    linked_campaign_ids = [a["campaign_id"] for a in assignments]
-
-    # Récupérer le RPM des campagnes liées pour calculer les gains
-    campaign_rpms = {}
-    for cid in linked_campaign_ids:
-        camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0, "rpm": 1})
-        if camp:
-            campaign_rpms[cid] = camp.get("rpm", 0)
-
-    # campaign_id principal = le premier lié (ou None si aucun)
-    primary_campaign_id = linked_campaign_ids[0] if linked_campaign_ids else None
-    primary_rpm = campaign_rpms.get(primary_campaign_id, 0) if primary_campaign_id else 0
-
-    saved = 0
-    for vid in videos:
-        if not vid.get("platform_video_id"):
-            continue
-        vid_views = vid.get("views", 0)
-        earnings = round((vid_views / 1000) * primary_rpm, 4) if primary_rpm else 0
-        doc = {
-            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
-            "platform_video_id": vid["platform_video_id"],
-            "account_id": account_id,
-            "user_id": user["user_id"],
-            "campaign_id": primary_campaign_id,   # ← lié à la campagne automatiquement
-            "platform": platform,
-            "url": vid.get("url", ""),
-            "title": vid.get("title"),
-            "thumbnail_url": vid.get("thumbnail_url"),
-            "views": vid_views,
-            "likes": vid.get("likes", 0),
-            "comments": vid.get("comments", 0),
-            "published_at": vid.get("published_at"),
-            "fetched_at": now_iso,
-            "earnings": earnings,
-        }
-        try:
-            await db.tracked_videos.update_one(
-                {"account_id": account_id, "platform_video_id": vid["platform_video_id"]},
-                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
-                upsert=True
-            )
-            saved += 1
-        except Exception:
-            pass
-    await db.social_accounts.update_one({"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}})
-    campaigns_info = f" dans la campagne" if primary_campaign_id else ""
-    # Add platform-specific note when only partial results
-    partial_note = ""
-    if platform == "tiktok" and saved < 10:
-        partial_note = (
-            f" — Seules {saved} vidéo(s) trouvées via la recherche TikWm. "
-            "Pour toutes vos vidéos : utilisez 'Ajouter vidéo' manuellement, "
-            "ou configurez TIKWM_API_KEY (gratuit sur tikwm.com) dans Railway."
-        )
     return {
-        "message": f"{saved} vidéo(s) importée(s){campaigns_info}{partial_note}",
-        "count": saved,
-        "simulated": False,
-        "partial": platform == "tiktok" and saved < 10,
+        "status": "started",
+        "message": "Scraping lancé en arrière-plan. Les vidéos apparaîtront dans quelques secondes.",
+    }
+
+
+@api_router.get("/social-accounts/{account_id}/scrape-status")
+async def get_scrape_status(account_id: str, user: dict = Depends(get_current_user)):
+    """Poll the status of a background scrape job."""
+    account = await db.social_accounts.find_one(
+        {"account_id": account_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+
+    video_count = await db.tracked_videos.count_documents({"account_id": account_id})
+    return {
+        "scrape_status": account.get("scrape_status", "idle"),
+        "scrape_status_message": account.get("scrape_status_message", ""),
+        "last_tracked_at": account.get("last_tracked_at"),
+        "video_count": video_count,
     }
 
 @api_router.get("/social-accounts/{account_id}/videos")
@@ -4632,42 +4973,73 @@ async def get_account_videos(account_id: str, user: dict = Depends(get_current_u
 @api_router.post("/social-accounts/{account_id}/add-video")
 async def add_video_manually(account_id: str, request: Request, user: dict = Depends(get_current_user)):
     """
-    Clipper submits a TikTok video URL manually.
-    Fetches real stats via TikWm single-video API (no API key needed for this endpoint).
-    Saved to tracked_videos for the account + all campaigns where this account is assigned.
+    Clipper manually adds a video URL (TikTok, YouTube, or Instagram).
+    Fetches real stats and saves to tracked_videos for all campaigns where this account is assigned.
     """
     body = await request.json()
     video_url = (body.get("video_url") or "").strip()
-    if not video_url or "tiktok.com" not in video_url:
-        raise HTTPException(status_code=400, detail="URL TikTok invalide (ex: https://www.tiktok.com/@user/video/123)")
+    if not video_url:
+        raise HTTPException(status_code=400, detail="URL de vidéo manquante")
 
     account = await db.social_accounts.find_one(
         {"account_id": account_id, "user_id": user["user_id"]}, {"_id": 0}
     )
     if not account:
         raise HTTPException(status_code=404, detail="Compte introuvable")
-    if account.get("platform") != "tiktok":
-        raise HTTPException(status_code=400, detail="Ce bouton n'est disponible que pour les comptes TikTok")
 
-    # Fetch stats from TikWm single-video API (works without auth key)
-    vid_data = await _fetch_tiktok_single_video_tikwm(video_url)
-    if not vid_data:
-        raise HTTPException(status_code=400, detail="Impossible de récupérer les stats de cette vidéo. Vérifiez que l'URL est correcte et que la vidéo est publique.")
+    platform = account.get("platform", "")
+    url_lower = video_url.lower()
 
-    # Validate that the video belongs to this account
-    vid_author = (vid_data.get("_author_username") or "").lower()
-    account_username = account.get("username", "").lower().lstrip("@")
-    if vid_author and account_username and vid_author != account_username:
+    # Validate that URL matches the account platform
+    url_valid = (
+        (platform == "tiktok" and "tiktok.com" in url_lower) or
+        (platform == "youtube" and ("youtube.com" in url_lower or "youtu.be" in url_lower)) or
+        (platform == "instagram" and "instagram.com" in url_lower)
+    )
+    if not url_valid:
+        examples = {
+            "tiktok": "https://www.tiktok.com/@user/video/123",
+            "youtube": "https://www.youtube.com/watch?v=XXXXX ou https://youtu.be/XXXXX",
+            "instagram": "https://www.instagram.com/reel/XXXXX/",
+        }
         raise HTTPException(
             status_code=400,
-            detail=f"Cette vidéo appartient à @{vid_author}, pas à @{account_username}. Ajoutez uniquement vos propres vidéos."
+            detail=f"URL {platform} invalide. Exemple : {examples.get(platform, 'URL valide')}"
         )
+
+    # Fetch stats based on platform
+    try:
+        if platform == "tiktok":
+            vid_data = await _fetch_tiktok_single_video_tikwm(video_url)
+            if not vid_data:
+                raise ValueError(
+                    "Impossible de récupérer les stats. Vérifiez que l'URL est correcte et que la vidéo est publique."
+                )
+            # Validate video belongs to this account
+            vid_author = (vid_data.get("_author_username") or "").lower()
+            account_username = account.get("username", "").lower().lstrip("@")
+            if vid_author and account_username and vid_author != account_username:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cette vidéo appartient à @{vid_author}, pas à @{account_username}. Ajoutez uniquement vos propres vidéos."
+                )
+        elif platform == "youtube":
+            vid_data = await _fetch_single_youtube_video(video_url)
+        elif platform == "instagram":
+            vid_data = await _fetch_single_instagram_video(video_url)
+        else:
+            raise HTTPException(status_code=400, detail=f"Plateforme non supportée : {platform}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # Find all campaigns where this account is assigned
     assignments = await db.campaign_social_accounts.find(
         {"account_id": account_id}, {"_id": 0}
     ).to_list(100)
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     saved_count = 0
     for assignment in assignments:
         campaign_id = assignment["campaign_id"]
@@ -4681,7 +5053,7 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             "account_id": account_id,
             "user_id": user["user_id"],
             "campaign_id": campaign_id,
-            "platform": "tiktok",
+            "platform": platform,
             "url": vid_data["url"],
             "title": vid_data.get("title"),
             "thumbnail_url": vid_data.get("thumbnail_url"),
@@ -4689,8 +5061,8 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             "likes": vid_data.get("likes", 0),
             "comments": vid_data.get("comments", 0),
             "published_at": vid_data.get("published_at"),
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": now_iso,
+            "created_at": now_iso,
             "earnings": round(earnings, 4),
             "manually_added": True,
             "simulated": False,
@@ -4698,7 +5070,7 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
         try:
             await db.tracked_videos.update_one(
                 {"account_id": account_id, "platform_video_id": vid_data["platform_video_id"]},
-                {"$set": doc},
+                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
                 upsert=True,
             )
             saved_count += 1
@@ -4706,14 +5078,14 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             logger.warning(f"Failed to upsert manually added video {vid_data['platform_video_id']}: {e}")
 
     if saved_count == 0:
-        # No campaign assigned — save anyway linked to account only
+        # No campaign assigned — save linked to account only
         doc = {
             "video_id": f"vid_{uuid.uuid4().hex[:12]}",
             "platform_video_id": vid_data["platform_video_id"],
             "account_id": account_id,
             "user_id": user["user_id"],
             "campaign_id": None,
-            "platform": "tiktok",
+            "platform": platform,
             "url": vid_data["url"],
             "title": vid_data.get("title"),
             "thumbnail_url": vid_data.get("thumbnail_url"),
@@ -4721,8 +5093,8 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             "likes": vid_data.get("likes", 0),
             "comments": vid_data.get("comments", 0),
             "published_at": vid_data.get("published_at"),
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "fetched_at": now_iso,
+            "created_at": now_iso,
             "earnings": 0,
             "manually_added": True,
             "simulated": False,
@@ -4733,8 +5105,9 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             upsert=True,
         )
 
+    views_str = f"{vid_data['views']:,}" if vid_data["views"] > 0 else "0 (mis à jour au prochain tracking)"
     return {
-        "message": f"Vidéo ajoutée avec succès ({vid_data['views']:,} vues)",
+        "message": f"Vidéo ajoutée ✓ ({views_str} vues)",
         "video": {
             "url": vid_data["url"],
             "title": vid_data.get("title"),
@@ -6095,10 +6468,41 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
-    "plan_small":     {"name": "Petite",       "amount": 7900,  "label": "79€/mois"},
-    "plan_medium":    {"name": "Assez Grosse",  "amount": 19900, "label": "199€/mois"},
-    "plan_unlimited": {"name": "Illimitée",     "amount": 59900, "label": "599€/mois"},
+    "plan_small":   {"name": "Starter",    "amount": 15000, "label": "150€/mois",
+                     "max_campaigns": 1, "max_clippers": 15},
+    "plan_full":    {"name": "Full",        "amount": 35000, "label": "350€/mois",
+                     "max_campaigns": None, "max_clippers": None},
+    # Legacy alias — treated as plan_full
+    "plan_medium":  {"name": "Full",        "amount": 35000, "label": "350€/mois",
+                     "max_campaigns": None, "max_clippers": None},
+    "plan_unlimited":{"name": "Full",       "amount": 35000, "label": "350€/mois",
+                     "max_campaigns": None, "max_clippers": None},
 }
+
+# Limits per plan (None = unlimited). Trial period = always unlimited.
+PLAN_LIMITS = {
+    "plan_small":    {"campaigns": 1,    "clippers": 15},
+    "plan_full":     {"campaigns": None, "clippers": None},
+    "plan_medium":   {"campaigns": None, "clippers": None},
+    "plan_unlimited":{"campaigns": None, "clippers": None},
+}
+
+def _get_plan_limits(user: dict) -> dict:
+    """Return {"campaigns": N|None, "clippers": N|None} for the user's plan.
+    During trial (14 days): always unlimited.
+    No subscription: unlimited (new account grace).
+    """
+    sub_status = user.get("subscription_status", "none")
+    if sub_status in (None, "none"):
+        return {"campaigns": None, "clippers": None}  # new account grace
+    if sub_status == "trial":
+        trial_started_at = user.get("trial_started_at")
+        if trial_started_at:
+            trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
+                return {"campaigns": None, "clippers": None}  # trial unlimited
+    plan_id = user.get("subscription_plan", "plan_small")
+    return PLAN_LIMITS.get(plan_id, {"campaigns": 1, "clippers": 15})
 
 @api_router.post("/subscription/checkout")
 async def create_subscription_checkout(body: dict, user: dict = Depends(get_current_user)):
@@ -7134,6 +7538,78 @@ async def admin_demo_login(role: str, request: Request, _: bool = Depends(verify
         path="/", max_age=24 * 60 * 60
     )
     return resp
+
+@api_router.get("/admin/api-usage")
+async def admin_api_usage(request: Request, _: bool = Depends(verify_admin_code)):
+    """Return API usage stats aggregated by hour / day / week / month for each service."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    hour = now.hour
+    week_ago  = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    services = [
+        {"key": "youtube",   "label": "YouTube Data API",  "free_limit": "10 000 req/jour"},
+        {"key": "tikwm",     "label": "TikWm (TikTok)",    "free_limit": "~500 req/jour (sans clé)"},
+        {"key": "instagram", "label": "Instagram Scraping","free_limit": "Variable (Apify $29/mois)"},
+        {"key": "resend",    "label": "Resend (Emails)",   "free_limit": "3 000 emails/mois"},
+    ]
+
+    result = {}
+    for svc in services:
+        key = svc["key"]
+
+        # Cette heure
+        doc_hour = await db.api_usage.find_one(
+            {"service": key, "date": today, "hour": hour}, {"_id": 0}
+        )
+
+        # Aujourd'hui
+        agg_today = await db.api_usage.aggregate([
+            {"$match": {"service": key, "date": today}},
+            {"$group": {"_id": None, "calls": {"$sum": "$calls"}, "errors": {"$sum": "$errors"}}}
+        ]).to_list(1)
+
+        # 7 derniers jours
+        agg_week = await db.api_usage.aggregate([
+            {"$match": {"service": key, "date": {"$gte": week_ago}}},
+            {"$group": {"_id": None, "calls": {"$sum": "$calls"}, "errors": {"$sum": "$errors"}}}
+        ]).to_list(1)
+
+        # 30 derniers jours
+        agg_month = await db.api_usage.aggregate([
+            {"$match": {"service": key, "date": {"$gte": month_ago}}},
+            {"$group": {"_id": None, "calls": {"$sum": "$calls"}, "errors": {"$sum": "$errors"}}}
+        ]).to_list(1)
+
+        # Historique 24h par heure (pour mini-graphe)
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        hourly_docs = await db.api_usage.find(
+            {"service": key, "date": {"$gte": yesterday}},
+            {"_id": 0, "date": 1, "hour": 1, "calls": 1, "errors": 1}
+        ).sort([("date", 1), ("hour", 1)]).to_list(50)
+
+        calls_today  = agg_today[0]["calls"]  if agg_today  else 0
+        errors_today = agg_today[0]["errors"] if agg_today  else 0
+        calls_week   = agg_week[0]["calls"]   if agg_week   else 0
+        calls_month  = agg_month[0]["calls"]  if agg_month  else 0
+
+        result[key] = {
+            "label":        svc["label"],
+            "free_limit":   svc["free_limit"],
+            "this_hour":    (doc_hour or {}).get("calls", 0),
+            "errors_hour":  (doc_hour or {}).get("errors", 0),
+            "today":        calls_today,
+            "errors_today": errors_today,
+            "success_rate": round((1 - errors_today / calls_today) * 100, 1) if calls_today > 0 else 100.0,
+            "week":         calls_week,
+            "month":        calls_month,
+            "hourly":       hourly_docs,
+        }
+
+    return {"services": result, "fetched_at": now.isoformat()}
+
 
 @api_router.get("/admin/api-status")
 async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code)):

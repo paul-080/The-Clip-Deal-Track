@@ -565,8 +565,10 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 // ─── ApiStatusTab ─────────────────────────────────────────────────────────────
 
 function ApiStatusTab() {
-  const [status, setStatus] = useState(null);
+  const [status, setStatus]   = useState(null);
   const [loading, setLoading] = useState(false);
+  const [usage, setUsage]     = useState(null);
+  const [usageLoading, setUsageLoading] = useState(false);
 
   const testAll = useCallback(() => {
     setLoading(true);
@@ -576,14 +578,29 @@ function ApiStatusTab() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { testAll(); }, [testAll]);
+  const fetchUsage = useCallback(() => {
+    setUsageLoading(true);
+    adminFetch("/admin/api-usage")
+      .then(setUsage)
+      .catch(() => {})
+      .finally(() => setUsageLoading(false));
+  }, []);
+
+  useEffect(() => { testAll(); fetchUsage(); }, [testAll, fetchUsage]);
 
   const apis = [
-    { key: "mongodb", label: "MongoDB", icon: Database, desc: "Base de données principale" },
-    { key: "youtube_api", label: "YouTube API", icon: Youtube, desc: "YouTube Data API v3" },
-    { key: "playwright", label: "Playwright", icon: Globe, desc: "Scraping TikTok / Instagram" },
-    { key: "stripe", label: "Stripe", icon: CreditCard, desc: "Paiements et abonnements" },
-    { key: "google_oauth", label: "Google OAuth", icon: Shield, desc: "Connexion Google" },
+    { key: "mongodb",     label: "MongoDB",      icon: Database,    desc: "Base de données principale" },
+    { key: "youtube_api", label: "YouTube API",   icon: Youtube,     desc: "YouTube Data API v3" },
+    { key: "playwright",  label: "Playwright",    icon: Globe,       desc: "Scraping TikTok / Instagram" },
+    { key: "stripe",      label: "Stripe",        icon: CreditCard,  desc: "Paiements et abonnements" },
+    { key: "google_oauth",label: "Google OAuth",  icon: Shield,      desc: "Connexion Google" },
+  ];
+
+  const usageServices = [
+    { key: "youtube",   label: "YouTube API",      color: "#FF0000", icon: "▶" },
+    { key: "tikwm",     label: "TikWm (TikTok)",   color: "#00E5FF", icon: "♪" },
+    { key: "instagram", label: "Instagram",         color: "#FF007F", icon: "◈" },
+    { key: "resend",    label: "Resend (Emails)",   color: "#9B59B6", icon: "✉" },
   ];
 
   function StatusBadge({ s }) {
@@ -610,51 +627,189 @@ function ApiStatusTab() {
     );
   }
 
+  function MiniBar({ value, max, color }) {
+    const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+    const danger = pct > 80;
+    return (
+      <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all"
+          style={{ width: `${pct}%`, backgroundColor: danger ? "#ef4444" : color }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-white">Connexions API</h2>
-        <button
-          onClick={testAll}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white text-sm transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-          Tout tester
-        </button>
+    <div className="space-y-8">
+      {/* ── Connexions ── */}
+      <div>
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-xl font-semibold text-white">Connexions API</h2>
+          <button
+            onClick={testAll}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white text-sm transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Tout tester
+          </button>
+        </div>
+        {status?.checked_at && (
+          <p className="text-white/30 text-xs mb-4 flex items-center gap-1">
+            <Clock className="w-3 h-3" /> Dernier test : {formatDate(status.checked_at)}
+          </p>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {apis.map(({ key, label, icon: Icon, desc }) => {
+            const s = status?.[key];
+            return (
+              <div key={key} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-5">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-white/5 rounded-lg flex items-center justify-center">
+                      <Icon className="w-5 h-5 text-white/60" />
+                    </div>
+                    <div>
+                      <p className="text-white font-medium text-sm">{label}</p>
+                      <p className="text-white/40 text-xs">{desc}</p>
+                    </div>
+                  </div>
+                  <StatusBadge s={s} />
+                </div>
+                {s?.error && (
+                  <p className="mt-3 text-xs text-red-400/70 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                    {s.error}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {status?.checked_at && (
-        <p className="text-white/30 text-xs mb-5 flex items-center gap-1">
-          <Clock className="w-3 h-3" /> Dernier test : {formatDate(status.checked_at)}
-        </p>
-      )}
+      {/* ── Utilisation API ── */}
+      <div>
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Utilisation des APIs</h2>
+            <p className="text-white/40 text-xs mt-0.5">Nombre d'appels réels par période — mis à jour en temps réel</p>
+          </div>
+          <button
+            onClick={fetchUsage}
+            disabled={usageLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white text-sm transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${usageLoading ? "animate-spin" : ""}`} />
+            Actualiser
+          </button>
+        </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {apis.map(({ key, label, icon: Icon, desc }) => {
-          const s = status?.[key];
-          return (
-            <div key={key} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-5">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-white/5 rounded-lg flex items-center justify-center">
-                    <Icon className="w-5 h-5 text-white/60" />
-                  </div>
-                  <div>
-                    <p className="text-white font-medium text-sm">{label}</p>
-                    <p className="text-white/40 text-xs">{desc}</p>
-                  </div>
+        {/* Tableau principal */}
+        <div className="bg-[#1a1a1a] border border-white/10 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/8">
+                <th className="text-left px-5 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Service</th>
+                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Cette heure</th>
+                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Aujourd'hui</th>
+                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">7 jours</th>
+                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">30 jours</th>
+                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Taux succès</th>
+                <th className="text-left px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Limite gratuite</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageLoading && !usage ? (
+                <tr><td colSpan={7} className="py-10 text-center text-white/30 text-xs">Chargement...</td></tr>
+              ) : usageServices.map(({ key, label, color, icon }) => {
+                const d = usage?.services?.[key];
+                const successRate = d?.success_rate ?? 100;
+                const errColor = successRate < 90 ? "text-red-400" : successRate < 99 ? "text-amber-400" : "text-green-400";
+                return (
+                  <tr key={key} className="border-b border-white/5 hover:bg-white/2 transition-colors">
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-base" style={{ color }}>{icon}</span>
+                        <div>
+                          <p className="text-white text-xs font-medium">{label}</p>
+                          <p className="text-white/30 text-[10px]">{d?.free_limit || "—"}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <span className="text-white font-mono text-sm">{(d?.this_hour ?? 0).toLocaleString()}</span>
+                      {d?.errors_hour > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_hour} err)</span>}
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <span className="text-white font-mono text-sm font-semibold">{(d?.today ?? 0).toLocaleString()}</span>
+                      {d?.errors_today > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_today} err)</span>}
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <span className="text-white/70 font-mono text-sm">{(d?.week ?? 0).toLocaleString()}</span>
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <span className="text-white/60 font-mono text-sm">{(d?.month ?? 0).toLocaleString()}</span>
+                    </td>
+                    <td className="px-4 py-3.5 text-center">
+                      <span className={`font-mono text-sm font-semibold ${errColor}`}>{successRate}%</span>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      {/* Mini progress bar — YouTube 10k/jour, Resend 3000/mois, TikWm 500/jour */}
+                      {key === "youtube"   && <MiniBar value={d?.today ?? 0}  max={10000} color={color} />}
+                      {key === "tikwm"     && <MiniBar value={d?.today ?? 0}  max={500}   color={color} />}
+                      {key === "instagram" && <MiniBar value={d?.today ?? 0}  max={200}   color={color} />}
+                      {key === "resend"    && <MiniBar value={d?.month ?? 0}  max={3000}  color={color} />}
+                      <p className="text-white/30 text-[10px] mt-1">{d?.free_limit}</p>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mini-graphes 24h */}
+        {usage && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+            {usageServices.map(({ key, label, color }) => {
+              const hourly = usage?.services?.[key]?.hourly || [];
+              const maxVal = Math.max(...hourly.map(h => h.calls), 1);
+              return (
+                <div key={key} className="bg-[#1a1a1a] border border-white/8 rounded-xl p-4">
+                  <p className="text-white/60 text-xs font-medium mb-3">{label} — 24h</p>
+                  {hourly.length === 0 ? (
+                    <p className="text-white/20 text-[10px] text-center py-4">Aucun appel</p>
+                  ) : (
+                    <div className="flex items-end gap-0.5 h-12">
+                      {hourly.map((h, i) => (
+                        <div
+                          key={i}
+                          className="flex-1 rounded-sm min-w-[2px]"
+                          style={{
+                            height: `${Math.max((h.calls / maxVal) * 100, 4)}%`,
+                            backgroundColor: h.errors > 0 ? "#ef4444" : color,
+                            opacity: 0.7,
+                          }}
+                          title={`${h.date} ${h.hour}h : ${h.calls} appels${h.errors > 0 ? `, ${h.errors} erreurs` : ""}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-white/30 text-[10px] mt-2 text-right">
+                    Total : {(usage?.services?.[key]?.today ?? 0).toLocaleString()} aujourd'hui
+                  </p>
                 </div>
-                <StatusBadge s={s} />
-              </div>
-              {s?.error && (
-                <p className="mt-3 text-xs text-red-400/70 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
-                  {s.error}
-                </p>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        )}
+
+        {usage?.fetched_at && (
+          <p className="text-white/20 text-[10px] mt-3 flex items-center gap-1">
+            <Clock className="w-2.5 h-2.5" /> Données au {formatDate(usage.fetched_at)}
+          </p>
+        )}
       </div>
     </div>
   );

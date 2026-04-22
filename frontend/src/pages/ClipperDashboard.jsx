@@ -1215,25 +1215,62 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
         method: "POST",
         credentials: "include",
       });
-      if (res.ok) {
-        const data = await res.json();
+      if (!res.ok) {
+        const err = await res.json();
+        const detail = err.detail || "Erreur lors du scraping";
+        const shortMsg = detail.length > 120 ? detail.substring(0, 120) + "…" : detail;
+        toast.error(shortMsg, { duration: 8000 });
+        setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
+        return;
+      }
+      const data = await res.json();
+      if (data.status === "started") {
+        toast.info("Scraping lancé… Les vidéos arrivent dans quelques secondes ⏳", { duration: 4000 });
+        // Poll every 3s until scrape_status is no longer "running"
+        let attempts = 0;
+        const maxAttempts = 25; // 75s max
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const sr = await fetch(`${API}/social-accounts/${accountId}/scrape-status`, { credentials: "include" });
+            if (sr.ok) {
+              const sd = await sr.json();
+              if (sd.scrape_status !== "running") {
+                clearInterval(poll);
+                if (sd.scrape_status === "done") {
+                  toast.success(sd.scrape_status_message || "Scraping terminé ✓");
+                } else if (sd.scrape_status === "error") {
+                  const msg = sd.scrape_status_message || "Erreur lors du scraping";
+                  toast.error(msg.length > 150 ? msg.substring(0, 150) + "…" : msg, { duration: 10000 });
+                }
+                // Reload videos
+                const vres = await fetch(`${API}/social-accounts/${accountId}/videos`, { credentials: "include" });
+                if (vres.ok) {
+                  const vdata = await vres.json();
+                  setVideosByAccount((prev) => ({ ...prev, [accountId]: vdata.videos || [] }));
+                }
+                setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
+              }
+            }
+          } catch (_) {}
+          if (attempts >= maxAttempts) {
+            clearInterval(poll);
+            toast.error("Scraping trop long — vérifiez la connexion ou ajoutez les vidéos manuellement.", { duration: 8000 });
+            setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
+          }
+        }, 3000);
+      } else {
+        // Legacy sync response (if backend was not updated yet)
         toast.success(data.message || "Scraping terminé ✓");
-        // Reload videos
         const vres = await fetch(`${API}/social-accounts/${accountId}/videos`, { credentials: "include" });
         if (vres.ok) {
           const vdata = await vres.json();
           setVideosByAccount((prev) => ({ ...prev, [accountId]: vdata.videos || [] }));
         }
-      } else {
-        const err = await res.json();
-        const detail = err.detail || "Erreur lors du scraping";
-        // Show a short toast but log the full error
-        const shortMsg = detail.length > 120 ? detail.substring(0, 120) + "…" : detail;
-        toast.error(shortMsg, { duration: 8000 });
+        setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
       }
     } catch (e) {
-      toast.error("Erreur de connexion");
-    } finally {
+      toast.error("Erreur de connexion — réessayez ou ajoutez les vidéos manuellement.");
       setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
     }
   };
@@ -1258,7 +1295,7 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
 
   const handleAddVideoManually = async (accountId) => {
     if (!manualVideoUrl.trim()) {
-      toast.error("Collez l'URL de votre vidéo TikTok");
+      toast.error("Collez l'URL de votre vidéo");
       return;
     }
     setAddingManualVideo(true);
@@ -1460,19 +1497,17 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                             : <TrendingUp className="w-3 h-3" />
                           }
                         </button>
-                        {/* Add video manually (TikTok only) */}
-                        {account.platform === "tiktok" && (
-                          <button
-                            onClick={() => {
-                              setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
-                              setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
-                            }}
-                            title="Ajouter une vidéo manuellement"
-                            className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#FF007F] hover:bg-[#FF007F]/10 transition-colors"
-                          >
-                            <Plus className="w-3 h-3" />
-                          </button>
-                        )}
+                        {/* Add video manually (all platforms) */}
+                        <button
+                          onClick={() => {
+                            setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
+                            setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
+                          }}
+                          title="Ajouter une vidéo manuellement"
+                          className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#FF007F] hover:bg-[#FF007F]/10 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
                         {/* Re-verify */}
                         <button
                           onClick={() => handleRefreshAccount(account.account_id)}
@@ -1508,15 +1543,23 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                 {/* Expanded videos section */}
                 {isExpanded && (
                   <div className="px-4 pb-3 pt-2 bg-white/2">
-                    {/* Manual video URL input (TikTok only) */}
-                    {account.platform === "tiktok" && manualVideoAccount === account.account_id && (
+                    {/* Manual video URL input (all platforms) */}
+                    {manualVideoAccount === account.account_id && (
                       <div className="mb-3 p-2.5 rounded-lg bg-[#FF007F]/5 border border-[#FF007F]/20">
-                        <p className="text-[#FF007F] text-[10px] font-semibold mb-1.5">📎 Ajouter une vidéo TikTok manuellement</p>
+                        <p className="text-[#FF007F] text-[10px] font-semibold mb-1.5">
+                          📎 Ajouter une vidéo {account.platform === "tiktok" ? "TikTok" : account.platform === "youtube" ? "YouTube" : "Instagram"} manuellement
+                        </p>
                         <div className="flex gap-2">
                           <Input
                             value={manualVideoUrl}
                             onChange={(e) => setManualVideoUrl(e.target.value)}
-                            placeholder="https://www.tiktok.com/@.../video/..."
+                            placeholder={
+                              account.platform === "tiktok"
+                                ? "https://www.tiktok.com/@.../video/..."
+                                : account.platform === "youtube"
+                                ? "https://www.youtube.com/watch?v=... ou https://youtu.be/..."
+                                : "https://www.instagram.com/reel/..."
+                            }
                             className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/20 text-xs h-7"
                             onKeyDown={(e) => e.key === "Enter" && handleAddVideoManually(account.account_id)}
                           />
@@ -1542,14 +1585,12 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                         >
                           {isScraping ? "Scraping…" : "Lancer le scraping"}
                         </button>
-                        {account.platform === "tiktok" && (
-                          <button
-                            onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
-                            className="text-[#FF007F] text-xs hover:underline"
-                          >
-                            + Ajouter manuellement
-                          </button>
-                        )}
+                        <button
+                          onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
+                          className="text-[#FF007F] text-xs hover:underline"
+                        >
+                          + Ajouter manuellement
+                        </button>
                       </div>
                     ) : (
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">

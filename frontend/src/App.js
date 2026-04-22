@@ -204,6 +204,7 @@ const EmailVerificationGate = () => {
   const [code, setCode] = useState("");
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
 
   const handleVerify = async () => {
     if (code.length !== 6 || !email) return;
@@ -213,7 +214,7 @@ const EmailVerificationGate = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: email.toLowerCase(), code }),
+        body: JSON.stringify({ email: email.toLowerCase().trim(), code }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail || "Code invalide");
@@ -226,6 +227,27 @@ const EmailVerificationGate = () => {
     }
   };
 
+  const handleResend = async () => {
+    if (!email) { toast.error("Entrez votre adresse email d'abord"); return; }
+    setResending(true);
+    try {
+      const r = await fetch(`${API}/auth/resend-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: email.toLowerCase().trim() }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || "Erreur lors du renvoi");
+      setCode("");
+      toast.success("Nouveau code envoyé — vérifiez vos mails (et spams)");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setResending(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center px-4">
       <div className="w-full max-w-md bg-[#121212] border border-white/10 rounded-2xl p-8 text-center">
@@ -233,9 +255,10 @@ const EmailVerificationGate = () => {
           <span className="text-3xl">✉️</span>
         </div>
         <h1 className="text-2xl font-bold text-white mb-2">Vérifiez votre email</h1>
-        <p className="text-white/50 text-sm mb-8">
-          Un code de vérification a été envoyé à votre adresse email. Entrez-le ci-dessous pour accéder au site.
+        <p className="text-white/50 text-sm mb-2">
+          Un code à 6 chiffres a été envoyé à votre adresse email.
         </p>
+        <p className="text-white/30 text-xs mb-8">Vérifiez aussi votre dossier Spam.</p>
         <div className="space-y-4 text-left">
           <div>
             <label className="block text-sm text-white/60 mb-2">Votre email</label>
@@ -255,6 +278,7 @@ const EmailVerificationGate = () => {
               maxLength={6}
               value={code}
               onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              onKeyDown={e => e.key === "Enter" && handleVerify()}
               placeholder="_ _ _ _ _ _"
               className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder:text-white/20 text-center text-2xl tracking-widest font-mono outline-none focus:border-[#00E5FF]/50"
             />
@@ -266,10 +290,17 @@ const EmailVerificationGate = () => {
           >
             {loading ? "Vérification..." : "Confirmer mon compte"}
           </button>
+          <button
+            onClick={handleResend}
+            disabled={resending || !email}
+            className="w-full py-2 text-sm text-white/40 hover:text-white/70 disabled:opacity-30 transition-colors"
+          >
+            {resending ? "Envoi en cours..." : "Renvoyer un nouveau code"}
+          </button>
         </div>
         <button
           onClick={() => { setEmailNotVerified(false); window.location.href = "/"; }}
-          className="mt-6 text-sm text-white/30 hover:text-white/60 transition-colors"
+          className="mt-4 text-sm text-white/30 hover:text-white/60 transition-colors"
         >
           Retour à l'accueil
         </button>

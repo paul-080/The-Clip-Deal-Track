@@ -2616,9 +2616,8 @@ function SettingsPage() {
   };
 
   const PLANS = [
-    { id: "plan_small",     name: "Petite",       price: "79€/mois",  features: ["1 campagne", "10 clippers", "Tracking 24h"] },
-    { id: "plan_medium",    name: "Assez Grosse",  price: "199€/mois", features: ["3 campagnes", "15 clippers/camp.", "Tracking 6h", "Analytics avancés"], featured: true },
-    { id: "plan_unlimited", name: "Illimitée",     price: "599€/mois", features: ["Campagnes illimitées", "Clippers illimités", "Tracking temps réel", "Support premium"] },
+    { id: "plan_small", name: "Starter", price: "150€/mois", features: ["1 campagne active", "15 clippers max", "Tracking automatique", "Chat & analytics", "Support standard"] },
+    { id: "plan_full",  name: "Full",    price: "350€/mois", features: ["Campagnes illimitées", "Clippers illimités", "Tracking automatique", "Analytics avancés", "Support prioritaire", "Liens tracking bio"], featured: true },
   ];
 
   const handlePicture = (e) => {
