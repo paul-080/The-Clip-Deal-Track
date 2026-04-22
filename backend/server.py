@@ -197,6 +197,7 @@ class CampaignCreate(BaseModel):
     pay_for_post: bool = False
     platforms: List[str] = []
     strike_days: int = 3
+    max_strikes: int = 3
     cadence: int = 1
     application_form_enabled: bool = False
     application_questions: List[str] = []
@@ -1083,6 +1084,7 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
         "pay_for_post": campaign_data.pay_for_post,
         "platforms": campaign_data.platforms,
         "strike_days": campaign_data.strike_days,
+        "max_strikes": campaign_data.max_strikes,
         "cadence": campaign_data.cadence,
         "application_form_enabled": campaign_data.application_form_enabled,
         "application_questions": campaign_data.application_questions,
@@ -2061,6 +2063,43 @@ async def issue_manual_strike(campaign_id: str, member_user_id: str, body: dict,
     })
 
     return {"message": "Strike issued", "strikes": new_strikes, "suspended": new_strikes >= max_strikes}
+
+@api_router.delete("/campaigns/{campaign_id}/members/{member_user_id}/strike")
+async def remove_manual_strike(campaign_id: str, member_user_id: str, user: dict = Depends(get_current_user)):
+    """Remove one strike from a clipper (agency/manager only)"""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    member = await db.campaign_members.find_one({
+        "campaign_id": campaign_id,
+        "user_id": member_user_id
+    }, {"_id": 0})
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    current_strikes = member.get("strikes", 0)
+    new_strikes = max(0, current_strikes - 1)
+
+    update: dict = {"strikes": new_strikes}
+    # If was suspended due to strikes and now below max, reactivate
+    if member.get("status") == "suspended" and new_strikes < member.get("strikes", 0):
+        campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+        max_strikes = campaign.get("max_strikes", 3) if campaign else 3
+        if new_strikes < max_strikes:
+            update["status"] = "active"
+
+    await db.campaign_members.update_one(
+        {"campaign_id": campaign_id, "user_id": member_user_id},
+        {"$set": update}
+    )
+
+    await manager.send_to_user(member_user_id, {
+        "type": "strike_removed",
+        "campaign_id": campaign_id,
+        "strikes": new_strikes,
+    })
+
+    return {"message": "Strike removed", "strikes": new_strikes}
 
 # ================= SOCIAL ACCOUNT VERIFICATION & TRACKING =================
 
@@ -8628,10 +8667,27 @@ async def check_and_issue_strikes():
                     {"$set": update}
                 )
 
-                # Notify via WebSocket
+                # Notify clipper via WebSocket
                 await manager.send_to_user(member["user_id"], {
                     "type": "strike_issued",
                     "campaign_id": campaign_id,
+                    "campaign_name": campaign.get("name", ""),
                     "strikes": new_strikes,
                     "suspended": new_strikes >= max_strikes
                 })
+
+                # Notify agency/creator via WebSocket
+                campaign_creator_id = campaign.get("agency_id") or campaign.get("created_by") or campaign.get("user_id")
+                if campaign_creator_id:
+                    clipper_user = await db.users.find_one({"user_id": member["user_id"]}, {"_id": 0, "display_name": 1, "name": 1})
+                    clipper_name = (clipper_user or {}).get("display_name") or (clipper_user or {}).get("name") or member["user_id"]
+                    await manager.send_to_user(campaign_creator_id, {
+                        "type": "agency_strike_notification",
+                        "campaign_id": campaign_id,
+                        "campaign_name": campaign.get("name", ""),
+                        "clipper_id": member["user_id"],
+                        "clipper_name": clipper_name,
+                        "strikes": new_strikes,
+                        "suspended": new_strikes >= max_strikes,
+                        "reason": strike["reason"]
+                    })

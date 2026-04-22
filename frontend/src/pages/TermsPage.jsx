@@ -21,7 +21,7 @@ export default function TermsPage() {
       {/* Header */}
       <div className="sticky top-0 z-10 border-b border-white/10 bg-[#0d0d0d]/95 backdrop-blur-sm">
         <div className="max-w-3xl mx-auto px-6 py-4 flex items-center gap-4">
-          <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-white/50 hover:text-white transition-colors text-sm">
+          <button onClick={() => { if (window.history.length > 1) navigate(-1); else navigate('/'); }} className="flex items-center gap-2 text-white/50 hover:text-white transition-colors text-sm">
             <ArrowLeft className="w-4 h-4" />
             Retour
           </button>

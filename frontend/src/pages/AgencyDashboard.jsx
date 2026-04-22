@@ -575,7 +575,8 @@ function CreateCampaign({ onCreated }) {
     min_view_payout: "0",
     max_view_payout: "",
     platforms: [],
-    strike_days: "24",
+    strike_days: "3",
+    max_strikes: "3",
     cadence: "1",
     application_form_enabled: false,
     application_questions: [],
@@ -636,7 +637,8 @@ function CreateCampaign({ onCreated }) {
         budget_total: formData.budget_unlimited ? null : parseFloat(formData.budget_total) || null,
         min_view_payout: parseInt(formData.min_view_payout) || 0,
         max_view_payout: formData.max_view_payout ? parseInt(formData.max_view_payout) : null,
-        strike_hours: parseInt(formData.strike_days) || 24,
+        strike_days: parseInt(formData.strike_days) || 3,
+        max_strikes: parseInt(formData.max_strikes) || 3,
         cadence: parseInt(formData.cadence) || 1,
       };
 
@@ -957,20 +959,20 @@ function CreateCampaign({ onCreated }) {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-white/70 mb-2">Strike automatique après</label>
+              <label className="block text-sm text-white/70 mb-2">Strike auto après inactivité de</label>
               <div className="flex gap-2">
-                {["24", "48", "72"].map((h) => (
+                {[{ val: "1", label: "1 jour" }, { val: "2", label: "2 jours" }, { val: "3", label: "3 jours" }, { val: "7", label: "7 jours" }].map(({ val, label }) => (
                   <button
-                    key={h}
+                    key={val}
                     type="button"
-                    onClick={() => handleChange("strike_days", h)}
-                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                      formData.strike_days === h
+                    onClick={() => handleChange("strike_days", val)}
+                    className={`flex-1 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                      formData.strike_days === val
                         ? "bg-[#FF007F] border-[#FF007F] text-white"
                         : "bg-white/5 border-white/10 text-white/50 hover:border-white/30"
                     }`}
                   >
-                    {h}h
+                    {label}
                   </button>
                 ))}
               </div>
@@ -983,6 +985,30 @@ function CreateCampaign({ onCreated }) {
                 onChange={(e) => handleChange("cadence", e.target.value)}
                 className="bg-white/5 border-white/10 text-white"
               />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-white/70 mb-2">Suspension après X strikes</label>
+              <div className="flex gap-2">
+                {[{ val: "1", label: "1" }, { val: "2", label: "2" }, { val: "3", label: "3" }, { val: "5", label: "5" }].map(({ val, label }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => handleChange("max_strikes", val)}
+                    className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                      formData.max_strikes === val
+                        ? "bg-[#FF007F] border-[#FF007F] text-white"
+                        : "bg-white/5 border-white/10 text-white/50 hover:border-white/30"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-end pb-1">
+              <p className="text-xs text-white/30 italic">Le clippeur est suspendu automatiquement après ce nombre de strikes consécutifs.</p>
             </div>
           </div>
         </CardContent>
@@ -1059,6 +1085,7 @@ function CampaignDashboard({ campaigns }) {
   const [pendingMembers, setPendingMembers] = useState([]);
   const [processingMember, setProcessingMember] = useState(null);
   const [kickingMember, setKickingMember] = useState(null);
+  const [strikingMember, setStrikingMember] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
   const [expandedMembers, setExpandedMembers] = useState(new Set());
   const [allVideos, setAllVideos] = useState([]);
@@ -1310,6 +1337,44 @@ function CampaignDashboard({ campaigns }) {
       else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
     } catch { toast.error("Erreur réseau"); }
     setKickingMember(null);
+  };
+
+  const handleAddStrike = async (userId, reason) => {
+    setStrikingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}/strike`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason || "Strike manuel par l'agence" }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Strike ajouté (${data.strikes} total)${data.suspended ? " — clippeur suspendu" : ""}`);
+        fetchCampaign();
+      } else {
+        const e = await res.json();
+        toast.error(e.detail || "Erreur");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    setStrikingMember(null);
+  };
+
+  const handleRemoveStrike = async (userId) => {
+    setStrikingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}/strike`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Strike retiré (${data.strikes} restant${data.strikes !== 1 ? "s" : ""})`);
+        fetchCampaign();
+      } else {
+        const e = await res.json();
+        toast.error(e.detail || "Erreur");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    setStrikingMember(null);
   };
 
   const handleDeleteVideo = async (videoId) => {
@@ -1819,7 +1884,7 @@ function CampaignDashboard({ campaigns }) {
                           >⋯</button>
                         </div>
                         {expandedMembers.has(member.user_id) && (
-                          <div className="border-t border-white/5 px-3 py-2 space-y-1.5">
+                          <div className="border-t border-white/5 px-3 py-2 space-y-2">
                             {(member.social_accounts || []).length > 0 && (
                               <div className="space-y-1">
                                 {(member.social_accounts || []).map(acc => (
@@ -1835,6 +1900,33 @@ function CampaignDashboard({ campaigns }) {
                                 ))}
                               </div>
                             )}
+                            {/* ── Strike management ── */}
+                            <div className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-white/3 border border-white/8">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-white/40 uppercase tracking-wide">Strikes</span>
+                                <div className="flex gap-0.5">
+                                  {Array.from({ length: campaign?.max_strikes || 3 }).map((_, i) => (
+                                    <span key={i} className={`w-2.5 h-2.5 rounded-full ${i < (member.strikes || 0) ? "bg-[#FF007F]" : "bg-white/10"}`} />
+                                  ))}
+                                </div>
+                                <span className="text-xs font-mono text-white/60">{member.strikes || 0}/{campaign?.max_strikes || 3}</span>
+                                {member.status === "suspended" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold">SUSPENDU</span>}
+                              </div>
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => handleRemoveStrike(member.user_id)}
+                                  disabled={strikingMember === member.user_id || (member.strikes || 0) === 0}
+                                  className="w-6 h-6 rounded-md bg-white/5 hover:bg-white/15 text-white/40 hover:text-white text-sm font-bold border border-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                  title="Retirer un strike"
+                                >−</button>
+                                <button
+                                  onClick={() => handleAddStrike(member.user_id)}
+                                  disabled={strikingMember === member.user_id}
+                                  className="w-6 h-6 rounded-md bg-[#FF007F]/10 hover:bg-[#FF007F]/25 text-[#FF007F] text-sm font-bold border border-[#FF007F]/20 transition-colors disabled:opacity-50"
+                                  title="Ajouter un strike"
+                                >+</button>
+                              </div>
+                            </div>
                             <button
                               onClick={() => handleKickMember(member.user_id)}
                               disabled={kickingMember === member.user_id}
@@ -2250,12 +2342,19 @@ function CampaignDashboard({ campaigns }) {
                   {clickLinks.links.map((lnk) => (
                     <tr key={lnk.link_id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
                       <td className="px-5 py-3">
-                        <p className="text-white font-medium">{lnk.clipper_name}</p>
-                        {lnk.last_clicked_at && (
-                          <p className="text-white/30 text-[10px] mt-0.5">
-                            Dernier clic : {new Date(lnk.last_clicked_at).toLocaleDateString("fr-FR")}
-                          </p>
-                        )}
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-7 h-7 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-xs font-bold text-[#FF007F] flex-shrink-0">
+                            {(lnk.clipper_name || "?")[0].toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-white font-medium truncate">{lnk.clipper_name}</p>
+                            {lnk.last_clicked_at && (
+                              <p className="text-white/30 text-[10px] mt-0.5">
+                                Dernier clic : {new Date(lnk.last_clicked_at).toLocaleDateString("fr-FR")}
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="font-mono text-white">{(lnk.click_count || 0).toLocaleString("fr-FR")}</span>
@@ -2547,12 +2646,20 @@ function PaymentPage() {
           ) : (
             <div className="space-y-2">
               {owedData.rows.filter(r => r.last_payment).map((row) => (
-                <div key={`hist_${row.user_id}_${row.campaign_id}`} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                  <div>
-                    <p className="text-white text-sm">{row.display_name || row.name} — {row.campaign_name}</p>
-                    <p className="text-white/40 text-xs">{new Date(row.last_payment.confirmed_at).toLocaleDateString("fr-FR")}</p>
+                <div key={`hist_${row.user_id}_${row.campaign_id}`} className="flex items-center gap-3 justify-between p-3 bg-white/5 rounded-lg">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
+                      {row.picture
+                        ? <img src={row.picture} alt="" className="w-full h-full object-cover" />
+                        : <span className="text-[#00E5FF] text-xs font-bold">{(row.display_name || row.name || "?")[0].toUpperCase()}</span>
+                      }
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-white text-sm font-medium truncate">{row.display_name || row.name} <span className="text-white/40 font-normal">— {row.campaign_name}</span></p>
+                      <p className="text-white/40 text-xs">{new Date(row.last_payment.confirmed_at).toLocaleDateString("fr-FR")}</p>
+                    </div>
                   </div>
-                  <p className="font-mono font-bold text-[#39FF14]">€{row.last_payment.amount_eur?.toFixed(2)}</p>
+                  <p className="font-mono font-bold text-[#39FF14] flex-shrink-0">€{row.last_payment.amount_eur?.toFixed(2)}</p>
                 </div>
               ))}
             </div>

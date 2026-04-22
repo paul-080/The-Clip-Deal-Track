@@ -461,6 +461,11 @@ export default function ChatPanel({ campaigns }) {
     finally { setConfirmingPayment(false); }
   };
 
+  const parsePayInfo = (raw) => {
+    try { const p = JSON.parse(raw || "{}"); return { iban: p.iban || "", nom: p.nom || "", bic: p.bic || "" }; }
+    catch { return { iban: raw || "", nom: "", bic: "" }; }
+  };
+
   const handleClaimPayment = async () => {
     if (!paymentSummary || paymentSummary.owed <= 0) return;
     if (!user?.payment_info?.trim()) {
@@ -469,7 +474,11 @@ export default function ChatPanel({ campaigns }) {
     }
     setNoRibError(false);
     setClaimingPayment(true);
-    const msg = `💰 Je réclame mon paiement : €${paymentSummary.owed.toFixed(2)} pour ${fmt(paymentSummary.views)} vues sur cette campagne. Mon IBAN/PayPal : ${user.payment_info}`;
+    const pi = parsePayInfo(user.payment_info);
+    const payDetails = pi.nom
+      ? `Titulaire : ${pi.nom}${pi.iban ? ` | IBAN : ${pi.iban}` : ""}${pi.bic ? ` | BIC : ${pi.bic}` : ""}`
+      : user.payment_info;
+    const msg = `💰 Je réclame mon paiement : €${paymentSummary.owed.toFixed(2)} pour ${fmt(paymentSummary.views)} vues sur cette campagne. ${payDetails}`;
     try {
       const res = await fetch(`${API}/messages`, {
         method: "POST",
@@ -663,23 +672,26 @@ export default function ChatPanel({ campaigns }) {
                         Conversation avec <span className="text-white font-medium">{selectedClipper.display_name || selectedClipper.name}</span>
                       </p>
                       {selectedClipper.social_accounts?.length > 0 && (
-                        <div className="flex gap-1 flex-shrink-0">
-                          {selectedClipper.social_accounts.map((acc, i) => {
-                            const link = acc.account_url || (
-                              acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
-                              acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
-                              `https://youtube.com/@${acc.username}`
-                            );
-                            const colors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
-                            return (
-                              <a key={i} href={link} target="_blank" rel="noopener noreferrer"
-                                className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/10 transition-all"
-                                style={{ color: colors[acc.platform] || "#fff" }}
-                                title={`@${acc.username} (${acc.platform})`}>
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
-                            );
-                          })}
+                        <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                          <p className="text-white/30 text-[9px] uppercase tracking-wider">Comptes clipper</p>
+                          <div className="flex gap-1">
+                            {selectedClipper.social_accounts.map((acc, i) => {
+                              const link = acc.account_url || (
+                                acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
+                                acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
+                                `https://youtube.com/@${acc.username}`
+                              );
+                              const colors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
+                              return (
+                                <a key={i} href={link} target="_blank" rel="noopener noreferrer"
+                                  className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/10 transition-all"
+                                  style={{ color: colors[acc.platform] || "#fff" }}
+                                  title={`@${acc.username} (${acc.platform})`}>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              );
+                            })}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -750,23 +762,26 @@ export default function ChatPanel({ campaigns }) {
                       </p>
                     </div>
                     {selectedClipper.social_accounts?.length > 0 && (
-                      <div className="flex gap-1">
-                        {selectedClipper.social_accounts.map((acc, i) => {
-                          const link = acc.account_url || (
-                            acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
-                            acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
-                            `https://youtube.com/@${acc.username}`
-                          );
-                          const colors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
-                          return (
-                            <a key={i} href={link} target="_blank" rel="noopener noreferrer"
-                              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white/10 transition-all"
-                              style={{ color: colors[acc.platform] || "#fff" }}
-                              title={`@${acc.username} (${acc.platform})`}>
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
-                          );
-                        })}
+                      <div className="flex flex-col items-end gap-0.5">
+                        <p className="text-white/30 text-[9px] uppercase tracking-wider">Comptes clipper</p>
+                        <div className="flex gap-1">
+                          {selectedClipper.social_accounts.map((acc, i) => {
+                            const link = acc.account_url || (
+                              acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
+                              acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
+                              `https://youtube.com/@${acc.username}`
+                            );
+                            const colors = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
+                            return (
+                              <a key={i} href={link} target="_blank" rel="noopener noreferrer"
+                                className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white/10 transition-all"
+                                style={{ color: colors[acc.platform] || "#fff" }}
+                                title={`@${acc.username} (${acc.platform})`}>
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1054,21 +1069,24 @@ export default function ChatPanel({ campaigns }) {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-white font-semibold text-xs truncate">{selectedClipper.display_name || selectedClipper.name}</p>
-                        {pd?.payment_info ? (
-                          <div className="flex items-center gap-1">
-                            <CreditCard className="w-2.5 h-2.5 text-[#f0c040] flex-shrink-0" />
-                            <span
-                              className="text-[10px] font-mono text-[#f0c040] truncate transition-all"
-                              style={!ibanVisible ? { filter: "blur(4px)", userSelect: "none" } : {}}
-                            >
-                              {pd.payment_info}
-                            </span>
-                            <button onClick={() => setIbanVisible(v => !v)} className="text-white/25 hover:text-white/60 transition-colors flex-shrink-0">
-                              {ibanVisible ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
-                            </button>
-                          </div>
-                        ) : (
-                          <p className="text-[10px] text-white/20 italic">Pas d'IBAN/PayPal</p>
+                        {pd?.payment_info ? (() => {
+                          const pi = parsePayInfo(pd.payment_info);
+                          return (
+                            <div className="flex items-center gap-1">
+                              <CreditCard className="w-2.5 h-2.5 text-[#f0c040] flex-shrink-0" />
+                              <span
+                                className="text-[10px] font-mono text-[#f0c040] truncate transition-all"
+                                style={!ibanVisible ? { filter: "blur(4px)", userSelect: "none" } : {}}
+                              >
+                                {pi.nom ? `${pi.nom}${pi.iban ? ` · ${pi.iban}` : ""}${pi.bic ? ` · ${pi.bic}` : ""}` : pd.payment_info}
+                              </span>
+                              <button onClick={() => setIbanVisible(v => !v)} className="text-white/25 hover:text-white/60 transition-colors flex-shrink-0">
+                                {ibanVisible ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                              </button>
+                            </div>
+                          );
+                        })() : (
+                          <p className="text-[10px] text-white/20 italic">Pas d'IBAN renseigné</p>
                         )}
                       </div>
                       {/* Stats inline */}

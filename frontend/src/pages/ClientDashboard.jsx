@@ -154,6 +154,7 @@ function CampaignView({ campaigns }) {
   const campaign = campaigns.find((c) => c.campaign_id === campaignId);
   const [stats, setStats] = useState(null);
   const [activeTab, setActiveTab] = useState("videos");
+  const [sortBy, setSortBy] = useState("recent"); // "recent" | "views"
 
   useEffect(() => {
     if (campaignId) fetchStats();
@@ -177,6 +178,12 @@ function CampaignView({ campaigns }) {
     date: new Date(d.date).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }),
     vues: d.views,
   }));
+
+  const sortedVideos = [...videos].sort((a, b) =>
+    sortBy === "views"
+      ? (b.views || 0) - (a.views || 0)
+      : new Date(b.published_at || 0) - new Date(a.published_at || 0)
+  );
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="client-campaign-view">
@@ -217,6 +224,36 @@ function CampaignView({ campaigns }) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Budget bar */}
+      {campaign.budget > 0 && (
+        <Card className="bg-[#121212] border-white/10">
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-white/40 uppercase tracking-wide font-medium">Budget consommé</p>
+              <p className="text-sm font-mono font-bold text-white">
+                €{((campaign.budget_used || 0)).toFixed(0)} <span className="text-white/30 font-normal">/ €{campaign.budget.toFixed(0)}</span>
+              </p>
+            </div>
+            <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min(100, ((campaign.budget_used || 0) / campaign.budget) * 100)}%`,
+                  background: ((campaign.budget_used || 0) / campaign.budget) > 0.85
+                    ? "#ef4444"
+                    : ((campaign.budget_used || 0) / campaign.budget) > 0.6
+                    ? "#f0c040"
+                    : "#22c55e",
+                }}
+              />
+            </div>
+            <p className="text-xs text-white/30 mt-1.5">
+              {Math.round(((campaign.budget_used || 0) / campaign.budget) * 100)}% utilisé
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Views chart */}
       <Card className="bg-[#121212] border-white/10">
@@ -259,14 +296,26 @@ function CampaignView({ campaigns }) {
         </CardContent>
       </Card>
 
-      {/* Tabs: Vidéos / Clippeurs */}
-      <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
-        {[{ id: "videos", label: `Vidéos (${videos.length})` }, { id: "clippers", label: `Clippeurs (${stats?.clipper_count || 0})` }].map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
-            {tab.label}
-          </button>
-        ))}
+      {/* Tabs + Sort */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex gap-1 p-1 bg-white/5 rounded-xl w-fit">
+          {[{ id: "videos", label: `Vidéos (${videos.length})` }, { id: "clippers", label: `Clippeurs (${stats?.clipper_count || 0})` }].map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        {activeTab === "videos" && videos.length > 0 && (
+          <div className="flex gap-1 p-1 bg-white/5 rounded-xl">
+            {[{ id: "recent", label: "Plus récent" }, { id: "views", label: "Plus de vues" }].map(s => (
+              <button key={s.id} onClick={() => setSortBy(s.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sortBy === s.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Videos grid */}
@@ -280,7 +329,7 @@ function CampaignView({ campaigns }) {
           </Card>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {videos.map((v) => {
+            {sortedVideos.map((v) => {
               const color = PLAT_COLOR[v.platform] || "#fff";
               return (
                 <a key={v.video_id} href={v.url} target="_blank" rel="noreferrer"

@@ -2060,7 +2060,10 @@ function CampaignDashboard({ campaigns, clipperStats }) {
 // Payment Page
 function PaymentPage({ stats }) {
   const { user } = useAuth();
-  const [paymentInfo, setPaymentInfo] = useState(user?.payment_info || "");
+  const parsePaymentInfo = (raw) => {
+    try { const p = JSON.parse(raw || "{}"); return { iban: p.iban || "", nom: p.nom || "", bic: p.bic || "" }; } catch { return { iban: raw || "", nom: "", bic: "" }; }
+  };
+  const [bankInfo, setBankInfo] = useState(parsePaymentInfo(user?.payment_info));
   const [savingInfo, setSavingInfo] = useState(false);
   const [campaignSummaries, setCampaignSummaries] = useState({});
   const [clickLinks, setClickLinks] = useState({});   // { [campaign_id]: link }
@@ -2111,7 +2114,7 @@ function PaymentPage({ stats }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ payment_info: paymentInfo }),
+        body: JSON.stringify({ payment_info: JSON.stringify(bankInfo) }),
       });
       if (res.ok) toast.success("Coordonnées de paiement sauvegardées ✓");
       else toast.error("Erreur");
@@ -2138,28 +2141,54 @@ function PaymentPage({ stats }) {
         </CardContent>
       </Card>
 
-      {/* IBAN / PayPal */}
-      <Card className="bg-[#121212] border-white/10">
+      {/* Coordonnées bancaires */}
+      <Card className="bg-[#121212] border-[#f0c040]/20">
         <CardHeader>
           <CardTitle className="text-white text-base flex items-center gap-2">
             <CreditCard className="w-4 h-4 text-[#f0c040]" />
-            Vos coordonnées de paiement
+            Vos coordonnées bancaires
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-xs text-white/40">Renseignez votre IBAN ou votre adresse PayPal pour que l'agence puisse vous virer directement.</p>
-          <div className="flex gap-3">
-            <Input
-              value={paymentInfo}
-              onChange={(e) => setPaymentInfo(e.target.value)}
-              placeholder="IBAN ou adresse PayPal (ex: FR76... ou jean@paypal.com)"
-              className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30"
-            />
-            <Button onClick={handleSavePaymentInfo} disabled={savingInfo}
-              className="bg-[#f0c040] hover:bg-[#f0c040]/80 text-black font-semibold">
-              {savingInfo ? "..." : "Sauvegarder"}
-            </Button>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-white/40">Ces informations sont transmises à l'agence pour qu'elle puisse vous virer directement. Elles ne sont jamais partagées avec d'autres parties.</p>
+          <div className="grid gap-3">
+            <div>
+              <label className="block text-xs text-white/60 mb-1.5 font-medium uppercase tracking-wide">Nom du titulaire <span className="text-red-400">*</span></label>
+              <Input
+                value={bankInfo.nom}
+                onChange={(e) => setBankInfo(prev => ({ ...prev, nom: e.target.value }))}
+                placeholder="Ex: Jean Dupont (tel qu'il apparaît sur votre compte)"
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-white/60 mb-1.5 font-medium uppercase tracking-wide">IBAN <span className="text-red-400">*</span></label>
+              <Input
+                value={bankInfo.iban}
+                onChange={(e) => setBankInfo(prev => ({ ...prev, iban: e.target.value.toUpperCase() }))}
+                placeholder="Ex: FR76 3000 6000 0112 3456 7890 189"
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/20 font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-white/60 mb-1.5 font-medium uppercase tracking-wide">BIC / SWIFT <span className="text-red-400">*</span></label>
+              <Input
+                value={bankInfo.bic}
+                onChange={(e) => setBankInfo(prev => ({ ...prev, bic: e.target.value.toUpperCase() }))}
+                placeholder="Ex: BNPAFRPP"
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/20 font-mono"
+              />
+            </div>
           </div>
+          <Button onClick={handleSavePaymentInfo} disabled={savingInfo || (!bankInfo.iban && !bankInfo.nom)}
+            className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black font-semibold">
+            {savingInfo ? "Enregistrement…" : "Sauvegarder mes coordonnées bancaires"}
+          </Button>
+          {bankInfo.iban && (
+            <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+              <p className="text-green-400 text-xs font-medium">✓ Coordonnées enregistrées — l'agence peut vous virer</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -2278,7 +2307,6 @@ function SettingsPage() {
   const [displayName, setDisplayName] = useState(user?.display_name || "");
   const [picturePreview, setPicturePreview] = useState(user?.picture || null);
   const [pictureBase64, setPictureBase64] = useState(null);
-  const [paymentInfo, setPaymentInfo] = useState(user?.payment_info || "");
   const [isSaving, setIsSaving] = useState(false);
 
   const handlePicture = (e) => {
@@ -2292,7 +2320,7 @@ function SettingsPage() {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      const body = { display_name: displayName, payment_info: paymentInfo };
+      const body = { display_name: displayName };
       if (pictureBase64) body.picture = pictureBase64;
       const res = await fetch(`${API}/profile`, {
         method: "PUT",
@@ -2356,18 +2384,6 @@ function SettingsPage() {
           <div>
             <label className="block text-sm text-white/70 mb-2">Email</label>
             <Input value={user?.email || ""} disabled className="bg-white/5 border-white/10 text-white/50" />
-          </div>
-
-          {/* IBAN / PayPal */}
-          <div className="pt-2 border-t border-white/10">
-            <label className="block text-sm text-white/70 mb-1">Coordonnées de paiement</label>
-            <p className="text-xs text-white/30 mb-2">IBAN, PayPal ou Revolut — visible uniquement par les agences pour vous payer</p>
-            <Input
-              value={paymentInfo}
-              onChange={(e) => setPaymentInfo(e.target.value)}
-              placeholder="FR76 3000 6000 0112 3456 7890 189  ou  votre@paypal.com"
-              className="bg-white/5 border-white/10 text-white placeholder:text-white/20"
-            />
           </div>
 
           <Button onClick={handleSave} disabled={isSaving} className="bg-[#f0c040] hover:bg-[#f0c040]/90 text-black font-semibold" data-testid="save-settings-btn">
