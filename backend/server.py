@@ -5007,26 +5007,69 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             detail=f"URL {platform} invalide. Exemple : {examples.get(platform, 'URL valide')}"
         )
 
-    # Fetch stats based on platform
+    # Fetch stats based on platform — always succeeds (fallback to 0 views if API fails)
+    stats_partial = False
     try:
         if platform == "tiktok":
-            vid_data = await _fetch_tiktok_single_video_tikwm(video_url)
-            if not vid_data:
-                raise ValueError(
-                    "Impossible de récupérer les stats. Vérifiez que l'URL est correcte et que la vidéo est publique."
+            try:
+                vid_data = await asyncio.wait_for(
+                    _fetch_tiktok_single_video_tikwm(video_url), timeout=15
                 )
-            # Validate video belongs to this account
-            vid_author = (vid_data.get("_author_username") or "").lower()
-            account_username = account.get("username", "").lower().lstrip("@")
-            if vid_author and account_username and vid_author != account_username:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cette vidéo appartient à @{vid_author}, pas à @{account_username}. Ajoutez uniquement vos propres vidéos."
-                )
+            except Exception:
+                vid_data = None
+            if vid_data:
+                # Validate video belongs to this account if we could identify the author
+                vid_author = (vid_data.get("_author_username") or "").lower()
+                account_username = account.get("username", "").lower().lstrip("@")
+                if vid_author and account_username and vid_author != account_username:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cette vidéo appartient à @{vid_author}, pas à @{account_username}. Ajoutez uniquement vos propres vidéos."
+                    )
+            else:
+                # TikWm failed — extract video ID from URL and save with 0 views
+                m = re.search(r'/video/(\d+)', video_url)
+                video_id = m.group(1) if m else f"tk_{uuid.uuid4().hex[:8]}"
+                vid_data = {
+                    "platform_video_id": video_id,
+                    "url": video_url,
+                    "title": None,
+                    "thumbnail_url": None,
+                    "views": 0, "likes": 0, "comments": 0, "published_at": None,
+                }
+                stats_partial = True
         elif platform == "youtube":
-            vid_data = await _fetch_single_youtube_video(video_url)
+            try:
+                vid_data = await asyncio.wait_for(
+                    _fetch_single_youtube_video(video_url), timeout=15
+                )
+            except Exception:
+                m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', video_url)
+                video_id = m.group(1) if m else f"yt_{uuid.uuid4().hex[:8]}"
+                vid_data = {
+                    "platform_video_id": video_id,
+                    "url": video_url,
+                    "title": None,
+                    "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg" if m else None,
+                    "views": 0, "likes": 0, "comments": 0, "published_at": None,
+                }
+                stats_partial = True
         elif platform == "instagram":
-            vid_data = await _fetch_single_instagram_video(video_url)
+            try:
+                vid_data = await asyncio.wait_for(
+                    _fetch_single_instagram_video(video_url), timeout=10
+                )
+            except Exception:
+                m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', video_url)
+                video_id = m.group(1) if m else f"ig_{uuid.uuid4().hex[:8]}"
+                vid_data = {
+                    "platform_video_id": video_id,
+                    "url": video_url,
+                    "title": None,
+                    "thumbnail_url": None,
+                    "views": 0, "likes": 0, "comments": 0, "published_at": None,
+                }
+                stats_partial = True
         else:
             raise HTTPException(status_code=400, detail=f"Plateforme non supportée : {platform}")
     except HTTPException:
@@ -5105,9 +5148,15 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             upsert=True,
         )
 
-    views_str = f"{vid_data['views']:,}" if vid_data["views"] > 0 else "0 (mis à jour au prochain tracking)"
+    if vid_data["views"] > 0:
+        views_str = f"{vid_data['views']:,}"
+        msg = f"Vidéo ajoutée ✓ ({views_str} vues)"
+    elif stats_partial:
+        msg = "Vidéo ajoutée ✓ — stats non disponibles pour l'instant (seront mises à jour au prochain tracking)"
+    else:
+        msg = "Vidéo ajoutée ✓ (0 vues — mise à jour au prochain tracking)"
     return {
-        "message": f"Vidéo ajoutée ✓ ({views_str} vues)",
+        "message": msg,
         "video": {
             "url": vid_data["url"],
             "title": vid_data.get("title"),
