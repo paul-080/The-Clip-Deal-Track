@@ -5253,12 +5253,11 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     if platform not in ("tiktok", "youtube", "instagram"):
         raise HTTPException(status_code=400, detail="Plateforme invalide")
 
-    # Fetch video stats from platform — fallback to 0 views so the video is always saved
+    # Fetch video stats — timeout 8s max, always fallback to 0 views (never blocks Railway)
     try:
-        vid_info = await fetch_single_video_by_url(url, platform)
+        vid_info = await asyncio.wait_for(fetch_single_video_by_url(url, platform), timeout=8)
     except Exception as e:
         logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {e}")
-        # Extract video ID from URL as best effort
         vid_id = None
         if platform == "tiktok":
             m = re.search(r'/video/(\d+)', url)
