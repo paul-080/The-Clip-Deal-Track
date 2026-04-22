@@ -9,7 +9,7 @@
 /coverage
 
 # production
-/build
+# /build  <- committed to git so Railway can serve directly without rebuilding
 
 # misc
 .DS_Store

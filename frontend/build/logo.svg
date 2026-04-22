@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00E5FF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FF007F;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- Background rounded square -->
+  <rect width="64" height="64" rx="14" ry="14" fill="url(#bg)"/>
+  <!-- Play triangle (white) -->
+  <polygon points="22,16 22,48 50,32" fill="#0A0A0A" opacity="0.9"/>
+  <!-- Small clip/scissors hint — two dots at top left -->
+  <circle cx="14" cy="12" r="3" fill="white" opacity="0.6"/>
+  <circle cx="14" cy="20" r="3" fill="white" opacity="0.6"/>
+</svg>
