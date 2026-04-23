@@ -4448,6 +4448,16 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
         })
     return result
 
+def _parse_utc(s) -> "datetime | None":
+    """Parse an ISO datetime string and return UTC-aware datetime, or None on failure."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
 async def _fetch_single_tiktok_video(url: str) -> dict:
     """Fetch stats for a single TikTok video URL via TikWm API."""
     params = {"url": url, "count": 1}
@@ -4569,6 +4579,8 @@ async def run_video_tracking():
         for assignment in assignments:
             account_id = assignment["account_id"]
             user_id = assignment["user_id"]
+            # Cutoff: only videos published AFTER the account was assigned to this campaign
+            assigned_cutoff = _parse_utc(assignment.get("assigned_at"))
             account = await db.social_accounts.find_one(
                 {"account_id": account_id, "status": "verified"}, {"_id": 0}
             )
@@ -4581,15 +4593,15 @@ async def run_video_tracking():
                 last_tracked = account.get("last_tracked_at")
                 if last_tracked:
                     try:
-                        lt_dt = datetime.fromisoformat(last_tracked.replace("Z", "+00:00"))
-                        if lt_dt.tzinfo is None:
-                            lt_dt = lt_dt.replace(tzinfo=timezone.utc)
+                        lt_dt = _parse_utc(last_tracked) or datetime.now(timezone.utc)
                         delta_days = (datetime.now(timezone.utc) - lt_dt).total_seconds() / 86400
                         since_days = max(2, int(delta_days) + 2)
                     except Exception:
-                        since_days = 30
+                        since_days = 7
                 else:
-                    since_days = 30
+                    # First tracking for this account — only look back 7 days max
+                    # (the assigned_at filter will drop pre-campaign videos anyway)
+                    since_days = 7
                 videos = await fetch_videos(platform, username, account, since_days)
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
@@ -4599,12 +4611,16 @@ async def run_video_tracking():
                     )
                     await asyncio.sleep(0.5)
                     continue
+                saved_count = 0
                 for vid in videos:
                     if not vid.get("platform_video_id"):
                         continue
+                    # Skip videos published before the account was assigned to this campaign
+                    pub_dt = _parse_utc(vid.get("published_at"))
+                    if assigned_cutoff and pub_dt and pub_dt < assigned_cutoff:
+                        continue
                     earnings = (vid["views"] / 1000) * rpm
-                    doc = {
-                        "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+                    set_fields = {
                         "platform_video_id": vid["platform_video_id"],
                         "account_id": account_id,
                         "user_id": user_id,
@@ -4623,11 +4639,14 @@ async def run_video_tracking():
                     try:
                         await db.tracked_videos.update_one(
                             {"account_id": account_id, "platform_video_id": vid["platform_video_id"]},
-                            {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                            {"$set": set_fields,
+                             "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
                             upsert=True
                         )
+                        saved_count += 1
                     except Exception as upsert_err:
                         logger.warning(f"Failed to upsert video {vid.get('platform_video_id')} for {platform}/@{username}: {upsert_err}")
+                logger.info(f"Tracked {saved_count} post-campaign videos for {platform}/@{username} (campaign {campaign_id})")
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
                     {"$set": {"last_tracked_at": now_iso}}
@@ -4863,21 +4882,28 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
     await db.campaign_social_accounts.insert_one(assignment)
 
     # Trigger immediate tracking for this account+campaign (background, non-blocking)
-    async def _immediate_track(acc_id: str, cid: str, uid: str):
+    # cutoff = now: only videos published AFTER assignment are counted
+    _assign_cutoff = datetime.now(timezone.utc)
+
+    async def _immediate_track(acc_id: str, cid: str, uid: str, cutoff: datetime):
         try:
             acc = await db.social_accounts.find_one({"account_id": acc_id, "status": "verified"}, {"_id": 0})
             if not acc:
                 return
             campaign = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
             rpm = (campaign or {}).get("rpm", 0)
-            videos = await fetch_videos(acc["platform"], acc["username"], acc, since_days=90)
+            videos = await fetch_videos(acc["platform"], acc["username"], acc, since_days=7)
             now_iso = datetime.now(timezone.utc).isoformat()
+            inserted = 0
             for vid in videos:
                 if not vid.get("platform_video_id"):
                     continue
+                # Only track videos published AFTER the account was assigned to this campaign
+                pub_dt = _parse_utc(vid.get("published_at"))
+                if pub_dt and pub_dt < cutoff:
+                    continue  # Pre-campaign video — skip
                 earnings = (vid["views"] / 1000) * rpm
-                doc = {
-                    "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+                set_fields = {
                     "platform_video_id": vid["platform_video_id"],
                     "account_id": acc_id,
                     "user_id": uid,
@@ -4898,16 +4924,19 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
                 try:
                     await db.tracked_videos.update_one(
                         {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
-                        {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                        {"$set": set_fields,
+                         "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
                         upsert=True
                     )
+                    inserted += 1
                 except Exception:
                     pass
+            logger.info(f"Immediate track: {inserted} post-campaign videos saved for {acc['platform']}/@{acc['username']}")
             await db.social_accounts.update_one({"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}})
         except Exception as e:
             logger.debug(f"Immediate track on assign failed for {acc_id}: {e}")
 
-    asyncio.create_task(_immediate_track(account_id, campaign_id, user["user_id"]))
+    asyncio.create_task(_immediate_track(account_id, campaign_id, user["user_id"], _assign_cutoff))
     return {"message": "Account assigned"}
 
 @api_router.delete("/campaigns/{campaign_id}/social-accounts/{account_id}")
