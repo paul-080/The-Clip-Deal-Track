@@ -5397,8 +5397,7 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
         rpm = (campaign or {}).get("rpm", 0)
         earnings = (vid_data["views"] / 1000) * rpm
 
-        doc = {
-            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+        set_fields = {
             "platform_video_id": vid_data["platform_video_id"],
             "account_id": account_id,
             "user_id": user["user_id"],
@@ -5412,7 +5411,6 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             "comments": vid_data.get("comments", 0),
             "published_at": vid_data.get("published_at"),
             "fetched_at": now_iso,
-            "created_at": now_iso,
             "earnings": round(earnings, 4),
             "manually_added": True,
             "simulated": False,
@@ -5420,7 +5418,8 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
         try:
             await db.tracked_videos.update_one(
                 {"account_id": account_id, "platform_video_id": vid_data["platform_video_id"]},
-                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                {"$set": set_fields,
+                 "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
                 upsert=True,
             )
             saved_count += 1
@@ -5429,8 +5428,7 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
 
     if saved_count == 0:
         # No campaign assigned — save linked to account only
-        doc = {
-            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+        fallback_fields = {
             "platform_video_id": vid_data["platform_video_id"],
             "account_id": account_id,
             "user_id": user["user_id"],
@@ -5444,14 +5442,14 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
             "comments": vid_data.get("comments", 0),
             "published_at": vid_data.get("published_at"),
             "fetched_at": now_iso,
-            "created_at": now_iso,
             "earnings": 0,
             "manually_added": True,
             "simulated": False,
         }
         await db.tracked_videos.update_one(
             {"account_id": account_id, "platform_video_id": vid_data["platform_video_id"]},
-            {"$set": doc},
+            {"$set": fallback_fields,
+             "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
             upsert=True,
         )
 
