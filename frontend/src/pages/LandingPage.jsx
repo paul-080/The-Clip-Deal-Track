@@ -37,6 +37,9 @@ export default function LandingPage() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
   const [loginLoading, setLoginLoading] = useState(false);
+  const [loginView, setLoginView] = useState("login"); // "login" | "forgot" | "forgot_sent"
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
 
   const roles = [
     {
@@ -252,6 +255,23 @@ export default function LandingPage() {
       toast.error(e.message);
     } finally {
       setLoginLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!forgotEmail.trim()) { toast.error("Entrez votre adresse email"); return; }
+    setForgotLoading(true);
+    try {
+      await fetch(`${API}/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail.trim().toLowerCase() }),
+      });
+      setLoginView("forgot_sent");
+    } catch {
+      toast.error("Erreur réseau — réessayez");
+    } finally {
+      setForgotLoading(false);
     }
   };
 
@@ -1004,7 +1024,7 @@ export default function LandingPage() {
       </Dialog>
 
       {/* ── Modal Se connecter ── */}
-      <Dialog open={showLoginModal} onOpenChange={setShowLoginModal}>
+      <Dialog open={showLoginModal} onOpenChange={(o) => { setShowLoginModal(o); if (!o) { setLoginView("login"); setForgotEmail(""); } }}>
         <DialogContent className="bg-[#121212] border-white/10 max-w-md">
           <DialogHeader>
             <div className="flex items-center gap-3 mb-2">
@@ -1016,6 +1036,47 @@ export default function LandingPage() {
               </DialogTitle>
             </div>
           </DialogHeader>
+          {loginView === "forgot_sent" ? (
+            /* ── Email envoyé ── */
+            <div className="mt-4 text-center space-y-4">
+              <div className="w-14 h-14 rounded-full bg-[#39FF14]/10 flex items-center justify-center mx-auto">
+                <svg className="w-7 h-7 text-[#39FF14]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+              </div>
+              <p className="text-white font-semibold">Email envoyé !</p>
+              <p className="text-white/40 text-sm">Vérifie ta boîte <span className="text-white/70">{forgotEmail}</span> (et les spams). Le lien expire dans 1 heure.</p>
+              <button onClick={() => { setLoginView("login"); setForgotEmail(""); }} className="text-sm text-[#00E5FF] hover:underline">
+                Retour à la connexion
+              </button>
+            </div>
+          ) : loginView === "forgot" ? (
+            /* ── Mot de passe oublié ── */
+            <div className="space-y-4 mt-4">
+              <p className="text-white/50 text-sm">Entre ton email — tu recevras un lien pour choisir un nouveau mot de passe.</p>
+              <div>
+                <label className="block text-sm text-white/70 mb-2">Email</label>
+                <Input
+                  type="email"
+                  placeholder="votre@email.com"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleForgotPassword()}
+                  className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+                  autoFocus
+                />
+              </div>
+              <Button
+                onClick={handleForgotPassword}
+                disabled={forgotLoading || !forgotEmail.trim()}
+                className="w-full bg-[#f0c040] text-black hover:bg-[#f0c040]/90 font-semibold py-6"
+              >
+                {forgotLoading ? "Envoi..." : "Envoyer le lien"}
+              </Button>
+              <button onClick={() => setLoginView("login")} className="w-full text-center text-sm text-white/40 hover:text-white/70 transition-colors">
+                ← Retour à la connexion
+              </button>
+            </div>
+          ) : (
+          /* ── Connexion normale ── */
           <div className="space-y-4 mt-4">
             <div>
               <label className="block text-sm text-white/70 mb-2">Email</label>
@@ -1029,7 +1090,15 @@ export default function LandingPage() {
               />
             </div>
             <div>
-              <label className="block text-sm text-white/70 mb-2">Mot de passe</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm text-white/70">Mot de passe</label>
+                <button
+                  onClick={() => { setForgotEmail(loginForm.email); setLoginView("forgot"); }}
+                  className="text-xs text-white/30 hover:text-[#00E5FF] transition-colors"
+                >
+                  Mot de passe oublié ?
+                </button>
+              </div>
               <Input
                 type="password"
                 placeholder="••••••••"
@@ -1056,6 +1125,7 @@ export default function LandingPage() {
               </button>
             </p>
           </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

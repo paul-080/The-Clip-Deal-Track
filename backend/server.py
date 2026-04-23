@@ -838,6 +838,148 @@ async def verify_email(req: VerifyEmailRequest):
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return _make_session_response(user, session_token)
 
+
+async def _send_reset_email(to_email: str, reset_url: str):
+    """Send password-reset link. Priority: Resend API → SMTP → log fallback."""
+
+    html = f"""
+    <div style="font-family:Inter,Arial,sans-serif;background:#0A0A0A;padding:40px;max-width:480px;margin:0 auto;border-radius:12px;">
+      <div style="text-align:center;margin-bottom:32px;">
+        <div style="display:inline-block;background:linear-gradient(135deg,#00E5FF,#FF007F);border-radius:10px;padding:12px 20px;">
+          <span style="color:#000;font-weight:bold;font-size:18px;">&#9654; The Clip Deal Track</span>
+        </div>
+      </div>
+      <h2 style="color:#fff;font-size:22px;font-weight:600;margin-bottom:8px;">Réinitialisation de votre mot de passe</h2>
+      <p style="color:rgba(255,255,255,0.6);font-size:15px;margin-bottom:32px;">Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe. Ce lien est valable <strong style="color:#fff;">1 heure</strong>.</p>
+      <div style="text-align:center;margin-bottom:32px;">
+        <a href="{reset_url}" style="display:inline-block;background:linear-gradient(135deg,#00E5FF,#FF007F);color:#000;font-weight:700;font-size:15px;padding:14px 32px;border-radius:8px;text-decoration:none;">Réinitialiser mon mot de passe</a>
+      </div>
+      <p style="color:rgba(255,255,255,0.4);font-size:13px;">Si vous n'avez pas demandé cette réinitialisation, ignorez cet email — votre mot de passe reste inchangé.</p>
+    </div>
+    """
+
+    subject = "Réinitialisation de votre mot de passe — The Clip Deal Track"
+
+    # ── Priorité 1 : Resend API ───────────────────────────────────────────────
+    if RESEND_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": RESEND_FROM,
+                        "to": [to_email],
+                        "subject": subject,
+                        "html": html,
+                    },
+                )
+            if resp.status_code in (200, 201):
+                logger.info(f"Reset email sent via Resend to {to_email} — id={resp.json().get('id')}")
+                return
+            else:
+                logger.warning(f"Resend API error {resp.status_code}: {resp.text} — falling back to SMTP")
+        except Exception as resend_err:
+            logger.warning(f"Resend exception: {resend_err} — falling back to SMTP")
+
+    # ── Priorité 2 : SMTP (Gmail ou autre) ────────────────────────────────────
+    if SMTP_USER and SMTP_PASSWORD:
+        import asyncio as _asyncio
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        smtp_from = os.environ.get('SMTP_FROM', f'The Clip Deal Track <{SMTP_USER}>')
+
+        def _send_smtp():
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = smtp_from
+            msg["To"] = to_email
+            msg.attach(MIMEText(f"Réinitialisez votre mot de passe en visitant ce lien (valable 1 heure) :\n{reset_url}", "plain"))
+            msg.attach(MIMEText(html, "html"))
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+                s.ehlo()
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASSWORD)
+                s.sendmail(smtp_from, [to_email], msg.as_string())
+
+        loop = _asyncio.get_event_loop()
+        await loop.run_in_executor(None, _send_smtp)
+        logger.info(f"Reset email sent via SMTP to {to_email}")
+        return
+
+    # ── Fallback : log seulement (dev sans config email) ─────────────────────
+    logger.warning(
+        f"⚠️  Aucun service email configuré (RESEND_API_KEY ou SMTP_USER manquant). "
+        f"Lien de réinitialisation pour {to_email} : {reset_url}"
+    )
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(request: Request):
+    """Request a password-reset link. Always returns {sent: true} regardless of whether the email exists."""
+    body = await request.json()
+    email_lc = (body.get("email") or "").lower().strip()
+    if not email_lc:
+        raise HTTPException(status_code=400, detail="Email manquant")
+
+    user = await db.users.find_one({"email": email_lc}, {"_id": 0, "user_id": 1})
+    if user:
+        token = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        await db.password_resets.insert_one({
+            "token": token,
+            "user_id": user["user_id"],
+            "email": email_lc,
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+            "created_at": now.isoformat(),
+        })
+        reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+        try:
+            await _send_reset_email(email_lc, reset_url)
+        except Exception as e:
+            logger.warning(f"Reset email failed for {email_lc}: {e}")
+
+    return {"sent": True}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(request: Request):
+    """Consume a password-reset token and update the user's password."""
+    body = await request.json()
+    token = (body.get("token") or "").strip()
+    new_password = body.get("new_password") or ""
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Token manquant")
+
+    pending = await db.password_resets.find_one({"token": token}, {"_id": 0})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Lien invalide ou déjà utilisé")
+
+    expires_at = pending.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Lien expiré — demandez un nouveau")
+
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court")
+
+    await db.users.update_one(
+        {"user_id": pending["user_id"]},
+        {"$set": {"password_hash": _hash_password(new_password)}}
+    )
+    await db.password_resets.delete_one({"token": token})
+
+    return {"success": True, "message": "Mot de passe mis à jour"}
+
+
 @api_router.get("/auth/debug-env")
 async def debug_env():
     """Debug: show all env var names containing RESEND, SMTP, or RAILWAY."""

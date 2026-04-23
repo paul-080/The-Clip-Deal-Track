@@ -15,6 +15,7 @@ import ClientDashboard from "./pages/ClientDashboard";
 import JoinCampaign from "./pages/JoinCampaign";
 import AdminDashboard from "./pages/AdminDashboard";
 import TermsPage from "./pages/TermsPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
@@ -380,6 +381,8 @@ const AppRouter = () => {
 
       {/* Legal — public */}
       <Route path="/cgu" element={<TermsPage />} />
+      <Route path="/terms" element={<TermsPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
