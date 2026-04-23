@@ -1832,27 +1832,44 @@ async def get_public_stats(token: str):
         raise HTTPException(status_code=404, detail="Lien client invalide")
     campaign_id = campaign["campaign_id"]
 
-    # Total views depuis tracked_videos
+    # Totaux depuis tracked_videos
     pipeline = [
         {"$match": {"campaign_id": campaign_id}},
-        {"$group": {"_id": None, "total_views": {"$sum": "$views"}, "total_videos": {"$sum": 1}}}
+        {"$group": {
+            "_id": None,
+            "total_views":    {"$sum": "$views"},
+            "total_likes":    {"$sum": "$likes"},
+            "total_comments": {"$sum": "$comments"},
+            "total_videos":   {"$sum": 1},
+        }}
     ]
     agg = await db.tracked_videos.aggregate(pipeline).to_list(1)
-    total_views = agg[0]["total_views"] if agg else 0
-    total_videos = agg[0]["total_videos"] if agg else 0
-
-    # Clippeurs actifs
-    members = await db.campaign_members.find(
-        {"campaign_id": campaign_id, "role": "clipper", "status": "active"},
-        {"_id": 0, "user_id": 1}
-    ).to_list(200)
-    clipper_count = len(members)
+    total_views    = agg[0]["total_views"]    if agg else 0
+    total_likes    = agg[0]["total_likes"]    if agg else 0
+    total_comments = agg[0]["total_comments"] if agg else 0
+    total_videos   = agg[0]["total_videos"]   if agg else 0
+    engagement     = round((total_likes + total_comments) / total_views * 100, 1) if total_views > 0 else 0.0
+    avg_views      = round(total_views / total_videos) if total_videos > 0 else 0
 
     # Top vidéos
     top_videos = await db.tracked_videos.find(
         {"campaign_id": campaign_id},
-        {"_id": 0, "url": 1, "title": 1, "views": 1, "platform": 1, "thumbnail_url": 1, "published_at": 1}
-    ).sort("views", -1).to_list(12)
+        {"_id": 0, "url": 1, "title": 1, "views": 1, "likes": 1, "comments": 1,
+         "platform": 1, "thumbnail_url": 1, "published_at": 1}
+    ).sort("views", -1).to_list(50)
+
+    # Timeline vues sur 30 derniers jours (pour la courbe)
+    from collections import defaultdict
+    views_by_day: dict = defaultdict(int)
+    all_vids = await db.tracked_videos.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "fetched_at": 1, "views": 1}
+    ).to_list(1000)
+    for v in all_vids:
+        day = (v.get("fetched_at") or "")[:10]
+        if day:
+            views_by_day[day] += v.get("views", 0)
+    timeline = [{"date": d, "views": views_by_day[d]} for d in sorted(views_by_day)[-30:]]
 
     # Stats par plateforme
     platform_agg = await db.tracked_videos.aggregate([
@@ -1861,13 +1878,16 @@ async def get_public_stats(token: str):
     ]).to_list(10)
 
     return {
-        "campaign_name": campaign.get("name"),
-        "total_views": total_views,
-        "total_videos": total_videos,
-        "clipper_count": clipper_count,
-        "rpm": campaign.get("rpm", 0),
-        "top_videos": top_videos,
-        "platforms": {p["_id"]: {"views": p["views"], "count": p["count"]} for p in platform_agg},
+        "campaign_name":  campaign.get("name"),
+        "total_views":    total_views,
+        "total_likes":    total_likes,
+        "total_comments": total_comments,
+        "total_videos":   total_videos,
+        "engagement":     engagement,
+        "avg_views":      avg_views,
+        "timeline":       timeline,
+        "top_videos":     top_videos,
+        "platforms":      {p["_id"]: {"views": p["views"], "count": p["count"]} for p in platform_agg},
     }
 
 @api_router.post("/campaigns/join/{token}")

@@ -4,12 +4,13 @@ import { useAuth, API } from "../App";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Video, Check, AlertCircle, Eye, TrendingUp, Users,
-  Clock, Star, Lock, ChevronRight
+  Clock, Star, Lock, ChevronRight, Heart, MessageCircle, BarChart2, RefreshCw
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { toast } from "sonner";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 const ROLE_CONFIG = {
   clipper: { color: "#00E5FF", label: "Clippeur", icon: Video },
@@ -23,19 +24,30 @@ function fmt(n) {
        : String(n || 0);
 }
 
+const ACCENT = "#FFB300";
+const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };
+const PLAT_LABEL = { tiktok: "TikTok", instagram: "Instagram", youtube: "YouTube" };
+const PERIODS = [{ label: "7j", days: 7 }, { label: "30j", days: 30 }, { label: "90j", days: 90 }, { label: "Tout", days: 0 }];
+
 // ─── Page stats publique Client ──────────────────────────────────────────────
 function ClientStatsPage({ token }) {
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]   = useState(null);
+  const [stats, setStats]       = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState(null);
+  const [activeTab, setActiveTab] = useState("overview");
+  const [period, setPeriod]     = useState(30);
+  const [filterPlatform, setFilterPlatform] = useState("all");
 
-  useEffect(() => {
+  const fetchStats = () => {
+    setLoading(true);
     fetch(`${API}/campaigns/public-stats/${token}`)
       .then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e.detail)))
       .then(setStats)
       .catch(e => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [token]);
+  };
+
+  useEffect(() => { fetchStats(); }, [token]);
 
   if (loading) return (
     <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center">
@@ -53,7 +65,26 @@ function ClientStatsPage({ token }) {
     </div>
   );
 
-  const platforms = stats.platforms || {};
+  // Timeline filtrage par période
+  const rawTimeline = stats.timeline || [];
+  const tlFiltered = period === 0 ? rawTimeline : rawTimeline.slice(-period);
+  const tlData = tlFiltered.map(d => ({
+    ...d,
+    label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+  }));
+
+  // Vidéos filtrées
+  const allVideos = stats.top_videos || [];
+  const filteredVideos = filterPlatform === "all" ? allVideos : allVideos.filter(v => v.platform === filterPlatform);
+  const platforms = Object.keys(stats.platforms || {});
+
+  const kpis = [
+    { label: "Vues totales",    value: fmt(stats.total_views),    color: "text-white" },
+    { label: "Likes",           value: fmt(stats.total_likes),    color: "text-[#FFB300]" },
+    { label: "Commentaires",    value: fmt(stats.total_comments), color: "text-white/70" },
+    { label: "Engagement",      value: `${stats.engagement}%`,   color: "text-[#39FF14]" },
+    { label: "Moy. vues/vidéo", value: fmt(stats.avg_views),     color: "text-[#00E5FF]" },
+  ];
 
   return (
     <div className="min-h-screen bg-[#0A0A0A]">
@@ -61,70 +92,170 @@ function ClientStatsPage({ token }) {
       <div className="border-b border-white/5 px-6 py-4 flex items-center gap-3">
         <img src="/logo.svg" alt="" className="w-8 h-8" onError={e => e.target.style.display="none"} />
         <span className="font-bold text-white">The Clip Deal Track</span>
-        <span className="ml-auto text-xs bg-[#FFB300]/20 text-[#FFB300] px-2 py-1 rounded-full font-medium">
-          Vue client
-        </span>
+        <span className="ml-auto text-xs bg-[#FFB300]/20 text-[#FFB300] px-2 py-1 rounded-full font-medium">Vue client</span>
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-10 space-y-8">
-        <div>
-          <p className="text-white/40 text-sm mb-1">Campagne</p>
-          <h1 className="font-bold text-3xl text-white">{stats.campaign_name}</h1>
+      <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+
+        {/* Titre + refresh */}
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-white/40 text-sm mb-1">Campagne</p>
+            <h1 className="font-bold text-3xl text-white">{stats.campaign_name}</h1>
+          </div>
+          <button onClick={fetchStats}
+            className="flex items-center gap-1.5 text-xs text-white/40 hover:text-white/70 transition-colors mt-2">
+            <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+          </button>
         </div>
 
-        {/* KPI cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { label: "Vues totales",   value: fmt(stats.total_views),  color: "#FFB300", icon: Eye },
-            { label: "Vidéos trackées",value: fmt(stats.total_videos), color: "#00E5FF", icon: Video },
-            { label: "Clippeurs actifs",value: stats.clipper_count,   color: "#39FF14", icon: Users },
-            { label: "RPM",            value: `${stats.rpm}€/1K`,      color: "#FF007F", icon: TrendingUp },
-          ].map(({ label, value, color, icon: Icon }) => (
-            <div key={label} className="bg-[#121212] border border-white/10 rounded-xl p-5">
-              <Icon className="w-4 h-4 mb-2" style={{ color }} />
-              <p className="font-mono font-black text-2xl text-white">{value}</p>
+        {/* 5 KPIs */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {kpis.map(({ label, value, color }) => (
+            <div key={label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+              <p className={`font-mono font-black text-2xl ${color}`}>{value}</p>
               <p className="text-xs text-white/40 mt-1">{label}</p>
             </div>
           ))}
         </div>
 
-        {/* Plateformes */}
-        {Object.keys(platforms).length > 0 && (
-          <div className="bg-[#121212] border border-white/10 rounded-xl p-6">
-            <h2 className="font-bold text-white mb-4">Par plateforme</h2>
-            <div className="grid grid-cols-3 gap-4">
-              {Object.entries(platforms).map(([plat, d]) => (
-                <div key={plat} className="text-center">
-                  <p className="text-sm font-medium text-white capitalize">{plat}</p>
-                  <p className="font-mono font-bold text-[#FFB300] text-lg">{fmt(d.views)}</p>
-                  <p className="text-xs text-white/40">{d.count} vidéos</p>
+        {/* Tabs */}
+        <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
+          {[
+            { id: "overview", label: "Vue d'ensemble" },
+            { id: "videos",   label: `Vidéos (${allVideos.length})` },
+          ].map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+                activeTab === tab.id ? "bg-[#FFB300] text-black shadow-lg" : "text-white/50 hover:text-white"
+              }`}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── OVERVIEW ── */}
+        {activeTab === "overview" && (
+          <div className="space-y-5">
+            {/* Courbe */}
+            <div className="bg-[#121212] border border-white/10 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="font-semibold text-white">Évolution des vues</h2>
+                <div className="flex gap-1 bg-white/5 rounded-lg p-0.5">
+                  {PERIODS.map(p => (
+                    <button key={p.days} onClick={() => setPeriod(p.days)}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                        period === p.days ? "bg-[#FFB300] text-black" : "text-white/40 hover:text-white"
+                      }`}>
+                      {p.label}
+                    </button>
+                  ))}
                 </div>
-              ))}
+              </div>
+              {tlData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={tlData}>
+                    <defs>
+                      <linearGradient id="cg_pub" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%"  stopColor={ACCENT} stopOpacity={0.3} />
+                        <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+                    <XAxis dataKey="label" tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false}
+                      tickFormatter={v => v >= 1000 ? `${Math.round(v/1000)}K` : v} />
+                    <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
+                      labelStyle={{ color: "#fff" }} itemStyle={{ color: ACCENT }}
+                      formatter={v => [v?.toLocaleString("fr-FR"), "Vues"]} />
+                    <Area type="monotone" dataKey="views" stroke={ACCENT} strokeWidth={2}
+                      fill="url(#cg_pub)" dot={false} activeDot={{ r: 4, fill: ACCENT }} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[200px] flex items-center justify-center text-white/30 text-sm">
+                  Aucune donnée disponible
+                </div>
+              )}
             </div>
+
+            {/* Par plateforme */}
+            {platforms.length > 0 && (
+              <div className="bg-[#121212] border border-white/10 rounded-2xl p-6">
+                <h2 className="font-semibold text-white mb-4">Par plateforme</h2>
+                <div className="grid grid-cols-3 gap-4">
+                  {platforms.map(plat => {
+                    const d = stats.platforms[plat];
+                    return (
+                      <div key={plat} className="text-center p-4 bg-white/5 rounded-xl">
+                        <p className="text-sm font-medium mb-2" style={{ color: PLAT_COLOR[plat] || "#fff" }}>
+                          {PLAT_LABEL[plat] || plat}
+                        </p>
+                        <p className="font-mono font-bold text-white text-xl">{fmt(d.views)}</p>
+                        <p className="text-xs text-white/40 mt-1">{d.count} vidéo{d.count > 1 ? "s" : ""}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Top vidéos */}
-        {stats.top_videos?.length > 0 && (
-          <div className="bg-[#121212] border border-white/10 rounded-xl p-6">
-            <h2 className="font-bold text-white mb-4">Top vidéos</h2>
-            <div className="space-y-2">
-              {stats.top_videos.slice(0, 8).map((v, i) => (
-                <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
-                  className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors group">
-                  <span className="text-white/30 text-xs w-4">{i+1}</span>
-                  <span className="flex-1 text-white/80 text-sm truncate group-hover:text-white">
-                    {v.title || v.url}
-                  </span>
-                  <span className="text-xs font-mono text-[#FFB300]">{fmt(v.views)}</span>
-                  <span className="text-xs text-white/30 capitalize">{v.platform}</span>
-                </a>
-              ))}
-            </div>
+        {/* ── VIDEOS ── */}
+        {activeTab === "videos" && (
+          <div className="space-y-3">
+            {/* Filtre plateforme */}
+            {platforms.length > 1 && (
+              <div className="flex gap-2">
+                {["all", ...platforms].map(p => (
+                  <button key={p} onClick={() => setFilterPlatform(p)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                      filterPlatform === p
+                        ? "border-[#FFB300]/50 bg-[#FFB300]/10 text-[#FFB300]"
+                        : "border-white/10 text-white/40 hover:text-white"
+                    }`}>
+                    {p === "all" ? "Toutes" : PLAT_LABEL[p] || p}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filteredVideos.length === 0 ? (
+              <div className="text-center py-12 text-white/30">Aucune vidéo</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {filteredVideos.map((v, i) => (
+                  <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
+                    className="flex gap-3 bg-[#121212] border border-white/10 rounded-xl p-3 hover:border-white/20 transition-all group">
+                    {v.thumbnail_url ? (
+                      <img src={v.thumbnail_url} alt="" className="w-20 h-14 rounded-lg object-cover flex-shrink-0" />
+                    ) : (
+                      <div className="w-20 h-14 rounded-lg bg-white/5 flex-shrink-0 flex items-center justify-center">
+                        <Video className="w-5 h-5 text-white/20" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white/80 text-sm line-clamp-2 group-hover:text-white transition-colors">
+                        {v.title || v.url}
+                      </p>
+                      <div className="flex items-center gap-3 mt-1.5 text-xs text-white/40">
+                        <span className="text-[#FFB300] font-mono font-bold">{fmt(v.views)} vues</span>
+                        {v.likes > 0 && <span className="flex items-center gap-1"><Heart className="w-3 h-3" />{fmt(v.likes)}</span>}
+                        {v.comments > 0 && <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{fmt(v.comments)}</span>}
+                        <span className="capitalize ml-auto" style={{ color: PLAT_COLOR[v.platform] || "#fff" }}>
+                          {PLAT_LABEL[v.platform] || v.platform}
+                        </span>
+                      </div>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
-        <p className="text-center text-white/20 text-xs">
+        <p className="text-center text-white/20 text-xs pt-4">
           Powered by The Clip Deal Track · Données actualisées automatiquement
         </p>
       </div>
