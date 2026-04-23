@@ -744,13 +744,10 @@ async def email_register(req: EmailRegisterRequest):
             "settings": {}
         })
 
-    # Send verification email (non-blocking — log code if RESEND not configured)
-    try:
-        await _send_verification_email(email_lc, code)
-    except Exception as e:
-        logger.warning(f"Email send failed for {email_lc}: {e} — code={code}")
+    # Envoi email en tâche de fond → réponse immédiate au frontend
+    asyncio.create_task(_send_verification_email(email_lc, code))
 
-    logger.info(f"Verification code sent to {email_lc} (role: {req.role})")
+    logger.info(f"Verification code queued for {email_lc} (role: {req.role})")
     return {"email_pending": True, "email": email_lc}
 
 
@@ -775,11 +772,7 @@ async def resend_verification_code(request: Request):
         {"$set": {"code": code, "expires_at": expires_at.isoformat()}}
     )
 
-    try:
-        await _send_verification_email(email_lc, code)
-    except Exception as e:
-        logger.warning(f"Resend email failed for {email_lc}: {e} — code={code}")
-
+    asyncio.create_task(_send_verification_email(email_lc, code))
     return {"sent": True}
 
 @api_router.post("/auth/verify-email")
@@ -1118,10 +1111,7 @@ async def email_login(request: Request):
             }},
             upsert=True
         )
-        try:
-            await _send_verification_email(email, code)
-        except Exception as e:
-            logger.warning(f"Login resend email failed for {email}: {e} — code={code}")
+        asyncio.create_task(_send_verification_email(email, code))
         raise HTTPException(status_code=403, detail="email_not_verified")
 
     session_token = uuid.uuid4().hex
