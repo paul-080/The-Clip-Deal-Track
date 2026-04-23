@@ -1114,10 +1114,21 @@ function CampaignDashboard({ campaigns }) {
   const [period, setPeriod] = useState("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [topClips, setTopClips] = useState([]);
+  const [topClipsLoading, setTopClipsLoading] = useState(false);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
   const PLAT_ICON = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
+
+  const fetchTopClips = async () => {
+    setTopClipsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10`, { credentials: "include" });
+      if (res.ok) { const d = await res.json(); setTopClips(d.clips || []); }
+    } catch {}
+    finally { setTopClipsLoading(false); }
+  };
 
   useEffect(() => {
     if (campaignId) {
@@ -1125,6 +1136,9 @@ function CampaignDashboard({ campaigns }) {
       fetchStats();
       fetchPendingMembers();
       fetchAllVideos();
+      fetchTopClips();
+      const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
+      return () => clearInterval(interval);
     }
   }, [campaignId]);
 
@@ -1490,6 +1504,7 @@ function CampaignDashboard({ campaigns }) {
           { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length },
           ...(campaign.payment_model === "clicks" ? [{ id: "liens", label: "🔗 Liens" }] : []),
+          { id: "clip-winner", label: "🏆 Clip Winner" },
         ].map(tab => (
           <button key={tab.id}
             onClick={() => {
@@ -2407,6 +2422,112 @@ function CampaignDashboard({ campaigns }) {
                   <span className="ml-2 text-white/20">— soit €{(clickLinks.rate_per_click / 1000).toFixed(4)}/clic</span>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══════════ CLIP WINNER TAB ═══════════ */}
+      {activeTab === "clip-winner" && (
+        <div className="space-y-5">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-white font-semibold text-lg flex items-center gap-2">
+                🏆 <span>Top 10 — Clips les plus vus</span>
+              </h3>
+              <p className="text-white/35 text-xs mt-0.5">Toutes plateformes confondues · actualisation auto toutes les 5 min</p>
+            </div>
+            <button
+              onClick={fetchTopClips}
+              disabled={topClipsLoading}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40"
+            >
+              <RefreshCw className={`w-4 h-4 ${topClipsLoading ? "animate-spin" : ""}`} />
+              Actualiser
+            </button>
+          </div>
+
+          {topClipsLoading && topClips.length === 0 ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" />
+            </div>
+          ) : topClips.length === 0 ? (
+            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
+              <p className="text-4xl mb-3">🏆</p>
+              <p className="text-sm">Aucun clip tracké pour l'instant</p>
+              <p className="text-xs mt-1">Les clips apparaîtront ici dès que le tracking sera actif.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {topClips.map((clip, i) => {
+                const medals = ["🥇", "🥈", "🥉"];
+                const color = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" }[clip.platform] || "#fff";
+                const maxViews = topClips[0]?.views || 1;
+                return (
+                  <a
+                    key={clip.video_id || i}
+                    href={clip.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-4 bg-[#121212] border border-white/8 hover:border-white/20 rounded-xl p-3 transition-all group"
+                  >
+                    {/* Rank */}
+                    <div className="w-8 text-center flex-shrink-0">
+                      {i < 3
+                        ? <span className="text-xl">{medals[i]}</span>
+                        : <span className="text-white/30 font-bold text-lg">#{i + 1}</span>}
+                    </div>
+
+                    {/* Thumbnail */}
+                    <div className="relative w-16 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
+                      {clip.thumbnail_url
+                        ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover"
+                            onError={e => { e.target.style.display = "none"; }} />
+                        : <div className="w-full h-full flex items-center justify-center text-lg">
+                            {{ tiktok: "🎵", instagram: "📸", youtube: "▶️" }[clip.platform]}
+                          </div>}
+                      <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold px-1 rounded"
+                        style={{ background: `${color}dd`, color: "#000" }}>
+                        {clip.platform}
+                      </span>
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <ExternalLink className="w-3 h-3 text-white" />
+                      </div>
+                    </div>
+
+                    {/* Title + clipper */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-medium truncate leading-tight">
+                        {clip.title || `Vidéo ${clip.platform}`}
+                      </p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <div className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0"
+                          style={{ background: `${color}25`, color }}>
+                          {(clip.clipper_name || "?")[0].toUpperCase()}
+                        </div>
+                        <p className="text-white/35 text-xs truncate">{clip.clipper_name || "Inconnu"}</p>
+                      </div>
+                    </div>
+
+                    {/* Views bar + count */}
+                    <div className="w-40 flex-shrink-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-white font-mono font-bold text-sm">{fmtViews(clip.views || 0)}</span>
+                        {(clip.earnings || 0) > 0 && (
+                          <span className="text-[#f0c040] font-mono text-xs">€{clip.earnings.toFixed(2)}</span>
+                        )}
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{ width: `${Math.round((clip.views / maxViews) * 100)}%`, background: color }}
+                        />
+                      </div>
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>

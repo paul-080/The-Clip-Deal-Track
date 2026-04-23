@@ -4084,11 +4084,72 @@ async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
     }
 
 
+async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
+    """
+    Fetch TikTok videos via RapidAPI tiktok-scraper7.
+    Uses the same RAPIDAPI_KEY as Instagram. Free tier: 100 req/month.
+    Subscribe at: https://rapidapi.com/Lundehund/api/tiktok-scraper7
+    """
+    if not RAPIDAPI_KEY:
+        raise ValueError("RAPIDAPI_KEY non configuré")
+    username = username.lstrip("@")
+    headers = {
+        "x-rapidapi-host": "tiktok-scraper7.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+    }
+    result = []
+    async with httpx.AsyncClient(timeout=25) as c:
+        r = await c.get(
+            "https://tiktok-scraper7.p.rapidapi.com/user/posts",
+            headers=headers,
+            params={"unique_id": username, "count": "35", "cursor": "0"},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"RapidAPI TikTok HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    code = data.get("code", -1)
+    if code != 0:
+        raise ValueError(f"RapidAPI TikTok error code {code}: {data.get('msg', '')}")
+    videos_raw = (data.get("data") or {}).get("videos") or data.get("data") or []
+    if isinstance(videos_raw, dict):
+        videos_raw = videos_raw.get("videos") or []
+    for item in (videos_raw or []):
+        # Handle nested video_id
+        vid_id = str(item.get("video_id") or item.get("aweme_id") or item.get("id") or "")
+        if not vid_id:
+            continue
+        stats = item.get("statistics") or item.get("stats") or {}
+        create_time = item.get("create_time") or item.get("createTime") or 0
+        views = int(stats.get("play_count") or stats.get("playCount") or
+                    item.get("play_count") or item.get("views") or 0)
+        likes = int(stats.get("digg_count") or stats.get("diggCount") or
+                    item.get("digg_count") or item.get("likes") or 0)
+        comments = int(stats.get("comment_count") or stats.get("commentCount") or
+                       item.get("comment_count") or item.get("comments") or 0)
+        thumb = (item.get("cover") or item.get("origin_cover") or
+                 (item.get("video") or {}).get("cover") or None)
+        result.append({
+            "platform_video_id": vid_id,
+            "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",
+            "title": (item.get("title") or item.get("desc") or "")[:200] or None,
+            "thumbnail_url": thumb,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+        })
+    logger.info(f"RapidAPI TikTok: {len(result)} videos for @{username}")
+    return result
+
+
 async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
     """
-    Fetch TikTok videos. Priority: TikWm API (cloud-safe) → TikTok Mobile API → Playwright → yt-dlp.
-    TikWm with API key gets all videos. Without key, search gets partial results.
-    Playwright is tried when TikWm finds < 10 videos (to potentially find more).
+    Fetch TikTok videos. Priority:
+    1. TikWm API with key (most reliable from cloud)
+    2. TikTok Mobile API (requires numeric user_id)
+    3. RapidAPI tiktok-scraper7 (requires RAPIDAPI_KEY, free 100 req/month)
+    4. Playwright (not available on Railway)
+    5. yt-dlp (often blocked from cloud)
     """
     username = username.lstrip("@")
     # Parse user_id: may be "numericId|secUid" format from updated TikWm verify
@@ -4144,6 +4205,20 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 logger.warning(f"Playwright returned 0 videos for @{username}")
         except Exception as e:
             logger.warning(f"Playwright TikTok video fetch failed for @{username}: {e}")
+    # Fallback 3: RapidAPI tiktok-scraper7 (works from cloud — free 100 req/month)
+    if RAPIDAPI_KEY:
+        try:
+            rapid_videos = await _fetch_tiktok_videos_rapidapi(username)
+            if rapid_videos:
+                logger.info(f"RapidAPI TikTok fallback: {len(rapid_videos)} videos for @{username}")
+                # Merge with any partial TikWm results (deduplicate)
+                merged_all = {v["platform_video_id"]: v for v in combined}
+                for v in rapid_videos:
+                    merged_all[v["platform_video_id"]] = v
+                return list(merged_all.values())
+        except Exception as e:
+            logger.warning(f"RapidAPI TikTok failed for @{username}: {e}")
+
     # If we have TikWm partial results, return them rather than failing completely
     if combined:
         logger.info(f"Returning {len(combined)} partial TikWm videos for @{username} (full scraping blocked)")
@@ -5499,6 +5574,55 @@ async def get_my_views_chart(campaign_id: str, days: int = 30, user: dict = Depe
         timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
         current += timedelta(days=1)
     return {"timeline": timeline}
+
+@api_router.get("/campaigns/{campaign_id}/my-videos")
+async def get_my_campaign_videos(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Clipper's own tracked videos for a specific campaign, sorted by views desc."""
+    videos = await db.tracked_videos.find(
+        {"campaign_id": campaign_id, "user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("views", -1).to_list(200)
+    return {"videos": videos}
+
+@api_router.get("/campaigns/{campaign_id}/top-clips")
+async def get_campaign_top_clips(campaign_id: str, limit: int = 10, user: dict = Depends(get_current_user)):
+    """Top N videos by views for this campaign — visible to all roles."""
+    raw = await db.tracked_videos.find(
+        {"campaign_id": campaign_id, "views": {"$gt": 0}},
+        {"_id": 0}
+    ).sort("views", -1).to_list(limit)
+
+    # Enrich with clipper info
+    user_ids = list({v.get("user_id") for v in raw if v.get("user_id")})
+    users_map: dict = {}
+    if user_ids:
+        clipper_docs = await db.users.find(
+            {"user_id": {"$in": user_ids}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+        ).to_list(len(user_ids))
+        users_map = {u["user_id"]: u for u in clipper_docs}
+
+    clips = []
+    for i, vid in enumerate(raw):
+        uid = vid.get("user_id")
+        clipper = users_map.get(uid, {})
+        clips.append({
+            "rank": i + 1,
+            "video_id": vid.get("video_id"),
+            "url": vid.get("url"),
+            "platform": vid.get("platform"),
+            "title": vid.get("title"),
+            "thumbnail_url": vid.get("thumbnail_url"),
+            "views": vid.get("views", 0),
+            "likes": vid.get("likes", 0),
+            "comments": vid.get("comments", 0),
+            "published_at": vid.get("published_at"),
+            "earnings": vid.get("earnings", 0),
+            "clipper_name": clipper.get("display_name") or clipper.get("name") or "Clippeur",
+            "clipper_picture": clipper.get("picture"),
+            "user_id": uid,
+        })
+    return {"clips": clips}
 
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):

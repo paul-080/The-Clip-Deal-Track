@@ -1741,20 +1741,45 @@ function CampaignDashboard({ campaigns, clipperStats }) {
   const [viewsTimeline, setViewsTimeline] = useState(null);
   const [viewsPeriod, setViewsPeriod] = useState("30");
   const [viewsLoading, setViewsLoading] = useState(false);
+  const [myVideos, setMyVideos] = useState([]);
+  const [topClips, setTopClips] = useState([]);
+  const [topClipsLoading, setTopClipsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
 
   // Stats perso depuis le parent (déjà fetchées)
   const myStats = clipperStats?.campaign_stats?.find((s) => s.campaign_id === campaignId);
   const isClickCampaign = campaign?.payment_model === "clicks";
+  const budgetTotal = campaign?.budget_total || 0;
+  const budgetUsed = campaign?.budget_used || 0;
+  const budgetUnlimited = campaign?.budget_unlimited;
+  const budgetLeft = Math.max(0, budgetTotal - budgetUsed);
 
   useEffect(() => {
-    if (campaignId && isClickCampaign) {
-      fetchClickLink();
-      fetchClickStats("30d");
-    }
-    if (campaignId && !isClickCampaign) {
-      fetchViewsTimeline("30");
-    }
+    if (!campaignId) return;
+    if (isClickCampaign) { fetchClickLink(); fetchClickStats("30d"); }
+    else { fetchViewsTimeline("30"); }
+    fetchMyVideos();
+    fetchTopClips();
+    // Auto-refresh Clip Winner every 5 minutes
+    const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, [campaignId, isClickCampaign]);
+
+  const fetchMyVideos = async () => {
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/my-videos`, { credentials: "include" });
+      if (res.ok) { const d = await res.json(); setMyVideos(d.videos || []); }
+    } catch {}
+  };
+
+  const fetchTopClips = async () => {
+    setTopClipsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10`, { credentials: "include" });
+      if (res.ok) { const d = await res.json(); setTopClips(d.clips || []); }
+    } catch {}
+    finally { setTopClipsLoading(false); }
+  };
 
   const fetchViewsTimeline = async (d = viewsPeriod) => {
     setViewsLoading(true);
@@ -1845,6 +1870,81 @@ function CampaignDashboard({ campaigns, clipperStats }) {
         </div>
       </div>
 
+      {/* Onglets */}
+      <div className="flex gap-1 border-b border-white/8 pb-0">
+        {[
+          { id: "overview", label: "Vue d'ensemble", icon: "📊" },
+          { id: "mes-videos", label: "Mes vidéos", icon: "🎬" },
+          { id: "clip-winner", label: "Clip Winner", icon: "🏆" },
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-all -mb-px ${
+              activeTab === tab.id
+                ? "border-[#00E5FF] text-[#00E5FF]"
+                : "border-transparent text-white/40 hover:text-white/70"
+            }`}>
+            <span>{tab.icon}</span>{tab.label}
+            {tab.id === "mes-videos" && myVideos.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 text-[10px]">{myVideos.length}</span>
+            )}
+            {tab.id === "clip-winner" && topClips.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-[#f0c040]/20 text-[#f0c040] text-[10px]">{topClips.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {activeTab !== "overview" && activeTab !== "mes-videos" && activeTab !== "clip-winner" && null}
+
+      {/* ══════ ONGLET MES VIDÉOS ══════ */}
+      {activeTab === "mes-videos" && (
+        <div className="space-y-4">
+          {myVideos.length === 0 ? (
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-10 text-center">
+              <p className="text-4xl mb-3">🎬</p>
+              <p className="text-white/40 text-sm">Aucune vidéo trackée pour l'instant</p>
+              <p className="text-white/20 text-xs mt-1">Tes vidéos apparaîtront ici après le prochain tracking (toutes les 6h)</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {myVideos.map(vid => (
+                <a key={vid.video_id} href={vid.url} target="_blank" rel="noopener noreferrer"
+                  className="group bg-[#121212] border border-white/10 rounded-xl overflow-hidden hover:border-white/25 transition-all">
+                  <div className="aspect-video relative bg-black overflow-hidden">
+                    {vid.thumbnail_url
+                      ? <img src={vid.thumbnail_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      : <div className="w-full h-full flex items-center justify-center text-2xl">{vid.platform === "tiktok" ? "🎵" : vid.platform === "instagram" ? "📸" : "▶️"}</div>
+                    }
+                    <div className="absolute top-2 left-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                        style={{ background: vid.platform === "tiktok" ? "#00E5FF20" : vid.platform === "instagram" ? "#FF007F20" : "#FF000020",
+                                 color: vid.platform === "tiktok" ? "#00E5FF" : vid.platform === "instagram" ? "#FF007F" : "#FF4444" }}>
+                        {vid.platform === "tiktok" ? "TikTok" : vid.platform === "instagram" ? "Instagram" : "YouTube"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    <p className="text-white text-xs font-medium line-clamp-2 mb-2">{vid.title || "Sans titre"}</p>
+                    <div className="flex items-center justify-between text-[10px] text-white/40">
+                      <span>👁 {vid.views >= 1000000 ? `${(vid.views/1000000).toFixed(1)}M` : vid.views >= 1000 ? `${Math.round(vid.views/1000)}K` : vid.views}</span>
+                      <span className="text-[#39FF14]">€{(vid.earnings || 0).toFixed(2)}</span>
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════ ONGLET CLIP WINNER ══════ */}
+      {activeTab === "clip-winner" && (
+        <ClipWinnerTab clips={topClips} loading={topClipsLoading} onRefresh={fetchTopClips} accentColor="#00E5FF" />
+      )}
+
+      {/* ══════ ONGLET OVERVIEW ══════ */}
+      {activeTab === "overview" && (<>
+
       {/* ═══ LIEN DE TRACKING — visible uniquement pour campagnes au clic ═══ */}
       {isClickCampaign && (
         <div className="rounded-2xl border border-[#f0c040]/30 bg-[#f0c040]/6 p-5 space-y-4">
@@ -1926,27 +2026,38 @@ function CampaignDashboard({ campaigns, clipperStats }) {
           </Card>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Card className="bg-[#121212] border-white/10">
-            <CardContent className="p-6">
-              <p className="text-sm text-white/50 mb-1">Classement</p>
-              <p className="font-mono font-bold text-3xl text-white">#{myStats?.rank || "-"}</p>
+            <CardContent className="p-5">
+              <p className="text-xs text-white/50 mb-1">Classement</p>
+              <p className="font-mono font-bold text-2xl text-white">#{myStats?.rank || "-"}</p>
             </CardContent>
           </Card>
           <Card className="bg-[#121212] border-white/10">
-            <CardContent className="p-6">
-              <p className="text-sm text-white/50 mb-1">Vues totales</p>
-              <p className="font-mono font-bold text-3xl text-white">
-                {fmtViews(myStats?.views || 0)}
-              </p>
+            <CardContent className="p-5">
+              <p className="text-xs text-white/50 mb-1">Mes vues</p>
+              <p className="font-mono font-bold text-2xl text-white">{fmtViews(myStats?.views || 0)}</p>
             </CardContent>
           </Card>
           <Card className="bg-[#121212] border-white/10">
-            <CardContent className="p-6">
-              <p className="text-sm text-white/50 mb-1">Gains générés</p>
-              <p className="font-mono font-bold text-3xl text-[#00E5FF]">
-                €{(myStats?.earnings || 0).toFixed(2)}
-              </p>
+            <CardContent className="p-5">
+              <p className="text-xs text-white/50 mb-1">Mes gains</p>
+              <p className="font-mono font-bold text-2xl text-[#00E5FF]">€{(myStats?.earnings || 0).toFixed(2)}</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-[#121212] border-white/10">
+            <CardContent className="p-5">
+              <p className="text-xs text-white/50 mb-1">Budget restant</p>
+              {budgetUnlimited
+                ? <p className="font-mono font-bold text-2xl text-[#39FF14]">Illimité</p>
+                : <>
+                    <p className="font-mono font-bold text-2xl text-[#f0c040]">€{budgetLeft.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</p>
+                    <div className="mt-1.5 h-1 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-[#f0c040] rounded-full transition-all"
+                        style={{ width: `${Math.min(100, budgetTotal > 0 ? (budgetUsed / budgetTotal) * 100 : 0)}%` }} />
+                    </div>
+                  </>
+              }
             </CardContent>
           </Card>
         </div>
@@ -2132,7 +2243,78 @@ function CampaignDashboard({ campaigns, clipperStats }) {
           </div>
         </CardContent>
       </Card>
+      </>)}
     </motion.div>
+  );
+}
+
+// ─── Clip Winner Tab (composant partagé) ─────────────────────────────────────
+function ClipWinnerTab({ clips, loading, onRefresh, accentColor = "#f0c040" }) {
+  const fmtV = (n) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n/1000)}K` : (n||0).toString();
+  const medals = ["🥇","🥈","🥉"];
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xl">🏆</span>
+          <h2 className="text-white font-semibold">Top 10 clips de la campagne</h2>
+          <span className="text-xs text-white/30">· s'actualise toutes les 6h</span>
+        </div>
+        <button onClick={onRefresh} disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs transition-all disabled:opacity-40">
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Actualiser
+        </button>
+      </div>
+
+      {loading && clips.length === 0 ? (
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-10 text-center">
+          <div className="w-6 h-6 border-2 border-white/10 border-t-white/50 rounded-full animate-spin mx-auto" />
+        </div>
+      ) : clips.length === 0 ? (
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-10 text-center">
+          <p className="text-3xl mb-3">🏆</p>
+          <p className="text-white/40 text-sm">Aucun clip encore — le classement apparaîtra dès les premières vues</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {clips.map((clip, i) => (
+            <a key={clip.video_id || i} href={clip.url} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-3 bg-[#121212] border border-white/10 rounded-xl p-3 hover:border-white/25 transition-all group">
+              {/* Rank */}
+              <div className="w-8 flex-shrink-0 text-center">
+                {i < 3
+                  ? <span className="text-xl">{medals[i]}</span>
+                  : <span className="text-sm font-mono text-white/30">#{clip.rank}</span>
+                }
+              </div>
+              {/* Thumbnail */}
+              <div className="w-14 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-white/5">
+                {clip.thumbnail_url
+                  ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                  : <div className="w-full h-full flex items-center justify-center text-sm">{clip.platform === "tiktok" ? "🎵" : clip.platform === "instagram" ? "📸" : "▶️"}</div>
+                }
+              </div>
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <p className="text-white text-sm font-medium truncate">{clip.title || "Sans titre"}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  {clip.clipper_picture
+                    ? <img src={clip.clipper_picture} alt="" className="w-4 h-4 rounded-full object-cover" />
+                    : <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] text-white/50">{(clip.clipper_name||"?")[0]}</div>
+                  }
+                  <p className="text-white/40 text-xs truncate">{clip.clipper_name}</p>
+                </div>
+              </div>
+              {/* Stats */}
+              <div className="flex-shrink-0 text-right">
+                <p className="font-mono font-bold text-sm text-white">{fmtV(clip.views)}</p>
+                <p className="text-[10px] text-white/30">vues</p>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
