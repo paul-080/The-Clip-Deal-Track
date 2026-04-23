@@ -1102,10 +1102,27 @@ async def email_login(request: Request):
     if not _verify_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
 
-    # Password correct → auto-verify email (password ownership already proven)
+    # Email verification required (main registration flow)
     if not user.get("email_verified", False):
-        await db.users.update_one({"email": email}, {"$set": {"email_verified": True}})
-        user["email_verified"] = True
+        import random as _r
+        code = str(_r.randint(100000, 999999))
+        expires_at_code = datetime.now(timezone.utc) + timedelta(minutes=15)
+        pw_hash = user.get("password_hash") or _hash_password(password)
+        await db.email_verifications.update_one(
+            {"email": email},
+            {"$set": {
+                "email": email, "code": code, "password_hash": pw_hash,
+                "role": user.get("role", ""), "display_name": user.get("display_name", user.get("name", "")),
+                "first_name": user.get("first_name"), "last_name": user.get("last_name"),
+                "agency_name": user.get("agency_name"), "expires_at": expires_at_code.isoformat(),
+            }},
+            upsert=True
+        )
+        try:
+            await _send_verification_email(email, code)
+        except Exception as e:
+            logger.warning(f"Login resend email failed for {email}: {e} — code={code}")
+        raise HTTPException(status_code=403, detail="email_not_verified")
 
     session_token = uuid.uuid4().hex
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)

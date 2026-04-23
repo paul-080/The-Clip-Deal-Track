@@ -351,6 +351,22 @@ function RegisterAndJoin({ token, role, campaignInfo }) {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
+
+      // Si compte non vérifié → bypass via join-register (flow join uniquement)
+      if (!res.ok && data.detail === "email_not_verified") {
+        const r2 = await fetch(`${API}/auth/join-register`, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password, display_name: email.split("@")[0], role }),
+        });
+        const d2 = await r2.json();
+        if (!r2.ok) { setError(d2.detail || "Mot de passe incorrect"); return; }
+        setUser(d2.user);
+        const ok = await joinCampaign();
+        if (ok) { setDone(true); toast.success("Connecté !"); setTimeout(() => navigate(`/${d2.user.role || role}`), 1800); }
+        return;
+      }
+
       if (!res.ok) { setError(data.detail || "Email ou mot de passe incorrect"); return; }
       setUser(data.user);
       const ok = await joinCampaign();
