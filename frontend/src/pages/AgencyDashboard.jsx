@@ -2841,8 +2841,8 @@ function SettingsPage() {
   };
 
   const PLANS = [
-    { id: "plan_small",     name: "Starter",  price: "150€/mois", features: ["1 campagne active", "Jusqu'à 15 clippers", "Tracking automatique", "Chat avec les clippeurs", "Support standard"] },
-    { id: "plan_medium",    name: "Pro",      price: "350€/mois", features: ["3 campagnes actives", "10 clippers max / campagne", "Tracking automatique", "Analytics avancés", "Support prioritaire", "Liens de tracking bio"], featured: true },
+    { id: "plan_small",     name: "Starter",  price: "249€/mois", features: ["1 campagne active", "Jusqu'à 15 clippers", "Tracking automatique", "Chat avec les clippeurs", "Support standard"] },
+    { id: "plan_medium",    name: "Pro",      price: "549€/mois", features: ["3 campagnes actives", "10 clippers max / campagne", "Tracking automatique", "Analytics avancés", "Support prioritaire", "Liens de tracking bio"], featured: true },
     { id: "plan_unlimited", name: "Illimité", price: "749€/mois", features: ["Campagnes illimitées", "Clippers illimités", "Tracking automatique", "Analytics avancés", "Support premium 24/7", "Liens de tracking bio", "Accès API"] },
   ];
 

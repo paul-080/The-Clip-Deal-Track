@@ -624,7 +624,7 @@ export default function LandingPage() {
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 space-y-4 hover:border-white/20 transition-all">
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Starter</p>
-                <p className="text-3xl font-bold text-white">150€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-3xl font-bold text-white">249€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
               </div>
               <ul className="space-y-2 text-sm text-white/60">
@@ -646,7 +646,7 @@ export default function LandingPage() {
               </div>
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Pro</p>
-                <p className="text-3xl font-bold text-white">350€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-3xl font-bold text-white">549€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
               </div>
               <ul className="space-y-2 text-sm text-white/60">

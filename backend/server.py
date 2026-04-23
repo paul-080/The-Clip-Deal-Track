@@ -7072,14 +7072,14 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
-    "plan_small":     {"name": "Starter",  "amount": 15000,  "label": "150€/mois",
+    "plan_small":     {"name": "Starter",  "amount": 24900,  "label": "249€/mois",
                        "max_campaigns": 1,    "max_clippers": 15},
-    "plan_medium":    {"name": "Pro",       "amount": 35000,  "label": "350€/mois",
+    "plan_medium":    {"name": "Pro",       "amount": 54900,  "label": "549€/mois",
                        "max_campaigns": 3,    "max_clippers": 10},
     "plan_unlimited": {"name": "Illimité",  "amount": 74900,  "label": "749€/mois",
                        "max_campaigns": None, "max_clippers": None},
     # Legacy alias — redirect to plan_medium
-    "plan_full":      {"name": "Pro",       "amount": 35000,  "label": "350€/mois",
+    "plan_full":      {"name": "Pro",       "amount": 54900,  "label": "549€/mois",
                        "max_campaigns": 3,    "max_clippers": 10},
 }
 
