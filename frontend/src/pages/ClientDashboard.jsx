@@ -81,7 +81,6 @@ export default function ClientDashboard() {
         <Routes>
           <Route index element={<ClientHome campaigns={campaigns} loading={loading} />} />
           <Route path="campaign/:campaignId" element={<CampaignView campaigns={campaigns} />} />
-          <Route path="campaign/:campaignId/chat" element={<ChatPanel campaigns={campaigns} />} />
           <Route path="support" element={<SupportPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Routes>
