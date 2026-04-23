@@ -6967,23 +6967,23 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
-    "plan_small":   {"name": "Starter",    "amount": 15000, "label": "150€/mois",
-                     "max_campaigns": 1, "max_clippers": 15},
-    "plan_full":    {"name": "Full",        "amount": 35000, "label": "350€/mois",
-                     "max_campaigns": None, "max_clippers": None},
-    # Legacy alias — treated as plan_full
-    "plan_medium":  {"name": "Full",        "amount": 35000, "label": "350€/mois",
-                     "max_campaigns": None, "max_clippers": None},
-    "plan_unlimited":{"name": "Full",       "amount": 35000, "label": "350€/mois",
-                     "max_campaigns": None, "max_clippers": None},
+    "plan_small":     {"name": "Starter",  "amount": 15000,  "label": "150€/mois",
+                       "max_campaigns": 1,    "max_clippers": 15},
+    "plan_medium":    {"name": "Pro",       "amount": 35000,  "label": "350€/mois",
+                       "max_campaigns": 3,    "max_clippers": 10},
+    "plan_unlimited": {"name": "Illimité",  "amount": 74900,  "label": "749€/mois",
+                       "max_campaigns": None, "max_clippers": None},
+    # Legacy alias — redirect to plan_medium
+    "plan_full":      {"name": "Pro",       "amount": 35000,  "label": "350€/mois",
+                       "max_campaigns": 3,    "max_clippers": 10},
 }
 
 # Limits per plan (None = unlimited). Trial period = always unlimited.
 PLAN_LIMITS = {
-    "plan_small":    {"campaigns": 1,    "clippers": 15},
-    "plan_full":     {"campaigns": None, "clippers": None},
-    "plan_medium":   {"campaigns": None, "clippers": None},
-    "plan_unlimited":{"campaigns": None, "clippers": None},
+    "plan_small":     {"campaigns": 1,    "clippers": 15},
+    "plan_medium":    {"campaigns": 3,    "clippers": 10},
+    "plan_unlimited": {"campaigns": None, "clippers": None},
+    "plan_full":      {"campaigns": 3,    "clippers": 10},
 }
 
 def _get_plan_limits(user: dict) -> dict:
