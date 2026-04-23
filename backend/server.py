@@ -5383,51 +5383,57 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
 
 @api_router.get("/campaigns/{campaign_id}/views-chart")
 async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
-    """Daily views snapshots for a campaign chart. Falls back to tracked_videos grouping."""
+    """
+    Daily NEW views for a campaign chart (delta, not cumulative).
+    views_snapshots stores cumulative totals → we compute day-to-day differences.
+    """
     from datetime import timedelta
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
+    start_str = start.strftime("%Y-%m-%d")
 
-    # Try stored snapshots first
+    # Fetch snapshots from window. Also fetch the snapshot just before the window
+    # to correctly compute the delta for the first day.
     snapshots = await db.views_snapshots.find(
-        {"campaign_id": campaign_id, "date": {"$gte": start.strftime("%Y-%m-%d")}},
+        {"campaign_id": campaign_id, "date": {"$gte": start_str}},
         {"_id": 0, "date": 1, "total_views": 1}
-    ).sort("date", 1).to_list(days + 1)
+    ).sort("date", 1).to_list(days + 2)
 
     if snapshots:
-        data_by_day = {s["date"]: s["total_views"] for s in snapshots}
+        # Anchor: total_views the day before the window (so delta on day 1 is correct)
+        prev_snap = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": {"$lt": start_str}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        prev_total = prev_snap["total_views"] if prev_snap else 0
+
+        snap_by_date = {s["date"]: s["total_views"] for s in snapshots}
+
+        # Compute daily delta: new views = total_today - total_prev_day
+        sorted_dates = sorted(snap_by_date.keys())
+        delta_by_day: dict = {}
+        running_prev = prev_total
+        for d in sorted_dates:
+            cum = snap_by_date[d]
+            delta_by_day[d] = max(0, cum - running_prev)
+            running_prev = cum
+
         timeline = []
         current = start
         while current <= end:
             day = current.strftime("%Y-%m-%d")
-            timeline.append({"date": day, "views": data_by_day.get(day, 0)})
+            timeline.append({"date": day, "views": delta_by_day.get(day, 0)})
             current += timedelta(days=1)
         return {"timeline": timeline, "source": "snapshots"}
 
-    # Fallback: group by fetched_at (tracking date) — more accurate than published_at
-    # Uses $ifNull to coalesce fetched_at -> published_at -> today
-    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    pipeline = [
-        {"$match": {"campaign_id": campaign_id}},
-        {"$addFields": {
-            "day": {"$substr": [
-                {"$ifNull": ["$fetched_at", {"$ifNull": ["$published_at", today_iso]}]},
-                0, 10
-            ]}
-        }},
-        {"$match": {"day": {"$gte": start.strftime("%Y-%m-%d")}}},
-        {"$group": {"_id": "$day", "views": {"$sum": "$views"}}},
-        {"$sort": {"_id": 1}}
-    ]
-    results = await db.tracked_videos.aggregate(pipeline).to_list(days + 1)
-    data_by_day = {r["_id"]: r["views"] for r in results}
+    # Fallback (no snapshots yet): return zeros — chart will be empty until first tracking run
     timeline = []
     current = start
     while current <= end:
-        day = current.strftime("%Y-%m-%d")
-        timeline.append({"date": day, "views": data_by_day.get(day, 0)})
+        timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
         current += timedelta(days=1)
-    return {"timeline": timeline, "source": "fallback"}
+    return {"timeline": timeline, "source": "no_data"}
 
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
@@ -6095,30 +6101,37 @@ async def get_campaign_stats(campaign_id: str, user: dict = Depends(get_current_
     for i, cs in enumerate(clipper_stats_sorted):
         cs["rank"] = i + 1
 
-    # ── Chart data: views grouped by day (last 30 days) ──
-    all_videos = await db.tracked_videos.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(5000)
-    from collections import defaultdict
-    views_by_day: dict = defaultdict(int)
-    today = datetime.now(timezone.utc).date()
-    for vid in all_videos:
-        raw = vid.get("fetched_at") or vid.get("published_at") or vid.get("created_at")
-        if not raw:
-            continue
-        try:
-            if isinstance(raw, str):
-                dt = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
-            else:
-                dt = raw.date() if hasattr(raw, "date") else today
-            if (today - dt).days <= 30:
-                views_by_day[str(dt)] += vid.get("views", 0)
-        except Exception:
-            pass
-    # Fill missing days with 0
+    # ── Chart data: daily NEW views (delta from snapshots, last 30 days) ──
     from datetime import timedelta as _td
+    today = datetime.now(timezone.utc).date()
+    start_date_30 = str(today - _td(days=30))
+
+    snapshots_30 = await db.views_snapshots.find(
+        {"campaign_id": campaign_id, "date": {"$gte": start_date_30}},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(35)
+
     views_chart = []
-    for i in range(30, -1, -1):
-        d = str(today - _td(days=i))
-        views_chart.append({"date": d, "views": views_by_day.get(d, 0)})
+    if snapshots_30:
+        prev_snap_30 = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": {"$lt": start_date_30}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        prev_total_30 = prev_snap_30["total_views"] if prev_snap_30 else 0
+        snap_by_date_30 = {s["date"]: s["total_views"] for s in snapshots_30}
+        delta_by_day_30: dict = {}
+        running = prev_total_30
+        for d in sorted(snap_by_date_30.keys()):
+            cum = snap_by_date_30[d]
+            delta_by_day_30[d] = max(0, cum - running)
+            running = cum
+        for i in range(30, -1, -1):
+            d = str(today - _td(days=i))
+            views_chart.append({"date": d, "views": delta_by_day_30.get(d, 0)})
+    else:
+        for i in range(30, -1, -1):
+            views_chart.append({"date": str(today - _td(days=i)), "views": 0})
 
     # ── Videos for client view (no RPM/earnings) ──
     # Batch-fetch any video uploaders not already in users_map_stats
