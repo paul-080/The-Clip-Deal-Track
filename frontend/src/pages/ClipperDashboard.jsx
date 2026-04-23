@@ -2251,14 +2251,22 @@ function CampaignDashboard({ campaigns, clipperStats }) {
 // ─── Clip Winner Tab (composant partagé) ─────────────────────────────────────
 function ClipWinnerTab({ clips, loading, onRefresh, accentColor = "#f0c040" }) {
   const fmtV = (n) => n >= 1e6 ? `${(n/1e6).toFixed(1)}M` : n >= 1000 ? `${Math.round(n/1000)}K` : (n||0).toString();
-  const medals = ["🥇","🥈","🥉"];
+  const engagementRate = (clip) => {
+    if (!clip.views || clip.views === 0) return "—";
+    const eng = ((clip.likes || 0) + (clip.comments || 0)) / clip.views * 100;
+    return eng.toFixed(1) + "%";
+  };
+  const platIcon = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
+  const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
+
   return (
     <div className="space-y-3">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-xl">🏆</span>
           <h2 className="text-white font-semibold">Top 10 clips de la campagne</h2>
-          <span className="text-xs text-white/30">· s'actualise toutes les 6h</span>
+          <span className="text-xs text-white/30">· auto-refresh toutes les 5 min</span>
         </div>
         <button onClick={onRefresh} disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs transition-all disabled:opacity-40">
@@ -2277,41 +2285,70 @@ function ClipWinnerTab({ clips, loading, onRefresh, accentColor = "#f0c040" }) {
         </div>
       ) : (
         <div className="space-y-2">
-          {clips.map((clip, i) => (
-            <a key={clip.video_id || i} href={clip.url} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-3 bg-[#121212] border border-white/10 rounded-xl p-3 hover:border-white/25 transition-all group">
-              {/* Rank */}
-              <div className="w-8 flex-shrink-0 text-center">
-                {i < 3
-                  ? <span className="text-xl">{medals[i]}</span>
-                  : <span className="text-sm font-mono text-white/30">#{clip.rank}</span>
-                }
-              </div>
-              {/* Thumbnail */}
-              <div className="w-14 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-white/5">
-                {clip.thumbnail_url
-                  ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-sm">{clip.platform === "tiktok" ? "🎵" : clip.platform === "instagram" ? "📸" : "▶️"}</div>
-                }
-              </div>
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-sm font-medium truncate">{clip.title || "Sans titre"}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  {clip.clipper_picture
-                    ? <img src={clip.clipper_picture} alt="" className="w-4 h-4 rounded-full object-cover" />
-                    : <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] text-white/50">{(clip.clipper_name||"?")[0]}</div>
+          {clips.map((clip, i) => {
+            const eng = engagementRate(clip);
+            const borderCol = i === 0 ? "#FFD700" : i === 1 ? "#C0C0C0" : i === 2 ? "#CD7F32" : "rgba(255,255,255,0.08)";
+            return (
+              <div key={clip.video_id || i}
+                className="flex items-center gap-4 bg-[#121212] rounded-xl p-3 overflow-hidden"
+                style={{ border: `1px solid ${borderCol}` }}>
+
+                {/* Rang — grand chiffre */}
+                <div className="w-10 flex-shrink-0 text-center">
+                  {i < 3
+                    ? <span className="text-2xl leading-none" style={{ color: medalColors[i] }}>
+                        {i + 1}
+                      </span>
+                    : <span className="text-lg font-bold text-white/25">#{i + 1}</span>
                   }
-                  <p className="text-white/40 text-xs truncate">{clip.clipper_name}</p>
+                </div>
+
+                {/* Thumbnail — grand, cliquable */}
+                <a href={clip.url} target="_blank" rel="noopener noreferrer"
+                  className="relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden bg-white/5 group cursor-pointer">
+                  {clip.thumbnail_url
+                    ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                    : <div className="w-full h-full flex items-center justify-center text-2xl">{platIcon[clip.platform] || "🎬"}</div>
+                  }
+                  {/* Overlay play */}
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <svg className="w-6 h-6 text-white drop-shadow" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  </div>
+                  {/* Platform badge */}
+                  <span className="absolute bottom-1 left-1 text-[9px] font-bold px-1 py-0.5 rounded"
+                    style={{ background: clip.platform === "tiktok" ? "#00E5FFcc" : clip.platform === "instagram" ? "#FF007Fcc" : "#FF4444cc", color: "#000" }}>
+                    {clip.platform}
+                  </span>
+                </a>
+
+                {/* Titre court */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium truncate max-w-[180px]">
+                    {clip.title ? clip.title.slice(0, 40) + (clip.title.length > 40 ? "…" : "") : "—"}
+                  </p>
+                  <p className="text-white/30 text-xs truncate mt-0.5">{clip.clipper_name || "—"}</p>
+                </div>
+
+                {/* Stats : vues · likes · audience qualifiée */}
+                <div className="flex-shrink-0 flex gap-4 items-center">
+                  <div className="text-center">
+                    <p className="font-mono font-bold text-white text-sm">{fmtV(clip.views || 0)}</p>
+                    <p className="text-[10px] text-white/30">vues</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="font-mono font-bold text-[#FF007F] text-sm">{fmtV(clip.likes || 0)}</p>
+                    <p className="text-[10px] text-white/30">likes</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="font-mono font-bold text-sm" style={{ color: accentColor }}>{eng}</p>
+                    <p className="text-[10px] text-white/30">audience</p>
+                  </div>
                 </div>
               </div>
-              {/* Stats */}
-              <div className="flex-shrink-0 text-right">
-                <p className="font-mono font-bold text-sm text-white">{fmtV(clip.views)}</p>
-                <p className="text-[10px] text-white/30">vues</p>
-              </div>
-            </a>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

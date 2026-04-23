@@ -2429,22 +2429,18 @@ function CampaignDashboard({ campaigns }) {
 
       {/* ═══════════ CLIP WINNER TAB ═══════════ */}
       {activeTab === "clip-winner" && (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-white font-semibold text-lg flex items-center gap-2">
                 🏆 <span>Top 10 — Clips les plus vus</span>
               </h3>
-              <p className="text-white/35 text-xs mt-0.5">Toutes plateformes confondues · actualisation auto toutes les 5 min</p>
+              <p className="text-white/35 text-xs mt-0.5">Toutes plateformes · auto-refresh 5 min</p>
             </div>
-            <button
-              onClick={fetchTopClips}
-              disabled={topClipsLoading}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40"
-            >
-              <RefreshCw className={`w-4 h-4 ${topClipsLoading ? "animate-spin" : ""}`} />
-              Actualiser
+            <button onClick={fetchTopClips} disabled={topClipsLoading}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40">
+              <RefreshCw className={`w-4 h-4 ${topClipsLoading ? "animate-spin" : ""}`} /> Actualiser
             </button>
           </div>
 
@@ -2461,71 +2457,64 @@ function CampaignDashboard({ campaigns }) {
           ) : (
             <div className="space-y-2">
               {topClips.map((clip, i) => {
-                const medals = ["🥇", "🥈", "🥉"];
-                const color = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" }[clip.platform] || "#fff";
-                const maxViews = topClips[0]?.views || 1;
+                const platColor = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" }[clip.platform] || "#fff";
+                const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
+                const borderCol = i < 3 ? `${medalColors[i]}50` : "rgba(255,255,255,0.08)";
+                const eng = clip.views > 0
+                  ? (((clip.likes || 0) + (clip.comments || 0)) / clip.views * 100).toFixed(1) + "%"
+                  : "—";
                 return (
-                  <a
-                    key={clip.video_id || i}
-                    href={clip.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-4 bg-[#121212] border border-white/8 hover:border-white/20 rounded-xl p-3 transition-all group"
-                  >
-                    {/* Rank */}
-                    <div className="w-8 text-center flex-shrink-0">
+                  <div key={clip.video_id || i}
+                    className="flex items-center gap-4 bg-[#121212] rounded-xl p-3 overflow-hidden"
+                    style={{ border: `1px solid ${borderCol}` }}>
+
+                    {/* Rang grand */}
+                    <div className="w-9 flex-shrink-0 text-center">
                       {i < 3
-                        ? <span className="text-xl">{medals[i]}</span>
-                        : <span className="text-white/30 font-bold text-lg">#{i + 1}</span>}
+                        ? <span className="text-2xl font-bold leading-none" style={{ color: medalColors[i] }}>{i + 1}</span>
+                        : <span className="text-lg font-bold text-white/25">#{i + 1}</span>}
                     </div>
 
-                    {/* Thumbnail */}
-                    <div className="relative w-16 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
+                    {/* Thumbnail grand + cliquable */}
+                    <a href={clip.url} target="_blank" rel="noopener noreferrer"
+                      className="relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden bg-white/5 group/thumb cursor-pointer">
                       {clip.thumbnail_url
-                        ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover"
+                        ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200"
                             onError={e => { e.target.style.display = "none"; }} />
-                        : <div className="w-full h-full flex items-center justify-center text-lg">
+                        : <div className="w-full h-full flex items-center justify-center text-2xl">
                             {{ tiktok: "🎵", instagram: "📸", youtube: "▶️" }[clip.platform]}
                           </div>}
-                      <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold px-1 rounded"
-                        style={{ background: `${color}dd`, color: "#000" }}>
-                        {clip.platform}
-                      </span>
-                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <ExternalLink className="w-3 h-3 text-white" />
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center">
+                        <svg className="w-6 h-6 text-white drop-shadow" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                       </div>
-                    </div>
+                      <span className="absolute bottom-0.5 left-0.5 text-[9px] font-bold px-1 py-0.5 rounded"
+                        style={{ background: `${platColor}dd`, color: "#000" }}>{clip.platform}</span>
+                    </a>
 
-                    {/* Title + clipper */}
+                    {/* Titre + clipper */}
                     <div className="flex-1 min-w-0">
-                      <p className="text-white text-sm font-medium truncate leading-tight">
-                        {clip.title || `Vidéo ${clip.platform}`}
+                      <p className="text-white text-sm font-medium truncate">
+                        {clip.title ? clip.title.slice(0, 40) + (clip.title.length > 40 ? "…" : "") : "—"}
                       </p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <div className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0"
-                          style={{ background: `${color}25`, color }}>
-                          {(clip.clipper_name || "?")[0].toUpperCase()}
-                        </div>
-                        <p className="text-white/35 text-xs truncate">{clip.clipper_name || "Inconnu"}</p>
-                      </div>
+                      <p className="text-white/30 text-xs truncate mt-0.5">{clip.clipper_name || "—"}</p>
                     </div>
 
-                    {/* Views bar + count */}
-                    <div className="w-40 flex-shrink-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-white font-mono font-bold text-sm">{fmtViews(clip.views || 0)}</span>
-                        {(clip.earnings || 0) > 0 && (
-                          <span className="text-[#f0c040] font-mono text-xs">€{clip.earnings.toFixed(2)}</span>
-                        )}
+                    {/* Stats : vues · likes · audience */}
+                    <div className="flex-shrink-0 flex gap-5 items-center">
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-white text-sm">{fmt(clip.views || 0)}</p>
+                        <p className="text-[10px] text-white/30">vues</p>
                       </div>
-                      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all"
-                          style={{ width: `${Math.round((clip.views / maxViews) * 100)}%`, background: color }}
-                        />
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#FF007F] text-sm">{fmt(clip.likes || 0)}</p>
+                        <p className="text-[10px] text-white/30">likes</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#f0c040] text-sm">{eng}</p>
+                        <p className="text-[10px] text-white/30">audience</p>
                       </div>
                     </div>
-                  </a>
+                  </div>
                 );
               })}
             </div>
