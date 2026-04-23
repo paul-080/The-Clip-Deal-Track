@@ -3856,11 +3856,14 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                                 http_ok = False
                                 error_reason = f"Chaîne YouTube @{username} introuvable."
                             elif resp.status_code == 200:
-                                # Check for "404" or not-found markers in YouTube page
-                                not_found_markers = ["This channel doesn't exist", "404", "ytInitialData"]
                                 # ytInitialData must be present on a valid page
                                 if "ytInitialData" in body:
                                     http_ok = True
+                                    # Extract channelId from page HTML so we can fetch videos later
+                                    import re as _re
+                                    cid_match = _re.search(r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,24})"', body)
+                                    if cid_match:
+                                        channel_id = cid_match.group(1)
                                 else:
                                     http_ok = False
                                     error_reason = f"Chaîne YouTube @{username} introuvable ou inaccessible."
@@ -3874,16 +3877,20 @@ async def _verify_and_update_account(account_id: str, platform: str, username: s
                     http_ok = False
 
             if http_ok:
+                fallback_set = {
+                    "status": "verified",
+                    "verified_at": datetime.now(timezone.utc).isoformat(),
+                    "error_message": None,
+                    "display_name": username,
+                    "follower_count": None,
+                    "avatar_url": None,
+                }
+                # For YouTube: store the channelId extracted from page so video fetching works
+                if channel_id:
+                    fallback_set["platform_channel_id"] = channel_id
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
-                    {"$set": {
-                        "status": "verified",
-                        "verified_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": None,
-                        "display_name": username,
-                        "follower_count": None,
-                        "avatar_url": None,
-                    }}
+                    {"$set": fallback_set}
                 )
             elif platform == "instagram":
                 # Instagram IPs are blocked from cloud — accept account without stats
@@ -4663,6 +4670,23 @@ async def run_video_tracking():
                 continue
             platform = account["platform"]
             username = account["username"]
+            # YouTube: if channel_id is missing (verified via HTTP fallback), try to re-verify
+            if platform == "youtube" and not account.get("platform_channel_id") and YOUTUBE_API_KEY:
+                try:
+                    info = await _verify_youtube(username)
+                    new_cid = info.get("platform_channel_id")
+                    if new_cid:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {"platform_channel_id": new_cid,
+                                      "display_name": info.get("display_name", username),
+                                      "follower_count": info.get("follower_count"),
+                                      "avatar_url": info.get("avatar_url")}}
+                        )
+                        account["platform_channel_id"] = new_cid
+                        logger.info(f"YouTube channel_id recovered for @{username}: {new_cid}")
+                except Exception as yt_e:
+                    logger.warning(f"YouTube re-verify failed for @{username}: {yt_e}")
             try:
                 # Compute since_days dynamically from last_tracked_at
                 last_tracked = account.get("last_tracked_at")
