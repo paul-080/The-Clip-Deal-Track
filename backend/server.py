@@ -4091,6 +4091,91 @@ async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
     }
 
 
+async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 30) -> list:
+    """
+    Fetch TikTok videos via Apify clockworks/tiktok-scraper.
+    Most reliable from cloud servers — uses Apify residential proxies.
+    Requires APIFY_TOKEN (already used for Instagram).
+    Cost: ~$0.008/result (free tier: 5$ credits on signup).
+    """
+    if not APIFY_TOKEN:
+        raise ValueError("APIFY_TOKEN non configuré")
+    username = username.lstrip("@")
+    actor_id = "clockworks~tiktok-scraper"
+    payload = {
+        "profiles": [f"https://www.tiktok.com/@{username}"],
+        "resultsType": "posts",
+        "maxPostsPerProfile": max_posts,
+        "shouldDownloadVideos": False,
+        "shouldDownloadCovers": False,
+        "shouldDownloadSlideshowImages": False,
+    }
+    # Start actor run
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(
+            f"https://api.apify.com/v2/acts/{actor_id}/runs",
+            params={"token": APIFY_TOKEN},
+            json=payload,
+        )
+    if r.status_code not in (200, 201):
+        raise ValueError(f"Apify TikTok start failed: HTTP {r.status_code} — {r.text[:200]}")
+    run_data = r.json().get("data", r.json())
+    run_id = run_data.get("id")
+    dataset_id = run_data.get("defaultDatasetId")
+    if not run_id:
+        raise ValueError("Apify TikTok: pas de run_id dans la réponse")
+    logger.info(f"Apify TikTok run started: {run_id} for @{username}")
+
+    # Poll until SUCCEEDED (max 3 min)
+    for attempt in range(36):
+        await asyncio.sleep(5)
+        async with httpx.AsyncClient(timeout=15) as c:
+            sr = await c.get(
+                f"https://api.apify.com/v2/actor-runs/{run_id}",
+                params={"token": APIFY_TOKEN},
+            )
+        if sr.status_code != 200:
+            continue
+        status = sr.json().get("data", {}).get("status", "")
+        if status == "SUCCEEDED":
+            break
+        if status in ("FAILED", "ABORTED", "TIMED-OUT"):
+            raise ValueError(f"Apify TikTok run {status} for @{username}")
+        logger.info(f"Apify TikTok @{username}: run status={status} (attempt {attempt+1}/36)")
+    else:
+        raise ValueError(f"Apify TikTok timeout for @{username}")
+
+    # Fetch dataset items
+    if not dataset_id:
+        run_info = sr.json().get("data", {})
+        dataset_id = run_info.get("defaultDatasetId")
+    if not dataset_id:
+        raise ValueError("Apify TikTok: dataset_id introuvable")
+    items = await _apify_get_dataset(dataset_id)
+    logger.info(f"Apify TikTok: {len(items)} items for @{username}")
+
+    result = []
+    for item in items:
+        vid_id = str(item.get("id") or "")
+        if not vid_id:
+            continue
+        create_time = item.get("createTimeISO") or item.get("createTime")
+        if isinstance(create_time, (int, float)):
+            create_time = datetime.fromtimestamp(create_time, tz=timezone.utc).isoformat()
+        thumb = item.get("coverUrl") or item.get("videoUrl") or None
+        result.append({
+            "platform_video_id": vid_id,
+            "url": item.get("webVideoUrl") or f"https://www.tiktok.com/@{username}/video/{vid_id}",
+            "title": (item.get("text") or "")[:200] or None,
+            "thumbnail_url": thumb,
+            "views":    int(item.get("playCount") or item.get("play_count") or 0),
+            "likes":    int(item.get("diggCount") or item.get("digg_count") or 0),
+            "comments": int(item.get("commentCount") or item.get("comment_count") or 0),
+            "published_at": create_time,
+        })
+    return result
+
+
 async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
     """
     Fetch TikTok videos via RapidAPI tiktok-scraper7.
@@ -4152,9 +4237,10 @@ async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
 async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
     """
     Fetch TikTok videos. Priority:
-    1. TikWm API with key (most reliable from cloud)
+    0. Apify clockworks/tiktok-scraper (most reliable from cloud — residential proxies)
+    1. TikWm API with key (reliable if key is valid)
     2. TikTok Mobile API (requires numeric user_id)
-    3. RapidAPI tiktok-scraper7 (requires RAPIDAPI_KEY, free 100 req/month)
+    3. RapidAPI tiktok-scraper7 (requires RapidAPI subscription)
     4. Playwright (not available on Railway)
     5. yt-dlp (often blocked from cloud)
     """
@@ -4169,6 +4255,16 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     elif user_id and user_id.startswith("MS4"):
         sec_uid = user_id
         numeric_id = ""
+
+    # Priority 0: Apify (most reliable from cloud — uses residential proxies)
+    if APIFY_TOKEN:
+        try:
+            apify_videos = await _fetch_tiktok_videos_apify(username)
+            if apify_videos:
+                logger.info(f"Apify TikTok: {len(apify_videos)} videos for @{username}")
+                return apify_videos
+        except Exception as e:
+            logger.warning(f"Apify TikTok failed for @{username}: {e}")
 
     tikwm_videos = []
     # Primary: TikWm API — all strategies A-E (search is always available)
