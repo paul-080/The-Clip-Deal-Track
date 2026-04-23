@@ -619,7 +619,7 @@ export default function LandingPage() {
             </h2>
             <p className="text-white/50 text-base">HT · 2 semaines offertes à l'inscription</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center max-w-2xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center max-w-5xl mx-auto">
             {/* Starter */}
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 space-y-4 hover:border-white/20 transition-all">
               <div>
@@ -638,25 +638,47 @@ export default function LandingPage() {
                 Commencer l'essai gratuit
               </Button>
             </div>
-            {/* Full — FEATURED */}
+
+            {/* Pro — FEATURED */}
             <div className="bg-[#121212] border-2 border-[#FF007F] rounded-2xl p-6 space-y-4 relative">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#FF007F] text-white text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
                 Recommandé
               </div>
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Full</p>
+                <p className="text-white/50 text-sm font-medium mb-1">Pro</p>
                 <p className="text-3xl font-bold text-white">350€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
               </div>
               <ul className="space-y-2 text-sm text-white/60">
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Campagnes illimitées</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Clippers illimités</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 3 campagnes actives</li>
+                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 10 clippers max / campagne</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking automatique</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Analytics avancés</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support prioritaire</li>
                 <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Liens de tracking bio</li>
               </ul>
               <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#FF007F]/80 text-white rounded-lg py-2 text-sm font-semibold transition-colors">
+                Commencer l'essai gratuit
+              </Button>
+            </div>
+
+            {/* Illimité */}
+            <div className="bg-[#121212] border border-[#f0c040]/40 rounded-2xl p-6 space-y-4 hover:border-[#f0c040]/70 transition-all">
+              <div>
+                <p className="text-[#f0c040] text-sm font-medium mb-1">Illimité</p>
+                <p className="text-3xl font-bold text-white">749€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
+              </div>
+              <ul className="space-y-2 text-sm text-white/60">
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Campagnes illimitées</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Clippers illimités</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Tracking automatique</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Analytics avancés</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Support premium 24/7</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Liens de tracking bio</li>
+                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Accès API</li>
+              </ul>
+              <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
                 Commencer l'essai gratuit
               </Button>
             </div>
