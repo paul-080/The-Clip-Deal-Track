@@ -37,6 +37,7 @@ function ClientStatsPage({ token }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [period, setPeriod]     = useState(30);
   const [filterPlatform, setFilterPlatform] = useState("all");
+  const [sortPub, setSortPub]   = useState("views"); // "views" | "published_at"
 
   const fetchStats = () => {
     setLoading(true);
@@ -73,9 +74,16 @@ function ClientStatsPage({ token }) {
     label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
   }));
 
-  // Vidéos filtrées
+  // Vidéos filtrées + triées
   const allVideos = stats.top_videos || [];
-  const filteredVideos = filterPlatform === "all" ? allVideos : allVideos.filter(v => v.platform === filterPlatform);
+  const filteredVideos = [...(filterPlatform === "all" ? allVideos : allVideos.filter(v => v.platform === filterPlatform))]
+    .sort((a, b) => {
+      if (sortPub === "published_at") {
+        const da = a.published_at || ""; const db = b.published_at || "";
+        return da < db ? 1 : da > db ? -1 : 0;
+      }
+      return (b.views || 0) - (a.views || 0);
+    });
   const platforms = Object.keys(stats.platforms || {});
 
   const kpis = [
@@ -205,51 +213,90 @@ function ClientStatsPage({ token }) {
         {/* ── VIDEOS ── */}
         {activeTab === "videos" && (
           <div className="space-y-3">
-            {/* Filtre plateforme */}
-            {platforms.length > 1 && (
-              <div className="flex gap-2">
-                {["all", ...platforms].map(p => (
-                  <button key={p} onClick={() => setFilterPlatform(p)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                      filterPlatform === p
-                        ? "border-[#FFB300]/50 bg-[#FFB300]/10 text-[#FFB300]"
-                        : "border-white/10 text-white/40 hover:text-white"
-                    }`}>
-                    {p === "all" ? "Toutes" : PLAT_LABEL[p] || p}
+            {/* Barre tri + filtre */}
+            <div className="flex flex-wrap gap-2">
+              <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+                {[
+                  { id: "views",        label: "🔥 Plus de vues" },
+                  { id: "published_at", label: "🕐 Plus récent"  },
+                ].map(s => (
+                  <button key={s.id} onClick={() => setSortPub(s.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sortPub === s.id ? "bg-[#FFB300] text-black" : "text-white/40 hover:text-white"}`}>
+                    {s.label}
                   </button>
                 ))}
               </div>
-            )}
+              {platforms.length > 1 && (
+                <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+                  {["all", ...platforms].map(p => (
+                    <button key={p} onClick={() => setFilterPlatform(p)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filterPlatform === p ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                      {p === "all" ? "Toutes" : PLAT_LABEL[p] || p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {filteredVideos.length === 0 ? (
               <div className="text-center py-12 text-white/30">Aucune vidéo</div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {filteredVideos.map((v, i) => (
-                  <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
-                    className="flex gap-3 bg-[#121212] border border-white/10 rounded-xl p-3 hover:border-white/20 transition-all group">
-                    {v.thumbnail_url ? (
-                      <img src={v.thumbnail_url} alt="" className="w-20 h-14 rounded-lg object-cover flex-shrink-0" />
-                    ) : (
-                      <div className="w-20 h-14 rounded-lg bg-white/5 flex-shrink-0 flex items-center justify-center">
-                        <Video className="w-5 h-5 text-white/20" />
+              <div className="space-y-2">
+                {filteredVideos.map((v, i) => {
+                  const pc = PLAT_COLOR[v.platform] || "#fff";
+                  const engRate = v.views
+                    ? (((v.likes || 0) + (v.comments || 0)) / v.views * 100).toFixed(1) + "%"
+                    : "—";
+                  const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
+                  const borderColor = i < 3 ? `${medalColors[i]}50` : "rgba(255,255,255,0.08)";
+                  return (
+                    <div key={i} className="flex items-center gap-4 bg-[#121212] rounded-xl p-3"
+                      style={{ border: `1px solid ${borderColor}` }}>
+                      {/* Rang */}
+                      <div className="w-9 flex-shrink-0 text-center">
+                        {i < 3
+                          ? <span className="text-2xl font-bold" style={{ color: medalColors[i] }}>{i + 1}</span>
+                          : <span className="text-lg font-bold text-white/25">#{i + 1}</span>}
                       </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white/80 text-sm line-clamp-2 group-hover:text-white transition-colors">
-                        {v.title || v.url}
-                      </p>
-                      <div className="flex items-center gap-3 mt-1.5 text-xs text-white/40">
-                        <span className="text-[#FFB300] font-mono font-bold">{fmt(v.views)} vues</span>
-                        {v.likes > 0 && <span className="flex items-center gap-1"><Heart className="w-3 h-3" />{fmt(v.likes)}</span>}
-                        {v.comments > 0 && <span className="flex items-center gap-1"><MessageCircle className="w-3 h-3" />{fmt(v.comments)}</span>}
-                        <span className="capitalize ml-auto" style={{ color: PLAT_COLOR[v.platform] || "#fff" }}>
-                          {PLAT_LABEL[v.platform] || v.platform}
-                        </span>
+                      {/* Thumbnail */}
+                      <a href={v.url} target="_blank" rel="noopener noreferrer"
+                        className="relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden bg-white/5 group/t cursor-pointer">
+                        {v.thumbnail_url
+                          ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover group-hover/t:scale-105 transition-transform" />
+                          : <div className="w-full h-full flex items-center justify-center"><Video className="w-6 h-6 text-white/20" /></div>}
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/t:opacity-100 transition-opacity flex items-center justify-center">
+                          <ChevronRight className="w-4 h-4 text-white" />
+                        </div>
+                        <span className="absolute bottom-0.5 left-0.5 text-[9px] font-bold px-1 py-0.5 rounded"
+                          style={{ background: `${pc}dd`, color: "#000" }}>{v.platform}</span>
+                      </a>
+                      {/* Titre */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium truncate">
+                          {v.title ? v.title.slice(0, 50) + (v.title.length > 50 ? "…" : "") : "—"}
+                        </p>
+                        <p className="text-white/30 text-xs mt-0.5">
+                          {v.published_at ? new Date(v.published_at).toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" }) : "—"}
+                        </p>
+                      </div>
+                      {/* Stats */}
+                      <div className="flex-shrink-0 flex gap-5 items-center">
+                        <div className="text-center">
+                          <p className="font-mono font-bold text-white text-sm">{fmt(v.views || 0)}</p>
+                          <p className="text-[10px] text-white/30">vues</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="font-mono font-bold text-[#FF007F] text-sm">{fmt(v.likes || 0)}</p>
+                          <p className="text-[10px] text-white/30">likes</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="font-mono font-bold text-[#FFB300] text-sm">{engRate}</p>
+                          <p className="text-[10px] text-white/30">eng.</p>
+                        </div>
                       </div>
                     </div>
-                  </a>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

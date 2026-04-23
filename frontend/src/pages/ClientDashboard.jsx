@@ -341,21 +341,26 @@ function CampaignView({ campaigns }) {
       {/* ══ VIDEOS TAB ══ */}
       {activeTab === "videos" && (
         <div className="space-y-3">
-          {/* Filters */}
+          {/* Barre tri + filtre */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Tri */}
             <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
-              {[{ id: "views", label: "Vues" }, { id: "likes", label: "Likes" }, { id: "published_at", label: "Date" }].map(s => (
-                <button key={s.id} onClick={() => toggleSort(s.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sortField === s.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
-                  {s.label} {sortField === s.id ? (sortDir === "desc" ? "↓" : "↑") : ""}
+              {[
+                { id: "views",        label: "🔥 Plus de vues" },
+                { id: "published_at", label: "🕐 Plus récent"  },
+              ].map(s => (
+                <button key={s.id} onClick={() => { setSortField(s.id); setSortDir(s.id === "published_at" ? "desc" : "desc"); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sortField === s.id ? "bg-[#FFB300] text-black" : "text-white/40 hover:text-white"}`}>
+                  {s.label}
                 </button>
               ))}
             </div>
+            {/* Filtre plateforme */}
             <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
-              {["all","tiktok","instagram","youtube"].map(p => (
+              {[["all","Toutes"],["tiktok","🎵 TikTok"],["instagram","📸 Insta"],["youtube","▶️ YouTube"]].map(([p, label]) => (
                 <button key={p} onClick={() => setFilterPlatform(p)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filterPlatform === p ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
-                  {p === "all" ? "Toutes" : p === "tiktok" ? "🎵 TikTok" : p === "instagram" ? "📸 Instagram" : "▶️ YouTube"}
+                  {label}
                 </button>
               ))}
             </div>
@@ -371,43 +376,64 @@ function CampaignView({ campaigns }) {
               <p className="text-sm">Aucune vidéo trackée pour le moment</p>
             </div>
           ) : (
-            <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
-              <div className="grid grid-cols-[2fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 text-xs text-white/35 font-medium uppercase tracking-wide">
-                <div>Vidéo</div><div>Vues</div><div>Likes</div><div>Date</div>
-              </div>
-              <div className="divide-y divide-white/5">
-                {displayVideos.map((video, i) => {
-                  const color = PLAT_COLOR_MAP[video.platform] || "#fff";
-                  return (
-                    <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
-                      className="grid grid-cols-[2fr_1fr_1fr_1fr] gap-4 px-4 py-3 hover:bg-white/5 transition-all group items-center">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative w-14 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
-                          {video.thumbnail_url
-                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" onError={e => { e.target.style.display="none"; }} />
-                            : <div className="w-full h-full flex items-center justify-center text-lg">{PLAT_ICON[video.platform]}</div>}
-                          <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold px-1 rounded"
-                            style={{ background: `${color}ee`, color: "#000" }}>{video.platform}</span>
-                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <ExternalLink className="w-3 h-3 text-white" />
-                          </div>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-white text-sm truncate">{video.title || `Vidéo ${video.platform}`}</p>
-                          <p className="text-white/30 text-xs truncate">{video.clipper_name}</p>
-                        </div>
+            /* ── même style que Clip Winner ── */
+            <div className="space-y-2">
+              {displayVideos.map((video, i) => {
+                const pc = PLAT_COLOR_MAP[video.platform] || "#fff";
+                const engRate = video.views
+                  ? (((video.likes || 0) + (video.comments || 0)) / video.views * 100).toFixed(1) + "%"
+                  : "—";
+                const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
+                const borderColor = i < 3 ? `${medalColors[i]}50` : "rgba(255,255,255,0.08)";
+                return (
+                  <div key={video.video_id || i}
+                    className="flex items-center gap-4 bg-[#121212] rounded-xl p-3"
+                    style={{ border: `1px solid ${borderColor}` }}>
+                    {/* Rang */}
+                    <div className="w-9 flex-shrink-0 text-center">
+                      {i < 3
+                        ? <span className="text-2xl font-bold" style={{ color: medalColors[i] }}>{i + 1}</span>
+                        : <span className="text-lg font-bold text-white/25">#{i + 1}</span>}
+                    </div>
+                    {/* Thumbnail */}
+                    <a href={video.url} target="_blank" rel="noopener noreferrer"
+                      className="relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden bg-white/5 group/t cursor-pointer">
+                      {video.thumbnail_url
+                        ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover group-hover/t:scale-105 transition-transform" />
+                        : <div className="w-full h-full flex items-center justify-center text-2xl">{PLAT_ICON[video.platform]}</div>}
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/t:opacity-100 transition-opacity flex items-center justify-center">
+                        <ExternalLink className="w-4 h-4 text-white" />
                       </div>
-                      <p className="text-white font-mono text-sm">{fmt(video.views || 0)}</p>
-                      <div className="flex items-center gap-1 text-[#FF007F] text-sm font-mono">
-                        <Heart className="w-3 h-3" />{fmt(video.likes || 0)}
-                      </div>
-                      <p className="text-white/40 text-xs">
+                      <span className="absolute bottom-0.5 left-0.5 text-[9px] font-bold px-1 py-0.5 rounded"
+                        style={{ background: `${pc}dd`, color: "#000" }}>{video.platform}</span>
+                    </a>
+                    {/* Titre */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-medium truncate">
+                        {video.title ? video.title.slice(0, 50) + (video.title.length > 50 ? "…" : "") : "—"}
+                      </p>
+                      <p className="text-white/30 text-xs mt-0.5">
                         {video.published_at ? new Date(video.published_at).toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" }) : "—"}
                       </p>
-                    </a>
-                  );
-                })}
-              </div>
+                    </div>
+                    {/* Stats */}
+                    <div className="flex-shrink-0 flex gap-5 items-center">
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-white text-sm">{fmt(video.views || 0)}</p>
+                        <p className="text-[10px] text-white/30">vues</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#FF007F] text-sm">{fmt(video.likes || 0)}</p>
+                        <p className="text-[10px] text-white/30">likes</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#FFB300] text-sm">{engRate}</p>
+                        <p className="text-[10px] text-white/30">eng.</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
