@@ -620,27 +620,30 @@ async def _send_verification_email(to_email: str, code: str):
 
     # ── Priorité 1 : Resend API ───────────────────────────────────────────────
     if RESEND_API_KEY:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {RESEND_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "from": RESEND_FROM,
-                    "to": [to_email],
-                    "subject": f"{code} — Votre code de vérification The Clip Deal Track",
-                    "html": html,
-                },
-            )
-        if resp.status_code not in (200, 201):
-            logger.error(f"Resend API error {resp.status_code}: {resp.text}")
-            asyncio.create_task(_track_api_call("resend", success=False))
-            raise Exception(f"Resend error {resp.status_code}: {resp.text}")
-        logger.info(f"Email sent via Resend to {to_email} — id={resp.json().get('id')}")
-        asyncio.create_task(_track_api_call("resend", success=True))
-        return
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": RESEND_FROM,
+                        "to": [to_email],
+                        "subject": f"{code} — Votre code de vérification The Clip Deal Track",
+                        "html": html,
+                    },
+                )
+            if resp.status_code in (200, 201):
+                logger.info(f"Email sent via Resend to {to_email} — id={resp.json().get('id')}")
+                asyncio.create_task(_track_api_call("resend", success=True))
+                return
+            else:
+                logger.warning(f"Resend API error {resp.status_code}: {resp.text} — falling back to SMTP")
+                asyncio.create_task(_track_api_call("resend", success=False))
+        except Exception as resend_err:
+            logger.warning(f"Resend exception: {resend_err} — falling back to SMTP")
 
     # ── Priorité 2 : SMTP (Gmail ou autre) ────────────────────────────────────
     if SMTP_USER and SMTP_PASSWORD:
