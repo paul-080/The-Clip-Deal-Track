@@ -847,16 +847,16 @@ export default function ChatPanel({ campaigns }) {
                     <div ref={conseilsEndRef} />
                   </div>
 
-                  {/* Textarea conseil + quick reply */}
-                  <div className="flex-shrink-0 border-t border-white/8 px-3 pt-2 pb-2.5 space-y-2">
-                    <textarea
-                      value={adviceContent}
-                      onChange={e => setAdviceContent(e.target.value)}
-                      placeholder={`Conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
-                      rows={2}
-                      className="w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 resize-none transition-colors"
-                    />
-                    <div className="flex gap-2">
+                  {/* Barre conseil compacte — 1 seule ligne */}
+                  <div className="flex-shrink-0 border-t border-white/8 px-3 py-2">
+                    <div className="flex gap-2 items-center">
+                      <input
+                        value={adviceContent}
+                        onChange={e => setAdviceContent(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && !e.shiftKey && handleSendAdvice()}
+                        placeholder={`Conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
+                        className="flex-1 bg-[#1a1a1a] border border-[#FF007F]/30 rounded-xl px-3 py-2 text-white text-sm placeholder:text-white/25 outline-none focus:border-[#FF007F]/60 transition-colors"
+                      />
                       <button
                         onClick={handleSendAdvice}
                         disabled={sending || !adviceContent.trim()}
@@ -864,20 +864,6 @@ export default function ChatPanel({ campaigns }) {
                       >
                         <Lightbulb className="w-3.5 h-3.5" />
                         Envoyer
-                      </button>
-                      <input
-                        value={newMessage}
-                        onChange={handleMsgChange}
-                        onKeyDown={handleMsgKeyDown}
-                        placeholder="Message rapide..."
-                        className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
-                      />
-                      <button
-                        onClick={handleSendMessage}
-                        disabled={sending || !newMessage.trim()}
-                        className="w-8 h-8 rounded-xl bg-[#FF007F]/20 hover:bg-[#FF007F]/40 border border-[#FF007F]/30 disabled:opacity-30 flex items-center justify-center flex-shrink-0 transition-all"
-                      >
-                        <Send className="w-3.5 h-3.5 text-[#FF007F]" />
                       </button>
                     </div>
                   </div>
