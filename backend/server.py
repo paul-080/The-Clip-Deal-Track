@@ -261,6 +261,7 @@ class MessageCreate(BaseModel):
     recipient_id: Optional[str] = None
     content: str
     message_type: str = "chat"
+    image_data: Optional[str] = None
 
 class Announcement(BaseModel):
     announcement_id: str
@@ -5718,6 +5719,7 @@ async def send_message(message_data: MessageCreate, user: dict = Depends(get_cur
         "recipient_id": message_data.recipient_id,
         "content": message_data.content,
         "message_type": message_data.message_type,
+        "image_data": message_data.image_data,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     

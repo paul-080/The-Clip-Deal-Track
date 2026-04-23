@@ -5,7 +5,8 @@ import { motion } from "framer-motion";
 import {
   Send, HelpCircle, Lightbulb, DollarSign, Eye, EyeOff,
   CheckCircle, CreditCard, ChevronLeft, User, AlertCircle,
-  MessageSquare, ExternalLink, MousePointerClick, Copy, Check
+  MessageSquare, ExternalLink, MousePointerClick, Copy, Check,
+  Megaphone, ImageIcon
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -176,6 +177,11 @@ export default function ChatPanel({ campaigns }) {
   const [tabUnread, setTabUnread] = useState({ questions: 0, conseils: 0 });
   const [claimingPayment, setClaimingPayment] = useState(false);
   const [ibanVisible, setIbanVisible] = useState(false);
+  const [annonces, setAnnonces] = useState([]);
+  const [announceText, setAnnounceText] = useState("");
+  const [announceImage, setAnnounceImage] = useState(null); // base64
+  const [sendingAnnonce, setSendingAnnonce] = useState(false);
+  const annoncesEndRef = useRef(null);
   const conseilsEndRef = useRef(null);
   const remunerationEndRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -223,6 +229,7 @@ export default function ChatPanel({ campaigns }) {
   useEffect(() => {
     if (activeTab === "questions") messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     else if (activeTab === "remuneration" || activeTab === "paiement") remunerationEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    else if (activeTab === "annonces") annoncesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
@@ -495,6 +502,41 @@ export default function ChatPanel({ campaigns }) {
     finally { setClaimingPayment(false); }
   };
 
+  const handleAnnounceImagePick = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { toast.error("Image trop lourde (max 2 Mo)"); return; }
+    const reader = new FileReader();
+    reader.onload = () => setAnnounceImage(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const handleSendAnnonce = async () => {
+    if (!announceText.trim() && !announceImage) return;
+    setSendingAnnonce(true);
+    try {
+      const res = await fetch(`${API}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          campaign_id: campaignId,
+          content: announceText.trim() || "",
+          message_type: "annonce",
+          image_data: announceImage || null,
+        }),
+      });
+      if (res.ok) {
+        const newMsg = await res.json();
+        setMessages(prev => prev.find(m => m.message_id === newMsg.message_id) ? prev : [...prev, newMsg]);
+        setAnnounceText("");
+        setAnnounceImage(null);
+        toast.success("Annonce publiée ✓");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setSendingAnnonce(false); }
+  };
+
   const sidebarClippers = () => {
     if (activeTab === "paiement" && paymentSummary?.clippers) {
       return [...paymentSummary.clippers].sort((a, b) => b.earned - a.earned);
@@ -512,6 +554,7 @@ export default function ChatPanel({ campaigns }) {
   const questionMessages = messages.filter(m => !m.message_type || m.message_type === "question" || m.message_type === "chat");
   const conseilChatMessages = messages.filter(m => m.message_type === "conseil");
   const remunerationMessages = messages.filter(m => m.message_type === "remuneration");
+  const visibleAnnonces = messages.filter(m => m.message_type === "annonce");
 
   const visibleMessages = selectedClipper
     ? questionMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
@@ -541,6 +584,7 @@ export default function ChatPanel({ campaigns }) {
   }
 
   const tabs = [
+    { id: "annonces", label: "Annonces", icon: Megaphone },
     { id: "questions", label: "Questions", icon: HelpCircle },
     { id: "conseils", label: "Conseils", icon: Lightbulb },
     ...(isAgencyOnly ? [{ id: "paiement", label: "Paiement", icon: DollarSign }] : []),
@@ -579,6 +623,7 @@ export default function ChatPanel({ campaigns }) {
             else if (tab.id === "conseils" && isClipper) badge = tabUnread.conseils;
             else if (tab.id === "conseils" && isAgency) badge = clippers.filter(c => c.needs_advice).length;
             else if (tab.id === "paiement") badge = paymentSummary?.clippers?.filter(c => c.owed > 0).length || 0;
+            else if (tab.id === "annonces") badge = visibleAnnonces.filter(a => a.created_at > getLastSeen("annonces")).length;
 
             const isActive = activeTab === tab.id;
             return (
@@ -589,7 +634,7 @@ export default function ChatPanel({ campaigns }) {
                   isActive
                     ? tab.id === "paiement" || tab.id === "remuneration"
                       ? "bg-[#f0c040]/15 text-[#f0c040] border-[#f0c040]/25"
-                      : tab.id === "conseils"
+                      : tab.id === "annonces" || tab.id === "conseils"
                         ? "bg-[#FF007F]/15 text-[#FF007F] border-[#FF007F]/25"
                         : isClipper
                           ? "bg-[#00E5FF]/15 text-[#00E5FF] border-[#00E5FF]/25"
@@ -601,7 +646,7 @@ export default function ChatPanel({ campaigns }) {
                 {tab.label}
                 {badge > 0 && (
                   <span className="flex items-center justify-center min-w-[18px] h-[18px] rounded-full text-[10px] font-bold text-black px-1"
-                    style={{ backgroundColor: tab.id === "questions" ? "#00E5FF" : tab.id === "conseils" ? "#FF007F" : "#f0c040" }}>
+                    style={{ backgroundColor: tab.id === "questions" ? "#00E5FF" : (tab.id === "annonces" || tab.id === "conseils") ? "#FF007F" : "#f0c040" }}>
                     {badge > 99 ? "99+" : badge}
                   </span>
                 )}
@@ -803,39 +848,37 @@ export default function ChatPanel({ campaigns }) {
                   </div>
 
                   {/* Textarea conseil + quick reply */}
-                  <div className="flex-shrink-0 border-t border-white/8 p-4 space-y-3">
+                  <div className="flex-shrink-0 border-t border-white/8 px-3 pt-2 pb-2.5 space-y-2">
                     <textarea
                       value={adviceContent}
                       onChange={e => setAdviceContent(e.target.value)}
-                      placeholder={`Écrire un conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
-                      rows={3}
-                      className="w-full bg-[#1a1a1a] border border-white/10 rounded-2xl px-4 py-3 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 resize-none transition-colors"
+                      placeholder={`Conseil pour ${selectedClipper.display_name || selectedClipper.name}...`}
+                      rows={2}
+                      className="w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 resize-none transition-colors"
                     />
                     <div className="flex gap-2">
                       <button
                         onClick={handleSendAdvice}
                         disabled={sending || !adviceContent.trim()}
-                        className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#FF007F] hover:bg-[#FF007F]/90 disabled:opacity-30 text-white text-sm font-semibold transition-all"
+                        className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#FF007F] hover:bg-[#FF007F]/90 disabled:opacity-30 text-white text-xs font-semibold transition-all flex-shrink-0"
                       >
-                        <Lightbulb className="w-4 h-4" />
-                        Envoyer le conseil
+                        <Lightbulb className="w-3.5 h-3.5" />
+                        Envoyer
                       </button>
-                      <div className="flex items-center gap-2 flex-1">
-                        <input
-                          value={newMessage}
-                          onChange={handleMsgChange}
-                          onKeyDown={handleMsgKeyDown}
-                          placeholder="Message rapide..."
-                          className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
-                        />
-                        <button
-                          onClick={handleSendMessage}
-                          disabled={sending || !newMessage.trim()}
-                          className="w-10 h-10 rounded-xl bg-[#FF007F]/20 hover:bg-[#FF007F]/40 border border-[#FF007F]/30 disabled:opacity-30 flex items-center justify-center transition-all"
-                        >
-                          <Send className="w-4 h-4 text-[#FF007F]" />
-                        </button>
-                      </div>
+                      <input
+                        value={newMessage}
+                        onChange={handleMsgChange}
+                        onKeyDown={handleMsgKeyDown}
+                        placeholder="Message rapide..."
+                        className="flex-1 bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder:text-white/25 outline-none focus:border-white/20 transition-colors"
+                      />
+                      <button
+                        onClick={handleSendMessage}
+                        disabled={sending || !newMessage.trim()}
+                        className="w-8 h-8 rounded-xl bg-[#FF007F]/20 hover:bg-[#FF007F]/40 border border-[#FF007F]/30 disabled:opacity-30 flex items-center justify-center flex-shrink-0 transition-all"
+                      >
+                        <Send className="w-3.5 h-3.5 text-[#FF007F]" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -899,6 +942,86 @@ export default function ChatPanel({ campaigns }) {
                 placeholder="Répondre à ton agence..."
                 buttonColor="#FF007F"
               />
+            </div>
+          )}
+
+          {/* ════════════════════════════════════════════════════════════
+              ONGLET ANNONCES — lecture tous / écriture agence seulement
+          ════════════════════════════════════════════════════════════ */}
+          {activeTab === "annonces" && (
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* Liste des annonces */}
+              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 min-h-0">
+                {visibleAnnonces.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <div className="w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+                      <Megaphone className="w-6 h-6 text-white/15" />
+                    </div>
+                    <p className="text-white/30 text-sm font-medium">Aucune annonce</p>
+                    <p className="text-white/15 text-xs mt-1">
+                      {isAgency ? "Publiez une annonce pour tous les clippeurs" : "L'agence n'a pas encore publié d'annonce"}
+                    </p>
+                  </div>
+                ) : (
+                  visibleAnnonces.map(msg => (
+                    <div key={msg.message_id} className="rounded-2xl bg-white/5 border border-white/8 overflow-hidden">
+                      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-white/8">
+                        <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 flex items-center justify-center flex-shrink-0">
+                          <Megaphone className="w-3 h-3 text-[#FF007F]" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs font-semibold">{msg.sender_name || "Agence"}</p>
+                          <p className="text-white/30 text-[10px]">{new Date(msg.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+                        </div>
+                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#FF007F]/15 text-[#FF007F] font-medium uppercase tracking-wide">Annonce</span>
+                      </div>
+                      {msg.image_data && (
+                        <img src={msg.image_data} alt="annonce" className="w-full object-cover max-h-64" />
+                      )}
+                      {msg.content && (
+                        <p className="px-4 py-3 text-white/80 text-sm leading-relaxed">{msg.content}</p>
+                      )}
+                    </div>
+                  ))
+                )}
+                <div ref={annoncesEndRef} />
+              </div>
+
+              {/* Zone d'envoi — agence uniquement */}
+              {isAgency && (
+                <div className="flex-shrink-0 border-t border-white/8 px-4 py-3 space-y-3">
+                  {announceImage && (
+                    <div className="relative inline-block">
+                      <img src={announceImage} alt="preview" className="h-20 rounded-xl object-cover border border-white/10" />
+                      <button
+                        onClick={() => setAnnounceImage(null)}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600 transition-colors"
+                      >✕</button>
+                    </div>
+                  )}
+                  <textarea
+                    value={announceText}
+                    onChange={e => setAnnounceText(e.target.value)}
+                    placeholder="Écrire une annonce pour tous les clippeurs..."
+                    rows={2}
+                    className="w-full bg-[#1a1a1a] border border-white/10 rounded-xl px-3 py-2.5 text-white text-sm placeholder:text-white/30 outline-none focus:border-white/20 resize-none transition-colors"
+                  />
+                  <div className="flex items-center gap-2">
+                    <label className="cursor-pointer w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors flex-shrink-0" title="Ajouter une image">
+                      <input type="file" accept="image/*" className="hidden" onChange={handleAnnounceImagePick} />
+                      <ImageIcon className="w-3.5 h-3.5 text-white/40" />
+                    </label>
+                    <button
+                      onClick={handleSendAnnonce}
+                      disabled={sendingAnnonce || (!announceText.trim() && !announceImage)}
+                      className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-[#FF007F] hover:bg-[#FF007F]/90 disabled:opacity-30 text-white text-sm font-semibold transition-all"
+                    >
+                      <Megaphone className="w-4 h-4" />
+                      {sendingAnnonce ? "Publication..." : "Publier l'annonce"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1103,14 +1226,10 @@ export default function ChatPanel({ campaigns }) {
                       )}
                     </div>
 
-                    {/* Chat rémunération scrollable */}
-                    <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 min-h-0">
+                    {/* Chat rémunération — fil compact */}
+                    <div className="overflow-y-auto px-3 py-2 space-y-2 flex-shrink-0" style={{ maxHeight: "110px" }}>
                       {remunerationMessages.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-center">
-                          <CreditCard className="w-8 h-8 text-white/8 mb-2" />
-                          <p className="text-white/20 text-xs">Fil de paiement</p>
-                          <p className="text-white/12 text-[10px] mt-0.5">Les messages de paiement apparaissent ici</p>
-                        </div>
+                        <p className="text-white/20 text-xs text-center py-2">Aucun message de paiement</p>
                       ) : (
                         remunerationMessages.map(msg => (
                           <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} />
