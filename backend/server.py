@@ -5783,8 +5783,8 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     # Fetch video stats — timeout 8s max, always fallback to 0 views (never blocks Railway)
     try:
         vid_info = await asyncio.wait_for(fetch_single_video_by_url(url, platform), timeout=8)
-    except Exception as e:
-        logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {e}")
+    except BaseException as e:
+        logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {type(e).__name__}: {e}")
         vid_id = None
         if platform == "tiktok":
             m = re.search(r'/video/(\d+)', url)
@@ -5860,8 +5860,17 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
             )
             saved.append({**set_fields, **insert_only})
         except Exception as e:
-            logger.warning(f"track_video upsert error: {e}")
-            raise HTTPException(status_code=500, detail=f"Erreur d'enregistrement en base: {e}")
+            err_str = str(e)
+            if "duplicate key" in err_str.lower() or "E11000" in err_str:
+                # Unique index conflict — just update the existing doc
+                try:
+                    await db.tracked_videos.update_one(upsert_key, {"$set": set_fields})
+                    saved.append({**set_fields, **insert_only})
+                except Exception as e2:
+                    logger.warning(f"track_video fallback update error: {e2}")
+            else:
+                logger.warning(f"track_video upsert error: {e}")
+                raise HTTPException(status_code=500, detail=f"Erreur d'enregistrement en base: {e}")
 
     views = vid_info["views"]
     if views > 0:
@@ -8991,8 +9000,8 @@ app.add_middleware(
 async def startup_event():
     # ── MongoDB indexes — idempotent, safe to re-run ───────────────────────
     indexes = [
-        # tracked_videos
-        (db.tracked_videos, [("account_id", 1), ("platform_video_id", 1)], {"unique": True}),
+        # tracked_videos — unique per (account, campaign, platform_video_id) to allow same URL in multiple campaigns
+        (db.tracked_videos, [("account_id", 1), ("campaign_id", 1), ("platform_video_id", 1)], {"unique": True, "sparse": True}),
         (db.tracked_videos, [("user_id", 1)], {}),
         (db.tracked_videos, [("campaign_id", 1)], {}),
         # messages
@@ -9044,6 +9053,18 @@ async def startup_event():
             await collection.create_index(keys, **opts)
         except Exception as e:
             logger.debug(f"Index already exists or minor error: {e}")
+
+    # ── Drop old bad index: (account_id, platform_video_id) was unique, caused
+    #    DuplicateKeyError when adding same YouTube/Instagram URL to 2 campaigns ──
+    try:
+        existing = await db.tracked_videos.index_information()
+        for name, info in existing.items():
+            key_fields = [k[0] for k in info.get("key", [])]
+            if key_fields == ["account_id", "platform_video_id"] and info.get("unique"):
+                await db.tracked_videos.drop_index(name)
+                logger.info(f"Startup: dropped old unique index '{name}' on tracked_videos")
+    except Exception as e:
+        logger.debug(f"Old index cleanup: {e}")
 
     # ── Clean up expired sessions (belt + suspenders alongside TTL index) ──
     try:

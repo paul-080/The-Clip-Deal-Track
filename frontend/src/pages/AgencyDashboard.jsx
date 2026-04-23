@@ -1287,7 +1287,10 @@ function CampaignDashboard({ campaigns }) {
         try { detail = (await res.json()).detail || detail; } catch {}
         toast.error(detail);
       }
-    } catch (e) { toast.error("Erreur réseau — vérifiez la connexion"); }
+    } catch (e) {
+      console.error("track-video error:", e);
+      toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
+    }
     finally { setAddingVideo(false); }
   };
 
