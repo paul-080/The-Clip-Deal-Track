@@ -5486,8 +5486,8 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     for uid in target_users:
         earnings = round((vid_info["views"] / 1000) * rpm, 2) if uid else 0
         video_id = f"vid_{uuid.uuid4().hex[:12]}"
-        doc = {
-            "video_id": video_id,
+        # Fields updated every time (on insert OR update)
+        set_fields = {
             "platform_video_id": vid_info["platform_video_id"],
             "account_id": None,
             "user_id": uid,
@@ -5501,30 +5501,42 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
             "comments": vid_info.get("comments", 0),
             "published_at": vid_info.get("published_at"),
             "fetched_at": now_iso,
-            "created_at": now_iso,
             "earnings": earnings,
             "manually_added": True,
             "added_by": user["user_id"],
         }
+        # Fields only set on first insert (video_id + created_at must NOT be in $set to avoid conflict)
+        insert_only = {"video_id": video_id, "created_at": now_iso}
         upsert_key = {"campaign_id": campaign_id, "platform_video_id": vid_info["platform_video_id"]}
         if uid:
             upsert_key["user_id"] = uid
         try:
             await db.tracked_videos.update_one(
                 upsert_key,
-                {"$set": doc, "$setOnInsert": {"created_at": now_iso}},
+                {"$set": set_fields, "$setOnInsert": insert_only},
                 upsert=True
             )
-            saved.append(doc)
+            saved.append({**set_fields, **insert_only})
         except Exception as e:
             logger.warning(f"track_video upsert error: {e}")
+            raise HTTPException(status_code=500, detail=f"Erreur d'enregistrement en base: {e}")
+
+    views = vid_info["views"]
+    if views > 0:
+        msg = f"Vidéo trackée avec succès — {views:,} vues"
+    elif platform == "youtube" and not YOUTUBE_API_KEY:
+        msg = "Vidéo YouTube enregistrée (stats indisponibles — clé YOUTUBE_API_KEY manquante)"
+    elif platform == "instagram":
+        msg = "Vidéo Instagram enregistrée (vues non disponibles sans API privée)"
+    else:
+        msg = "Vidéo enregistrée — stats en cours de récupération"
 
     return {
-        "message": f"Vidéo trackée avec succès ({vid_info['views']:,} vues)",
+        "message": msg,
         "video": {
             "url": url,
             "title": vid_info.get("title"),
-            "views": vid_info["views"],
+            "views": views,
             "platform": platform,
             "target_count": len([u for u in target_users if u]),
         }

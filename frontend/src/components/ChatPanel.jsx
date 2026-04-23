@@ -604,7 +604,7 @@ export default function ChatPanel({ campaigns }) {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="flex flex-col h-[calc(100vh-8rem)] bg-[#0d0d0d]"
+      className="flex flex-col h-full bg-[#0d0d0d]"
     >
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-white/8">

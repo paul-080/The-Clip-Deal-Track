@@ -138,7 +138,7 @@ export default function ClipperDashboard() {
         accentColor={ACCENT_COLOR}
         role="clipper"
       />
-      <main className="flex-1 ml-64 p-8">
+      <main className={`flex-1 ml-64 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-8"}`}>
         <Routes>
           <Route index element={<ClipperHome announcements={announcements} stats={stats} />} />
           <Route path="discover" element={<DiscoverCampaigns onJoin={fetchData} />} />

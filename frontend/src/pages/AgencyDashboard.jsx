@@ -143,7 +143,7 @@ export default function AgencyDashboard() {
         accentColor={ACCENT_COLOR}
         role="agency"
       />
-      <main className="flex-1 ml-64 p-8">
+      <main className={`flex-1 ml-64 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-8"}`}>
         <Routes>
           <Route index element={<AgencyHome announcements={announcements} onUpdate={fetchData} />} />
           <Route path="welcome" element={<WelcomePage />} />
@@ -1251,7 +1251,7 @@ function CampaignDashboard({ campaigns }) {
         body: JSON.stringify({
           url: manualVideoForm.url,
           platform: manualVideoForm.platform,
-          target_user_id: manualVideoForm.target,
+          target: manualVideoForm.target,
         }),
       });
       if (res.ok) {
@@ -1262,13 +1262,18 @@ function CampaignDashboard({ campaigns }) {
           title: v.title || "Sans titre",
           earnings: v.earnings || 0,
         });
-        toast.success("Vidéo trackée avec succès ✓");
+        if ((v.views || 0) === 0) {
+          toast.success("Vidéo enregistrée ✓ — stats en attente (API manquante ou vidéo privée)");
+        } else {
+          toast.success(`Vidéo trackée ✓ — ${(v.views || 0).toLocaleString("fr-FR")} vues`);
+        }
         fetchAllVideos();
       } else {
-        const err = await res.json();
-        toast.error(err.detail || "Erreur lors de l'ajout");
+        let detail = "Erreur lors de l'ajout";
+        try { detail = (await res.json()).detail || detail; } catch {}
+        toast.error(detail);
       }
-    } catch { toast.error("Erreur réseau"); }
+    } catch (e) { toast.error("Erreur réseau — vérifiez la connexion"); }
     finally { setAddingVideo(false); }
   };
 
