@@ -68,9 +68,6 @@ export default function ClientDashboard() {
       label: c.name,
       icon: Video,
       path: `/client/campaign/${c.campaign_id}`,
-      children: [
-        { id: `chat-${c.campaign_id}`, label: `Chat — ${c.name}`, icon: MessageCircle, path: `/client/campaign/${c.campaign_id}/chat` },
-      ],
     })),
     { type: "divider" },
     { id: "support", label: "Support", icon: HelpCircle, path: "/client/support", badge: supportUnread },
@@ -152,17 +149,17 @@ function CampaignView({ campaigns }) {
   const location = useLocation();
   const campaignId = location.pathname.split("/")[3];
   const campaign = campaigns.find((c) => c.campaign_id === campaignId);
-  const [stats, setStats] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [allVideos, setAllVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
   const [viewsTimeline, setViewsTimeline] = useState(null);
   const [viewsPeriod, setViewsPeriod] = useState("30");
-  const [viewsLoading, setViewsLoading] = useState(false);
+  const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
   const [topClips, setTopClips] = useState([]);
   const [topClipsLoading, setTopClipsLoading] = useState(false);
   const [sortField, setSortField] = useState("views");
   const [sortDir, setSortDir] = useState("desc");
+  const [filterPlatform, setFilterPlatform] = useState("all");
 
   const fmt = fmtViews;
   const PLAT_COLOR_MAP = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -170,7 +167,6 @@ function CampaignView({ campaigns }) {
 
   useEffect(() => {
     if (campaignId) {
-      fetchStats();
       fetchAllVideos();
       fetchViewsTimeline("30");
       fetchTopClips();
@@ -178,13 +174,6 @@ function CampaignView({ campaigns }) {
       return () => clearInterval(interval);
     }
   }, [campaignId]);
-
-  const fetchStats = async () => {
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/stats`, { credentials: "include" });
-      if (res.ok) setStats(await res.json());
-    } catch {}
-  };
 
   const fetchAllVideos = async () => {
     setVideosLoading(true);
@@ -195,11 +184,11 @@ function CampaignView({ campaigns }) {
   };
 
   const fetchViewsTimeline = async (d = viewsPeriod) => {
-    setViewsLoading(true);
+    setViewsTimelineLoading(true);
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/views-chart?days=${d}`, { credentials: "include" });
       if (res.ok) setViewsTimeline(await res.json());
-    } catch {} finally { setViewsLoading(false); }
+    } catch {} finally { setViewsTimelineLoading(false); }
   };
 
   const fetchTopClips = async () => {
@@ -216,56 +205,60 @@ function CampaignView({ campaigns }) {
     </div>
   );
 
-  const isClickCampaign = campaign.payment_model === "clicks";
-
-  // Chart data
-  const chartData = viewsTimeline?.data?.map(d => ({
-    date: new Date(d.date).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }),
-    vues: d.views,
-  })) || (stats?.views_chart || []).map(d => ({
-    date: new Date(d.date).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }),
-    vues: d.views,
-  }));
-
-  // Sort videos
-  const sortedVideos = [...allVideos].sort((a, b) => {
-    const va = a[sortField] ?? 0, vb = b[sortField] ?? 0;
-    return sortDir === "desc" ? vb - va : va - vb;
-  });
-
-  const totalViews = stats?.total_views || 0;
+  // ── KPIs (same as agency, without gains estimés) ──────────────────────────
+  const totalViews = allVideos.reduce((s, v) => s + (v.views || 0), 0);
   const totalLikes = allVideos.reduce((s, v) => s + (v.likes || 0), 0);
-  const engRate = totalViews > 0 ? ((totalLikes / totalViews) * 100).toFixed(1) + "%" : "—";
+  const totalComments = allVideos.reduce((s, v) => s + (v.comments || 0), 0);
+  const engagementRate = totalViews > 0 ? ((totalLikes + totalComments) / totalViews * 100).toFixed(1) : "0.0";
+  const avgViews = allVideos.length > 0 ? Math.round(totalViews / allVideos.length) : 0;
+
+  // ── Chart data (same format as agency) ───────────────────────────────────
+  const tlData = (viewsTimeline?.timeline || []).map(d => ({
+    ...d,
+    label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+  }));
+  const hasChartData = tlData.some(d => d.views > 0);
+
+  // ── Filtered + sorted videos ──────────────────────────────────────────────
+  const displayVideos = [...allVideos]
+    .filter(v => filterPlatform === "all" || v.platform === filterPlatform)
+    .sort((a, b) => {
+      let av = a[sortField] ?? 0, bv = b[sortField] ?? 0;
+      if (typeof av === "string") av = av.toLowerCase();
+      if (typeof bv === "string") bv = bv.toLowerCase();
+      return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+    });
+
+  const toggleSort = (field) => {
+    if (sortField === field) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir("desc"); }
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="client-campaign-view">
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-bold text-2xl text-white mb-1">{campaign.name}</h1>
-          <div className="flex items-center gap-2">
+          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <div className="flex items-center gap-3">
             <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${
               campaign.status === "active" ? "bg-green-500/15 text-green-400 border-green-500/25" : "bg-white/5 text-white/40 border-white/10"
             }`}>{campaign.status === "active" ? "Actif" : campaign.status}</span>
-            {campaign.platforms?.map(p => (
-              <span key={p} className="text-xs px-2 py-0.5 rounded-md font-medium"
-                style={{ background: PLAT_COLOR_MAP[p] + "20", color: PLAT_COLOR_MAP[p] }}>
-                {PLAT_LABEL[p] || p}
-              </span>
-            ))}
+            <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
           </div>
         </div>
-        <button onClick={() => { fetchStats(); fetchAllVideos(); }}
+        <button onClick={() => { fetchAllVideos(); fetchViewsTimeline(viewsPeriod); }}
           className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
           <RefreshCw className="w-4 h-4" /> Actualiser
         </button>
       </div>
 
-      {/* TABS */}
+      {/* TABS — same style as agency */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
         {[
           { id: "overview", label: "Vue d'ensemble" },
-          { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
+          { id: "videos",   label: `Vidéos (${allVideos.length})`, dot: videosLoading },
           { id: "clip-winner", label: "🏆 Clip Winner" },
         ].map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -278,107 +271,92 @@ function CampaignView({ campaigns }) {
         ))}
       </div>
 
-      {/* ══ VUE D'ENSEMBLE ══ */}
+      {/* ══ OVERVIEW TAB ══ */}
       {activeTab === "overview" && (
         <div className="space-y-5">
-          {/* KPIs */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+
+          {/* KPI row — same as agency (5 cards, no gains estimés) */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             {[
-              { label: "Vues totales", value: fmt(totalViews), color: "text-white" },
-              { label: "Clippeurs actifs", value: stats?.clipper_count || 0, color: "text-[#FFB300]" },
-              { label: "Vidéos postées", value: allVideos.length, color: "text-white" },
-              { label: "Audience qualifiée", value: engRate, color: "text-[#39FF14]" },
+              { label: "Vues totales",    value: fmt(totalViews),      color: "text-white" },
+              { label: "Likes",           value: fmt(totalLikes),      color: "text-[#FFB300]" },
+              { label: "Commentaires",    value: fmt(totalComments),   color: "text-white/70" },
+              { label: "Engagement",      value: `${engagementRate}%`, color: "text-[#39FF14]" },
+              { label: "Moy. vues/vidéo", value: fmt(avgViews),        color: "text-[#00E5FF]" },
             ].map(kpi => (
               <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                <p className="text-xs text-white/35 mb-1">{kpi.label}</p>
-                <p className={`font-mono font-bold text-2xl ${kpi.color}`}>{kpi.value}</p>
+                <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
               </div>
             ))}
           </div>
 
-          {/* Period selector */}
-          <div className="flex items-center gap-2">
-            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
-              {[{ id: "7", label: "7 jours" }, { id: "30", label: "30 jours" }, { id: "90", label: "90 jours" }].map(p => (
-                <button key={p.id} onClick={() => { setViewsPeriod(p.id); fetchViewsTimeline(p.id); }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${viewsPeriod === p.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            {viewsLoading && <div className="w-4 h-4 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />}
-          </div>
-
-          {/* Chart */}
+          {/* Views timeline chart — period selector inside card (same as agency) */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
-            <p className="text-white/50 text-xs mb-4 flex items-center gap-2">
-              <TrendingUp className="w-3.5 h-3.5 text-[#FFB300]" />
-              Vues par jour
-            </p>
-            {chartData.length > 0 ? (
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-white font-medium">Vues par jour</p>
+              <div className="flex items-center gap-2">
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {[["7","7j"],["30","30j"],["90","90j"]].map(([val, label]) => (
+                    <button key={val}
+                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />}
+              </div>
+            </div>
+            {hasChartData ? (
               <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                   <defs>
-                    <linearGradient id="clientGrad" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="clientViewsGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#FFB300" stopOpacity={0.3} />
                       <stop offset="95%" stopColor="#FFB300" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }}
-                    interval={Math.max(0, Math.floor(chartData.length / 7) - 1)} tickLine={false} axisLine={false} />
+                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
+                    interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
                   <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
-                  <Tooltip
-                    contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px" }}
-                    labelStyle={{ color: "rgba(255,255,255,0.6)", fontSize: 12 }}
-                    itemStyle={{ color: "#FFB300", fontFamily: "monospace" }}
-                    formatter={(v) => [fmt(v), "Vues"]}
-                  />
-                  <Area type="monotone" dataKey="vues" stroke="#FFB300" strokeWidth={2}
-                    fill="url(#clientGrad)" dot={false} activeDot={{ r: 4, fill: "#FFB300" }} />
+                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
+                    labelStyle={{ color: "white", fontSize: 11 }}
+                    formatter={(v) => [fmt(v), "Vues"]} />
+                  <Area type="monotone" dataKey="views" stroke="#FFB300" strokeWidth={2} fill="url(#clientViewsGrad)" dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-40 flex items-center justify-center">
-                <p className="text-white/30 text-sm">Pas encore de données de tracking</p>
+              <div className="h-48 flex items-center justify-center">
+                {viewsTimelineLoading
+                  ? <div className="w-6 h-6 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />
+                  : <p className="text-white/20 text-sm">Aucune donnée — les vues s'accumulent au fur et à mesure du tracking</p>
+                }
               </div>
             )}
           </div>
-
-          {/* Clippers ranking */}
-          {stats?.clipper_stats?.length > 0 && (
-            <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
-              <p className="text-white/50 text-xs px-4 py-3 border-b border-white/5 flex items-center gap-2">
-                <Users className="w-3.5 h-3.5" /> Classement des clippeurs
-              </p>
-              <div className="divide-y divide-white/5">
-                {stats.clipper_stats.map((c, i) => (
-                  <div key={c.user_id} className="flex items-center gap-3 px-4 py-3">
-                    <span className="font-mono font-bold text-[#FFB300] w-6 text-sm">#{i + 1}</span>
-                    <div className="w-7 h-7 rounded-full bg-[#FFB300]/15 flex items-center justify-center flex-shrink-0 text-xs font-bold text-[#FFB300]">
-                      {(c.display_name || "C")[0]}
-                    </div>
-                    <p className="flex-1 text-white text-sm truncate">{c.display_name}</p>
-                    <p className="font-mono text-sm font-bold text-white">{fmt(c.views)}</p>
-                    <p className="text-white/30 text-xs w-8">vues</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
-      {/* ══ VIDÉOS ══ */}
+      {/* ══ VIDEOS TAB ══ */}
       {activeTab === "videos" && (
         <div className="space-y-3">
-          {/* Sort bar */}
-          <div className="flex items-center gap-2">
+          {/* Filters */}
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
               {[{ id: "views", label: "Vues" }, { id: "likes", label: "Likes" }, { id: "published_at", label: "Date" }].map(s => (
-                <button key={s.id} onClick={() => { if (sortField === s.id) setSortDir(d => d === "desc" ? "asc" : "desc"); else { setSortField(s.id); setSortDir("desc"); } }}
+                <button key={s.id} onClick={() => toggleSort(s.id)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sortField === s.id ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
                   {s.label} {sortField === s.id ? (sortDir === "desc" ? "↓" : "↑") : ""}
+                </button>
+              ))}
+            </div>
+            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              {["all","tiktok","instagram","youtube"].map(p => (
+                <button key={p} onClick={() => setFilterPlatform(p)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filterPlatform === p ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                  {p === "all" ? "Toutes" : p === "tiktok" ? "🎵 TikTok" : p === "instagram" ? "📸 Instagram" : "▶️ YouTube"}
                 </button>
               ))}
             </div>
@@ -388,19 +366,18 @@ function CampaignView({ campaigns }) {
             <div className="flex items-center justify-center py-16">
               <div className="w-6 h-6 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />
             </div>
-          ) : allVideos.length === 0 ? (
+          ) : displayVideos.length === 0 ? (
             <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
               <Film className="w-10 h-10 mx-auto mb-3 opacity-30" />
               <p className="text-sm">Aucune vidéo trackée pour le moment</p>
             </div>
           ) : (
             <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
-              {/* Table header */}
               <div className="grid grid-cols-[2fr_1fr_1fr_1fr] gap-4 px-4 py-3 border-b border-white/5 text-xs text-white/35 font-medium uppercase tracking-wide">
                 <div>Vidéo</div><div>Vues</div><div>Likes</div><div>Date</div>
               </div>
               <div className="divide-y divide-white/5">
-                {sortedVideos.map((video, i) => {
+                {displayVideos.map((video, i) => {
                   const color = PLAT_COLOR_MAP[video.platform] || "#fff";
                   return (
                     <a key={video.video_id || i} href={video.url} target="_blank" rel="noopener noreferrer"
@@ -408,7 +385,7 @@ function CampaignView({ campaigns }) {
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="relative w-14 h-10 rounded-md overflow-hidden flex-shrink-0 bg-white/10">
                           {video.thumbnail_url
-                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" onError={e => { e.target.style.display = "none"; }} />
+                            ? <img src={video.thumbnail_url} alt="" className="w-full h-full object-cover" onError={e => { e.target.style.display="none"; }} />
                             : <div className="w-full h-full flex items-center justify-center text-lg">{PLAT_ICON[video.platform]}</div>}
                           <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold px-1 rounded"
                             style={{ background: `${color}ee`, color: "#000" }}>{video.platform}</span>
@@ -421,13 +398,13 @@ function CampaignView({ campaigns }) {
                           <p className="text-white/30 text-xs truncate">{video.clipper_name}</p>
                         </div>
                       </div>
-                      <div className="text-white font-mono text-sm">{fmt(video.views || 0)}</div>
+                      <p className="text-white font-mono text-sm">{fmt(video.views || 0)}</p>
                       <div className="flex items-center gap-1 text-[#FF007F] text-sm font-mono">
                         <Heart className="w-3 h-3" />{fmt(video.likes || 0)}
                       </div>
-                      <div className="text-white/40 text-xs">
-                        {video.published_at ? new Date(video.published_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "—"}
-                      </div>
+                      <p className="text-white/40 text-xs">
+                        {video.published_at ? new Date(video.published_at).toLocaleDateString("fr-FR", { day:"2-digit", month:"2-digit", year:"2-digit" }) : "—"}
+                      </p>
                     </a>
                   );
                 })}
