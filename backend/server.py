@@ -840,6 +840,62 @@ async def verify_email(req: VerifyEmailRequest):
     return _make_session_response(user, session_token)
 
 
+@api_router.post("/auth/join-register")
+async def join_register(request: Request):
+    """
+    Inscription instantanée SANS vérification email — utilisée depuis les liens de join.
+    Crée le compte immédiatement et retourne une session.
+    Si le compte existe déjà avec ce mot de passe → connexion directe.
+    """
+    body = await request.json()
+    email    = (body.get("email") or "").lower().strip()
+    password = (body.get("password") or "").strip()
+    name     = (body.get("display_name") or body.get("name") or "").strip()
+    role     = (body.get("role") or "clipper").strip()
+
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Email invalide")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Mot de passe trop court (6 caractères min.)")
+    if not name:
+        raise HTTPException(status_code=400, detail="Nom requis")
+    if role not in ["clipper", "manager", "client"]:
+        role = "clipper"
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        # Compte déjà existant → vérifier le mot de passe
+        if existing.get("password_hash") and not _check_password(password, existing["password_hash"]):
+            raise HTTPException(status_code=401, detail="Email déjà utilisé — mot de passe incorrect")
+        user_id = existing["user_id"]
+        # Mettre à jour email_verified si nécessaire
+        await db.users.update_one({"user_id": user_id}, {"$set": {"email_verified": True}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "display_name": name,
+            "picture": None,
+            "role": role,
+            "password_hash": _hash_password(password),
+            "email_verified": True,   # pas de vérif pour le flow join
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "settings": {},
+        })
+
+    session_token = uuid.uuid4().hex
+    expires_at_session = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "user_id": user_id, "session_token": session_token,
+        "expires_at": expires_at_session.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    return _make_session_response(user, session_token)
+
+
 async def _send_reset_email(to_email: str, reset_url: str):
     """Send password-reset link. Priority: Resend API → SMTP → log fallback."""
 

@@ -11,6 +11,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { toast } from "sonner";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { GoogleLogin } from "@react-oauth/google";
 
 const ROLE_CONFIG = {
   clipper: { color: "#00E5FF", label: "Clippeur", icon: Video },
@@ -310,202 +311,195 @@ function ClientStatsPage({ token }) {
   );
 }
 
-// ─── Formulaire inscription (clipper / manager) ───────────────────────────────
+// ─── Connexion / Inscription unifiée (clipper / manager) ─────────────────────
 function RegisterAndJoin({ token, role, campaignInfo }) {
   const { color, label } = ROLE_CONFIG[role] || ROLE_CONFIG.clipper;
+  const { setUser } = useAuth();
   const navigate = useNavigate();
 
-  const [step, setStep]           = useState("register"); // register | verify | done
-  const [email, setEmail]         = useState("");
-  const [password, setPassword]   = useState("");
-  const [displayName, setName]    = useState("");
-  const [code, setCode]           = useState("");
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState("");
-  const [joinResult, setJoinResult] = useState(null);
+  const [mode, setMode]         = useState("register"); // "register" | "login"
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName]         = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState("");
+  const [done, setDone]         = useState(false);
 
-  // Étape 1 — Inscription + envoi code email
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
+  // Après auth réussie → rejoindre la campagne
+  const joinCampaign = async () => {
     try {
-      const res = await fetch(`${API}/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, display_name: displayName, role }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setError(data.detail || "Erreur"); return; }
-      setStep("verify");
-      toast.success("Code envoyé par email !");
-    } catch { setError("Erreur de connexion"); }
-    finally { setLoading(false); }
-  };
-
-  // Étape 2 — Vérification du code → création compte → join campaign
-  const handleVerify = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try {
-      // Vérifier le code et créer le compte
-      const vres = await fetch(`${API}/auth/verify-email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email, code }),
-      });
-      const vdata = await vres.json();
-      if (!vres.ok) { setError(vdata.detail || "Code invalide"); return; }
-
-      // Rejoindre la campagne avec le token (le cookie de session vient d'être créé)
       const jres = await fetch(`${API}/campaigns/join/${token}`, {
-        method: "POST",
-        credentials: "include",
+        method: "POST", credentials: "include",
       });
       const jdata = await jres.json();
-      if (!jres.ok) { setError(jdata.detail || "Erreur lors de la jonction"); return; }
+      if (!jres.ok && jdata.detail !== "Déjà membre de cette campagne") {
+        toast.error(jdata.detail || "Erreur lors de la jonction");
+        return false;
+      }
+    } catch {}
+    return true;
+  };
 
-      setJoinResult(jdata);
-      setStep("done");
-
-      if (role === "clipper") {
-        toast.success("Candidature envoyée — en attente d'approbation de l'agence !");
-        setTimeout(() => navigate("/clipper"), 2500);
-      } else {
-        toast.success("Candidature envoyée — en attente d'approbation !");
+  // Connexion compte existant
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const res = await fetch(`${API}/auth/login`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.detail || "Email ou mot de passe incorrect"); return; }
+      setUser(data.user);
+      const ok = await joinCampaign();
+      if (ok) {
+        setDone(true);
+        toast.success("Connecté !");
+        setTimeout(() => navigate(`/${data.user.role || role}`), 1800);
       }
     } catch { setError("Erreur de connexion"); }
     finally { setLoading(false); }
   };
 
+  // Inscription instantanée (sans code email)
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const res = await fetch(`${API}/auth/join-register`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, display_name: name, role }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.detail || "Erreur"); return; }
+      setUser(data.user);
+      const ok = await joinCampaign();
+      if (ok) {
+        setDone(true);
+        toast.success("Compte créé !");
+        setTimeout(() => navigate(`/${data.user.role || role}`), 1800);
+      }
+    } catch { setError("Erreur de connexion"); }
+    finally { setLoading(false); }
+  };
+
+  // Google OAuth
+  const handleGoogle = async (credentialResponse) => {
+    setError(""); setLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/google`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id_token: credentialResponse.credential, role, display_name: name || "Utilisateur" }),
+      });
+      if (!r.ok) { const d = await r.json(); setError(d.detail || "Erreur Google"); return; }
+      const data = await r.json();
+      setUser(data.user);
+      const ok = await joinCampaign();
+      if (ok) {
+        setDone(true);
+        toast.success("Connecté avec Google !");
+        setTimeout(() => navigate(`/${data.user.role || role}`), 1800);
+      }
+    } catch { setError("Erreur Google"); }
+    finally { setLoading(false); }
+  };
+
+  if (done) return (
+    <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
+      <motion.div initial={{ opacity:0, scale:0.95 }} animate={{ opacity:1, scale:1 }} className="text-center">
+        <div className="w-20 h-20 rounded-full mx-auto mb-6 flex items-center justify-center" style={{ background: `${color}20` }}>
+          <Check className="w-10 h-10" style={{ color }} />
+        </div>
+        <h2 className="font-bold text-white text-2xl mb-2">
+          {role === "clipper" ? "Campagne rejointe !" : "Candidature envoyée !"}
+        </h2>
+        <p className="text-white/50 text-sm mb-1">{campaignInfo?.name}</p>
+        <p className="text-white/30 text-xs flex items-center justify-center gap-1 mt-4">
+          <Clock className="w-3 h-3" /> Redirection...
+        </p>
+      </motion.div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center p-6">
       <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} className="w-full max-w-md space-y-4">
 
-        {/* Info campagne */}
+        {/* Bandeau campagne */}
         {campaignInfo && (
-          <div className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: `${color}20` }}>
+          <div className="bg-[#121212] border border-white/10 rounded-xl p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}20` }}>
               <Video className="w-5 h-5" style={{ color }} />
             </div>
-            <div>
-              <p className="text-white font-semibold">{campaignInfo.name}</p>
-              <p className="text-xs text-white/40">{campaignInfo.rpm}€ / 1 000 vues · {campaignInfo.clipper_count} clippeurs actifs</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-semibold truncate">{campaignInfo.name}</p>
+              <p className="text-xs text-white/40">{campaignInfo.rpm}€ / 1 000 vues</p>
             </div>
-            <span className="ml-auto text-xs px-2 py-1 rounded-full font-bold border" style={{ color, borderColor: `${color}40`, background: `${color}15` }}>
+            <span className="text-xs px-2 py-1 rounded-full font-bold border flex-shrink-0"
+              style={{ color, borderColor: `${color}40`, background: `${color}15` }}>
               {label}
             </span>
           </div>
         )}
 
         <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-8">
-            <AnimatePresence mode="wait">
+          <CardContent className="p-7 space-y-5">
 
-              {/* ── Étape 1 : Inscription ── */}
-              {step === "register" && (
-                <motion.div key="register" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }}>
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: `${color}20` }}>
-                      <Lock className="w-5 h-5" style={{ color }} />
-                    </div>
-                    <div>
-                      <h2 className="font-bold text-white text-lg">Créer votre compte</h2>
-                      <p className="text-white/40 text-xs">
-                        {role === "clipper" ? "Vous rejoindrez la campagne automatiquement"
-                          : "Votre candidature sera soumise à l'agence"}
-                      </p>
-                    </div>
-                  </div>
+            {/* Toggle login / register */}
+            <div className="flex bg-white/5 rounded-xl p-1 border border-white/10">
+              {[["register","Créer un compte"],["login","J'ai déjà un compte"]].map(([m, lbl]) => (
+                <button key={m} onClick={() => { setMode(m); setError(""); }}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${mode === m ? "text-black shadow" : "text-white/50 hover:text-white"}`}
+                  style={mode === m ? { backgroundColor: color } : {}}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
 
-                  <form onSubmit={handleRegister} className="space-y-4">
-                    <Input value={displayName} onChange={e => setName(e.target.value)}
-                      placeholder="Votre nom complet" required
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                    <Input type="email" value={email} onChange={e => setEmail(e.target.value)}
-                      placeholder="Adresse email" required
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                    <Input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                      placeholder="Mot de passe (6 caractères min.)" required minLength={6}
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
+            {/* Google OAuth */}
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-white/30 text-xs">Continuer avec</p>
+              <GoogleLogin
+                onSuccess={handleGoogle}
+                onError={() => setError("Connexion Google échouée")}
+                theme="filled_black" shape="pill" text="continue_with" locale="fr" useOneTap={false}
+              />
+            </div>
 
-                    {error && <p className="text-red-400 text-sm">{error}</p>}
+            {/* Séparateur */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px bg-white/10" />
+              <span className="text-xs text-white/30">ou</span>
+              <div className="flex-1 h-px bg-white/10" />
+            </div>
 
-                    <Button type="submit" disabled={loading} className="w-full py-5 font-bold text-black"
-                      style={{ backgroundColor: color }}>
-                      {loading ? "Envoi..." : "Continuer →"}
-                    </Button>
-                  </form>
-
-                  <p className="text-center text-white/30 text-xs mt-4">
-                    Déjà un compte ?{" "}
-                    <a href="/login" className="underline" style={{ color }}>Se connecter</a>
-                  </p>
-                </motion.div>
+            {/* Formulaire */}
+            <form onSubmit={mode === "login" ? handleLogin : handleRegister} className="space-y-3">
+              {mode === "register" && (
+                <Input value={name} onChange={e => setName(e.target.value)}
+                  placeholder="Nom complet" required
+                  className="bg-white/5 border-white/10 text-white placeholder:text-white/25 focus:border-white/30" />
               )}
+              <Input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="Adresse email" required
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/25 focus:border-white/30" />
+              <Input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                placeholder={mode === "register" ? "Mot de passe (6 caractères min.)" : "Mot de passe"}
+                required minLength={mode === "register" ? 6 : 1}
+                className="bg-white/5 border-white/10 text-white placeholder:text-white/25 focus:border-white/30" />
 
-              {/* ── Étape 2 : Code email ── */}
-              {step === "verify" && (
-                <motion.div key="verify" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }}>
-                  <div className="text-center mb-6">
-                    <div className="w-14 h-14 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ background: `${color}20` }}>
-                      <Star className="w-7 h-7" style={{ color }} />
-                    </div>
-                    <h2 className="font-bold text-white text-xl mb-1">Vérifiez votre email</h2>
-                    <p className="text-white/40 text-sm">Code envoyé à <span className="text-white">{email}</span></p>
-                  </div>
+              {error && <p className="text-red-400 text-sm">{error}</p>}
 
-                  <form onSubmit={handleVerify} className="space-y-4">
-                    <Input value={code} onChange={e => setCode(e.target.value)}
-                      placeholder="Code à 6 chiffres" required maxLength={6}
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30 text-center text-xl tracking-widest" />
+              <Button type="submit" disabled={loading} className="w-full py-5 font-bold text-black mt-2"
+                style={{ backgroundColor: color }}>
+                {loading ? "..." : mode === "login" ? "Se connecter →" : "Créer mon compte →"}
+              </Button>
+            </form>
 
-                    {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-
-                    <Button type="submit" disabled={loading} className="w-full py-5 font-bold text-black"
-                      style={{ backgroundColor: color }}>
-                      {loading ? "Vérification..." : role === "clipper" ? "Rejoindre la campagne ✓" : "Envoyer ma candidature ✓"}
-                    </Button>
-                  </form>
-
-                  <button onClick={() => { setStep("register"); setError(""); }}
-                    className="w-full text-center text-white/30 text-xs mt-3 hover:text-white/60">
-                    ← Modifier mon email
-                  </button>
-                </motion.div>
-              )}
-
-              {/* ── Étape 3 : Succès ── */}
-              {step === "done" && (
-                <motion.div key="done" initial={{ opacity:0 }} animate={{ opacity:1 }} className="text-center py-4">
-                  <div className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ background: `${color}20` }}>
-                    <Check className="w-8 h-8" style={{ color }} />
-                  </div>
-                  {role === "clipper" ? (
-                    <>
-                      <h2 className="font-bold text-white text-2xl mb-2">Bienvenue !</h2>
-                      <p className="text-white/60 mb-1">Vous avez rejoint</p>
-                      <p className="font-bold text-white mb-4">{campaignInfo?.name}</p>
-                      <p className="text-white/30 text-sm flex items-center justify-center gap-2">
-                        <Clock className="w-3 h-3" /> Redirection vers votre dashboard...
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <h2 className="font-bold text-white text-2xl mb-2">Candidature envoyée !</h2>
-                      <p className="text-white/60 mb-4">
-                        L'agence va examiner votre candidature en tant que <span className="font-bold" style={{ color }}>Manager</span>.<br />
-                        Vous recevrez une notification à <span className="text-white">{email}</span>.
-                      </p>
-                      <a href="/login" className="text-sm underline" style={{ color }}>
-                        Se connecter →
-                      </a>
-                    </>
-                  )}
-                </motion.div>
-              )}
-
-            </AnimatePresence>
           </CardContent>
         </Card>
 
