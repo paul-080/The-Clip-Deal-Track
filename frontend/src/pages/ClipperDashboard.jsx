@@ -1738,6 +1738,9 @@ function CampaignDashboard({ campaigns, clipperStats }) {
   const [copied, setCopied] = useState(false);
   const [clickStats, setClickStats] = useState(null);
   const [clickPeriod, setClickPeriod] = useState("30d");
+  const [viewsTimeline, setViewsTimeline] = useState(null);
+  const [viewsPeriod, setViewsPeriod] = useState("30");
+  const [viewsLoading, setViewsLoading] = useState(false);
 
   // Stats perso depuis le parent (déjà fetchées)
   const myStats = clipperStats?.campaign_stats?.find((s) => s.campaign_id === campaignId);
@@ -1748,7 +1751,19 @@ function CampaignDashboard({ campaigns, clipperStats }) {
       fetchClickLink();
       fetchClickStats("30d");
     }
+    if (campaignId && !isClickCampaign) {
+      fetchViewsTimeline("30");
+    }
   }, [campaignId, isClickCampaign]);
+
+  const fetchViewsTimeline = async (d = viewsPeriod) => {
+    setViewsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/my-views-chart?days=${d}`, { credentials: "include" });
+      if (res.ok) setViewsTimeline(await res.json());
+    } catch {}
+    finally { setViewsLoading(false); }
+  };
 
   const fetchClickStats = async (p = clickPeriod) => {
     try {
@@ -2002,6 +2017,70 @@ function CampaignDashboard({ campaigns, clipperStats }) {
             <span className="text-red-400">
               Tu as {myStats.strikes} strike(s) actif(s) sur cette campagne
             </span>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Views chart — campagnes au view uniquement */}
+      {!isClickCampaign && (
+        <Card className="bg-[#121212] border-white/10">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-white text-base flex items-center gap-2">
+                <Eye className="w-4 h-4 text-[#00E5FF]" /> Tes vues par jour
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {[["7","7j"],["30","30j"],["90","90j"]].map(([val, label]) => (
+                    <button key={val}
+                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-[#00E5FF]/20 text-[#00E5FF]" : "text-white/40 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {viewsLoading && <div className="w-4 h-4 border-2 border-[#00E5FF]/30 border-t-[#00E5FF] rounded-full animate-spin" />}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {(() => {
+              const tlData = (viewsTimeline?.timeline || []).map(d => ({
+                ...d,
+                label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+              }));
+              const hasData = tlData.some(d => d.views > 0);
+              return hasData ? (
+                <ResponsiveContainer width="100%" height={180}>
+                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="myViewsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
+                        <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                    <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
+                      interval={Math.max(0, Math.floor(tlData.length / 8) - 1)} />
+                    <YAxis tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
+                      tickFormatter={v => v >= 1000000 ? `${(v/1000000).toFixed(1)}M` : v >= 1000 ? `${Math.round(v/1000)}K` : v} />
+                    <Tooltip
+                      contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
+                      labelStyle={{ color: "white" }}
+                      formatter={(v) => [v >= 1000000 ? `${(v/1000000).toFixed(1)}M` : v >= 1000 ? `${(v/1000).toFixed(1)}K` : v.toLocaleString("fr-FR"), "Nouvelles vues"]}
+                    />
+                    <Area type="monotone" dataKey="views" stroke="#00E5FF" strokeWidth={2} fill="url(#myViewsGrad)" dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-36 flex items-center justify-center">
+                  {viewsLoading
+                    ? <div className="w-6 h-6 border-2 border-[#00E5FF]/30 border-t-[#00E5FF] rounded-full animate-spin" />
+                    : <p className="text-white/20 text-sm">Aucune vue encore — les données apparaissent après le prochain tracking (toutes les 6h)</p>
+                  }
+                </div>
+              );
+            })()}
           </CardContent>
         </Card>
       )}

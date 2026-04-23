@@ -4708,6 +4708,24 @@ async def run_video_tracking():
                 }},
                 upsert=True
             )
+            # Per-user daily snapshot (for clipper personal chart)
+            user_ids_in_campaign = list({a["user_id"] for a in assignments if a.get("user_id")})
+            for uid in user_ids_in_campaign:
+                try:
+                    u_agg = await db.tracked_videos.aggregate([
+                        {"$match": {"campaign_id": campaign_id, "user_id": uid}},
+                        {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+                    ]).to_list(1)
+                    u_total = u_agg[0]["total_views"] if u_agg else 0
+                    await db.user_views_snapshots.update_one(
+                        {"campaign_id": campaign_id, "user_id": uid, "date": today_str},
+                        {"$set": {"campaign_id": campaign_id, "user_id": uid,
+                                  "date": today_str, "total_views": u_total,
+                                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+                        upsert=True
+                    )
+                except Exception as ue:
+                    logger.debug(f"User snapshot failed for {uid}: {ue}")
         except Exception as e:
             logger.warning(f"Failed to update budget/snapshot for {campaign_id}: {e}")
     # Global daily snapshot (all campaigns)
@@ -5434,6 +5452,53 @@ async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict 
         timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
         current += timedelta(days=1)
     return {"timeline": timeline, "source": "no_data"}
+
+@api_router.get("/campaigns/{campaign_id}/my-views-chart")
+async def get_my_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
+    """
+    Personal daily NEW views chart for the current clipper on a given campaign.
+    Computes deltas from user_views_snapshots (same logic as campaign chart).
+    """
+    from datetime import timedelta
+    uid = user["user_id"]
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    start_str = start.strftime("%Y-%m-%d")
+
+    snapshots = await db.user_views_snapshots.find(
+        {"campaign_id": campaign_id, "user_id": uid, "date": {"$gte": start_str}},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(days + 2)
+
+    if snapshots:
+        prev_snap = await db.user_views_snapshots.find_one(
+            {"campaign_id": campaign_id, "user_id": uid, "date": {"$lt": start_str}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        prev_total = prev_snap["total_views"] if prev_snap else 0
+        snap_by_date = {s["date"]: s["total_views"] for s in snapshots}
+        delta_by_day: dict = {}
+        running = prev_total
+        for d in sorted(snap_by_date.keys()):
+            cum = snap_by_date[d]
+            delta_by_day[d] = max(0, cum - running)
+            running = cum
+        timeline = []
+        current = start
+        while current <= end:
+            day = current.strftime("%Y-%m-%d")
+            timeline.append({"date": day, "views": delta_by_day.get(day, 0)})
+            current += timedelta(days=1)
+        return {"timeline": timeline}
+
+    # No snapshots yet — return zeros
+    timeline = []
+    current = start
+    while current <= end:
+        timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
+        current += timedelta(days=1)
+    return {"timeline": timeline}
 
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
@@ -8726,6 +8791,8 @@ async def startup_event():
         (db.campaign_social_accounts, [("user_id", 1)], {}),
         # views_snapshots
         (db.views_snapshots, [("campaign_id", 1), ("date", -1)], {}),
+        # user_views_snapshots (per clipper, per campaign, per day)
+        (db.user_views_snapshots, [("campaign_id", 1), ("user_id", 1), ("date", -1)], {}),
         # payments
         (db.payments, [("user_id", 1), ("campaign_id", 1)], {}),
         (db.payments, [("agency_id", 1)], {}),
