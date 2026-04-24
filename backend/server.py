@@ -5020,7 +5020,7 @@ async def track_videos_loop():
             await run_video_tracking()
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
-        await asyncio.sleep(30 * 60)
+        await asyncio.sleep(6 * 3600)  # toutes les 6h — économise les crédits Apify
 
 # ================= SOCIAL ACCOUNTS =================
 
