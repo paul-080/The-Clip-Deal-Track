@@ -3324,86 +3324,54 @@ async def _apify_get_dataset(dataset_id: str) -> list:
     return r.json() if isinstance(r.json(), list) else []
 
 
-async def _fetch_instagram_videos_apify(username: str) -> list:
+async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> list:
     """
-    Fetch Instagram Reels via Apify (approche async fiable).
-    1. Démarre le run
-    2. Poll jusqu'à SUCCEEDED (max 4 min)
-    3. Récupère le dataset
+    Fetch Instagram Reels via Apify — run-sync (1 seule requête, pas de polling).
+    Économique : 128 MB, max 10 posts par défaut.
     """
     if not APIFY_TOKEN:
         raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
 
-    # Essayer d'abord instagram-reel-scraper, puis instagram-scraper en fallback
-    actors = [
-        ("apify~instagram-reel-scraper", {
-            "directUrls": [f"https://www.instagram.com/{username}/reels/"],
-            "resultsType": "posts",
-            "resultsLimit": 50,
-        }),
+    attempts = [
         ("apify~instagram-scraper", {
             "directUrls": [f"https://www.instagram.com/{username}/"],
             "resultsType": "posts",
-            "resultsLimit": 50,
-            "searchType": "user",
+            "resultsLimit": max_posts,
+        }),
+        ("apify~instagram-reel-scraper", {
+            "directUrls": [f"https://www.instagram.com/{username}/reels/"],
+            "resultsType": "posts",
+            "resultsLimit": max_posts,
         }),
     ]
 
-    for actor_id, payload in actors:
+    last_err = "Apify Instagram: tous les acteurs ont échoué"
+    for actor_id, payload in attempts:
         try:
-            logger.info(f"Apify: démarrage {actor_id} pour @{username}")
-            # 1. Démarrer le run
-            async with httpx.AsyncClient(timeout=30) as c:
+            logger.info(f"Apify Instagram run-sync {actor_id} pour @{username}")
+            async with httpx.AsyncClient(timeout=120) as c:
                 r = await c.post(
-                    f"https://api.apify.com/v2/acts/{actor_id}/runs",
-                    params={"token": APIFY_TOKEN},
+                    f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 128},
                     json=payload,
                 )
+            logger.info(f"Apify Instagram {actor_id} sync @{username}: HTTP {r.status_code}")
             if r.status_code not in (200, 201):
-                logger.warning(f"Apify {actor_id} start HTTP {r.status_code}: {r.text[:200]}")
+                last_err = f"Apify {actor_id}: HTTP {r.status_code} — {r.text[:300]}"
+                logger.warning(last_err)
                 continue
 
-            run_data = r.json().get("data", r.json())
-            run_id = run_data.get("id")
-            dataset_id = run_data.get("defaultDatasetId")
-            if not run_id:
-                logger.warning(f"Apify {actor_id}: pas de run_id dans la réponse")
+            items = r.json()
+            if isinstance(items, dict):
+                items = items.get("data") or items.get("items") or []
+            if not isinstance(items, list):
+                items = []
+            logger.info(f"Apify Instagram {actor_id}: {len(items)} items pour @{username}")
+            if not items:
+                last_err = f"Apify Instagram {actor_id}: 0 items returned"
                 continue
 
-            logger.info(f"Apify run {run_id} démarré pour @{username}")
-
-            # 2. Poll le statut (max 4 minutes, toutes les 10s)
-            status = "RUNNING"
-            for attempt in range(24):  # 24 × 10s = 4 min
-                await asyncio.sleep(10)
-                async with httpx.AsyncClient(timeout=15) as c:
-                    sr = await c.get(
-                        f"https://api.apify.com/v2/actor-runs/{run_id}",
-                        params={"token": APIFY_TOKEN},
-                    )
-                if sr.status_code == 200:
-                    status = sr.json().get("data", {}).get("status", "RUNNING")
-                    logger.info(f"Apify run {run_id} status={status} (attempt {attempt+1})")
-                    if status in ("SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"):
-                        break
-
-            if status != "SUCCEEDED":
-                logger.warning(f"Apify {actor_id} run {run_id} terminé avec status={status}")
-                continue
-
-            # 3. Récupérer les résultats
-            if not dataset_id:
-                run_info = sr.json().get("data", {})
-                dataset_id = run_info.get("defaultDatasetId")
-            if not dataset_id:
-                logger.warning(f"Apify: pas de dataset_id pour run {run_id}")
-                continue
-
-            items = await _apify_get_dataset(dataset_id)
-            logger.info(f"Apify {actor_id}: {len(items)} items récupérés pour @{username}")
-
-            # 4. Parser
             results = []
             for item in items:
                 parsed = _parse_apify_item(item, username)
@@ -3411,17 +3379,16 @@ async def _fetch_instagram_videos_apify(username: str) -> list:
                     results.append(parsed)
 
             views_ok = sum(1 for v in results if v["views"] > 0)
-            logger.info(f"Apify @{username}: {len(results)} vidéos, {views_ok} avec vues > 0")
-
+            logger.info(f"Apify Instagram @{username}: {len(results)} vidéos, {views_ok} avec vues > 0")
             if results:
                 return results
-            # Si vide, essayer le prochain actor
 
         except Exception as e:
-            logger.warning(f"Apify {actor_id} failed for @{username}: {e}")
+            last_err = f"Apify Instagram {actor_id} exception: {e}"
+            logger.warning(last_err)
             continue
 
-    return []
+    raise ValueError(last_err)
 
 
 def _parse_ig_views(item: dict) -> int:
@@ -4201,7 +4168,7 @@ async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
     }
 
 
-async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 30) -> list:
+async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 10) -> list:
     """
     Fetch TikTok videos via Apify — uses run-sync endpoint (no polling).
     Tries multiple actors and input formats for reliability.
@@ -4239,7 +4206,7 @@ async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 30) -> list
             async with httpx.AsyncClient(timeout=120) as c:
                 r = await c.post(
                     f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 256},
+                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 128},
                     json=payload,
                 )
             logger.info(f"Apify {actor_id} sync @{username}: HTTP {r.status_code}")
