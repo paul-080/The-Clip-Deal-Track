@@ -909,7 +909,7 @@ function PostsTab() {
 function AdminCampaignDetailPanel({ campaignId, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("stats"); // stats | chat | membres
+  const [tab, setTab] = useState("stats"); // stats | chat | membres | videos
   const [newMsg, setNewMsg] = useState("");
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef(null);
@@ -978,9 +978,10 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-white/10 flex-shrink-0">
+        <div className="flex border-b border-white/10 flex-shrink-0 overflow-x-auto">
           {[
             { id: "stats", label: isClick ? "Clics & Stats" : "Vues & Stats" },
+            { id: "videos", label: `Vidéos (${data?.tracked_videos?.length || 0})` },
             { id: "chat", label: `Chat (${data?.messages?.length || 0})` },
             { id: "membres", label: `Membres (${data?.members?.length || 0})` },
           ].map(t => (
@@ -1082,6 +1083,61 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
                       <span>€{data.budget_total}</span>
                     </div>
                   </div>
+                )}
+              </div>
+            )
+
+            // ── VIDEOS TAB ──
+            : tab === "videos" ? (
+              <div className="p-5">
+                {(!data.tracked_videos || data.tracked_videos.length === 0) ? (
+                  <p className="text-white/30 text-sm text-center py-12">Aucune vidéo trackée pour cette campagne</p>
+                ) : (
+                  <>
+                    <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">{data.tracked_videos.length} vidéos — triées par vues</p>
+                    <div className="space-y-2">
+                      {data.tracked_videos.map(v => (
+                        <div key={v.video_id || v.url} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
+                          {/* Thumbnail */}
+                          <div className="w-10 h-14 rounded-md bg-white/5 overflow-hidden flex-shrink-0">
+                            {v.thumbnail_url ? (
+                              <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-white/20">
+                                <Play className="w-3 h-3" />
+                              </div>
+                            )}
+                          </div>
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <a href={v.url} target="_blank" rel="noopener noreferrer"
+                              className="text-white text-xs font-medium line-clamp-1 hover:text-[#00E5FF] transition-colors">
+                              {v.title || v.url || "—"}
+                            </a>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-white/30 text-[10px]">{v.clipper_name || "?"}</span>
+                              {v.platform && (
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
+                                  v.platform === "tiktok" ? "bg-pink-500/20 text-pink-300" :
+                                  v.platform === "instagram" ? "bg-purple-500/20 text-purple-300" :
+                                  "bg-red-500/20 text-red-300"
+                                }`}>{v.platform}</span>
+                              )}
+                              {v.manually_added && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400 border border-yellow-500/20">manuel</span>
+                              )}
+                            </div>
+                          </div>
+                          {/* Stats */}
+                          <div className="text-right flex-shrink-0">
+                            <p className="text-[#00E5FF] font-mono text-xs font-semibold">{fmtNum(v.views || 0)}</p>
+                            <p className="text-green-400 font-mono text-[10px]">€{(v.earnings || 0).toFixed(2)}</p>
+                            <p className="text-white/25 text-[10px]">❤️ {fmtNum(v.likes || 0)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             )
@@ -1775,7 +1831,10 @@ export default function AdminDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex">
+    <div
+      className="min-h-screen bg-[#0a0a0a] flex select-none"
+      onContextMenu={e => e.preventDefault()}
+    >
       <AdminSidebar active={active} setActive={setActive} onLogout={handleLogout} />
       <main className="flex-1 p-8 overflow-auto">
         {renderContent()}

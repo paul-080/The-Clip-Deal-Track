@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSock
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -20,6 +21,8 @@ import hashlib
 import hmac
 import secrets
 import random
+import time
+from collections import defaultdict
 import smtplib
 import ssl
 from email.mime.text import MIMEText
@@ -94,6 +97,19 @@ def _get_instagram_session() -> str:
     return cookie
 STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
 ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
+
+# ─── Rate limiting (in-memory) ───────────────────────────────────────────────
+_rate_store: dict = defaultdict(list)
+
+def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
+    """Returns True if rate limit is exceeded for this key."""
+    now = time.time()
+    calls = [t for t in _rate_store[key] if now - t < window_seconds]
+    _rate_store[key] = calls
+    if len(calls) >= max_calls:
+        return True
+    _rate_store[key].append(now)
+    return False
 CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
 stripe.api_key = STRIPE_API_KEY
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
@@ -109,6 +125,30 @@ SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', '').strip()
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+# ─── Security headers middleware ─────────────────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+        # Prevent clickjacking & limit framing
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "frame-ancestors 'self'; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self' https:; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com;"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -679,8 +719,11 @@ async def _send_verification_email(to_email: str, code: str):
     )
 
 @api_router.post("/auth/register")
-async def email_register(req: EmailRegisterRequest):
+async def email_register(req: EmailRegisterRequest, request: Request):
     """Register with email + password — sends a 6-digit verification code by email."""
+    ip = (request.client.host if request.client else None) or "unknown"
+    if _check_rate_limit(f"register:{ip}", 8, 300):
+        raise HTTPException(status_code=429, detail="Trop de tentatives d'inscription. Réessayez plus tard.")
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
     if len(req.password) < 6:
@@ -1085,6 +1128,9 @@ async def test_smtp():
 @api_router.post("/auth/login")
 async def email_login(request: Request):
     """Login with email + password."""
+    ip = (request.client.host if request.client else None) or "unknown"
+    if _check_rate_limit(f"login:{ip}", 15, 60):
+        raise HTTPException(status_code=429, detail="Trop de tentatives de connexion. Réessayez dans une minute.")
     body = await request.json()
     email = body.get("email", "").lower()
     password = body.get("password", "")
@@ -7773,6 +7819,25 @@ async def admin_campaign_detail(campaign_id: str, request: Request, _: bool = De
         msg["sender_display_name"] = s.get("display_name") or s.get("name") or msg.get("sender_name", "?")
         msg["sender_picture"] = s.get("picture")
         msg["sender_role_resolved"] = s.get("role") or msg.get("sender_role", "")
+
+    # Tracked videos (top 200 by views)
+    tracked_videos = await db.tracked_videos.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "video_id": 1, "url": 1, "title": 1, "platform": 1, "views": 1,
+         "likes": 1, "comments": 1, "thumbnail_url": 1, "published_at": 1,
+         "earnings": 1, "user_id": 1, "manually_added": 1, "fetched_at": 1}
+    ).sort("views", -1).to_list(200)
+    vid_user_ids = list({v["user_id"] for v in tracked_videos if v.get("user_id")})
+    if vid_user_ids:
+        vid_user_docs = await db.users.find(
+            {"user_id": {"$in": vid_user_ids}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1}
+        ).to_list(200)
+        vid_users_map = {u["user_id"]: u for u in vid_user_docs}
+        for v in tracked_videos:
+            info = vid_users_map.get(v.get("user_id"), {})
+            v["clipper_name"] = info.get("display_name") or info.get("name") or "?"
+    campaign["tracked_videos"] = tracked_videos
 
     campaign["members"] = members
     campaign["messages"] = messages

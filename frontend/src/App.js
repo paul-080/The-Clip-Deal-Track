@@ -474,7 +474,20 @@ const AdminContextMenu = () => {
   );
 };
 
+// ─── Security: disable right-click on images, block common copy shortcuts ─────
+function useSecurityGuard() {
+  useEffect(() => {
+    // Disable right-click on images only
+    const blockImgCtx = (e) => {
+      if (e.target.tagName === "IMG") e.preventDefault();
+    };
+    document.addEventListener("contextmenu", blockImgCtx);
+    return () => document.removeEventListener("contextmenu", blockImgCtx);
+  }, []);
+}
+
 function App() {
+  useSecurityGuard();
   return (
     <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID || ""}>
       <div className="min-h-screen bg-[#0A0A0A]">

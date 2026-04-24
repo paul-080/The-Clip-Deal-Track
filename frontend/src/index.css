@@ -74,6 +74,18 @@ code {
     font-family: 'JetBrains Mono', monospace;
 }
 
+/* ─── Anti-copy / Security ───────────────────────────────────────────────── */
+img {
+    -webkit-user-drag: none;
+    user-drag: none;
+    pointer-events: none;
+}
+
+img.clickable {
+    pointer-events: auto;
+}
+
+/* ─── Scrollbar styling ───────────────────────────────────────────────────── */
 /* Scrollbar styling */
 ::-webkit-scrollbar {
     width: 6px;
