@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, API } from "../App";
 import Sidebar from "../components/Sidebar";
@@ -7,7 +7,8 @@ import { motion } from "framer-motion";
 import {
   Bell, Settings, MessageCircle, Video, ClipboardList,
   Users, Send, AlertTriangle, Check, HelpCircle,
-  Search, X, Home, ChevronRight, BarChart3
+  Search, X, Home, ChevronRight, BarChart3,
+  RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Play, ExternalLink, TrendingUp
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -15,8 +16,18 @@ import { Textarea } from "../components/ui/textarea";
 import { Checkbox } from "../components/ui/checkbox";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
+import { Progress } from "../components/ui/progress";
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import ChatPanel from "../components/ChatPanel";
 import SupportPage from "../components/SupportPage";
+
+const fmtViews = (n) => {
+  if (!n || n === 0) return "0";
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 10000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+};
 
 const ACCENT_COLOR = "#39FF14";
 
@@ -516,168 +527,545 @@ function CampaignDashboard({ campaigns }) {
   const location = useLocation();
   const navigate = useNavigate();
   const campaignId = location.pathname.split("/")[3];
-  const campaign = campaigns.find((c) => c.campaign_id === campaignId);
-  const [stats, setStats] = useState(null);
+  const [campaign, setCampaign] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
+  const [allVideos, setAllVideos] = useState([]);
+  const [videosLoading, setVideosLoading] = useState(false);
+  const [sortField, setSortField] = useState("views");
+  const [sortDir, setSortDir] = useState("desc");
+  const [filterPlatform, setFilterPlatform] = useState("all");
+  const [filterClipper, setFilterClipper] = useState("all");
+  const [expandedMembers, setExpandedMembers] = useState(new Set());
+  const [strikingMember, setStrikingMember] = useState(null);
+  const [kickingMember, setKickingMember] = useState(null);
+  const [deletingVideo, setDeletingVideo] = useState(null);
+  const [topClips, setTopClips] = useState([]);
+  const [topClipsLoading, setTopClipsLoading] = useState(false);
+  const [viewsTimeline, setViewsTimeline] = useState(null);
+  const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
+  const [viewsPeriod, setViewsPeriod] = useState("30");
 
-  useEffect(() => {
-    if (campaignId) fetchData();
-  }, [campaignId]);
+  const fmt = fmtViews;
+  const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
+  const PLAT_ICON  = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
+  const ACCENT = "#39FF14";
 
-  const fetchData = async () => {
+  const fetchCampaign = async () => {
     try {
-      const statsRes = await fetch(`${API}/campaigns/${campaignId}/stats`, { credentials: "include" });
-      if (statsRes.ok) setStats(await statsRes.json());
-    } catch (error) {
-      console.error("Error:", error);
-    } finally {
-      setLoading(false);
-    }
+      const res = await fetch(`${API}/campaigns/${campaignId}`, { credentials: "include" });
+      if (res.ok) setCampaign(await res.json());
+    } catch {} finally { setLoading(false); }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-[#39FF14] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  const fetchAllVideos = async () => {
+    setVideosLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos`, { credentials: "include" });
+      if (res.ok) { const d = await res.json(); setAllVideos(d.videos || []); }
+    } catch {} finally { setVideosLoading(false); }
+  };
 
-  if (!campaign) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-white/50">Campagne non trouvée</p>
-      </div>
-    );
-  }
+  const fetchTopClips = async () => {
+    setTopClipsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10`, { credentials: "include" });
+      if (res.ok) { const d = await res.json(); setTopClips(d.clips || []); }
+    } catch {} finally { setTopClipsLoading(false); }
+  };
 
-  const tabs = [
-    { id: "overview", label: "Vue d'ensemble", icon: BarChart3 },
-    { id: "clippers", label: "Clippeurs", icon: Users },
-  ];
+  const fetchViewsTimeline = async (d = viewsPeriod) => {
+    setViewsTimelineLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/views-chart?days=${d}`, { credentials: "include" });
+      if (res.ok) setViewsTimeline(await res.json());
+    } catch {} finally { setViewsTimelineLoading(false); }
+  };
+
+  useEffect(() => {
+    if (campaignId) {
+      fetchCampaign();
+      fetchAllVideos();
+      fetchTopClips();
+      const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
+      return () => clearInterval(interval);
+    }
+  }, [campaignId]);
+
+  useEffect(() => {
+    if (campaign?.payment_model === "views") fetchViewsTimeline();
+  }, [campaign?.campaign_id]);
+
+  const handleAddStrike = async (userId) => {
+    setStrikingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}/strike`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Strike manuel par le manager" }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Strike ajouté (${data.strikes} total)${data.suspended ? " — clippeur suspendu" : ""}`);
+        fetchCampaign();
+      } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setStrikingMember(null);
+  };
+
+  const handleRemoveStrike = async (userId) => {
+    setStrikingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}/strike`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Strike retiré (${data.strikes} restant${data.strikes !== 1 ? "s" : ""})`);
+        fetchCampaign();
+      } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setStrikingMember(null);
+  };
+
+  const handleKickMember = async (userId) => {
+    if (!window.confirm("Retirer ce clippeur de la campagne ?")) return;
+    setKickingMember(userId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/members/${userId}`, { method: "DELETE", credentials: "include" });
+      if (res.ok) { toast.success("Clippeur retiré"); fetchCampaign(); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setKickingMember(null);
+  };
+
+  const handleDeleteVideo = async (videoId) => {
+    if (!window.confirm("Supprimer cette vidéo ?")) return;
+    setDeletingVideo(videoId);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/videos/${videoId}`, { method: "DELETE", credentials: "include" });
+      if (res.ok) { toast.success("Vidéo supprimée"); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+    setDeletingVideo(null);
+  };
+
+  // KPIs
+  const totalViews    = allVideos.reduce((s, v) => s + (v.views    || 0), 0);
+  const totalLikes    = allVideos.reduce((s, v) => s + (v.likes    || 0), 0);
+  const totalComments = allVideos.reduce((s, v) => s + (v.comments || 0), 0);
+  const totalEarnings = allVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+  const engagementRate = totalViews > 0 ? ((totalLikes + totalComments) / totalViews * 100).toFixed(1) : "0.0";
+  const avgViews = allVideos.length > 0 ? Math.round(totalViews / allVideos.length) : 0;
+
+  const activeMembers = campaign?.members?.filter(m => m.status === "active") || [];
+  const budgetPercentage = campaign?.budget_total ? Math.min(100, (campaign.budget_used / campaign.budget_total) * 100) : 0;
+
+  const displayVideos = useMemo(() => {
+    let vids = [...allVideos];
+    if (filterPlatform !== "all") vids = vids.filter(v => v.platform === filterPlatform);
+    if (filterClipper !== "all") vids = vids.filter(v => v.user_id === filterClipper);
+    vids.sort((a, b) => {
+      let av = a[sortField] ?? 0, bv = b[sortField] ?? 0;
+      if (typeof av === "string") av = av.toLowerCase();
+      if (typeof bv === "string") bv = bv.toLowerCase();
+      return sortDir === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+    });
+    return vids;
+  }, [allVideos, filterPlatform, filterClipper, sortField, sortDir]);
+
+  const toggleSort = (field) => {
+    if (sortField === field) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir("desc"); }
+  };
+
+  const SortIcon = ({ field }) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 text-white/20" />;
+    return sortDir === "asc"
+      ? <ChevronUp className="w-3 h-3" style={{ color: ACCENT }} />
+      : <ChevronDown className="w-3 h-3" style={{ color: ACCENT }} />;
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT, borderTopColor: "transparent" }} />
+    </div>
+  );
+  if (!campaign) return <div className="text-center py-12"><p className="text-white/50">Campagne non trouvée</p></div>;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      className="space-y-8"
-      data-testid="manager-campaign-dashboard"
-    >
-      <div className="flex items-start justify-between">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="manager-campaign-dashboard">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-2">{campaign.name}</h1>
-          <p className="text-white/50">Suivi de la campagne</p>
+          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <div className="flex items-center gap-3">
+            <Badge variant="outline" className="border-white/20 text-white/50 text-xs">{campaign.status}</Badge>
+            <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
+          </div>
         </div>
-        <Button
-          onClick={() => navigate(`/manager/campaign/${campaignId}/chat`)}
-          className="bg-[#39FF14] hover:bg-[#39FF14]/80 text-black font-bold"
-        >
-          <MessageCircle className="w-4 h-4 mr-2" />
-          Ouvrir le chat
-        </Button>
+        <div className="flex gap-2">
+          <button onClick={() => { fetchAllVideos(); fetchViewsTimeline(); }}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
+            <RefreshCw className="w-4 h-4" /> Actualiser
+          </button>
+          <button onClick={() => navigate(`/manager/campaign/${campaignId}/chat`)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-black text-sm font-bold transition-all"
+            style={{ background: ACCENT }}>
+            <MessageCircle className="w-4 h-4" /> Chat
+          </button>
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-white/5 rounded-xl p-1 w-fit">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === t.id
-                ? "bg-[#39FF14] text-black"
-                : "text-white/50 hover:text-white"
+      {/* TABS */}
+      <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
+        {[
+          { id: "overview", label: "Vue d'ensemble" },
+          { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
+          { id: "clip-winner", label: "🏆 Clip Winner" },
+        ].map(tab => (
+          <button key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`relative flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === tab.id ? "text-black shadow-lg" : "text-white/50 hover:text-white"
             }`}
-          >
-            <t.icon className="w-4 h-4" />
-            {t.label}
+            style={activeTab === tab.id ? { background: ACCENT } : {}}>
+            {tab.label}
+            {tab.dot && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
           </button>
         ))}
       </div>
 
+      {/* ═══ OVERVIEW TAB ═══ */}
       {activeTab === "overview" && (
-        <div className="space-y-6">
-          {/* Stats Overview */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Card className="bg-[#121212] border-white/10">
-              <CardContent className="p-6">
-                <p className="text-sm text-white/50 mb-1">Vues totales</p>
-                <p className="font-mono font-bold text-2xl text-white">
-                  {stats?.total_views?.toLocaleString() || 0}
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="bg-[#121212] border-white/10">
-              <CardContent className="p-6">
-                <p className="text-sm text-white/50 mb-1">Clippeurs actifs</p>
-                <p className="font-mono font-bold text-2xl text-[#39FF14]">
-                  {stats?.clipper_count || 0}
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="bg-[#121212] border-white/10">
-              <CardContent className="p-6">
-                <p className="text-sm text-white/50 mb-1">Strikes actifs</p>
-                <p className="font-mono font-bold text-2xl text-red-400">
-                  {stats?.clipper_stats?.filter(c => c.strikes > 0).length || 0}
-                </p>
-              </CardContent>
-            </Card>
+        <div className="space-y-5">
+          {/* KPI row */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {[
+              { label: "Vues totales",    value: fmt(totalViews),            color: "text-white" },
+              { label: "Likes",           value: fmt(totalLikes),            color: "text-[#FF007F]" },
+              { label: "Commentaires",    value: fmt(totalComments),         color: "text-white/70" },
+              { label: "Engagement",      value: `${engagementRate}%`,       color: "text-[#39FF14]" },
+              { label: "Moy. vues/vidéo", value: fmt(avgViews),              color: "text-[#00E5FF]" },
+              { label: "Gains estimés",   value: `€${totalEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
+            ].map(kpi => (
+              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Views timeline chart */}
+          <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-white font-medium">Vues par jour</p>
+              <div className="flex items-center gap-2">
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {[["7","7j"],["30","30j"],["90","90j"]].map(([val, label]) => (
+                    <button key={val}
+                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT + "50", borderTopColor: ACCENT }} />}
+              </div>
+            </div>
+            {(() => {
+              const tlData = (viewsTimeline?.timeline || []).map(d => ({
+                ...d,
+                label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+              }));
+              const hasData = tlData.some(d => d.views > 0);
+              return hasData ? (
+                <ResponsiveContainer width="100%" height={200}>
+                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="mgr-viewsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={ACCENT} stopOpacity={0.3} />
+                        <stop offset="95%" stopColor={ACCENT} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
+                      interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
+                    <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
+                    <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
+                      labelStyle={{ color: "white", fontSize: 11 }}
+                      formatter={v => [fmt(v), "Vues"]} />
+                    <Area type="monotone" dataKey="views" stroke={ACCENT} strokeWidth={2} fill="url(#mgr-viewsGrad)" dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-48 flex items-center justify-center">
+                  {viewsTimelineLoading
+                    ? <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT + "40", borderTopColor: ACCENT }} />
+                    : <p className="text-white/20 text-sm">Aucune donnée — les vues s'accumulent au fur et à mesure du tracking</p>
+                  }
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Budget + Clippers ranking */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Budget */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+              <p className="text-white font-medium">Budget & RPM</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div><p className="text-xs text-white/40">RPM</p><p className="font-mono font-bold text-lg" style={{ color: ACCENT }}>€{campaign.rpm}/1K</p></div>
+                {!campaign.budget_unlimited && campaign.budget_total && (
+                  <div><p className="text-xs text-white/40">Budget utilisé</p>
+                    <p className="text-white font-mono font-bold text-lg">€{campaign.budget_used || 0} / €{campaign.budget_total}</p>
+                  </div>
+                )}
+              </div>
+              {!campaign.budget_unlimited && campaign.budget_total && (
+                <div>
+                  <div className="flex justify-between text-xs text-white/40 mb-1">
+                    <span>Progression</span><span>{budgetPercentage.toFixed(0)}%</span>
+                  </div>
+                  <Progress value={budgetPercentage} className="h-2" />
+                </div>
+              )}
+            </div>
+
+            {/* Clippers ranking */}
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+              <p className="text-white font-medium mb-3">Classement des clippeurs</p>
+              {activeMembers.length === 0 ? (
+                <p className="text-white/30 text-sm text-center py-4">Aucun clippeur actif</p>
+              ) : (
+                <div className="space-y-2">
+                  {activeMembers.map((member, index) => {
+                    const memberVideos = allVideos.filter(v => v.user_id === member.user_id);
+                    const memberViews = memberVideos.reduce((s, v) => s + (v.views || 0), 0);
+                    const memberEarnings = memberVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+                    return (
+                      <div key={member.member_id} className="rounded-lg bg-white/5 overflow-hidden">
+                        <div className="flex items-center gap-3 p-2.5">
+                          <span className="font-mono text-sm text-white/30 w-6">#{index+1}</span>
+                          <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-black flex-shrink-0"
+                            style={{ background: ACCENT + "40", color: ACCENT }}>
+                            {(member.user_info?.display_name || "?")[0].toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white text-sm truncate">{member.user_info?.display_name || member.user_info?.name}</p>
+                            <p className="text-white/30 text-xs">{memberVideos.length} vidéo{memberVideos.length !== 1 ? "s" : ""}</p>
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            <p className="text-white text-sm font-mono">{fmt(memberViews)}</p>
+                            <p className="text-xs" style={{ color: ACCENT }}>€{memberEarnings.toFixed(2)}</p>
+                          </div>
+                          <button
+                            onClick={() => setExpandedMembers(prev => { const s = new Set(prev); s.has(member.user_id) ? s.delete(member.user_id) : s.add(member.user_id); return s; })}
+                            className="text-white/20 hover:text-white/60 text-xs px-1.5 transition-colors">⋯</button>
+                        </div>
+                        {expandedMembers.has(member.user_id) && (
+                          <div className="border-t border-white/5 px-3 py-2 space-y-2">
+                            {/* Strike management */}
+                            <div className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-white/3 border border-white/8">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-white/40 uppercase tracking-wide">Strikes</span>
+                                <div className="flex gap-0.5">
+                                  {Array.from({ length: campaign?.max_strikes || 3 }).map((_, i) => (
+                                    <span key={i} className={`w-2.5 h-2.5 rounded-full ${i < (member.strikes || 0) ? "bg-red-500" : "bg-white/10"}`} />
+                                  ))}
+                                </div>
+                                <span className="text-xs font-mono text-white/60">{member.strikes || 0}/{campaign?.max_strikes || 3}</span>
+                                {member.status === "suspended" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold">SUSPENDU</span>}
+                              </div>
+                              <div className="flex gap-1">
+                                <button onClick={() => handleRemoveStrike(member.user_id)}
+                                  disabled={strikingMember === member.user_id || (member.strikes || 0) === 0}
+                                  className="w-6 h-6 rounded-md bg-white/5 hover:bg-white/15 text-white/40 hover:text-white text-sm font-bold border border-white/10 transition-colors disabled:opacity-30">−</button>
+                                <button onClick={() => handleAddStrike(member.user_id)}
+                                  disabled={strikingMember === member.user_id}
+                                  className="w-6 h-6 rounded-md bg-red-500/10 hover:bg-red-500/25 text-red-400 text-sm font-bold border border-red-500/20 transition-colors disabled:opacity-50">+</button>
+                              </div>
+                            </div>
+                            <button onClick={() => handleKickMember(member.user_id)}
+                              disabled={kickingMember === member.user_id}
+                              className="w-full py-1 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-medium border border-red-500/20 transition-colors disabled:opacity-50">
+                              {kickingMember === member.user_id ? "Retrait..." : "🚫 Retirer de la campagne"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {activeTab === "clippers" && (
-        <Card className="bg-[#121212] border-white/10">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Users className="w-5 h-5 text-[#39FF14]" />
-              Clippeurs de la campagne
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!stats?.clipper_stats || stats.clipper_stats.length === 0 ? (
-              <p className="text-white/50 text-center py-8">Aucun clippeur actif</p>
-            ) : (
-              <div className="space-y-3">
-                {stats.clipper_stats.map((clipper, index) => (
-                  <div
-                    key={clipper.user_id}
-                    className={`flex items-center justify-between p-4 rounded-xl ${
-                      clipper.strikes > 0
-                        ? "bg-red-500/8 border border-red-500/20"
-                        : "bg-white/5 border border-white/8"
-                    }`}
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-9 h-9 rounded-full bg-[#39FF14]/20 flex items-center justify-center flex-shrink-0">
-                        <span className="text-xs font-bold text-[#39FF14]">#{index + 1}</span>
-                      </div>
-                      <div>
-                        <p className="text-white font-medium text-sm">
-                          {clipper.display_name || clipper.name || `Clippeur ${index + 1}`}
-                        </p>
-                        {clipper.strikes > 0 && (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <AlertTriangle className="w-3 h-3 text-red-400" />
-                            <span className="text-red-400 text-xs">{clipper.strikes} strike(s)</span>
-                          </div>
-                        )}
+      {/* ═══ VIDEOS TAB ═══ */}
+      {activeTab === "videos" && (
+        <div className="space-y-4">
+          {/* Filters */}
+          <div className="flex gap-3 flex-wrap">
+            <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
+              {["all","tiktok","instagram","youtube"].map(p => (
+                <button key={p} onClick={() => setFilterPlatform(p)}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${filterPlatform === p ? "bg-white/10 text-white" : "text-white/40 hover:text-white"}`}
+                  style={filterPlatform === p && p !== "all" ? { color: PLAT_COLOR[p] } : {}}>
+                  {p === "all" ? "Toutes" : `${PLAT_ICON[p]} ${p}`}
+                </button>
+              ))}
+            </div>
+            {activeMembers.length > 0 && (
+              <select value={filterClipper} onChange={e => setFilterClipper(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white/70 focus:outline-none">
+                <option value="all">Tous les clippeurs</option>
+                {activeMembers.map(m => (
+                  <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
+                ))}
+              </select>
+            )}
+            <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
+          </div>
+
+          {/* Table header */}
+          {displayVideos.length === 0 ? (
+            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
+              <TrendingUp className="w-10 h-10 mx-auto mb-3 opacity-20" />
+              <p className="text-sm">Aucune vidéo trackée</p>
+              <p className="text-xs mt-1">Le tracking démarre dès qu'un clippeur connecte son compte social.</p>
+            </div>
+          ) : (
+            <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+              <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-0 text-xs text-white/40 border-b border-white/10 px-4 py-2.5">
+                <span className="w-10" />
+                <span>Vidéo</span>
+                <button onClick={() => toggleSort("views")} className="flex items-center gap-1 hover:text-white transition-colors pr-6">Vues <SortIcon field="views" /></button>
+                <button onClick={() => toggleSort("likes")} className="flex items-center gap-1 hover:text-white transition-colors pr-6">Likes <SortIcon field="likes" /></button>
+                <button onClick={() => toggleSort("earnings")} className="flex items-center gap-1 hover:text-white transition-colors pr-6">Gains <SortIcon field="earnings" /></button>
+                <span className="w-8" />
+              </div>
+              <div className="divide-y divide-white/5">
+                {displayVideos.map(v => (
+                  <div key={v.video_id} className="grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-0 items-center px-4 py-2.5 hover:bg-white/3 transition-colors">
+                    {/* Thumbnail */}
+                    <div className="w-10 h-14 rounded-md bg-white/5 overflow-hidden mr-3 flex-shrink-0">
+                      {v.thumbnail_url
+                        ? <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" onError={e => e.target.style.display = "none"} />
+                        : <div className="w-full h-full flex items-center justify-center text-lg">{PLAT_ICON[v.platform] || "🎬"}</div>}
+                    </div>
+                    {/* Info */}
+                    <div className="min-w-0 pr-4">
+                      <a href={v.url} target="_blank" rel="noopener noreferrer"
+                        className="text-white text-xs font-medium line-clamp-2 hover:underline">{v.title || v.url || "—"}</a>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: (PLAT_COLOR[v.platform] || "#fff") + "20", color: PLAT_COLOR[v.platform] || "#fff" }}>{v.platform}</span>
+                        {v.clipper_name && <span className="text-white/30 text-[10px]">{v.clipper_name}</span>}
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className="font-mono text-white text-sm">
-                        {clipper.views?.toLocaleString()} vues
-                      </p>
-                      <p className="text-xs text-[#39FF14]">€{clipper.earnings?.toFixed(2)}</p>
+                    {/* Stats */}
+                    <span className="font-mono text-white text-xs pr-6">{fmt(v.views || 0)}</span>
+                    <span className="font-mono text-[#FF007F] text-xs pr-6">{fmt(v.likes || 0)}</span>
+                    <span className="font-mono text-xs pr-4" style={{ color: ACCENT }}>€{(v.earnings || 0).toFixed(2)}</span>
+                    {/* Actions */}
+                    <div className="flex gap-1">
+                      <a href={v.url} target="_blank" rel="noopener noreferrer"
+                        className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white/30 hover:text-white transition-colors">
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                      <button onClick={() => handleDeleteVideo(v.video_id)} disabled={deletingVideo === v.video_id}
+                        className="w-7 h-7 rounded-lg bg-red-500/10 hover:bg-red-500/20 flex items-center justify-center text-red-400/50 hover:text-red-400 transition-colors disabled:opacity-30">
+                        <X className="w-3 h-3" />
+                      </button>
                     </div>
                   </div>
                 ))}
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ CLIP WINNER TAB ═══ */}
+      {activeTab === "clip-winner" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-white font-semibold text-lg flex items-center gap-2">🏆 <span>Top 10 — Clips les plus vus</span></h3>
+              <p className="text-white/35 text-xs mt-0.5">Toutes plateformes · auto-refresh 5 min</p>
+            </div>
+            <button onClick={fetchTopClips} disabled={topClipsLoading}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40">
+              <RefreshCw className={`w-4 h-4 ${topClipsLoading ? "animate-spin" : ""}`} /> Actualiser
+            </button>
+          </div>
+
+          {topClipsLoading && topClips.length === 0 ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "#f0c04040", borderTopColor: "#f0c040" }} />
+            </div>
+          ) : topClips.length === 0 ? (
+            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
+              <p className="text-4xl mb-3">🏆</p>
+              <p className="text-sm">Aucun clip tracké pour l'instant</p>
+              <p className="text-xs mt-1">Les clips apparaîtront ici dès que le tracking sera actif.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {topClips.map((clip, i) => {
+                const platColor = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" }[clip.platform] || "#fff";
+                const medalColors = ["#FFD700","#C0C0C0","#CD7F32"];
+                const borderCol = i < 3 ? `${medalColors[i]}50` : "rgba(255,255,255,0.08)";
+                const eng = clip.views > 0
+                  ? (((clip.likes || 0) + (clip.comments || 0)) / clip.views * 100).toFixed(1) + "%"
+                  : "—";
+                return (
+                  <div key={clip.video_id || i}
+                    className="flex items-center gap-4 bg-[#121212] rounded-xl p-3 overflow-hidden"
+                    style={{ border: `1px solid ${borderCol}` }}>
+                    <div className="w-9 flex-shrink-0 text-center">
+                      {i < 3
+                        ? <span className="text-2xl font-bold leading-none" style={{ color: medalColors[i] }}>{i+1}</span>
+                        : <span className="text-lg font-bold text-white/25">#{i+1}</span>}
+                    </div>
+                    <a href={clip.url} target="_blank" rel="noopener noreferrer"
+                      className="relative flex-shrink-0 w-24 h-16 rounded-lg overflow-hidden bg-white/5 group/thumb cursor-pointer">
+                      {clip.thumbnail_url
+                        ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover group-hover/thumb:scale-105 transition-transform duration-200" onError={e => { e.target.style.display = "none"; }} />
+                        : <div className="w-full h-full flex items-center justify-center text-2xl">{PLAT_ICON[clip.platform]}</div>}
+                      <div className="absolute inset-0 bg-black/50 opacity-0 group-hover/thumb:opacity-100 transition-opacity flex items-center justify-center">
+                        <svg className="w-6 h-6 text-white drop-shadow" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                      </div>
+                      <span className="absolute bottom-0.5 left-0.5 text-[9px] font-bold px-1 py-0.5 rounded"
+                        style={{ background: `${platColor}dd`, color: "#000" }}>{clip.platform}</span>
+                    </a>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-medium truncate">
+                        {clip.title ? clip.title.slice(0, 40) + (clip.title.length > 40 ? "…" : "") : "—"}
+                      </p>
+                      <p className="text-white/30 text-xs truncate mt-0.5">{clip.clipper_name || "—"}</p>
+                    </div>
+                    <div className="flex-shrink-0 flex gap-5 items-center">
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-white text-sm">{fmt(clip.views || 0)}</p>
+                        <p className="text-[10px] text-white/30">vues</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#FF007F] text-sm">{fmt(clip.likes || 0)}</p>
+                        <p className="text-[10px] text-white/30">likes</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="font-mono font-bold text-[#f0c040] text-sm">{eng}</p>
+                        <p className="text-[10px] text-white/30">audience</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </motion.div>
   );
