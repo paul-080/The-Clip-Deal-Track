@@ -77,6 +77,25 @@ YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY', '')
 TIKWM_API_KEY = os.environ.get('TIKWM_API_KEY', '')
 RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '').strip()
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN', '').strip()
+CLIP_SCRAPER_URL = os.environ.get('CLIP_SCRAPER_URL', '').strip().rstrip('/')
+CLIP_SCRAPER_KEY = os.environ.get('CLIP_SCRAPER_KEY', '').strip()
+
+
+async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int = 30) -> list:
+    """Appelle le service ClipScraper standalone (alternative à Apify, économique)."""
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        raise ValueError("CLIP_SCRAPER_URL/KEY non configuré")
+    if platform not in ("tiktok", "instagram", "youtube"):
+        raise ValueError(f"Platform non supportée: {platform}")
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(
+            f"{CLIP_SCRAPER_URL}/v1/{platform}/{username.lstrip('@')}",
+            params={"max_videos": max_videos},
+            headers={"X-API-Key": CLIP_SCRAPER_KEY},
+        )
+    if r.status_code != 200:
+        raise ValueError(f"ClipScraper {platform} HTTP {r.status_code}: {r.text[:200]}")
+    return (r.json() or {}).get("videos", [])
 
 # Instagram session cookie rotation
 # Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
@@ -4587,7 +4606,17 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         sec_uid = user_id
         numeric_id = ""
 
-    # Priority 0: Apify (most reliable from cloud — uses residential proxies)
+    # Priority 0a: ClipScraper standalone (économique, contrôlé par nous)
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            cs_videos = await _fetch_via_clipscraper("tiktok", username)
+            if cs_videos:
+                logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username}")
+                return cs_videos
+        except Exception as e:
+            logger.warning(f"ClipScraper TikTok failed for @{username}: {e}")
+
+    # Priority 0b: Apify (fallback — proxies résidentiels)
     if APIFY_TOKEN:
         try:
             apify_videos = await _fetch_tiktok_videos_apify(username)
@@ -4746,7 +4775,17 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     """
     username = username.lstrip("@")
 
-    # Priorité 1 : Apify Instagram Reel Scraper — le plus fiable, pas de cookie
+    # Priorité 0 : ClipScraper standalone (économique, contrôlé)
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            cs_videos = await _fetch_via_clipscraper("instagram", username)
+            if cs_videos:
+                logger.info(f"ClipScraper Instagram: {len(cs_videos)} videos for @{username}")
+                return cs_videos
+        except Exception as e:
+            logger.warning(f"ClipScraper Instagram failed for @{username}: {e}")
+
+    # Priorité 1 : Apify Instagram Reel Scraper — fallback résidentiel
     if APIFY_TOKEN:
         try:
             videos = await _fetch_instagram_videos_apify(username)
