@@ -3278,10 +3278,10 @@ async def _verify_tiktok_apify(username: str) -> dict:
     last_err = "Apify TikTok verify: tous les acteurs ont échoué"
     for actor_id, payload in attempts:
         try:
-            async with httpx.AsyncClient(timeout=120) as c:
+            async with httpx.AsyncClient(timeout=35) as c:
                 r = await c.post(
                     f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 256},
+                    params={"token": APIFY_TOKEN, "timeout": 25, "memory": 256},
                     json=payload,
                 )
             logger.info(f"Apify TikTok verify {actor_id} @{username}: HTTP {r.status_code}")
@@ -3930,10 +3930,10 @@ async def _verify_instagram_apify(username: str) -> dict:
     last_err = "Apify Instagram verify: tous les acteurs ont échoué"
     for actor_id, payload in attempts:
         try:
-            async with httpx.AsyncClient(timeout=120) as c:
+            async with httpx.AsyncClient(timeout=35) as c:
                 r = await c.post(
                     f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 256},
+                    params={"token": APIFY_TOKEN, "timeout": 25, "memory": 256},
                     json=payload,
                 )
             logger.info(f"Apify Instagram verify {actor_id} @{username}: HTTP {r.status_code}")
