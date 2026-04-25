@@ -9351,11 +9351,8 @@ def _is_inapp_browser(ua: str) -> bool:
     return any(sig.lower() in ua.lower() for sig in _IN_APP_UA_SIGNATURES)
 
 def _build_breakout_page(destination: str) -> str:
-    """HTML page qui essaie de sortir des WebViews in-app (TikTok / Instagram / Facebook).
-    Stratégie :
-    - Navigateur normal : redirection immédiate.
-    - Android in-app : Intent URL générique (laisse l'utilisateur choisir Chrome/Samsung/etc) + fallback URL.
-    - iOS in-app : impossible de forcer Safari (Apple bloque). On affiche instructions + bouton Copier.
+    """HTML minimaliste : tente d'ouvrir dans le navigateur système, sinon retombe direct sur la destination.
+    Aucun bouton 'copier', aucune instruction utilisateur — silencieux.
     """
     dest_safe = destination.replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;")
     dest_no_proto = destination.replace("https://", "").replace("http://", "")
@@ -9363,73 +9360,21 @@ def _build_breakout_page(destination: str) -> str:
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Ouverture dans votre navigateur…</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redirection…</title>
   <style>
-    *{{margin:0;padding:0;box-sizing:border-box}}
-    body{{min-height:100vh;background:#0d0d0d;display:flex;flex-direction:column;align-items:center;justify-content:center;
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#fff;padding:24px;text-align:center}}
-    .icon{{font-size:52px;margin-bottom:18px}}
-    h1{{font-size:22px;font-weight:700;margin-bottom:10px;letter-spacing:-0.3px}}
-    .sub{{font-size:14px;color:rgba(255,255,255,.55);margin-bottom:28px;line-height:1.6;max-width:320px}}
-    .btn{{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;max-width:340px;padding:18px 22px;
-      background:#f0c040;color:#0d0d0d;font-weight:800;font-size:16px;border-radius:14px;text-decoration:none;
-      margin:0 auto 14px;letter-spacing:-0.2px;border:none;cursor:pointer}}
-    .btn:active{{opacity:.85}}
-    .btn-ghost{{background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.15)}}
-    .url-box{{background:#000;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 14px;
-      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:rgba(255,255,255,.7);
-      max-width:340px;margin:0 auto 16px;word-break:break-all;line-height:1.5}}
-    .steps{{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;
-      padding:16px 18px;max-width:340px;text-align:left;margin:14px auto 0}}
-    .steps-title{{font-size:11px;font-weight:700;color:rgba(255,255,255,.55);text-transform:uppercase;
-      letter-spacing:.8px;margin-bottom:10px}}
-    .step{{font-size:13px;color:rgba(255,255,255,.7);margin-bottom:6px;line-height:1.5}}
-    .step strong{{color:#fff}}
-    .spinner{{width:28px;height:28px;border:3px solid rgba(255,255,255,.12);border-top-color:#f0c040;
-      border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 24px}}
+    html,body{{margin:0;padding:0;background:#0d0d0d;color:#fff;height:100%;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      display:flex;align-items:center;justify-content:center;flex-direction:column}}
+    .spinner{{width:34px;height:34px;border:3px solid rgba(255,255,255,.12);
+      border-top-color:#f0c040;border-radius:50%;animation:spin .8s linear infinite}}
     @keyframes spin{{to{{transform:rotate(360deg)}}}}
-    #toast{{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(57,255,20,.95);
-      color:#000;padding:10px 18px;border-radius:10px;font-weight:700;font-size:13px;display:none;z-index:99}}
-    #ios-tip,#android-tip,#generic-tip{{display:none}}
+    p{{margin-top:16px;font-size:13px;color:rgba(255,255,255,.4)}}
   </style>
 </head>
 <body>
-  <div class="spinner" id="spinner"></div>
-  <div class="icon" id="icon" style="display:none">🔗</div>
-  <h1 id="title">Redirection en cours…</h1>
-  <p class="sub" id="subtitle">Nous vous redirigeons.</p>
-
-  <a class="btn" id="open-btn" href="{dest_safe}" rel="noopener noreferrer" style="display:none">
-    🌐 Ouvrir dans mon navigateur
-  </a>
-
-  <button class="btn btn-ghost" id="copy-btn" onclick="copyUrl()" style="display:none">
-    📋 Copier le lien
-  </button>
-
-  <div class="url-box" id="url-display" style="display:none">{dest_safe}</div>
-
-  <div class="steps" id="ios-tip">
-    <div class="steps-title">📱 Sur iPhone : ouvrir dans Safari</div>
-    <div class="step">1. Touchez <strong>···</strong> en haut à droite</div>
-    <div class="step">2. Choisissez <strong>« Ouvrir dans le navigateur »</strong> ou <strong>« Ouvrir dans Safari »</strong></div>
-    <div class="step">3. Ou copiez le lien et collez-le dans Safari</div>
-  </div>
-
-  <div class="steps" id="android-tip">
-    <div class="steps-title">📱 Sur Android</div>
-    <div class="step">Le bouton doré ouvre le lien dans votre navigateur (Chrome, Samsung, etc.).</div>
-    <div class="step">Si rien ne se passe : <strong>copiez le lien</strong> et collez-le dans Chrome.</div>
-  </div>
-
-  <div class="steps" id="generic-tip">
-    <div class="steps-title">💡 Astuce</div>
-    <div class="step">Copiez l'URL avec le bouton ci-dessus et collez-la dans votre navigateur.</div>
-  </div>
-
-  <div id="toast">✓ Lien copié !</div>
-
+  <div class="spinner"></div>
+  <p>Redirection…</p>
   <script>
     var dest = "{dest_safe}";
     var destNoProto = "{dest_no_proto}";
@@ -9445,63 +9390,24 @@ def _build_breakout_page(destination: str) -> str:
     var isInApp = isTikTok || isInstagram || isFacebook || isLine || isSnap ||
                   (/Android/.test(ua) && !/Chrome/.test(ua) && /Version\\//.test(ua));
 
-    function showAll(tipsId) {{
-      document.getElementById('spinner').style.display = 'none';
-      document.getElementById('icon').style.display = 'block';
-      document.getElementById('title').textContent = 'Ouvrir dans votre navigateur';
-      document.getElementById('subtitle').textContent = 'Cette page s\\'ouvre mieux dans votre navigateur principal.';
-      document.getElementById('open-btn').style.display = 'flex';
-      document.getElementById('copy-btn').style.display = 'flex';
-      document.getElementById('url-display').style.display = 'block';
-      if (tipsId) document.getElementById(tipsId).style.display = 'block';
-    }}
-
-    function copyUrl() {{
-      var url = dest;
-      var done = function() {{
-        var t = document.getElementById('toast');
-        t.style.display = 'block';
-        setTimeout(function() {{ t.style.display = 'none'; }}, 2000);
-      }};
-      if (navigator.clipboard && navigator.clipboard.writeText) {{
-        navigator.clipboard.writeText(url).then(done).catch(function() {{
-          fallbackCopy(url, done);
-        }});
-      }} else {{
-        fallbackCopy(url, done);
-      }}
-    }}
-
-    function fallbackCopy(text, cb) {{
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      try {{ document.execCommand('copy'); cb(); }} catch(e) {{}}
-      document.body.removeChild(ta);
-    }}
-
     if (!isInApp) {{
-      // Navigateur normal : redirection immédiate
+      // Navigateur normal — redirection immédiate
       window.location.replace(dest);
     }} else if (isAndroid) {{
-      // Android : essai Intent URL avec chooser système (pas de package= forcé)
-      // S.browser_fallback_url permet à Android de revenir au lien classique si l'intent échoue
-      showAll('android-tip');
+      // Android : tente Intent URL (laisse le système ouvrir Chrome/Samsung/etc)
+      // S.browser_fallback_url = retombe sur la destination si l'intent échoue
       var intentUrl = 'intent://' + destNoProto +
         '#Intent;scheme=https;action=android.intent.action.VIEW;' +
         'S.browser_fallback_url=' + encodeURIComponent(dest) + ';end';
-      // On déclenche l'intent après 400ms (laisse le temps d'afficher l'UI)
-      setTimeout(function() {{
-        try {{ window.location.href = intentUrl; }} catch(e) {{}}
-      }}, 400);
+      try {{ window.location.replace(intentUrl); }} catch(e) {{}}
+      // Fallback ultime après 1.2s (si l'intent n'a rien fait, on ouvre la destination dans le webview)
+      setTimeout(function() {{ window.location.replace(dest); }}, 1200);
     }} else if (isIOS) {{
-      // iOS : impossible de forcer Safari depuis un WebView. On affiche les instructions.
-      showAll('ios-tip');
+      // iOS : impossible de forcer Safari depuis WebView. On retombe direct sur la destination.
+      // (Apple bloque ça par design)
+      window.location.replace(dest);
     }} else {{
-      showAll('generic-tip');
+      window.location.replace(dest);
     }}
   </script>
 </body>
