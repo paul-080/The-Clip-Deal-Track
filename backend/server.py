@@ -9323,8 +9323,28 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
         except Exception as e:
             return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
 
+    async def test_clipscraper():
+        t = time.time()
+        if not CLIP_SCRAPER_URL:
+            return {"status": "not_configured", "error": "CLIP_SCRAPER_URL non configuré (déploie le service clip-scraper)"}
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(f"{CLIP_SCRAPER_URL}/health")
+            if r.status_code == 200:
+                data = r.json()
+                return {
+                    "status": "ok",
+                    "latency_ms": round((time.time() - t) * 1000),
+                    "version": data.get("version", "unknown"),
+                    "cache_size": data.get("cache_size", 0),
+                    "url": CLIP_SCRAPER_URL,
+                }
+            return {"status": "error", "error": f"HTTP {r.status_code}", "latency_ms": round((time.time() - t) * 1000)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:150], "latency_ms": round((time.time() - t) * 1000)}
+
     results = await asyncio.gather(
-        test_mongodb(), test_youtube(), test_apify(), test_stripe(), test_google_oauth(),
+        test_mongodb(), test_youtube(), test_apify(), test_stripe(), test_google_oauth(), test_clipscraper(),
         return_exceptions=False
     )
     return {
@@ -9333,6 +9353,15 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
         "apify": results[2],
         "stripe": results[3],
         "google_oauth": results[4],
+        "clipscraper": results[5],
+        "env_summary": {
+            "CLIP_SCRAPER_URL": CLIP_SCRAPER_URL or "(non défini)",
+            "CLIP_SCRAPER_KEY": "***configurée***" if CLIP_SCRAPER_KEY else "(non défini)",
+            "APIFY_TOKEN": "***configurée***" if APIFY_TOKEN else "(non défini)",
+            "YOUTUBE_API_KEY": "***configurée***" if YOUTUBE_API_KEY else "(non défini)",
+            "RESEND_API_KEY": "***configurée***" if (os.environ.get('RESEND_API_KEY') or '').strip() else "(non défini)",
+            "INSTAGRAM_SESSIONS": f"{len(INSTAGRAM_SESSIONS)} cookie(s)" if INSTAGRAM_SESSIONS else "(non défini)",
+        },
         "checked_at": datetime.now(timezone.utc).isoformat()
     }
 
