@@ -10155,38 +10155,42 @@ async def check_and_issue_strikes():
                 days_inactive = (now - last_post_at).days
 
             if days_inactive >= strike_days:
-                # Check if a strike was already issued for this inactivity period
-                recent_strike = await db.strikes.find_one({
-                    "campaign_id": campaign_id,
-                    "user_id": member["user_id"],
-                    "auto": True,
-                    "created_at": {"$gte": (now - timedelta(days=strike_days)).isoformat()}
-                })
-                if recent_strike:
+                # Strike ID déterministe basé sur date du jour : empêche les doublons même sous race condition
+                strike_day_key = now.strftime("%Y%m%d")
+                strike_id = f"auto_{campaign_id}_{member['user_id']}_{strike_day_key}"
+
+                # Upsert atomique : si déjà un strike auto aujourd'hui, ne crée rien
+                upsert_result = await db.strikes.update_one(
+                    {"strike_id": strike_id},
+                    {"$setOnInsert": {
+                        "strike_id": strike_id,
+                        "campaign_id": campaign_id,
+                        "user_id": member["user_id"],
+                        "reason": f"Inactivité de {days_inactive} jours (seuil : {strike_days} jours)",
+                        "auto": True,
+                        "created_at": now.isoformat(),
+                    }},
+                    upsert=True
+                )
+                # Si pas inserted, c'est un doublon → skip
+                if upsert_result.upserted_id is None:
                     continue
 
-                # Issue automatic strike
-                strike = {
-                    "strike_id": f"str_{uuid.uuid4().hex[:12]}",
-                    "campaign_id": campaign_id,
-                    "user_id": member["user_id"],
-                    "reason": f"Inactivité de {days_inactive} jours (seuil : {strike_days} jours)",
-                    "auto": True,
-                    "created_at": now.isoformat()
-                }
-                await db.strikes.insert_one(strike)
-
-                new_strikes = member.get("strikes", 0) + 1
-                update = {"strikes": new_strikes}
+                # Compteur de strikes en atomique via $inc — évite race condition
+                from pymongo import ReturnDocument
+                updated_member = await db.campaign_members.find_one_and_update(
+                    {"member_id": member["member_id"]},
+                    {"$inc": {"strikes": 1}},
+                    return_document=ReturnDocument.AFTER
+                )
+                new_strikes = (updated_member or {}).get("strikes", member.get("strikes", 0) + 1)
 
                 if new_strikes >= max_strikes:
-                    update["status"] = "suspended"
+                    await db.campaign_members.update_one(
+                        {"member_id": member["member_id"]},
+                        {"$set": {"status": "suspended"}}
+                    )
                     logger.info(f"Clipper {member['user_id']} suspended in campaign {campaign_id}")
-
-                await db.campaign_members.update_one(
-                    {"member_id": member["member_id"]},
-                    {"$set": update}
-                )
 
                 # Notify clipper via WebSocket
                 await manager.send_to_user(member["user_id"], {
@@ -10210,5 +10214,5 @@ async def check_and_issue_strikes():
                         "clipper_name": clipper_name,
                         "strikes": new_strikes,
                         "suspended": new_strikes >= max_strikes,
-                        "reason": strike["reason"]
+                        "reason": f"Inactivité de {days_inactive} jours (seuil : {strike_days} jours)"
                     })
