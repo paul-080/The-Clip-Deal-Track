@@ -1796,16 +1796,7 @@ async def get_pending_members(campaign_id: str, user: dict = Depends(get_current
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.get("agency_id") != user["user_id"] and user.get("role") not in ["agency", "manager"]:
-        # Check if user is a manager in the campaign
-        is_manager = await db.campaign_members.find_one({
-            "campaign_id": campaign_id,
-            "user_id": user["user_id"],
-            "role": "manager",
-            "status": "active"
-        })
-        if not is_manager:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    await _assert_campaign_authority(user, campaign)
 
     members = await db.campaign_members.find(
         {"campaign_id": campaign_id, "status": "pending"},
@@ -1829,18 +1820,33 @@ async def get_pending_members(campaign_id: str, user: dict = Depends(get_current
 
     return {"members": members}
 
+async def _assert_campaign_authority(user: dict, campaign: dict) -> None:
+    """Vérifie que l'utilisateur a autorité sur cette campagne :
+    - Soit il est le propriétaire (agence créatrice)
+    - Soit il est un manager ACTIF dans CETTE campagne
+    Lève 403 sinon. Empêche IDOR cross-campagne.
+    """
+    if campaign.get("agency_id") == user["user_id"]:
+        return  # propriétaire de la campagne
+    if user.get("role") == "manager":
+        is_active_manager = await db.campaign_members.find_one({
+            "campaign_id": campaign["campaign_id"],
+            "user_id": user["user_id"],
+            "role": "manager",
+            "status": "active"
+        })
+        if is_active_manager:
+            return
+    raise HTTPException(status_code=403, detail="Non autorisé sur cette campagne")
+
+
 @api_router.post("/campaigns/{campaign_id}/members/{member_id}/accept")
 async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = Depends(get_current_user)):
     """Accept a pending campaign member (agency/manager only)"""
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.get("agency_id") != user["user_id"] and user.get("role") not in ["agency", "manager"]:
-        is_manager = await db.campaign_members.find_one({
-            "campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager", "status": "active"
-        })
-        if not is_manager:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    await _assert_campaign_authority(user, campaign)
 
     member = await db.campaign_members.find_one({"member_id": member_id, "campaign_id": campaign_id})
     if not member:
@@ -1924,12 +1930,7 @@ async def reject_campaign_member(campaign_id: str, member_id: str, user: dict = 
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.get("agency_id") != user["user_id"] and user.get("role") not in ["agency", "manager"]:
-        is_manager = await db.campaign_members.find_one({
-            "campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager", "status": "active"
-        })
-        if not is_manager:
-            raise HTTPException(status_code=403, detail="Not authorized")
+    await _assert_campaign_authority(user, campaign)
 
     member = await db.campaign_members.find_one({"member_id": member_id, "campaign_id": campaign_id})
     if not member:
@@ -2341,6 +2342,10 @@ async def get_campaign_strikes(campaign_id: str, user: dict = Depends(get_curren
     """Get strikes for a campaign (agency/manager only)"""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign)
 
     strikes = await db.strikes.find({"campaign_id": campaign_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return {"strikes": strikes}
@@ -2350,6 +2355,10 @@ async def issue_manual_strike(campaign_id: str, member_user_id: str, body: dict,
     """Issue a manual strike to a clipper (agency/manager only)"""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign)
 
     member = await db.campaign_members.find_one({
         "campaign_id": campaign_id,
@@ -2358,7 +2367,6 @@ async def issue_manual_strike(campaign_id: str, member_user_id: str, body: dict,
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     max_strikes = campaign.get("max_strikes", 3) if campaign else 3
 
     strike = {
@@ -2395,6 +2403,10 @@ async def remove_manual_strike(campaign_id: str, member_user_id: str, user: dict
     """Remove one strike from a clipper (agency/manager only)"""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    campaign_check = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign_check:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign_check)
 
     member = await db.campaign_members.find_one({
         "campaign_id": campaign_id,
@@ -5504,6 +5516,10 @@ async def kick_member_from_campaign(campaign_id: str, member_user_id: str, user:
     """Agency/Manager kicks a clipper or manager out of a campaign."""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign_check = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign_check:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign_check)
     result = await db.campaign_members.delete_one({
         "campaign_id": campaign_id,
         "user_id": member_user_id
@@ -5522,6 +5538,10 @@ async def delete_campaign_video(campaign_id: str, video_id: str, user: dict = De
     """Agency/Manager deletes any tracked video from a campaign."""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign_check = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign_check:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign_check)
     result = await db.tracked_videos.delete_one({
         "video_id": video_id,
         "campaign_id": campaign_id,
