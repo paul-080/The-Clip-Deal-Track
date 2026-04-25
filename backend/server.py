@@ -1587,6 +1587,14 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
     except Exception:
         pass
 
+    # Réponses du formulaire de candidature : zip questions ↔ réponses
+    raw_responses = body.get("responses") or []
+    questions = campaign.get("application_questions") or []
+    responses_map = []
+    for i, q in enumerate(questions):
+        ans = raw_responses[i] if i < len(raw_responses) else ""
+        responses_map.append({"question": q, "answer": (ans or "").strip()})
+
     member = {
         "member_id": f"mem_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign_id,
@@ -1596,6 +1604,8 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
         "joined_at": datetime.now(timezone.utc).isoformat(),
         "strikes": 0,
         "last_post_at": None,
+        "responses": responses_map,
+        # Legacy fields (retro-compat)
         "tiktok": body.get("tiktok", ""),
         "instagram": body.get("instagram", ""),
         "youtube": body.get("youtube", ""),

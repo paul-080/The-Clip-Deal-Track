@@ -630,7 +630,7 @@ function DiscoverCampaigns({ onJoin }) {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCampaign, setSelectedCampaign] = useState(null);
-  const [applyForm, setApplyForm] = useState({ tiktok: "", instagram: "", youtube: "", example_url: "" });
+  const [applyForm, setApplyForm] = useState({ responses: [] });
   const [applying, setApplying] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("recent");
@@ -689,9 +689,15 @@ function DiscoverCampaigns({ onJoin }) {
       }
       return;
     }
-    if (!applyForm.tiktok && !applyForm.instagram && !applyForm.youtube) {
-      toast.error("Renseigne au moins un compte social");
-      return;
+    const questions = selectedCampaign.application_questions || [];
+    const responses = (applyForm.responses || []).map(r => (r || "").trim());
+    // Vérification : si l'agence a configuré des questions, toutes doivent être remplies
+    if (questions.length > 0) {
+      const missing = questions.findIndex((_, i) => !responses[i]);
+      if (missing !== -1) {
+        toast.error(`Réponds à : "${questions[missing]}"`);
+        return;
+      }
     }
     setApplying(true);
     try {
@@ -699,12 +705,12 @@ function DiscoverCampaigns({ onJoin }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(applyForm),
+        body: JSON.stringify({ responses }),
       });
       if (res.ok) {
         toast.success("Candidature envoyée !");
         setSelectedCampaign(null);
-        setApplyForm({ tiktok: "", instagram: "", youtube: "", example_url: "" });
+        setApplyForm({ responses: [] });
         if (onJoin) onJoin();
       } else {
         const err = await res.json();
@@ -797,31 +803,32 @@ function DiscoverCampaigns({ onJoin }) {
               <p className="text-sm text-[#39FF14]/80 bg-[#39FF14]/10 rounded-lg px-3 py-2">
                 ⚡ Rejoindre instantanément — aucun formulaire requis
               </p>
+            ) : (selectedCampaign.application_questions || []).length === 0 ? (
+              <p className="text-sm text-white/60 bg-white/5 rounded-lg px-3 py-2">
+                Confirme ta candidature ci-dessous. L'agence n'a pas configuré de questions personnalisées.
+              </p>
             ) : (
               <p className="text-sm text-white/60">
-                {selectedCampaign.payment_model === "clicks"
-                  ? "Renseigne tes comptes sociaux (facultatif pour les campagnes au clic)."
-                  : "Renseigne tes comptes sociaux pour postuler. Ils seront trackés automatiquement dès ton acceptation."}
+                Réponds aux questions ci-dessous pour postuler.
               </p>
             )}
-            {selectedCampaign.application_form_enabled !== false && (
+            {selectedCampaign.application_form_enabled !== false && (selectedCampaign.application_questions || []).length > 0 && (
               <div className="space-y-3">
-                <div>
-                  <label className="block text-xs text-white/50 mb-1">TikTok (@pseudo)</label>
-                  <Input value={applyForm.tiktok} onChange={(e) => setApplyForm(p => ({ ...p, tiktok: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                </div>
-                <div>
-                  <label className="block text-xs text-white/50 mb-1">Instagram (@pseudo)</label>
-                  <Input value={applyForm.instagram} onChange={(e) => setApplyForm(p => ({ ...p, instagram: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                </div>
-                <div>
-                  <label className="block text-xs text-white/50 mb-1">YouTube (@pseudo)</label>
-                  <Input value={applyForm.youtube} onChange={(e) => setApplyForm(p => ({ ...p, youtube: e.target.value }))} placeholder="@monpseudo" className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                </div>
-                <div>
-                  <label className="block text-xs text-white/50 mb-1">Exemple de clip (URL)</label>
-                  <Input value={applyForm.example_url} onChange={(e) => setApplyForm(p => ({ ...p, example_url: e.target.value }))} placeholder="https://tiktok.com/..." className="bg-white/5 border-white/10 text-white placeholder:text-white/30" />
-                </div>
+                {(selectedCampaign.application_questions || []).map((q, i) => (
+                  <div key={i}>
+                    <label className="block text-xs text-white/70 mb-1 font-medium">{q}</label>
+                    <Input
+                      value={(applyForm.responses || [])[i] || ""}
+                      onChange={(e) => setApplyForm(p => {
+                        const r = [...(p.responses || [])];
+                        r[i] = e.target.value;
+                        return { ...p, responses: r };
+                      })}
+                      placeholder="Ta réponse…"
+                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                    />
+                  </div>
+                ))}
               </div>
             )}
             <div className="flex gap-3 pt-2">

@@ -2474,6 +2474,17 @@ function CampaignDashboard({ campaigns }) {
                         </span>
                       </div>
                     )}
+                    {/* Réponses au formulaire de candidature */}
+                    {Array.isArray(member.responses) && member.responses.length > 0 && (
+                      <div className="mt-3 space-y-1.5 bg-white/3 border border-white/8 rounded-lg p-3">
+                        {member.responses.map((r, idx) => (
+                          <div key={idx} className="text-xs">
+                            <p className="text-white/50 font-medium">{r.question}</p>
+                            <p className="text-white/85 mt-0.5 break-words">{r.answer || <span className="italic text-white/30">(pas de réponse)</span>}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex gap-2 flex-shrink-0">
                     <button onClick={() => handleAcceptMember(member.member_id)} disabled={processingMember === member.member_id}
