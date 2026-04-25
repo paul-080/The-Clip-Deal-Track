@@ -28,7 +28,8 @@ import { motion } from "framer-motion";
 import {
   Home, Search, Smartphone, CreditCard, Settings, MessageCircle,
   Video, TrendingUp, Eye, DollarSign, Plus, Trash2, Check, X, AlertTriangle,
-  Heart, Share2, BarChart2, Link2, ChevronRight, HelpCircle, Copy, RefreshCw, MousePointerClick
+  Heart, Share2, BarChart2, Link2, ChevronRight, HelpCircle, Copy, RefreshCw, MousePointerClick,
+  ThumbsUp, ThumbsDown
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -165,6 +166,8 @@ export default function ClipperDashboard() {
 function PostCard({ ann, currentUser }) {
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(ann.likes || 0);
+  const [disliked, setDisliked] = useState(false);
+  const [dislikeCount, setDislikeCount] = useState(ann.dislikes || 0);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState("");
@@ -180,17 +183,40 @@ function PostCard({ ann, currentUser }) {
   useEffect(() => {
     fetch(`${API}/announcements/${ann.announcement_id}/likes`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) { setLiked(d.liked); setLikeCount(d.count); } })
+      .then(d => {
+        if (d) {
+          setLiked(d.liked);
+          setLikeCount(d.count);
+          setDisliked(d.disliked || false);
+          setDislikeCount(d.dislike_count || 0);
+        }
+      })
       .catch(() => {});
   }, [ann.announcement_id]);
 
   const toggleLike = async () => {
-    const prev = liked;
-    setLiked(!prev);
-    setLikeCount(c => prev ? c - 1 : c + 1);
     try {
       const r = await fetch(`${API}/announcements/${ann.announcement_id}/like`, { method: "POST", credentials: "include" });
-      if (r.ok) { const d = await r.json(); setLiked(d.liked); setLikeCount(d.count); }
+      if (r.ok) {
+        const d = await r.json();
+        setLiked(d.liked);
+        setLikeCount(d.count);
+        setDisliked(d.disliked || false);
+        setDislikeCount(d.dislike_count || 0);
+      }
+    } catch {}
+  };
+
+  const toggleDislike = async () => {
+    try {
+      const r = await fetch(`${API}/announcements/${ann.announcement_id}/dislike`, { method: "POST", credentials: "include" });
+      if (r.ok) {
+        const d = await r.json();
+        setDisliked(d.disliked);
+        setDislikeCount(d.dislike_count);
+        setLiked(d.liked || false);
+        setLikeCount(d.count || 0);
+      }
     } catch {}
   };
 
@@ -295,8 +321,15 @@ function PostCard({ ann, currentUser }) {
             onClick={toggleLike}
             className={`flex items-center gap-1.5 text-sm transition-colors ${liked ? "text-[#FF007F]" : "text-white/40 hover:text-white/70"}`}
           >
-            <Heart className={`w-4 h-4 transition-all ${liked ? "fill-[#FF007F] scale-110" : ""}`} />
-            <span>{likeCount > 0 ? likeCount : ""} Comme</span>
+            <ThumbsUp className={`w-4 h-4 transition-all ${liked ? "fill-[#FF007F] scale-110" : ""}`} />
+            <span>{likeCount > 0 ? likeCount : ""}</span>
+          </button>
+          <button
+            onClick={toggleDislike}
+            className={`flex items-center gap-1.5 text-sm transition-colors ${disliked ? "text-white" : "text-white/40 hover:text-white/70"}`}
+          >
+            <ThumbsDown className={`w-4 h-4 transition-all ${disliked ? "fill-white scale-110" : ""}`} />
+            <span>{dislikeCount > 0 ? dislikeCount : ""}</span>
           </button>
           <button
             onClick={toggleComments}

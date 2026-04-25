@@ -6911,6 +6911,7 @@ async def create_announcement(ann_data: AnnouncementCreate, user: dict = Depends
 
 @api_router.post("/announcements/{announcement_id}/like")
 async def toggle_like(announcement_id: str, user: dict = Depends(get_current_user)):
+    """Toggle like — supprime auto le dislike si présent (mutuellement exclusif)."""
     user_id = user["user_id"]
     existing = await db.announcement_likes.find_one({"announcement_id": announcement_id, "user_id": user_id})
     if existing:
@@ -6919,16 +6920,41 @@ async def toggle_like(announcement_id: str, user: dict = Depends(get_current_use
     else:
         await db.announcement_likes.insert_one({"announcement_id": announcement_id, "user_id": user_id})
         liked = True
-    count = await db.announcement_likes.count_documents({"announcement_id": announcement_id})
-    return {"liked": liked, "count": count}
+        # Supprime dislike si présent (mutuellement exclusif)
+        await db.announcement_dislikes.delete_one({"announcement_id": announcement_id, "user_id": user_id})
+    like_count = await db.announcement_likes.count_documents({"announcement_id": announcement_id})
+    dislike_count = await db.announcement_dislikes.count_documents({"announcement_id": announcement_id})
+    disliked = await db.announcement_dislikes.find_one({"announcement_id": announcement_id, "user_id": user_id}) is not None
+    return {"liked": liked, "count": like_count, "disliked": disliked, "dislike_count": dislike_count}
+
+
+@api_router.post("/announcements/{announcement_id}/dislike")
+async def toggle_dislike(announcement_id: str, user: dict = Depends(get_current_user)):
+    """Toggle dislike — supprime auto le like si présent (mutuellement exclusif)."""
+    user_id = user["user_id"]
+    existing = await db.announcement_dislikes.find_one({"announcement_id": announcement_id, "user_id": user_id})
+    if existing:
+        await db.announcement_dislikes.delete_one({"announcement_id": announcement_id, "user_id": user_id})
+        disliked = False
+    else:
+        await db.announcement_dislikes.insert_one({"announcement_id": announcement_id, "user_id": user_id})
+        disliked = True
+        # Supprime like si présent
+        await db.announcement_likes.delete_one({"announcement_id": announcement_id, "user_id": user_id})
+    like_count = await db.announcement_likes.count_documents({"announcement_id": announcement_id})
+    dislike_count = await db.announcement_dislikes.count_documents({"announcement_id": announcement_id})
+    liked = await db.announcement_likes.find_one({"announcement_id": announcement_id, "user_id": user_id}) is not None
+    return {"disliked": disliked, "dislike_count": dislike_count, "liked": liked, "count": like_count}
 
 
 @api_router.get("/announcements/{announcement_id}/likes")
 async def get_likes(announcement_id: str, user: dict = Depends(get_current_user)):
     user_id = user["user_id"]
-    count = await db.announcement_likes.count_documents({"announcement_id": announcement_id})
+    like_count = await db.announcement_likes.count_documents({"announcement_id": announcement_id})
+    dislike_count = await db.announcement_dislikes.count_documents({"announcement_id": announcement_id})
     liked = await db.announcement_likes.find_one({"announcement_id": announcement_id, "user_id": user_id}) is not None
-    return {"count": count, "liked": liked}
+    disliked = await db.announcement_dislikes.find_one({"announcement_id": announcement_id, "user_id": user_id}) is not None
+    return {"count": like_count, "liked": liked, "dislike_count": dislike_count, "disliked": disliked}
 
 
 @api_router.get("/announcements/{announcement_id}/comments")
