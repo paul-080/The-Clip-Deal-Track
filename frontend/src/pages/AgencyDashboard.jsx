@@ -29,13 +29,15 @@ import {
   Home, Search, Plus, Link2, CreditCard, Settings, MessageCircle,
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
   TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
-  ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle, MousePointerClick, Calendar
+  ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle, MousePointerClick, Calendar,
+  ThumbsUp, ThumbsDown, Share2, ChevronRight, BarChart2, X
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
+import { PostCard, PostComposer } from "../components/AnnouncementFeed";
 import { Checkbox } from "../components/ui/checkbox";
 import { Badge } from "../components/ui/badge";
 import { Progress } from "../components/ui/progress";
@@ -212,103 +214,25 @@ function WelcomePage() {
   );
 }
 
-// Agency Home with Announcements
+// Agency Home with Announcements (uses shared PostCard + PostComposer)
 function AgencyHome({ announcements, onUpdate }) {
-  const [showForm, setShowForm] = useState(false);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const handleSubmit = async () => {
-    if (!title.trim() || !content.trim()) {
-      toast.error("Veuillez remplir tous les champs");
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const res = await fetch(`${API}/announcements`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ title, content }),
-      });
-
-      if (res.ok) {
-        toast.success("Annonce publiée");
-        setTitle("");
-        setContent("");
-        setShowForm(false);
-        onUpdate();
-      }
-    } catch (error) {
-      toast.error("Erreur lors de la publication");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
+  const { user } = useAuth();
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="space-y-8"
+      className="space-y-6"
       data-testid="agency-home"
     >
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-2">Accueil — Annonces</h1>
-          <p className="text-white/50">Publiez des annonces pour vos clippeurs</p>
-        </div>
-        <Button
-          onClick={() => setShowForm(!showForm)}
-          className="bg-[#FF007F] hover:bg-[#FF007F]/80 text-white"
-          data-testid="new-announcement-btn"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Nouvelle annonce
-        </Button>
+      <div>
+        <h1 className="font-display font-bold text-3xl text-white mb-2">Accueil — Annonces</h1>
+        <p className="text-white/50">Publiez des annonces pour vos clippeurs (avec photo, like, dislike, commentaires)</p>
       </div>
 
-      {showForm && (
-        <Card className="bg-[#121212] border-[#FF007F]/30">
-          <CardContent className="p-6 space-y-4">
-            <Input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Titre de l'annonce"
-              className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-              data-testid="announcement-title-input"
-            />
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Contenu de l'annonce..."
-              rows={4}
-              className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
-              data-testid="announcement-content-input"
-            />
-            <div className="flex gap-2">
-              <Button
-                onClick={handleSubmit}
-                disabled={isSubmitting}
-                className="bg-[#FF007F] hover:bg-[#FF007F]/80 text-white"
-                data-testid="publish-announcement-btn"
-              >
-                {isSubmitting ? "Publication..." : "Publier"}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setShowForm(false)}
-                className="border-white/10 text-white"
-              >
-                Annuler
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Composer (avec upload photo) */}
+      <PostComposer user={user} onPosted={onUpdate} />
 
+      {/* Feed */}
       {announcements.length === 0 ? (
         <Card className="bg-[#121212] border-white/10">
           <CardContent className="p-8 text-center">
@@ -318,17 +242,7 @@ function AgencyHome({ announcements, onUpdate }) {
       ) : (
         <div className="space-y-4">
           {announcements.map((ann) => (
-            <Card key={ann.announcement_id} className="bg-[#121212] border-white/10">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-bold text-lg text-white">{ann.title}</h3>
-                  <span className="text-xs text-white/30">
-                    {new Date(ann.created_at).toLocaleDateString("fr-FR")}
-                  </span>
-                </div>
-                <p className="text-white/60">{ann.content}</p>
-              </CardContent>
-            </Card>
+            <PostCard key={ann.announcement_id} ann={ann} currentUser={user} />
           ))}
         </div>
       )}
