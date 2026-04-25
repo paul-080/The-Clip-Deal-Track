@@ -5408,7 +5408,20 @@ async def assign_account_to_campaign(campaign_id: str, account_id: str, user: di
     })
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
+    # Vérifie que la plateforme du compte est autorisée par la campagne
+    campaign_doc = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "platforms": 1, "name": 1})
+    if campaign_doc:
+        allowed_platforms = campaign_doc.get("platforms") or []
+        # Si la liste est vide → autoriser tout (legacy / non configuré)
+        if allowed_platforms and account["platform"] not in allowed_platforms:
+            platforms_label = ", ".join(allowed_platforms) or "aucune"
+            raise HTTPException(
+                status_code=400,
+                detail=f"La campagne « {campaign_doc.get('name', '')} » n'accepte que les plateformes : {platforms_label}. "
+                       f"Demande à l'agence d'ajouter {account['platform']} dans les paramètres de la campagne."
+            )
+
     existing = await db.campaign_social_accounts.find_one({
         "campaign_id": campaign_id,
         "account_id": account_id
@@ -6356,6 +6369,15 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
         raise HTTPException(status_code=400, detail="URL requise")
     if platform not in ("tiktok", "youtube", "instagram"):
         raise HTTPException(status_code=400, detail="Plateforme invalide")
+    # Vérifie que la plateforme est autorisée par la campagne
+    allowed_platforms = campaign.get("platforms") or []
+    if allowed_platforms and platform not in allowed_platforms:
+        platforms_label = ", ".join(allowed_platforms) or "aucune"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cette campagne n'accepte que : {platforms_label}. "
+                   f"Modifie les plateformes dans l'onglet ⚙️ Paramètres pour ajouter {platform}."
+        )
 
     # Fetch video stats — each platform function is self-contained with its own timeout and never raises
     try:

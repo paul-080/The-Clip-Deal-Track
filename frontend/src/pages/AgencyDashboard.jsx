@@ -2166,17 +2166,26 @@ function CampaignDashboard({ campaigns }) {
                   )}
                 </div>
 
-                {/* Plateforme */}
+                {/* Plateforme — filtré par les plateformes autorisées de la campagne */}
                 <div>
                   <label className="text-xs text-white/50 block mb-1.5">Plateforme *</label>
                   <div className="flex gap-2">
-                    {[["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]].map(([p, icon]) => (
-                      <button key={p} onClick={() => setManualVideoForm(f => ({ ...f, platform: p }))}
-                        className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${manualVideoForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
-                        {icon} {p}
-                      </button>
-                    ))}
+                    {(() => {
+                      const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : ["tiktok","instagram","youtube"];
+                      const ALL = [["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]];
+                      return ALL.filter(([p]) => allowed.includes(p)).map(([p, icon]) => (
+                        <button key={p} onClick={() => setManualVideoForm(f => ({ ...f, platform: p }))}
+                          className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${manualVideoForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
+                          {icon} {p}
+                        </button>
+                      ));
+                    })()}
                   </div>
+                  {campaign?.platforms && campaign.platforms.length > 0 && campaign.platforms.length < 3 && (
+                    <p className="text-xs text-white/40 mt-1.5">
+                      Pour ajouter d'autres plateformes, va dans ⚙️ Paramètres → Plateformes acceptées.
+                    </p>
+                  )}
                 </div>
 
                 {/* URL */}
@@ -2741,6 +2750,34 @@ function CampaignDashboard({ campaigns }) {
                 placeholder="Illimité"
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
               />
+            </div>
+
+            {/* Plateformes acceptées (modifiable) */}
+            <div className="space-y-2">
+              <label className="text-xs text-white/50 font-medium">Plateformes acceptées</label>
+              <div className="flex gap-2">
+                {[["tiktok","🎵 TikTok"], ["instagram","📸 Instagram"], ["youtube","▶️ YouTube"]].map(([p, label]) => {
+                  const isSelected = (settingsForm.platforms || []).includes(p);
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setSettingsForm(prev => {
+                        const platforms = prev.platforms || [];
+                        return { ...prev, platforms: isSelected ? platforms.filter(x => x !== p) : [...platforms, p] };
+                      })}
+                      className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-all ${
+                        isSelected
+                          ? "bg-[#FF007F]/15 border-[#FF007F]/40 text-[#FF007F]"
+                          : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-white/35">Active/désactive les plateformes que tes clippeurs peuvent utiliser pour cette campagne.</p>
             </div>
 
             <button
