@@ -4,6 +4,25 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Force les options des <select> natifs à être dark (sinon blanc sur blanc, illisible) */
+select {
+  color: #fff;
+  background-color: #1a1a1a;
+}
+select option {
+  background-color: #1a1a1a;
+  color: #fff;
+  padding: 8px 12px;
+}
+select option:checked,
+select option:hover {
+  background-color: #2a2a2a;
+  color: #fff;
+}
+select option:disabled {
+  color: rgba(255, 255, 255, 0.3);
+}
+
 @layer base {
     :root {
         --background: 0 0% 4%;
