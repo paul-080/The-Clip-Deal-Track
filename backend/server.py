@@ -5100,6 +5100,29 @@ async def run_video_tracking():
                 continue
             platform = account["platform"]
             username = account["username"]
+
+            # ── Smart cache COMPTE : skip Apify si pas de growth récent ──
+            # Seuls les comptes "actifs" (avec growth) gardent un tracking 6h.
+            # Comptes "stagnants" (no growth depuis 1 scan) → tracking 12h.
+            # Comptes "morts" (no growth depuis 3 scans + total < 1000 vues) → tracking 24h.
+            # YouTube est gratuit (API officielle), on ne skip jamais.
+            try:
+                last_tracked = account.get("last_tracked_at")
+                last_growth = account.get("last_growth", None)
+                last_total = account.get("last_total_views", 0) or 0
+                if platform != "youtube" and last_tracked and last_growth is not None:
+                    last_dt = _parse_utc(last_tracked) or datetime.now(timezone.utc)
+                    elapsed_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                    # Comptes très inactifs : 24h
+                    if last_growth == 0 and last_total < 1000 and elapsed_hours < 24:
+                        logger.info(f"Skip {platform}/@{username} — cold (no growth, low views) — wait 24h")
+                        continue
+                    # Comptes stagnants : 12h
+                    if last_growth == 0 and elapsed_hours < 12:
+                        logger.info(f"Skip {platform}/@{username} — stagnant (no growth) — wait 12h")
+                        continue
+            except Exception:
+                pass  # En cas de doute, on scrape
             # YouTube: if channel_id is missing (verified via HTTP fallback), try to re-verify
             if platform == "youtube" and not account.get("platform_channel_id") and YOUTUBE_API_KEY:
                 try:
@@ -5144,7 +5167,20 @@ async def run_video_tracking():
                     )
                     await asyncio.sleep(0.5)
                     continue
+
+                # ── Smart cache : récupère les vidéos existantes pour comparer growth ──
+                existing_map = {}
+                try:
+                    existing_docs = await db.tracked_videos.find(
+                        {"account_id": account_id},
+                        {"_id": 0, "platform_video_id": 1, "views": 1}
+                    ).to_list(500)
+                    existing_map = {d["platform_video_id"]: d.get("views", 0) for d in existing_docs}
+                except Exception:
+                    pass
+
                 saved_count = 0
+                skipped_cold = 0
                 for vid in videos:
                     if not vid.get("platform_video_id"):
                         continue
@@ -5152,7 +5188,17 @@ async def run_video_tracking():
                     pub_dt = _parse_utc(vid.get("published_at"))
                     if assigned_cutoff and pub_dt and pub_dt < assigned_cutoff:
                         continue
-                    earnings = (vid["views"] / 1000) * rpm
+
+                    # ── Smart cache : skip update si video froide (< 100 vues ET pas de growth) ──
+                    new_views = int(vid.get("views", 0) or 0)
+                    old_views = int(existing_map.get(vid["platform_video_id"], 0) or 0)
+                    has_growth = new_views > old_views
+                    is_cold = (not has_growth) and new_views < 100 and old_views > 0
+                    if is_cold:
+                        skipped_cold += 1
+                        continue
+
+                    earnings = (new_views / 1000) * rpm
                     set_fields = {
                         "platform_video_id": vid["platform_video_id"],
                         "account_id": account_id,
@@ -5162,7 +5208,7 @@ async def run_video_tracking():
                         "url": vid.get("url", ""),
                         "title": vid.get("title"),
                         "thumbnail_url": vid.get("thumbnail_url"),
-                        "views": vid["views"],
+                        "views": new_views,
                         "likes": vid["likes"],
                         "comments": vid["comments"],
                         "published_at": vid.get("published_at"),
@@ -5179,10 +5225,19 @@ async def run_video_tracking():
                         saved_count += 1
                     except Exception as upsert_err:
                         logger.warning(f"Failed to upsert video {vid.get('platform_video_id')} for {platform}/@{username}: {upsert_err}")
-                logger.info(f"Tracked {saved_count} post-campaign videos for {platform}/@{username} (campaign {campaign_id})")
+                logger.info(f"Tracked {saved_count} videos for {platform}/@{username} ({skipped_cold} skipped as cold)")
+
+                # ── Smart cache compte : track total_views pour ajuster fréquence future ──
+                new_account_total = sum(int(v.get("views", 0) or 0) for v in videos)
+                old_account_total = account.get("last_total_views", 0) or 0
+                account_growth = new_account_total - old_account_total
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
-                    {"$set": {"last_tracked_at": now_iso}}
+                    {"$set": {
+                        "last_tracked_at": now_iso,
+                        "last_total_views": new_account_total,
+                        "last_growth": account_growth,
+                    }}
                 )
                 # jitter to reduce rate-limit risk
                 await asyncio.sleep(1)
