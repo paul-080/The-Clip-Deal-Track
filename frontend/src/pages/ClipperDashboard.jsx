@@ -1854,10 +1854,10 @@ function CampaignDashboard({ campaigns, clipperStats }) {
     } catch {}
   };
 
-  const fetchTopClips = async () => {
+  const fetchTopClips = async (period = "all") => {
     setTopClipsLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10`, { credentials: "include" });
+      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10&period=${period}`, { credentials: "include" });
       if (res.ok) { const d = await res.json(); setTopClips(d.clips || []); }
     } catch {}
     finally { setTopClipsLoading(false); }
@@ -2459,20 +2459,39 @@ function ClipWinnerTab({ clips, loading, onRefresh, accentColor = "#f0c040" }) {
   };
   const platIcon = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
   const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
+  const [period, setPeriod] = useState("all");
+  const PERIODS = [["24h","24h"],["7d","7j"],["30d","30j"],["all","Tout"]];
+  const periodLabel = { "24h": "dernières 24h", "7d": "7 derniers jours", "30d": "30 derniers jours", "all": "depuis toujours" }[period];
+
+  // Re-fetch when period changes (parent must accept period as arg)
+  useEffect(() => {
+    if (onRefresh) onRefresh(period);
+    // eslint-disable-next-line
+  }, [period]);
 
   return (
     <div className="space-y-3">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header + sélecteur de période */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xl">🏆</span>
-          <h2 className="text-white font-semibold">Top 10 clips de la campagne</h2>
-          <span className="text-xs text-white/30">· auto-refresh toutes les 5 min</span>
+          <h2 className="text-white font-semibold">Top 10 clips · {periodLabel}</h2>
         </div>
-        <button onClick={onRefresh} disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs transition-all disabled:opacity-40">
-          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Actualiser
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+            {PERIODS.map(([val, label]) => (
+              <button key={val} onClick={() => setPeriod(val)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${period === val ? "text-black" : "text-white/50 hover:text-white"}`}
+                style={period === val ? { background: accentColor } : {}}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => onRefresh && onRefresh(period)} disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-white text-xs transition-all disabled:opacity-40">
+            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Actualiser
+          </button>
+        </div>
       </div>
 
       {loading && clips.length === 0 ? (

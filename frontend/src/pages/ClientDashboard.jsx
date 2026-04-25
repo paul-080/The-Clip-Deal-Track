@@ -199,10 +199,10 @@ function CampaignView({ campaigns }) {
     } catch {} finally { setViewsTimelineLoading(false); }
   };
 
-  const fetchTopClips = async () => {
+  const fetchTopClips = async (period = "all") => {
     setTopClipsLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10`, { credentials: "include" });
+      const res = await fetch(`${API}/campaigns/${campaignId}/top-clips?limit=10&period=${period}`, { credentials: "include" });
       if (res.ok) { const d = await res.json(); setTopClips(d.clips || []); }
     } catch {} finally { setTopClipsLoading(false); }
   };
@@ -478,18 +478,31 @@ function ClientClipWinner({ clips, loading, onRefresh }) {
   const medalColors = ["#FFD700", "#C0C0C0", "#CD7F32"];
   const platColor = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
   const platIcon = { tiktok: "🎵", instagram: "📸", youtube: "▶️" };
+  const [period, setPeriod] = useState("all");
+  const periodLabel = { "24h":"Dernières 24h","7d":"7 derniers jours","30d":"30 derniers jours","all":"Depuis toujours" }[period];
+  useEffect(() => { if (onRefresh) onRefresh(period); /* eslint-disable-next-line */ }, [period]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h3 className="text-white font-semibold text-lg flex items-center gap-2">🏆 Top 10 — Clips les plus vus</h3>
-          <p className="text-white/35 text-xs mt-0.5">Toutes plateformes · auto-refresh 5 min</p>
+          <p className="text-white/35 text-xs mt-0.5">{periodLabel} · auto-refresh 5 min</p>
         </div>
-        <button onClick={onRefresh} disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40">
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+            {[["24h","24h"],["7d","7j"],["30d","30j"],["all","Tout"]].map(([val, label]) => (
+              <button key={val} onClick={() => setPeriod(val)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${period === val ? "bg-[#FFB300] text-black" : "text-white/50 hover:text-white"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => onRefresh && onRefresh(period)} disabled={loading}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all border border-white/10 disabled:opacity-40">
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
+          </button>
+        </div>
       </div>
 
       {loading && clips.length === 0 ? (

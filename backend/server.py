@@ -6237,10 +6237,22 @@ async def get_my_campaign_videos(campaign_id: str, user: dict = Depends(get_curr
     return {"videos": videos}
 
 @api_router.get("/campaigns/{campaign_id}/top-clips")
-async def get_campaign_top_clips(campaign_id: str, limit: int = 10, user: dict = Depends(get_current_user)):
-    """Top N videos by views for this campaign — visible to all roles."""
+async def get_campaign_top_clips(
+    campaign_id: str,
+    limit: int = 10,
+    period: str = "all",   # "24h" | "7d" | "30d" | "all"
+    user: dict = Depends(get_current_user)
+):
+    """Top N videos by views for this campaign — visible to all roles.
+    period: filtre les vidéos par date de publication (depuis quand publiées)."""
+    from datetime import timedelta
+    PERIOD_DAYS = {"24h": 1, "7d": 7, "30d": 30}
+    query: dict = {"campaign_id": campaign_id, "views": {"$gt": 0}}
+    if period in PERIOD_DAYS:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=PERIOD_DAYS[period])).isoformat()
+        query["published_at"] = {"$gte": cutoff}
     raw = await db.tracked_videos.find(
-        {"campaign_id": campaign_id, "views": {"$gt": 0}},
+        query,
         {"_id": 0}
     ).sort("views", -1).to_list(limit)
 
