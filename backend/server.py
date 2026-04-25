@@ -4980,7 +4980,8 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
 
 async def _fetch_single_youtube_video(url: str) -> dict:
     """Fetch stats for a single YouTube video URL via YouTube Data API. Never raises — always returns a valid dict."""
-    m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+    # Supporte tous les formats : watch?v= / youtu.be/ / shorts/ / embed/ / v/ / live/
+    m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', url)
     video_id = m.group(1) if m else None
     fallback = {
         "platform_video_id": video_id or f"yt_{uuid.uuid4().hex[:8]}",
@@ -5796,7 +5797,7 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
                     _fetch_single_youtube_video(video_url), timeout=15
                 )
             except Exception:
-                m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', video_url)
+                m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', video_url)
                 video_id = m.group(1) if m else f"yt_{uuid.uuid4().hex[:8]}"
                 vid_data = {
                     "platform_video_id": video_id,
@@ -6336,7 +6337,7 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
             m = re.search(r'/video/(\d+)', url)
             vid_id = m.group(1) if m else None
         elif platform == "youtube":
-            m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+            m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', url)
             vid_id = m.group(1) if m else None
         elif platform == "instagram":
             m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
