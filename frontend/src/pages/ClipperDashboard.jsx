@@ -1801,6 +1801,25 @@ function CampaignDashboard({ campaigns, clipperStats }) {
   const [leavingCampaign, setLeavingCampaign] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const navigate = useNavigate();
+  // Period stats (mes données uniquement)
+  const [periodStats, setPeriodStats] = useState(null);
+  const [periodSel, setPeriodSel] = useState("30d");
+  const [periodOffset, setPeriodOffset] = useState(0);
+  const [periodLoading, setPeriodLoading] = useState(false);
+
+  const fetchMyPeriodStats = async (p = periodSel, off = periodOffset) => {
+    setPeriodLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/my-period-stats?period=${p}&offset=${off}`, { credentials: "include" });
+      if (res.ok) setPeriodStats(await res.json());
+    } catch {}
+    finally { setPeriodLoading(false); }
+  };
+
+  useEffect(() => {
+    if (campaignId && activeTab === "overview") fetchMyPeriodStats(periodSel, periodOffset);
+    // eslint-disable-next-line
+  }, [campaignId, activeTab, periodSel, periodOffset]);
 
   // Stats perso depuis le parent (déjà fetchées)
   const myStats = clipperStats?.campaign_stats?.find((s) => s.campaign_id === campaignId);
@@ -2056,6 +2075,56 @@ function CampaignDashboard({ campaigns, clipperStats }) {
 
       {/* ══════ ONGLET OVERVIEW ══════ */}
       {activeTab === "overview" && (<>
+
+      {/* ═══ Stats par période (mes données uniquement) ═══ */}
+      {(() => {
+        const PERIODS = [["24h","24h"],["7d","7j"],["30d","30j"],["year","An"],["all","Tout"]];
+        const canPrev = periodSel !== "all";
+        const canNext = periodOffset > 0;
+        return (
+          <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-white font-medium text-sm">Mes stats par période</p>
+                <p className="text-xs text-white/40 mt-0.5">{periodStats?.period_label || "Sélectionnez une période"}{periodOffset > 0 ? ` (il y a ${periodOffset} période${periodOffset > 1 ? "s" : ""})` : ""}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => canPrev && setPeriodOffset(o => o + 1)} disabled={!canPrev}
+                  title="Période précédente"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">‹</button>
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {PERIODS.map(([val, label]) => (
+                    <button key={val} onClick={() => { setPeriodSel(val); setPeriodOffset(0); }}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${periodSel === val ? "bg-[#00E5FF] text-black" : "text-white/50 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => canNext && setPeriodOffset(o => Math.max(0, o - 1))} disabled={!canNext}
+                  title="Période suivante"
+                  className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">›</button>
+                {periodLoading && <div className="w-4 h-4 border-2 border-[#00E5FF]/30 border-t-[#00E5FF] rounded-full animate-spin ml-1" />}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="bg-white/5 rounded-lg p-3">
+                <p className="text-xs text-white/40 mb-1">Mes vues</p>
+                <p className="text-xl font-bold font-mono text-[#00E5FF]">{fmtViews(periodStats?.views || 0)}</p>
+              </div>
+              <div className="bg-white/5 rounded-lg p-3">
+                <p className="text-xs text-white/40 mb-1">Mes gains</p>
+                <p className="text-xl font-bold font-mono text-[#39FF14]">€{(periodStats?.earnings || 0).toFixed(2)}</p>
+              </div>
+              {periodStats?.payment_model === "clicks" && (
+                <div className="bg-white/5 rounded-lg p-3">
+                  <p className="text-xs text-white/40 mb-1">Mes clics</p>
+                  <p className="text-xl font-bold font-mono text-[#FF007F]">{fmtViews(periodStats?.clicks || 0)}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ═══ LIEN DE TRACKING — visible uniquement pour campagnes au clic ═══ */}
       {isClickCampaign && (

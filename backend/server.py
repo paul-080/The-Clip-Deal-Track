@@ -6012,6 +6012,110 @@ async def get_campaign_period_stats(
     }
 
 
+@api_router.get("/campaigns/{campaign_id}/my-period-stats")
+async def get_my_period_stats(
+    campaign_id: str,
+    period: str = "30d",
+    offset: int = 0,
+    user: dict = Depends(get_current_user)
+):
+    """Per-clipper aggregate views + earnings + clicks over a time window.
+    Same shape as /period-stats but filtered to the current authenticated user.
+    """
+    from datetime import timedelta
+
+    PERIOD_DAYS = {"24h": 1, "7d": 7, "30d": 30, "year": 365}
+    if period not in PERIOD_DAYS and period != "all":
+        raise HTTPException(status_code=400, detail="period invalide (24h|7d|30d|year|all)")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    user_id = user["user_id"]
+    end = datetime.now(timezone.utc)
+    if period == "all":
+        start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        period_label = "Depuis toujours"
+    else:
+        days = PERIOD_DAYS[period]
+        end = end - timedelta(days=days * offset)
+        start = end - timedelta(days=days)
+        period_label = {"24h": "24 dernières heures", "7d": "7 derniers jours",
+                        "30d": "30 derniers jours", "year": "Cette année"}[period]
+
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
+    # ── Views via user_views_snapshots (delta) ──
+    views_in_period = 0
+    if period == "all":
+        latest = await db.user_views_snapshots.find_one(
+            {"campaign_id": campaign_id, "user_id": user_id},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        views_in_period = latest["total_views"] if latest else 0
+    else:
+        end_snap = await db.user_views_snapshots.find_one(
+            {"campaign_id": campaign_id, "user_id": user_id, "date": {"$lte": end_str}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        start_snap = await db.user_views_snapshots.find_one(
+            {"campaign_id": campaign_id, "user_id": user_id, "date": {"$lt": start_str}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        end_total = end_snap["total_views"] if end_snap else 0
+        start_total = start_snap["total_views"] if start_snap else 0
+        views_in_period = max(0, end_total - start_total)
+
+    payment_model = campaign.get("payment_model", "views")
+    rpm = campaign.get("rpm", 0) or 0
+    rate_per_click = campaign.get("rate_per_click", 0) or 0
+
+    earnings_in_period = 0.0
+    clicks_in_period = 0
+    unique_clicks_in_period = 0
+
+    if payment_model == "views":
+        earnings_in_period = round((views_in_period / 1000) * rpm, 2)
+    elif payment_model == "clicks":
+        # Aggregate this clipper's clicks via their click_links
+        my_links = await db.click_links.find(
+            {"campaign_id": campaign_id, "clipper_id": user_id},
+            {"_id": 0, "link_id": 1}
+        ).to_list(50)
+        link_ids = [l["link_id"] for l in my_links]
+        if link_ids:
+            click_match = {
+                "link_id": {"$in": link_ids},
+                "clicked_at": {"$gte": start.isoformat(), "$lte": end.isoformat()},
+            }
+            clicks_in_period = await db.click_events.count_documents(click_match)
+            unique_clicks_in_period = await db.click_events.count_documents({**click_match, "is_unique": True})
+        billing_mode = campaign.get("click_billing_mode", "all")
+        billable = unique_clicks_in_period if billing_mode != "all" else clicks_in_period
+        earnings_in_period = round((billable / 1000) * rate_per_click, 2)
+
+    return {
+        "period": period,
+        "period_label": period_label,
+        "offset": offset,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "views": views_in_period,
+        "earnings": earnings_in_period,
+        "clicks": clicks_in_period,
+        "unique_clicks": unique_clicks_in_period,
+        "payment_model": payment_model,
+        "rpm": rpm,
+        "rate_per_click": rate_per_click,
+        "budget_unlimited": campaign.get("budget_unlimited", False),
+    }
+
+
 @api_router.get("/campaigns/{campaign_id}/views-chart")
 async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
     """
