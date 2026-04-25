@@ -5213,9 +5213,19 @@ async def run_video_tracking():
             ]).to_list(1)
             total_campaign_views = agg[0]["total_views"] if agg else 0
             budget_used = round((total_campaign_views / 1000) * rpm, 2)
+            # Build update : si budget épuisé et campagne pas illimitée, auto-pause
+            update_set: dict = {"budget_used": budget_used}
+            budget_total = campaign.get("budget_total") or 0
+            budget_unlimited = campaign.get("budget_unlimited", False)
+            current_status = campaign.get("status")
+            if (not budget_unlimited and budget_total > 0 and budget_used >= budget_total
+                    and current_status == "active"):
+                update_set["status"] = "paused"
+                update_set["paused_reason"] = "budget_exhausted"
+                logger.info(f"Auto-pause campaign {campaign_id}: budget exhausted ({budget_used}€ >= {budget_total}€)")
             await db.campaigns.update_one(
                 {"campaign_id": campaign_id},
-                {"$set": {"budget_used": budget_used}}
+                {"$set": update_set}
             )
             # Daily snapshot for chart
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")

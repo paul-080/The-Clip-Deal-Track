@@ -275,6 +275,8 @@ export default function ChatPanel({ campaigns }) {
   const remunerationEndRef = useRef(null);
   const messagesEndRef = useRef(null);
   const wsRef = useRef(null);
+  const wsRetriesRef = useRef(0);
+  const wsReconnectTimerRef = useRef(null);
   // Ref to always have the latest activeTab in the WebSocket callback (avoids stale closure)
   const activeTabRef = useRef("questions");
   // Ref to prevent WebSocket reconnection after component unmounts
@@ -311,7 +313,10 @@ export default function ChatPanel({ campaigns }) {
     // Reset participants when campaign changes
     setParticipants([]);
     setShowParticipants(false);
-    return () => { if (wsRef.current) wsRef.current.close(); };
+    return () => {
+      if (wsReconnectTimerRef.current) clearTimeout(wsReconnectTimerRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
   }, [campaignId]);
 
   // Sync activeTabRef so WebSocket handler always reads the latest tab (no stale closure)
@@ -566,11 +571,61 @@ export default function ChatPanel({ campaigns }) {
             saveLastSeen("conseils");
           }
         }
+        // ── Notifs critiques (toasts) ──────────────────────────────────────
+        if (data.type === "strike_issued" && isClipper) {
+          if (data.suspended) {
+            toast.error(`⛔ Tu as été suspendu de cette campagne (${data.strikes} strikes)`, { duration: 8000 });
+          } else {
+            toast.warning(`⚠️ Strike reçu — ${data.strikes} strike${data.strikes > 1 ? "s" : ""} au total`, { duration: 6000 });
+          }
+        }
+        if (data.type === "strike_removed" && isClipper) {
+          toast.success(`✓ Un strike t'a été retiré (${data.strikes} restants)`, { duration: 5000 });
+        }
+        if (data.type === "application_accepted" && isClipper) {
+          toast.success(`🎉 Ta candidature a été acceptée !`, { duration: 6000 });
+        }
+        if (data.type === "application_rejected" && isClipper) {
+          toast.error(`Ta candidature a été refusée`, { duration: 6000 });
+        }
+        if (data.type === "new_application" && (isAgency || isManager)) {
+          toast.info(`📩 Nouvelle candidature de ${data.display_name || "un clippeur"}`, { duration: 5000 });
+        }
+        if (data.type === "payment_confirmed" && isClipper) {
+          toast.success(`💰 Paiement confirmé : ${data.amount_eur ? `€${data.amount_eur}` : "OK"}`, { duration: 6000 });
+        }
+        if (data.type === "direct_payment" && isClipper) {
+          toast.success(`💰 Paiement direct reçu`, { duration: 6000 });
+        }
+        if (data.type === "topup" && (isAgency || isManager)) {
+          toast.success(`💳 Budget rechargé`, { duration: 4000 });
+        }
+        if (data.type === "click_link_ready" && isClipper) {
+          toast.success(`🔗 Ton lien de tracking est prêt !`, { duration: 5000 });
+        }
+        if (data.type === "clipper_left" && (isAgency || isManager)) {
+          toast.info(`${data.display_name || "Un clippeur"} a quitté la campagne`, { duration: 5000 });
+        }
+        if (data.type === "agency_strike_notification" && (isAgency || isManager)) {
+          toast.warning(`⚠️ Strike auto émis sur ${data.clipper_name || "un clippeur"}`, { duration: 5000 });
+        }
+        if (data.type === "admin_notice") {
+          toast.info(`📢 ${data.message || "Notification admin"}`, { duration: 8000 });
+        }
       };
+      ws.onopen = () => { wsRetriesRef.current = 0; }; // reset backoff on success
       ws.onclose = () => {
-        // Only reconnect if still mounted AND this is still the active ws
+        // Backoff exponentiel : 3s, 6s, 12s, 24s, 30s max. Stop après 8 tentatives.
         if (mountedRef.current && wsRef.current === ws) {
-          setTimeout(connectWebSocket, 3000);
+          const retries = wsRetriesRef.current;
+          if (retries >= 8) {
+            console.warn("WebSocket: max reconnect attempts reached, giving up");
+            return;
+          }
+          const delay = Math.min(3000 * Math.pow(2, retries), 30000);
+          wsRetriesRef.current = retries + 1;
+          if (wsReconnectTimerRef.current) clearTimeout(wsReconnectTimerRef.current);
+          wsReconnectTimerRef.current = setTimeout(connectWebSocket, delay);
         }
       };
       ws.onerror = () => {
