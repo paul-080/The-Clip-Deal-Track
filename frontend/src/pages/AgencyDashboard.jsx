@@ -1180,6 +1180,11 @@ function CampaignDashboard({ campaigns }) {
   const [customTo, setCustomTo] = useState("");
   const [topClips, setTopClips] = useState([]);
   const [topClipsLoading, setTopClipsLoading] = useState(false);
+  // ── Period stats (24h / 7d / 30d / year / all) ──────────────────────────────
+  const [periodStats, setPeriodStats] = useState(null);
+  const [periodSel, setPeriodSel] = useState("30d");
+  const [periodOffset, setPeriodOffset] = useState(0);
+  const [periodLoading, setPeriodLoading] = useState(false);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -1214,6 +1219,21 @@ function CampaignDashboard({ campaigns }) {
     } catch {}
     finally { setViewsTimelineLoading(false); }
   };
+
+  const fetchPeriodStats = async (p = periodSel, off = periodOffset) => {
+    setPeriodLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/period-stats?period=${p}&offset=${off}`, { credentials: "include" });
+      if (res.ok) setPeriodStats(await res.json());
+    } catch {}
+    finally { setPeriodLoading(false); }
+  };
+
+  // Auto-fetch period stats when entering overview tab
+  useEffect(() => {
+    if (campaignId && activeTab === "overview") fetchPeriodStats(periodSel, periodOffset);
+    // eslint-disable-next-line
+  }, [campaignId, activeTab, periodSel, periodOffset]);
 
   const fetchClickStats = async (p = period, cFrom = customFrom, cTo = customTo) => {
     setClickStatsLoading(true);
@@ -1841,6 +1861,57 @@ function CampaignDashboard({ campaigns }) {
         </div>
       ) : activeTab === "overview" && (
         <div className="space-y-5">
+          {/* ── Period stats (24h / 7j / 30j / an / tout) ──────────────── */}
+          {(() => {
+            const PERIODS = [["24h","24h"],["7d","7j"],["30d","30j"],["year","An"],["all","Tout"]];
+            const idx = PERIODS.findIndex(([v]) => v === periodSel);
+            const canPrev = periodSel !== "all";
+            const canNext = periodOffset > 0;
+            return (
+              <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-white font-medium text-sm">Stats par période</p>
+                    <p className="text-xs text-white/40 mt-0.5">{periodStats?.period_label || "Sélectionnez une période"}{periodOffset > 0 ? ` (il y a ${periodOffset} période${periodOffset > 1 ? "s" : ""})` : ""}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => canPrev && setPeriodOffset(o => o + 1)} disabled={!canPrev}
+                      title="Période précédente"
+                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">‹</button>
+                    <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                      {PERIODS.map(([val, label]) => (
+                        <button key={val} onClick={() => { setPeriodSel(val); setPeriodOffset(0); }}
+                          className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${periodSel === val ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <button onClick={() => canNext && setPeriodOffset(o => Math.max(0, o - 1))} disabled={!canNext}
+                      title="Période suivante"
+                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">›</button>
+                    {periodLoading && <div className="w-4 h-4 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin ml-1" />}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-xs text-white/40 mb-1">Vues</p>
+                    <p className="text-xl font-bold font-mono text-[#00E5FF]">{fmt(periodStats?.views || 0)}</p>
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-xs text-white/40 mb-1">Gains générés</p>
+                    <p className="text-xl font-bold font-mono text-[#39FF14]">€{(periodStats?.earnings || 0).toFixed(2)}</p>
+                  </div>
+                  {periodStats?.payment_model === "clicks" && (
+                    <div className="bg-white/5 rounded-lg p-3">
+                      <p className="text-xs text-white/40 mb-1">Clics</p>
+                      <p className="text-xl font-bold font-mono text-[#FF007F]">{fmt(periodStats?.clicks || 0)}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* KPI row */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
