@@ -7007,8 +7007,15 @@ async def get_clippers_advice_status(campaign_id: str, user: dict = Depends(get_
     ).to_list(200)
     users_map = {u["user_id"]: u for u in user_docs}
 
+    # Récupère UNIQUEMENT les comptes sociaux assignés à CETTE campagne (pas tous les comptes du clipper)
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id, "user_id": {"$in": member_ids}},
+        {"_id": 0, "user_id": 1, "account_id": 1}
+    ).to_list(1000)
+    assigned_account_ids = {a["account_id"] for a in assignments}
+
     social_docs = await db.social_accounts.find(
-        {"user_id": {"$in": member_ids}},
+        {"user_id": {"$in": member_ids}, "account_id": {"$in": list(assigned_account_ids)}},
         {"_id": 0, "user_id": 1, "platform": 1, "username": 1, "account_url": 1, "status": 1}
     ).to_list(1000)
     socials_map: dict = {}
