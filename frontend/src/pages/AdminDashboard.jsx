@@ -149,18 +149,29 @@ function fmtNum(n) {
   return n.toLocaleString("fr-FR");
 }
 
+// Period config
+const PERIODS = [
+  { key: "1",   label: "24h",    days: 1   },
+  { key: "7",   label: "7j",     days: 7   },
+  { key: "30",  label: "30j",    days: 30  },
+  { key: "365", label: "1 an",   days: 365 },
+];
+
 function OverviewTab() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [viewsTimeline, setViewsTimeline] = useState([]);
   const [clicksTimeline, setClicksTimeline] = useState([]);
   const [activeChart, setActiveChart] = useState("views"); // "views" | "clicks"
+  const [chartPeriod, setChartPeriod] = useState("30");   // "1" | "7" | "30" | "365"
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
+  // Initial load: stats + default timeline (30j)
   useEffect(() => {
     Promise.all([
       adminFetch("/admin/stats"),
-      adminFetch("/admin/stats/videos-timeline").catch(() => ({ timeline: [] })),
-      adminFetch("/admin/stats/clicks-timeline").catch(() => ({ timeline: [] })),
+      adminFetch("/admin/stats/videos-timeline?days=30").catch(() => ({ timeline: [] })),
+      adminFetch("/admin/stats/clicks-timeline?days=30").catch(() => ({ timeline: [] })),
     ]).then(([s, vt, ct]) => {
       setStats(s);
       setViewsTimeline(vt.timeline || []);
@@ -168,6 +179,44 @@ function OverviewTab() {
     }).catch((e) => toast.error(e.message))
     .finally(() => setLoading(false));
   }, []);
+
+  // Re-fetch timelines when period changes
+  const fetchTimelines = async (days) => {
+    setTimelineLoading(true);
+    try {
+      const [vt, ct] = await Promise.all([
+        adminFetch(`/admin/stats/videos-timeline?days=${days}`).catch(() => ({ timeline: [] })),
+        adminFetch(`/admin/stats/clicks-timeline?days=${days}`).catch(() => ({ timeline: [] })),
+      ]);
+      setViewsTimeline(vt.timeline || []);
+      setClicksTimeline(ct.timeline || []);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setTimelineLoading(false);
+    }
+  };
+
+  const handlePeriodChange = (key) => {
+    setChartPeriod(key);
+    const p = PERIODS.find(p => p.key === key);
+    if (p) fetchTimelines(p.days);
+  };
+
+  // Format x-axis label based on period
+  const xTickFormatter = (val) => {
+    if (chartPeriod === "1") return val;           // already "HH:00"
+    if (chartPeriod === "365") {
+      // "YYYY-MM" → "MMM"
+      const months = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Aoû","Sep","Oct","Nov","Déc"];
+      const m = parseInt(val.slice(5, 7), 10);
+      return months[m - 1] || val;
+    }
+    // daily: "YYYY-MM-DD" → "DD/MM"
+    return val ? val.slice(5).replace("-", "/") : val;
+  };
+
+  const xInterval = chartPeriod === "1" ? 3 : chartPeriod === "7" ? 0 : chartPeriod === "30" ? 4 : 0;
 
   if (loading) return <div className="text-white/40 text-sm">Chargement...</div>;
   if (!stats) return null;
@@ -253,23 +302,55 @@ function OverviewTab() {
         </div>
       </div>
 
-      {/* Chart — toggle views / clicks */}
+      {/* Chart — toggle views / clicks + period selector */}
       <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-6">
-        <div className="flex items-center justify-between mb-5">
-          <p className="text-white font-medium">Activité — 30 derniers jours</p>
-          <div className="flex gap-1 bg-white/5 rounded-lg p-1">
-            <button
-              onClick={() => setActiveChart("views")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "views" ? "bg-[#00E5FF] text-black" : "text-white/50 hover:text-white"}`}
-            >
-              <Eye className="w-3 h-3" /> Vues
-            </button>
-            <button
-              onClick={() => setActiveChart("clicks")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "clicks" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}
-            >
-              <MousePointerClick className="w-3 h-3" /> Clics
-            </button>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+          {/* Title + loading dot */}
+          <div className="flex items-center gap-2">
+            <p className="text-white font-medium">
+              Activité —&nbsp;
+              <span className="text-white/50">{PERIODS.find(p => p.key === chartPeriod)?.label}</span>
+            </p>
+            {timelineLoading && <div className="w-3 h-3 border-2 border-white/20 border-t-white/70 rounded-full animate-spin" />}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Period selector + flèches */}
+            {(() => {
+              const idx = PERIODS.findIndex(p => p.key === chartPeriod);
+              return (
+                <div className="flex items-center gap-1">
+                  <button onClick={() => idx > 0 && handlePeriodChange(PERIODS[idx-1].key)} disabled={idx === 0}
+                    className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">‹</button>
+                  <div className="flex gap-0.5 bg-white/5 border border-white/10 rounded-lg p-0.5">
+                    {PERIODS.map(p => (
+                      <button key={p.key} onClick={() => handlePeriodChange(p.key)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${chartPeriod === p.key ? "bg-white/20 text-white" : "text-white/40 hover:text-white"}`}>
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={() => idx < PERIODS.length-1 && handlePeriodChange(PERIODS[idx+1].key)} disabled={idx === PERIODS.length-1}
+                    className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">›</button>
+                </div>
+              );
+            })()}
+
+            {/* Views / Clicks toggle */}
+            <div className="flex gap-1 bg-white/5 rounded-lg p-1 border border-white/10">
+              <button
+                onClick={() => setActiveChart("views")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "views" ? "bg-[#00E5FF] text-black" : "text-white/50 hover:text-white"}`}
+              >
+                <Eye className="w-3 h-3" /> Vues
+              </button>
+              <button
+                onClick={() => setActiveChart("clicks")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "clicks" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}
+              >
+                <MousePointerClick className="w-3 h-3" /> Clics
+              </button>
+            </div>
           </div>
         </div>
         {chartHasData ? (
@@ -283,8 +364,8 @@ function OverviewTab() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={(d) => d.slice(5)} interval={4} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
+                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v} />
                 <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
                 <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#gradViews)" strokeWidth={2} dot={false} name="Vues" />
               </AreaChart>
@@ -301,7 +382,7 @@ function OverviewTab() {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={(d) => d.slice(5)} interval={4} />
+                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
                 <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
                 <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
                 <Area type="monotone" dataKey="clicks" stroke="#f0c040" fill="url(#gradClicks)" strokeWidth={2} dot={false} name="Clics totaux" />
@@ -589,18 +670,17 @@ function ApiStatusTab() {
   useEffect(() => { testAll(); fetchUsage(); }, [testAll, fetchUsage]);
 
   const apis = [
-    { key: "mongodb",     label: "MongoDB",      icon: Database,    desc: "Base de données principale" },
-    { key: "youtube_api", label: "YouTube API",   icon: Youtube,     desc: "YouTube Data API v3" },
-    { key: "playwright",  label: "Playwright",    icon: Globe,       desc: "Scraping TikTok / Instagram" },
-    { key: "stripe",      label: "Stripe",        icon: CreditCard,  desc: "Paiements et abonnements" },
-    { key: "google_oauth",label: "Google OAuth",  icon: Shield,      desc: "Connexion Google" },
+    { key: "mongodb",     label: "MongoDB",              icon: Database,   desc: "Base de données principale" },
+    { key: "youtube_api", label: "YouTube API",           icon: Youtube,    desc: "YouTube Data API v3" },
+    { key: "apify",       label: "Apify (TikTok + Insta)",icon: Globe,      desc: "Tracking TikTok & Instagram via Apify" },
+    { key: "stripe",      label: "Stripe",                icon: CreditCard, desc: "Paiements et abonnements" },
+    { key: "google_oauth",label: "Google OAuth",          icon: Shield,     desc: "Connexion Google" },
   ];
 
   const usageServices = [
-    { key: "youtube",   label: "YouTube API",      color: "#FF0000", icon: "▶" },
-    { key: "tikwm",     label: "TikWm (TikTok)",   color: "#00E5FF", icon: "♪" },
-    { key: "instagram", label: "Instagram",         color: "#FF007F", icon: "◈" },
-    { key: "resend",    label: "Resend (Emails)",   color: "#9B59B6", icon: "✉" },
+    { key: "youtube",   label: "YouTube API",             color: "#FF0000", icon: "▶" },
+    { key: "apify",     label: "Apify (TikTok + Insta)",  color: "#00E5FF", icon: "⚡" },
+    { key: "resend",    label: "Resend (Emails)",          color: "#9B59B6", icon: "✉" },
   ];
 
   function StatusBadge({ s }) {
@@ -682,6 +762,21 @@ function ApiStatusTab() {
                     {s.error}
                   </p>
                 )}
+                {/* Apify: show plan + compute units */}
+                {api.key === "apify" && s?.status === "ok" && (
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    {s.plan && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20 font-mono">
+                        Plan: {s.plan}
+                      </span>
+                    )}
+                    {s.limit_usd > 0 && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-white/50 border border-white/10 font-mono">
+                        CU ce mois: {s.usage_usd} / {s.limit_usd}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -755,11 +850,10 @@ function ApiStatusTab() {
                       <span className={`font-mono text-sm font-semibold ${errColor}`}>{successRate}%</span>
                     </td>
                     <td className="px-4 py-3.5">
-                      {/* Mini progress bar — YouTube 10k/jour, Resend 3000/mois, TikWm 500/jour */}
-                      {key === "youtube"   && <MiniBar value={d?.today ?? 0}  max={10000} color={color} />}
-                      {key === "tikwm"     && <MiniBar value={d?.today ?? 0}  max={500}   color={color} />}
-                      {key === "instagram" && <MiniBar value={d?.today ?? 0}  max={200}   color={color} />}
-                      {key === "resend"    && <MiniBar value={d?.month ?? 0}  max={3000}  color={color} />}
+                      {/* Mini progress bar — YouTube 10k/jour, Apify $5/mois, Resend 3000/mois */}
+                      {key === "youtube" && <MiniBar value={d?.today ?? 0} max={10000} color={color} />}
+                      {key === "apify"   && <MiniBar value={d?.today ?? 0} max={100}   color={color} />}
+                      {key === "resend"  && <MiniBar value={d?.month ?? 0} max={3000}  color={color} />}
                       <p className="text-white/30 text-[10px] mt-1">{d?.free_limit}</p>
                     </td>
                   </tr>

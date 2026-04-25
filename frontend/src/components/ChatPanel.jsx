@@ -6,9 +6,11 @@ import {
   Send, HelpCircle, Lightbulb, DollarSign, Eye, EyeOff,
   CheckCircle, CreditCard, ChevronLeft, User, AlertCircle,
   MessageSquare, ExternalLink, MousePointerClick, Copy, Check,
-  Megaphone, ImageIcon
+  Megaphone, ImageIcon, Users, X
 } from "lucide-react";
 import { toast } from "sonner";
+
+const REACTION_EMOJIS = ["❤️", "🔥", "😂", "👍", "👎", "😮", "🎉"];
 
 // ─── Sub-components defined OUTSIDE ChatPanel to prevent re-mounting ──────────
 // (If defined inside, React recreates the function reference on every render,
@@ -18,12 +20,20 @@ function getRoleColor(role) {
   return { clipper: "#00E5FF", agency: "#FF007F", manager: "#39FF14", client: "#FFB300" }[role] || "#fff";
 }
 
-function MessageBubble({ msg, userId, isAgency }) {
+function MessageBubble({ msg, userId, isAgency, onReact }) {
+  const [hovered, setHovered] = useState(false);
   const isOwn = msg.sender_id === userId;
   const roleColor = getRoleColor(msg.sender_role);
   const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const reactions = msg.reactions || {};
+  const hasReactions = Object.values(reactions).some(users => users.length > 0);
+
   return (
-    <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
+    <div
+      className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""} group`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {!isOwn && (
         <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
           {msg.sender_picture
@@ -32,26 +42,73 @@ function MessageBubble({ msg, userId, isAgency }) {
           }
         </div>
       )}
-      <div className={`max-w-[70%] ${isOwn
-        ? isAgency
-          ? "bg-[#FF007F]/15 border border-[#FF007F]/25 rounded-2xl rounded-tr-sm"
-          : "bg-[#00E5FF]/10 border border-[#00E5FF]/20 rounded-2xl rounded-tr-sm"
-        : "bg-white/8 border border-white/10 rounded-2xl rounded-tl-sm"
-      } px-4 py-2.5`}>
-        {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
-        <p className="text-white text-sm leading-relaxed">{msg.content}</p>
-        <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+
+      <div className={`max-w-[70%] flex flex-col ${isOwn ? "items-end" : "items-start"}`}>
+        <div className={`${isOwn
+          ? isAgency
+            ? "bg-[#FF007F]/15 border border-[#FF007F]/25 rounded-2xl rounded-tr-sm"
+            : "bg-[#00E5FF]/10 border border-[#00E5FF]/20 rounded-2xl rounded-tr-sm"
+          : "bg-white/8 border border-white/10 rounded-2xl rounded-tl-sm"
+        } px-4 py-2.5`}>
+          {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+          <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+          <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+        </div>
+
+        {/* Reactions display */}
+        {hasReactions && (
+          <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? "justify-end" : "justify-start"}`}>
+            {Object.entries(reactions).map(([emoji, users]) =>
+              users.length > 0 ? (
+                <button
+                  key={emoji}
+                  onClick={() => onReact?.(msg.message_id, emoji)}
+                  className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs border transition-all ${
+                    users.includes(userId)
+                      ? "bg-white/20 border-white/35 text-white"
+                      : "bg-white/5 border-white/10 text-white/60 hover:bg-white/12"
+                  }`}
+                >
+                  {emoji} <span className="font-medium">{users.length}</span>
+                </button>
+              ) : null
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Emoji picker on hover */}
+      {hovered && onReact && (
+        <div className={`flex gap-0.5 items-center self-center opacity-0 group-hover:opacity-100 transition-opacity ${isOwn ? "order-first mr-1" : "ml-1"}`}>
+          {REACTION_EMOJIS.map(emoji => (
+            <button
+              key={emoji}
+              onClick={() => onReact(msg.message_id, emoji)}
+              className="w-6 h-6 flex items-center justify-center rounded-full bg-white/8 hover:bg-white/20 hover:scale-110 text-sm transition-all"
+              title={emoji}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function PaymentMessageBubble({ msg, userId }) {
+function PaymentMessageBubble({ msg, userId, onReact }) {
+  const [hovered, setHovered] = useState(false);
   const isOwn = msg.sender_id === userId;
   const roleColor = getRoleColor(msg.sender_role);
   const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const reactions = msg.reactions || {};
+  const hasReactions = Object.values(reactions).some(users => users.length > 0);
   return (
-    <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""}`}>
+    <div
+      className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : ""} group`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {!isOwn && (
         <div className="w-7 h-7 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
           {msg.sender_picture
@@ -60,14 +117,38 @@ function PaymentMessageBubble({ msg, userId }) {
           }
         </div>
       )}
-      <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 ${isOwn
-        ? "bg-[#f0c040]/10 border border-[#f0c040]/20 rounded-tr-sm"
-        : "bg-white/8 border border-white/10 rounded-tl-sm"
-      }`}>
-        {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
-        <p className="text-white text-sm leading-relaxed">{msg.content}</p>
-        <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+      <div className={`max-w-[70%] flex flex-col ${isOwn ? "items-end" : "items-start"}`}>
+        <div className={`rounded-2xl px-4 py-2.5 ${isOwn
+          ? "bg-[#f0c040]/10 border border-[#f0c040]/20 rounded-tr-sm"
+          : "bg-white/8 border border-white/10 rounded-tl-sm"
+        }`}>
+          {!isOwn && <p className="text-xs font-semibold mb-1" style={{ color: roleColor }}>{msg.sender_name}</p>}
+          <p className="text-white text-sm leading-relaxed">{msg.content}</p>
+          <p className="text-white/30 text-[10px] mt-1 text-right">{time}</p>
+        </div>
+        {hasReactions && (
+          <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? "justify-end" : "justify-start"}`}>
+            {Object.entries(reactions).map(([emoji, users]) =>
+              users.length > 0 ? (
+                <button key={emoji} onClick={() => onReact?.(msg.message_id, emoji)}
+                  className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs border transition-all ${
+                    users.includes(userId) ? "bg-white/20 border-white/35 text-white" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/12"
+                  }`}>
+                  {emoji} <span className="font-medium">{users.length}</span>
+                </button>
+              ) : null
+            )}
+          </div>
+        )}
       </div>
+      {hovered && onReact && (
+        <div className={`flex gap-0.5 items-center self-center ${isOwn ? "order-first mr-1" : "ml-1"}`}>
+          {REACTION_EMOJIS.map(emoji => (
+            <button key={emoji} onClick={() => onReact(msg.message_id, emoji)}
+              className="w-6 h-6 flex items-center justify-center rounded-full bg-white/8 hover:bg-white/20 hover:scale-110 text-sm transition-all">{emoji}</button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -181,6 +262,14 @@ export default function ChatPanel({ campaigns }) {
   const [announceText, setAnnounceText] = useState("");
   const [announceImage, setAnnounceImage] = useState(null); // base64
   const [sendingAnnonce, setSendingAnnonce] = useState(false);
+  // Participants panel
+  const [showParticipants, setShowParticipants] = useState(false);
+  const [participants, setParticipants] = useState([]);
+  // Announcement comments
+  const [expandedComments, setExpandedComments] = useState(new Set()); // message_ids with open comments
+  const [commentsByMsg, setCommentsByMsg] = useState({}); // { message_id: [comments] }
+  const [commentInputs, setCommentInputs] = useState({}); // { message_id: text }
+  const [sendingComment, setSendingComment] = useState(null); // message_id being submitted
   const annoncesEndRef = useRef(null);
   const conseilsEndRef = useRef(null);
   const remunerationEndRef = useRef(null);
@@ -219,6 +308,9 @@ export default function ChatPanel({ campaigns }) {
     fetchReceivedAdvices();
     connectWebSocket();
     markRead();
+    // Reset participants when campaign changes
+    setParticipants([]);
+    setShowParticipants(false);
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, [campaignId]);
 
@@ -321,6 +413,91 @@ export default function ChatPanel({ campaigns }) {
     } catch {}
   };
 
+  const fetchParticipants = async () => {
+    if (!campaignId) return;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/participants`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setParticipants(data.participants || []);
+      }
+    } catch {}
+  };
+
+  const handleReact = async (messageId, emoji) => {
+    // Optimistic update
+    setMessages(prev => prev.map(m => {
+      if (m.message_id !== messageId) return m;
+      const reactions = { ...(m.reactions || {}) };
+      const users = [...(reactions[emoji] || [])];
+      const uid = user?.user_id;
+      if (users.includes(uid)) {
+        const idx = users.indexOf(uid);
+        users.splice(idx, 1);
+      } else {
+        users.push(uid);
+      }
+      if (users.length > 0) reactions[emoji] = users;
+      else delete reactions[emoji];
+      return { ...m, reactions };
+    }));
+    // Server sync
+    try {
+      await fetch(`${API}/messages/${messageId}/react`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ emoji }),
+      });
+    } catch {}
+  };
+
+  const fetchComments = async (messageId) => {
+    try {
+      const res = await fetch(`${API}/messages/${messageId}/comments`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setCommentsByMsg(prev => ({ ...prev, [messageId]: data.comments || [] }));
+      }
+    } catch {}
+  };
+
+  const toggleComments = (messageId) => {
+    setExpandedComments(prev => {
+      const next = new Set(prev);
+      if (next.has(messageId)) {
+        next.delete(messageId);
+      } else {
+        next.add(messageId);
+        if (!commentsByMsg[messageId]) fetchComments(messageId);
+      }
+      return next;
+    });
+  };
+
+  const handlePostComment = async (messageId) => {
+    const content = (commentInputs[messageId] || "").trim();
+    if (!content) return;
+    setSendingComment(messageId);
+    try {
+      const res = await fetch(`${API}/messages/${messageId}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content }),
+      });
+      if (res.ok) {
+        const comment = await res.json();
+        setCommentsByMsg(prev => ({ ...prev, [messageId]: [...(prev[messageId] || []), comment] }));
+        setCommentInputs(prev => ({ ...prev, [messageId]: "" }));
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setSendingComment(null); }
+  };
+
   const connectWebSocket = () => {
     if (!user?.user_id || !mountedRef.current) return;
     // Close any existing connection before creating a new one
@@ -337,7 +514,11 @@ export default function ChatPanel({ campaigns }) {
         let data;
         try { data = JSON.parse(event.data); } catch { return; } // ignore malformed frames
         if (data.type === "new_message" && data.message.campaign_id === campaignId) {
-          setMessages((prev) => prev.find(m => m.message_id === data.message.message_id) ? prev : [...prev, data.message]);
+          setMessages((prev) => {
+            if (prev.find(m => m.message_id === data.message.message_id)) return prev;
+            const msg = { reactions: {}, ...data.message };
+            return [...prev, msg];
+          });
           const msgType = data.message.message_type || "question";
           if (data.message.sender_id !== user?.user_id) {
             const curTab = activeTabRef.current;
@@ -355,6 +536,26 @@ export default function ChatPanel({ campaigns }) {
               if (curTab === "conseils") saveLastSeen("conseils");
             }
           }
+        }
+        // Real-time reaction sync
+        if (data.type === "message_reaction") {
+          setMessages(prev => prev.map(m =>
+            m.message_id === data.message_id ? { ...m, reactions: data.reactions } : m
+          ));
+        }
+        // Real-time comment sync
+        if (data.type === "message_comment") {
+          const { message_id, comment } = data;
+          setCommentsByMsg(prev => {
+            if (!prev[message_id]) return prev; // don't open if not loaded
+            const existing = prev[message_id] || [];
+            if (existing.some(c => c.comment_id === comment.comment_id)) return prev;
+            return { ...prev, [message_id]: [...existing, comment] };
+          });
+          // Update comment count on message
+          setMessages(prev => prev.map(m =>
+            m.message_id === message_id ? { ...m, comment_count: (m.comment_count || 0) + 1 } : m
+          ));
         }
         if (data.type === "new_advice" && isClipper) {
           fetchReceivedAdvices();
@@ -607,13 +808,80 @@ export default function ChatPanel({ campaigns }) {
       className="flex flex-col h-full bg-[#0d0d0d]"
     >
       {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-white/8">
+      <div className="flex-shrink-0 px-4 pt-4 pb-3 border-b border-white/8 relative">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${accentColor}20` }}>
             <MessageSquare className="w-4 h-4" style={{ color: accentColor }} />
           </div>
-          <h2 className="font-semibold text-white text-base tracking-tight">{campaign?.name || "Campagne"}</h2>
+          <h2 className="font-semibold text-white text-base tracking-tight flex-1 truncate">{campaign?.name || "Campagne"}</h2>
+          {/* Participants button */}
+          <button
+            onClick={() => {
+              if (!showParticipants && participants.length === 0) fetchParticipants();
+              setShowParticipants(p => !p);
+            }}
+            className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium border transition-all ${
+              showParticipants
+                ? "bg-white/15 border-white/25 text-white"
+                : "bg-white/5 border-white/10 text-white/50 hover:text-white hover:bg-white/10"
+            }`}
+            title="Voir les participants"
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>{participants.length > 0 ? participants.length : ""}</span>
+          </button>
         </div>
+
+        {/* Participants dropdown panel */}
+        {showParticipants && (
+          <div className="absolute left-0 right-0 top-full z-20 bg-[#141414] border-b border-white/10 shadow-xl">
+            <div className="px-4 py-3">
+              <div className="flex items-center justify-between mb-2.5">
+                <p className="text-xs font-semibold text-white/60 uppercase tracking-wider">
+                  Participants ({participants.length})
+                </p>
+                <button onClick={() => setShowParticipants(false)} className="text-white/30 hover:text-white transition-colors">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {participants.length === 0 ? (
+                <p className="text-white/25 text-xs text-center py-2">Chargement...</p>
+              ) : (
+                <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+                  {participants.map(p => {
+                    const roleColors = { agency: "#FF007F", manager: "#39FF14", clipper: "#00E5FF", client: "#FFB300" };
+                    const roleLabels = { agency: "Agence", manager: "Manager", clipper: "Clippeur", client: "Client", owner: "Propriétaire" };
+                    const color = roleColors[p.role] || "#fff";
+                    const statusLabel = p.status === "pending" ? "⏳ En attente" : p.status === "suspended" ? "🚫 Suspendu" : p.status === "owner" ? "👑" : "✓";
+                    return (
+                      <div key={p.user_id} className="flex items-center gap-2.5 py-1.5 px-2 rounded-lg hover:bg-white/5 transition-colors">
+                        <div className="w-7 h-7 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0"
+                          style={{ backgroundColor: `${color}20` }}>
+                          {p.picture
+                            ? <img src={p.picture} alt="" className="w-full h-full object-cover" />
+                            : <span className="text-[10px] font-bold" style={{ color }}>{(p.display_name || "?")[0].toUpperCase()}</span>
+                          }
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs font-medium truncate">{p.display_name || "?"}</p>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ backgroundColor: `${color}20`, color }}>
+                            {roleLabels[p.role] || p.role}
+                          </span>
+                          {p.status !== "active" && p.status !== "owner" && (
+                            <span className="text-[9px] text-white/30">{statusLabel}</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
 
         {/* Tabs pills */}
         <div className="flex gap-1 overflow-x-auto pb-0.5">
@@ -753,7 +1021,7 @@ export default function ChatPanel({ campaigns }) {
                       </div>
                     ) : (
                       visibleMessages.map(msg => (
-                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} />
+                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} onReact={handleReact} />
                       ))
                     )}
                     <div ref={messagesEndRef} />
@@ -841,7 +1109,7 @@ export default function ChatPanel({ campaigns }) {
                       </div>
                     ) : (
                       visibleConseilMessages.map(msg => (
-                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} />
+                        <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={isAgency} onReact={handleReact} />
                       ))
                     )}
                     <div ref={conseilsEndRef} />
@@ -910,7 +1178,7 @@ export default function ChatPanel({ campaigns }) {
                       <div className="pt-3 mt-1 border-t border-white/8 space-y-3">
                         <p className="text-[10px] text-white/20 uppercase tracking-widest font-medium text-center">Conversation</p>
                         {conseilChatMessages.map(msg => (
-                          <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={false} />
+                          <MessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} isAgency={false} onReact={handleReact} />
                         ))}
                       </div>
                     )}
@@ -949,26 +1217,111 @@ export default function ChatPanel({ campaigns }) {
                     </p>
                   </div>
                 ) : (
-                  visibleAnnonces.map(msg => (
-                    <div key={msg.message_id} className="rounded-2xl bg-white/5 border border-white/8 overflow-hidden">
-                      <div className="flex items-center gap-2.5 px-4 py-3 border-b border-white/8">
-                        <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 flex items-center justify-center flex-shrink-0">
-                          <Megaphone className="w-3 h-3 text-[#FF007F]" />
+                  visibleAnnonces.map(msg => {
+                    const annReactions = msg.reactions || {};
+                    const hasAnnReactions = Object.values(annReactions).some(u => u.length > 0);
+                    return (
+                      <div key={msg.message_id} className="rounded-2xl bg-white/5 border border-white/8 overflow-hidden">
+                        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-white/8">
+                          <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 flex items-center justify-center flex-shrink-0">
+                            <Megaphone className="w-3 h-3 text-[#FF007F]" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white text-xs font-semibold">{msg.sender_name || "Agence"}</p>
+                            <p className="text-white/30 text-[10px]">{new Date(msg.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+                          </div>
+                          <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#FF007F]/15 text-[#FF007F] font-medium uppercase tracking-wide">Annonce</span>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white text-xs font-semibold">{msg.sender_name || "Agence"}</p>
-                          <p className="text-white/30 text-[10px]">{new Date(msg.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+                        {msg.image_data && (
+                          <img src={msg.image_data} alt="annonce" className="w-full object-cover max-h-64" />
+                        )}
+                        {msg.content && (
+                          <p className="px-4 py-3 text-white/80 text-sm leading-relaxed">{msg.content}</p>
+                        )}
+                        {/* Reactions + comment toggle footer */}
+                        <div className="flex items-center gap-1.5 px-4 pb-3 flex-wrap">
+                          {/* Existing reactions */}
+                          {hasAnnReactions && Object.entries(annReactions).map(([emoji, users]) =>
+                            users.length > 0 ? (
+                              <button key={emoji} onClick={() => handleReact(msg.message_id, emoji)}
+                                className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs border transition-all ${
+                                  users.includes(user?.user_id)
+                                    ? "bg-[#FF007F]/20 border-[#FF007F]/40 text-white"
+                                    : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
+                                }`}>
+                                {emoji} <span className="font-medium">{users.length}</span>
+                              </button>
+                            ) : null
+                          )}
+                          {/* Add reaction picker */}
+                          <div className="flex gap-0.5">
+                            {REACTION_EMOJIS.map(emoji => (
+                              <button key={emoji} onClick={() => handleReact(msg.message_id, emoji)}
+                                className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-white/10 text-sm transition-all opacity-40 hover:opacity-100 hover:scale-110">
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Comment toggle */}
+                          <button
+                            onClick={() => toggleComments(msg.message_id)}
+                            className={`ml-auto flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all ${
+                              expandedComments.has(msg.message_id)
+                                ? "bg-white/10 border-white/20 text-white"
+                                : "bg-white/4 border-white/8 text-white/40 hover:text-white/70 hover:bg-white/8"
+                            }`}
+                          >
+                            💬 {msg.comment_count > 0 ? msg.comment_count : ""} Commenter
+                          </button>
                         </div>
-                        <span className="text-[9px] px-2 py-0.5 rounded-full bg-[#FF007F]/15 text-[#FF007F] font-medium uppercase tracking-wide">Annonce</span>
+
+                        {/* Comments section — collapsible */}
+                        {expandedComments.has(msg.message_id) && (
+                          <div className="border-t border-white/6 px-4 pt-3 pb-3 space-y-3">
+                            {/* Comments list */}
+                            {(commentsByMsg[msg.message_id] || []).length === 0 ? (
+                              <p className="text-white/25 text-xs text-center py-1">Aucun commentaire — soyez le premier !</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {(commentsByMsg[msg.message_id] || []).map(c => (
+                                  <div key={c.comment_id} className="flex items-start gap-2">
+                                    <div className="w-6 h-6 rounded-full bg-white/10 flex-shrink-0 overflow-hidden flex items-center justify-center">
+                                      {c.author_picture
+                                        ? <img src={c.author_picture} alt="" className="w-full h-full object-cover" />
+                                        : <span className="text-[9px] font-bold text-white/60">{(c.author_name || "?")[0].toUpperCase()}</span>
+                                      }
+                                    </div>
+                                    <div className="flex-1 min-w-0 bg-white/5 rounded-xl px-3 py-2">
+                                      <p className="text-[10px] font-semibold mb-0.5" style={{ color: getRoleColor(c.author_role) }}>{c.author_name}</p>
+                                      <p className="text-white/80 text-xs leading-relaxed">{c.content}</p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {/* Comment input */}
+                            <div className="flex gap-2 items-center">
+                              <input
+                                value={commentInputs[msg.message_id] || ""}
+                                onChange={e => setCommentInputs(prev => ({ ...prev, [msg.message_id]: e.target.value }))}
+                                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handlePostComment(msg.message_id); } }}
+                                placeholder="Écrire un commentaire…"
+                                maxLength={500}
+                                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white placeholder:text-white/25 focus:outline-none focus:border-white/20 transition-colors"
+                              />
+                              <button
+                                onClick={() => handlePostComment(msg.message_id)}
+                                disabled={sendingComment === msg.message_id || !(commentInputs[msg.message_id] || "").trim()}
+                                className="w-7 h-7 flex items-center justify-center rounded-full bg-[#FF007F]/80 hover:bg-[#FF007F] text-white disabled:opacity-30 transition-all flex-shrink-0"
+                              >
+                                <Send className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {msg.image_data && (
-                        <img src={msg.image_data} alt="annonce" className="w-full object-cover max-h-64" />
-                      )}
-                      {msg.content && (
-                        <p className="px-4 py-3 text-white/80 text-sm leading-relaxed">{msg.content}</p>
-                      )}
-                    </div>
-                  ))
+                    );
+                  })
                 )}
                 <div ref={annoncesEndRef} />
               </div>
@@ -1067,7 +1420,7 @@ export default function ChatPanel({ campaigns }) {
                   </div>
                 ) : (
                   remunerationMessages.map(msg => (
-                    <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} />
+                    <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} onReact={handleReact} />
                   ))
                 )}
                 <div ref={remunerationEndRef} />
@@ -1218,7 +1571,7 @@ export default function ChatPanel({ campaigns }) {
                         <p className="text-white/20 text-xs text-center py-2">Aucun message de paiement</p>
                       ) : (
                         remunerationMessages.map(msg => (
-                          <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} />
+                          <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} onReact={handleReact} />
                         ))
                       )}
                       <div ref={remunerationEndRef} />

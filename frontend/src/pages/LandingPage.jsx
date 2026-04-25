@@ -165,9 +165,17 @@ export default function LandingPage() {
     }
   };
 
+  // Password rules checker (inline helper used by form + button)
+  const pwdRules = (pwd) => ({
+    length:  pwd.length >= 6,
+    upper:   /[A-Z]/.test(pwd),
+    special: /[^A-Za-z0-9]/.test(pwd),
+  });
+  const pwdValid = (pwd) => { const r = pwdRules(pwd); return r.length && r.upper && r.special; };
+
   const handleEmailRegister = async () => {
     if (!isFormValid() || !cguAccepted) return;
-    if (emailForm.password.length < 6) { toast.error("Mot de passe trop court (6 caractères minimum)"); return; }
+    if (!pwdValid(emailForm.password)) { toast.error("Le mot de passe ne respecte pas les règles de sécurité"); return; }
     if (emailForm.password !== emailForm.confirmPassword) { toast.error("Les mots de passe ne correspondent pas"); return; }
     setEmailLoading(true);
     try {
@@ -879,11 +887,31 @@ export default function LandingPage() {
                     <label className="block text-sm text-white/70 mb-2">Mot de passe *</label>
                     <Input
                       type="password"
-                      placeholder="Minimum 6 caractères"
+                      placeholder="Ex: MonMotDePasse1!"
                       value={emailForm.password}
                       onChange={(e) => setEmailForm(f => ({ ...f, password: e.target.value }))}
                       className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
                     />
+                    {/* Checklist des règles — visible dès qu'on commence à taper */}
+                    {emailForm.password.length > 0 && (() => {
+                      const r = pwdRules(emailForm.password);
+                      return (
+                        <div className="mt-2 space-y-1">
+                          {[
+                            { ok: r.length,  label: "6 caractères minimum" },
+                            { ok: r.upper,   label: "1 lettre majuscule (A-Z)" },
+                            { ok: r.special, label: "1 caractère spécial (!@#$%...)" },
+                          ].map(({ ok, label }) => (
+                            <div key={label} className="flex items-center gap-1.5">
+                              <span className={`text-xs font-bold ${ok ? "text-[#39FF14]" : "text-white/25"}`}>
+                                {ok ? "✓" : "×"}
+                              </span>
+                              <span className={`text-xs ${ok ? "text-[#39FF14]/80" : "text-white/35"}`}>{label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div>
                     <label className="block text-sm text-white/70 mb-2">Confirmer le mot de passe *</label>
@@ -894,6 +922,9 @@ export default function LandingPage() {
                       onChange={(e) => setEmailForm(f => ({ ...f, confirmPassword: e.target.value }))}
                       className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
                     />
+                    {emailForm.confirmPassword && emailForm.password !== emailForm.confirmPassword && (
+                      <p className="text-red-400 text-xs mt-1">Les mots de passe ne correspondent pas</p>
+                    )}
                   </div>
                 </div>
 
@@ -916,7 +947,7 @@ export default function LandingPage() {
 
                 {/* Méthodes de connexion */}
                 {(() => {
-                  const passwordValid = emailForm.password.length >= 6 && emailForm.password === emailForm.confirmPassword;
+                  const passwordValid = pwdValid(emailForm.password) && emailForm.password === emailForm.confirmPassword;
                   const allValid = isFormValid() && cguAccepted && passwordValid;
                   return allValid ? (
                   <div className="mt-5 space-y-3">
@@ -963,7 +994,7 @@ export default function LandingPage() {
                   <div className="w-full py-4 rounded-xl text-center text-sm text-white/30 border border-white/10 mt-4">
                     {!isFormValid() ? "Remplissez tous les champs pour continuer" :
                      !cguAccepted ? "Acceptez les CGU pour continuer" :
-                     emailForm.password.length < 6 ? "Mot de passe trop court (6 caractères min.)" :
+                     !pwdValid(emailForm.password) ? "Mot de passe non conforme (voir règles ci-dessus)" :
                      "Les mots de passe ne correspondent pas"}
                   </div>
                   );

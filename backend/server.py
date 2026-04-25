@@ -624,6 +624,17 @@ def _hash_password(password: str) -> str:
     h = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
     return f"{salt}:{h}"
 
+def _validate_password(password: str) -> str | None:
+    """Returns an error message if the password doesn't meet requirements, else None."""
+    import re
+    if len(password) < 6:
+        return "Mot de passe trop court (6 caractères minimum)"
+    if not re.search(r"[A-Z]", password):
+        return "Le mot de passe doit contenir au moins 1 majuscule"
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return "Le mot de passe doit contenir au moins 1 caractère spécial (!@#$%...)"
+    return None
+
 def _verify_password(password: str, stored: str) -> bool:
     try:
         salt, h = stored.split(":", 1)
@@ -726,8 +737,9 @@ async def email_register(req: EmailRegisterRequest, request: Request):
         raise HTTPException(status_code=429, detail="Trop de tentatives d'inscription. Réessayez plus tard.")
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
-    if len(req.password) < 6:
-        raise HTTPException(status_code=400, detail="Mot de passe trop court (6 caractères minimum)")
+    pwd_error = _validate_password(req.password)
+    if pwd_error:
+        raise HTTPException(status_code=400, detail=pwd_error)
     if "@" not in req.email or "." not in req.email:
         raise HTTPException(status_code=400, detail="Adresse email invalide")
 
@@ -1061,8 +1073,9 @@ async def reset_password(request: Request):
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Lien expiré — demandez un nouveau")
 
-    if len(new_password) < 6:
-        raise HTTPException(status_code=400, detail="Mot de passe trop court")
+    pwd_error = _validate_password(new_password)
+    if pwd_error:
+        raise HTTPException(status_code=400, detail=pwd_error)
 
     await db.users.update_one(
         {"user_id": pending["user_id"]},
@@ -1369,12 +1382,17 @@ async def get_campaigns(user: dict = Depends(get_current_user)):
     return {"campaigns": campaigns}
 
 @api_router.get("/campaigns/discover")
-async def discover_campaigns(user: dict = Depends(get_current_user)):
-    """Get all active campaigns for discovery — batch DB lookups."""
+async def discover_campaigns(
+    user: dict = Depends(get_current_user),
+    search: Optional[str] = None,
+    sort: str = "recent",
+):
+    """Get all active campaigns for discovery — with search & sort."""
+    query: dict = {"status": "active"}
     campaigns = await db.campaigns.find(
-        {"status": "active"},
+        query,
         {"_id": 0, "token_clipper": 0, "token_manager": 0, "token_client": 0}
-    ).to_list(100)
+    ).to_list(200)
 
     if not campaigns:
         return {"campaigns": []}
@@ -1389,20 +1407,66 @@ async def discover_campaigns(user: dict = Depends(get_current_user)):
     ).to_list(len(agency_ids))
     agency_map = {a["user_id"]: a for a in agency_docs}
 
-    # Batch 2: fetch user's memberships for all these campaigns at once
     campaign_ids = [c["campaign_id"] for c in campaigns]
+
+    # Batch 2: user's memberships for all campaigns
     membership_map: dict = {}
     if user_id:
-        members = await db.campaign_members.find(
+        my_members = await db.campaign_members.find(
             {"user_id": user_id, "campaign_id": {"$in": campaign_ids}},
             {"_id": 0, "campaign_id": 1, "status": 1}
         ).to_list(200)
-        membership_map = {m["campaign_id"]: m["status"] for m in members}
+        membership_map = {m["campaign_id"]: m["status"] for m in my_members}
+
+    # Batch 3: clipper_count per campaign (only active clippers)
+    all_members = await db.campaign_members.find(
+        {"campaign_id": {"$in": campaign_ids}, "role": "clipper", "status": "active"},
+        {"_id": 0, "campaign_id": 1}
+    ).to_list(5000)
+    clipper_count_map: dict = {}
+    for m in all_members:
+        cid = m["campaign_id"]
+        clipper_count_map[cid] = clipper_count_map.get(cid, 0) + 1
+
+    # Batch 4: total_views per campaign from tracked_videos
+    all_vids = await db.tracked_videos.find(
+        {"campaign_id": {"$in": campaign_ids}},
+        {"_id": 0, "campaign_id": 1, "views": 1}
+    ).to_list(50000)
+    views_map: dict = {}
+    for v in all_vids:
+        cid = v["campaign_id"]
+        views_map[cid] = views_map.get(cid, 0) + (v.get("views") or 0)
 
     for campaign in campaigns:
+        cid = campaign["campaign_id"]
         agency = agency_map.get(campaign["agency_id"], {})
         campaign["agency_name"] = agency.get("display_name", "Unknown")
-        campaign["user_status"] = membership_map.get(campaign["campaign_id"])
+        campaign["user_status"] = membership_map.get(cid)
+        campaign["clipper_count"] = clipper_count_map.get(cid, 0)
+        campaign["total_views"] = views_map.get(cid, 0)
+
+    # Search filter (after enrichment so we can search agency_name too)
+    if search:
+        q = search.strip().lower()
+        campaigns = [
+            c for c in campaigns
+            if q in (c.get("name") or "").lower()
+            or q in (c.get("description") or "").lower()
+            or q in (c.get("agency_name") or "").lower()
+        ]
+
+    # Sort
+    if sort == "rpm":
+        campaigns.sort(key=lambda c: c.get("rpm") or 0, reverse=True)
+    elif sort == "budget":
+        campaigns.sort(key=lambda c: (c.get("budget_total") or 0) - (c.get("budget_used") or 0), reverse=True)
+    elif sort == "views":
+        campaigns.sort(key=lambda c: c.get("total_views") or 0, reverse=True)
+    elif sort == "clippers":
+        campaigns.sort(key=lambda c: c.get("clipper_count") or 0, reverse=True)
+    else:  # "recent" default
+        campaigns.sort(key=lambda c: c.get("created_at") or "", reverse=True)
 
     return {"campaigns": campaigns}
 
@@ -3187,10 +3251,92 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
     return all_videos
 
 
-async def _verify_tiktok(username: str) -> dict:
-    """Verify TikTok account. Primary: TikWm API (cloud-safe). Fallbacks: Playwright, yt-dlp."""
+async def _verify_tiktok_apify(username: str) -> dict:
+    """Verify TikTok account via Apify — uses residential proxies, cloud-safe."""
+    if not APIFY_TOKEN:
+        raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
-    # Primary: TikWm API — works from cloud servers, no anti-bot issues
+
+    attempts = [
+        ("clockworks~tiktok-scraper", {
+            "profiles": [username],
+            "resultsPerPage": 1,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+        }),
+        ("clockworks~tiktok-scraper", {
+            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
+            "resultsPerPage": 1,
+            "shouldDownloadVideos": False,
+        }),
+        ("apify~tiktok-scraper", {
+            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
+            "maxPostsPerProfile": 1,
+        }),
+    ]
+
+    last_err = "Apify TikTok verify: tous les acteurs ont échoué"
+    for actor_id, payload in attempts:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 256},
+                    json=payload,
+                )
+            logger.info(f"Apify TikTok verify {actor_id} @{username}: HTTP {r.status_code}")
+            if r.status_code not in (200, 201):
+                last_err = f"Apify {actor_id}: HTTP {r.status_code} — {r.text[:200]}"
+                continue
+            items = r.json()
+            if isinstance(items, dict):
+                items = items.get("data") or items.get("items") or []
+            if not isinstance(items, list) or not items:
+                last_err = f"Apify {actor_id}: 0 items"
+                continue
+
+            # Extract author info — try authorMeta (video items) then top-level (profile items)
+            first = items[0]
+            author = first.get("authorMeta") or first.get("author") or {}
+            if not author and ("nickName" in first or "fans" in first or "uniqueId" in first):
+                author = first
+
+            display_name = (author.get("nickName") or author.get("name") or
+                            author.get("uniqueId") or username)
+            avatar = (author.get("avatar") or author.get("avatarLarger") or
+                      author.get("avatarMedium") or author.get("avatarThumb"))
+            followers = int(author.get("fans") or author.get("followerCount") or 0)
+            channel_id = str(author.get("id") or author.get("secUid") or "")
+
+            return {
+                "display_name": display_name,
+                "avatar_url": avatar,
+                "follower_count": followers,
+                "platform_channel_id": channel_id,
+            }
+        except Exception as e:
+            last_err = f"Apify TikTok {actor_id} exception: {e}"
+            logger.warning(last_err)
+            continue
+
+    raise ValueError(last_err)
+
+
+async def _verify_tiktok(username: str) -> dict:
+    """Verify TikTok account. Primary: Apify (residential proxies). Fallbacks: TikWm, Playwright, yt-dlp."""
+    username = username.lstrip("@")
+    # Primary: Apify — most reliable from cloud
+    if APIFY_TOKEN:
+        try:
+            return await _verify_tiktok_apify(username)
+        except ValueError as e:
+            msg = str(e).lower()
+            if "introuvable" in msg or "not found" in msg:
+                raise
+            logger.warning(f"Apify TikTok verify failed for @{username}: {e}")
+        except Exception as e:
+            logger.warning(f"Apify TikTok verify exception for @{username}: {e}")
+    # Fallback 1: TikWm API
     try:
         return await _verify_tiktok_tikwm(username)
     except ValueError as e:
@@ -3759,15 +3905,101 @@ def _parse_instagram_videos(data: dict) -> list:
     return result
 
 
+async def _verify_instagram_apify(username: str) -> dict:
+    """Verify Instagram account via Apify — uses residential proxies, cloud-safe."""
+    if not APIFY_TOKEN:
+        raise ValueError("APIFY_TOKEN non configuré")
+    username = username.lstrip("@")
+
+    attempts = [
+        ("apify~instagram-profile-scraper", {
+            "usernames": [username],
+        }),
+        ("apify~instagram-scraper", {
+            "directUrls": [f"https://www.instagram.com/{username}/"],
+            "resultsType": "details",
+            "resultsLimit": 1,
+        }),
+        ("apify~instagram-scraper", {
+            "directUrls": [f"https://www.instagram.com/{username}/"],
+            "resultsType": "posts",
+            "resultsLimit": 1,
+        }),
+    ]
+
+    last_err = "Apify Instagram verify: tous les acteurs ont échoué"
+    for actor_id, payload in attempts:
+        try:
+            async with httpx.AsyncClient(timeout=120) as c:
+                r = await c.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 256},
+                    json=payload,
+                )
+            logger.info(f"Apify Instagram verify {actor_id} @{username}: HTTP {r.status_code}")
+            if r.status_code not in (200, 201):
+                last_err = f"Apify {actor_id}: HTTP {r.status_code} — {r.text[:200]}"
+                continue
+            items = r.json()
+            if isinstance(items, dict):
+                items = items.get("data") or items.get("items") or []
+            if not isinstance(items, list) or not items:
+                last_err = f"Apify {actor_id}: 0 items"
+                continue
+
+            first = items[0]
+            # Profile-scraper output has direct fields: username, fullName, followersCount, profilePicUrl
+            # Post-scraper output has nested owner info: ownerUsername, ownerFullName, ownerProfilePicUrl
+            display_name = (first.get("fullName") or first.get("ownerFullName") or
+                            first.get("full_name") or username)
+            avatar = (first.get("profilePicUrl") or first.get("profilePicUrlHD") or
+                      first.get("ownerProfilePicUrl") or first.get("profile_pic_url"))
+            edge_fb = first.get("edge_followed_by")
+            edge_fb_count = edge_fb.get("count") if isinstance(edge_fb, dict) else 0
+            followers = int(first.get("followersCount") or first.get("followers") or edge_fb_count or 0)
+            channel_id = str(first.get("id") or first.get("ownerId") or
+                             first.get("user_id") or first.get("pk") or "")
+
+            # Sanity check: if we got nothing meaningful, try next actor
+            if not display_name or display_name == username and not avatar and not followers:
+                last_err = f"Apify {actor_id}: data vide ou non parsable"
+                continue
+
+            return {
+                "display_name": display_name,
+                "avatar_url": avatar,
+                "follower_count": followers,
+                "platform_channel_id": channel_id,
+            }
+        except Exception as e:
+            last_err = f"Apify Instagram {actor_id} exception: {e}"
+            logger.warning(last_err)
+            continue
+
+    raise ValueError(last_err)
+
+
 async def _verify_instagram(username: str) -> dict:
     """Verify Instagram account.
     Priority:
+      0. Apify (residential proxies, cloud-safe)
       1. httpx API with INSTAGRAM_SESSION_ID (works from cloud)
       2. RapidAPI instagram-scraper-api2 (works from cloud, free 100/month)
       3. Playwright browser interception (blocked from cloud)
       4. instaloader (blocked from cloud)
     """
     username = username.lstrip("@")
+    # Priority 0: Apify — most reliable from cloud, residential proxies
+    if APIFY_TOKEN:
+        try:
+            return await _verify_instagram_apify(username)
+        except ValueError as e:
+            msg = str(e).lower()
+            if "introuvable" in msg or "not found" in msg or "private" in msg:
+                raise
+            logger.warning(f"Apify Instagram verify failed for @{username}: {e}")
+        except Exception as e:
+            logger.warning(f"Apify Instagram verify exception for @{username}: {e}")
     # Priority 1: httpx with session cookie (works from Railway when session is set)
     try:
         data = await _scrape_instagram_api(username)
@@ -3830,7 +4062,7 @@ async def _track_api_call(service: str, success: bool = True):
 
 
 async def verify_account(platform: str, username: str) -> dict:
-    service_map = {"youtube": "youtube", "tiktok": "tikwm", "instagram": "instagram"}
+    service_map = {"youtube": "youtube", "tiktok": "apify", "instagram": "apify"}
     success = True
     try:
         if platform == "youtube":
@@ -4737,49 +4969,51 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
     }
 
 async def _fetch_single_youtube_video(url: str) -> dict:
-    """Fetch stats for a single YouTube video URL via YouTube Data API."""
-    if not YOUTUBE_API_KEY:
-        # No API key — extract video ID and save with 0 views (will be updated by tracking loop)
-        m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
-        video_id = m.group(1) if m else f"yt_{uuid.uuid4().hex[:8]}"
+    """Fetch stats for a single YouTube video URL via YouTube Data API. Never raises — always returns a valid dict."""
+    m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
+    video_id = m.group(1) if m else None
+    fallback = {
+        "platform_video_id": video_id or f"yt_{uuid.uuid4().hex[:8]}",
+        "url": url, "title": None,
+        "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg" if video_id else None,
+        "views": 0, "likes": 0, "comments": 0, "published_at": None,
+    }
+    if not YOUTUBE_API_KEY or not video_id:
+        return fallback
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={"id": video_id, "part": "statistics,snippet", "key": YOUTUBE_API_KEY}
+            )
+            data = r.json()
+        items = data.get("items", [])
+        if not items:
+            return fallback
+        item = items[0]
+        stats = item.get("statistics", {})
+        snip = item.get("snippet", {})
         return {
             "platform_video_id": video_id,
             "url": url,
-            "title": None,
-            "thumbnail_url": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg" if m else None,
-            "views": 0, "likes": 0, "comments": 0, "published_at": None,
+            "title": snip.get("title", "")[:200] or None,
+            "thumbnail_url": snip.get("thumbnails", {}).get("medium", {}).get("url"),
+            "views": int(stats.get("viewCount", 0)),
+            "likes": int(stats.get("likeCount", 0)),
+            "comments": int(stats.get("commentCount", 0)),
+            "published_at": snip.get("publishedAt"),
         }
-    m = re.search(r'(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})', url)
-    if not m:
-        raise ValueError("URL YouTube invalide — impossible d'extraire l'ID vidéo")
-    video_id = m.group(1)
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"id": video_id, "part": "statistics,snippet", "key": YOUTUBE_API_KEY}
-        )
-        data = r.json()
-    items = data.get("items", [])
-    if not items:
-        raise ValueError("Vidéo YouTube introuvable ou privée")
-    item = items[0]
-    stats = item.get("statistics", {})
-    snip = item.get("snippet", {})
-    return {
-        "platform_video_id": video_id,
-        "url": url,
-        "title": snip.get("title", "")[:200] or None,
-        "thumbnail_url": snip.get("thumbnails", {}).get("medium", {}).get("url"),
-        "views": int(stats.get("viewCount", 0)),
-        "likes": int(stats.get("likeCount", 0)),
-        "comments": int(stats.get("commentCount", 0)),
-        "published_at": snip.get("publishedAt"),
-    }
+    except Exception as e:
+        logger.warning(f"_fetch_single_youtube_video error for {url}: {type(e).__name__}: {e}")
+        return fallback
 
 async def _fetch_single_instagram_video(url: str) -> dict:
-    """Best-effort: extract shortcode, return partial info."""
-    m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-    shortcode = m.group(1) if m else None
+    """Best-effort: extract shortcode, return partial info. Never raises."""
+    try:
+        m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+        shortcode = m.group(1) if m else None
+    except Exception:
+        shortcode = None
     return {
         "platform_video_id": shortcode or f"ig_{uuid.uuid4().hex[:8]}",
         "url": url,
@@ -4803,7 +5037,7 @@ async def fetch_single_video_by_url(url: str, platform: str) -> dict:
     raise ValueError(f"Plateforme non supportée: {platform}")
 
 async def fetch_videos(platform: str, username: str, account: dict, since_days: int = 30) -> list:
-    service_map = {"youtube": "youtube", "tiktok": "tikwm", "instagram": "instagram"}
+    service_map = {"youtube": "youtube", "tiktok": "apify", "instagram": "apify"}
     success = True
     try:
         if platform == "youtube":
@@ -5861,10 +6095,10 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     if platform not in ("tiktok", "youtube", "instagram"):
         raise HTTPException(status_code=400, detail="Plateforme invalide")
 
-    # Fetch video stats — timeout 8s max, always fallback to 0 views (never blocks Railway)
+    # Fetch video stats — each platform function is self-contained with its own timeout and never raises
     try:
-        vid_info = await asyncio.wait_for(fetch_single_video_by_url(url, platform), timeout=8)
-    except BaseException as e:
+        vid_info = await fetch_single_video_by_url(url, platform)
+    except Exception as e:
         logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {type(e).__name__}: {e}")
         vid_id = None
         if platform == "tiktok":
@@ -6067,8 +6301,13 @@ async def get_messages(campaign_id: str, user: dict = Depends(get_current_user))
     messages = await db.messages.find(
         {"campaign_id": campaign_id},
         {"_id": 0}
-    ).sort("created_at", -1).to_list(100)
-    return {"messages": list(reversed(messages))}
+    ).sort("created_at", -1).to_list(200)
+    result = list(reversed(messages))
+    # Ensure all messages expose a reactions dict
+    for m in result:
+        if "reactions" not in m:
+            m["reactions"] = {}
+    return {"messages": result}
 
 @api_router.get("/messages/unread-counts")
 async def get_unread_counts(user: dict = Depends(get_current_user)):
@@ -6176,6 +6415,179 @@ async def send_message(message_data: MessageCreate, user: dict = Depends(get_cur
     })
     
     return message
+
+@api_router.post("/messages/{message_id}/react")
+async def react_to_message(message_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Toggle an emoji reaction on a message. All roles can react (including clippers on announcements)."""
+    ALLOWED_EMOJIS = ["❤️", "🔥", "😂", "👍", "👎", "😮", "🎉"]
+    emoji = (body.get("emoji") or "").strip()
+    if not emoji or emoji not in ALLOWED_EMOJIS:
+        raise HTTPException(status_code=400, detail="Emoji non autorisé")
+
+    msg = await db.messages.find_one({"message_id": message_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message introuvable")
+
+    reactions = dict(msg.get("reactions") or {})
+    user_id = user["user_id"]
+
+    current_users = list(reactions.get(emoji, []))
+    if user_id in current_users:
+        current_users.remove(user_id)
+    else:
+        current_users.append(user_id)
+
+    if current_users:
+        reactions[emoji] = current_users
+    else:
+        reactions.pop(emoji, None)
+
+    await db.messages.update_one({"message_id": message_id}, {"$set": {"reactions": reactions}})
+
+    # Broadcast to campaign so all connected users see the update in real-time
+    try:
+        await manager.broadcast_to_campaign(msg["campaign_id"], {
+            "type": "message_reaction",
+            "message_id": message_id,
+            "reactions": reactions,
+        })
+    except Exception:
+        pass
+
+    return {"reactions": reactions}
+
+
+@api_router.get("/messages/{message_id}/comments")
+async def get_message_comments(message_id: str, user: dict = Depends(get_current_user)):
+    """Get text comments on an annonce message."""
+    comments = await db.message_comments.find(
+        {"message_id": message_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(200)
+    # Enrich with author info
+    author_ids = list({c["user_id"] for c in comments})
+    if author_ids:
+        authors = await db.users.find(
+            {"user_id": {"$in": author_ids}},
+            {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1, "role": 1}
+        ).to_list(len(author_ids))
+        authors_map = {a["user_id"]: a for a in authors}
+    else:
+        authors_map = {}
+    for c in comments:
+        a = authors_map.get(c["user_id"], {})
+        c["author_name"] = a.get("display_name") or a.get("name") or "?"
+        c["author_picture"] = a.get("picture")
+        c["author_role"] = a.get("role")
+    return {"comments": comments}
+
+
+@api_router.post("/messages/{message_id}/comments")
+async def post_message_comment(message_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Post a text comment on an annonce message."""
+    content = (body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Contenu vide")
+    if len(content) > 500:
+        raise HTTPException(status_code=400, detail="Commentaire trop long (500 caractères max)")
+
+    msg = await db.messages.find_one({"message_id": message_id}, {"_id": 0, "campaign_id": 1, "message_type": 1})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message introuvable")
+
+    comment_id = f"cmt_{uuid.uuid4().hex[:12]}"
+    comment = {
+        "comment_id": comment_id,
+        "message_id": message_id,
+        "campaign_id": msg.get("campaign_id"),
+        "user_id": user["user_id"],
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.message_comments.insert_one(comment)
+    comment.pop("_id", None)
+    comment["author_name"] = user.get("display_name") or user.get("name") or "?"
+    comment["author_picture"] = user.get("picture")
+    comment["author_role"] = user.get("role")
+
+    # Broadcast to campaign
+    try:
+        await manager.broadcast_to_campaign(msg["campaign_id"], {
+            "type": "message_comment",
+            "message_id": message_id,
+            "comment": comment,
+        })
+    except Exception:
+        pass
+
+    # Update comment count on message
+    await db.messages.update_one(
+        {"message_id": message_id},
+        {"$inc": {"comment_count": 1}}
+    )
+
+    return comment
+
+
+@api_router.get("/campaigns/{campaign_id}/participants")
+async def get_campaign_participants(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Get all participants (active + pending members + agency/manager) of a campaign."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    # All members (any status)
+    members = await db.campaign_members.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "user_id": 1, "role": 1, "status": 1, "joined_at": 1}
+    ).to_list(500)
+
+    member_ids = [m["user_id"] for m in members]
+    agency_id = campaign.get("agency_id")
+    campaign_manager_id = campaign.get("manager_id")
+
+    # All user IDs we need to fetch (deduplicated)
+    all_ids = list({uid for uid in member_ids + [agency_id, campaign_manager_id] if uid})
+
+    user_docs = await db.users.find(
+        {"user_id": {"$in": all_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1, "role": 1}
+    ).to_list(500)
+    users_map = {u["user_id"]: u for u in user_docs}
+
+    participants = []
+    seen_ids = set()
+
+    # Agency owner first (not in campaign_members)
+    for uid, lbl_role in [(agency_id, "agency"), (campaign_manager_id, "manager")]:
+        if uid and uid not in seen_ids and uid not in member_ids:
+            u = users_map.get(uid, {})
+            participants.append({
+                "user_id": uid,
+                "role": u.get("role", lbl_role),
+                "status": "owner",
+                "display_name": u.get("display_name") or u.get("name", "Agence"),
+                "picture": u.get("picture"),
+                "joined_at": campaign.get("created_at"),
+            })
+            seen_ids.add(uid)
+
+    # All members
+    for m in members:
+        uid = m["user_id"]
+        if uid in seen_ids:
+            continue
+        u = users_map.get(uid, {})
+        participants.append({
+            "user_id": uid,
+            "role": m.get("role", "clipper"),
+            "status": m.get("status", "active"),
+            "display_name": u.get("display_name") or u.get("name", "?"),
+            "picture": u.get("picture"),
+            "joined_at": m.get("joined_at"),
+        })
+        seen_ids.add(uid)
+
+    return {"participants": participants, "total": len(participants)}
 
 # ================= ANNOUNCEMENTS =================
 
@@ -7660,56 +8072,159 @@ async def admin_stats(request: Request, _: bool = Depends(verify_admin_code)):
     }
 
 @api_router.get("/admin/stats/videos-timeline")
-async def admin_videos_timeline(request: Request, _: bool = Depends(verify_admin_code)):
-    """Tracked videos count grouped by day for the last 30 days."""
+async def admin_videos_timeline(
+    request: Request,
+    days: int = Query(30, ge=1, le=366),
+    _: bool = Depends(verify_admin_code)
+):
+    """Tracked videos/views timeline. Grouping: hourly (1j), daily (≤90j), monthly (>90j)."""
     from datetime import timedelta
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=30)
-    pipeline = [
-        {"$match": {"created_at": {"$gte": start.isoformat()}}},
-        {"$group": {
-            "_id": {"$substr": ["$created_at", 0, 10]},
-            "count": {"$sum": 1},
-            "views": {"$sum": "$views"}
-        }},
-        {"$sort": {"_id": 1}}
-    ]
-    results = await db.tracked_videos.aggregate(pipeline).to_list(31)
-    data_by_day = {r["_id"]: r for r in results}
+    start = end - timedelta(days=days)
     timeline = []
-    current = start
-    while current <= end:
-        day = current.strftime("%Y-%m-%d")
-        d = data_by_day.get(day, {})
-        timeline.append({"date": day, "videos": d.get("count", 0), "views": d.get("views", 0)})
-        current += timedelta(days=1)
-    return {"timeline": timeline}
+
+    if days == 1:
+        # ── Hourly: last 24h ──────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"created_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$created_at", 0, 13]},  # "YYYY-MM-DDTHH"
+                "count": {"$sum": 1},
+                "views": {"$sum": "$views"}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.tracked_videos.aggregate(pipeline).to_list(25)
+        data_map = {r["_id"]: r for r in results}
+        current = start.replace(minute=0, second=0, microsecond=0)
+        while current <= end:
+            key = current.strftime("%Y-%m-%dT%H")
+            d = data_map.get(key, {})
+            timeline.append({"date": current.strftime("%H:00"), "videos": d.get("count", 0), "views": d.get("views", 0)})
+            current += timedelta(hours=1)
+
+    elif days <= 90:
+        # ── Daily ─────────────────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"created_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$created_at", 0, 10]},
+                "count": {"$sum": 1},
+                "views": {"$sum": "$views"}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.tracked_videos.aggregate(pipeline).to_list(days + 1)
+        data_map = {r["_id"]: r for r in results}
+        current = start
+        while current <= end:
+            day = current.strftime("%Y-%m-%d")
+            d = data_map.get(day, {})
+            timeline.append({"date": day, "videos": d.get("count", 0), "views": d.get("views", 0)})
+            current += timedelta(days=1)
+
+    else:
+        # ── Monthly: 1 year ───────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"created_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$created_at", 0, 7]},  # "YYYY-MM"
+                "count": {"$sum": 1},
+                "views": {"$sum": "$views"}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.tracked_videos.aggregate(pipeline).to_list(13)
+        data_map = {r["_id"]: r for r in results}
+        # Generate all 12 (or 13) monthly buckets
+        from calendar import monthrange
+        current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        while current <= end:
+            key = current.strftime("%Y-%m")
+            d = data_map.get(key, {})
+            timeline.append({"date": key, "videos": d.get("count", 0), "views": d.get("views", 0)})
+            # Next month
+            days_in_month = monthrange(current.year, current.month)[1]
+            current = current + timedelta(days=days_in_month)
+
+    return {"timeline": timeline, "period": days}
+
 
 @api_router.get("/admin/stats/clicks-timeline")
-async def admin_clicks_timeline(request: Request, _: bool = Depends(verify_admin_code)):
-    """Click events grouped by day for the last 30 days."""
+async def admin_clicks_timeline(
+    request: Request,
+    days: int = Query(30, ge=1, le=366),
+    _: bool = Depends(verify_admin_code)
+):
+    """Click events timeline. Grouping: hourly (1j), daily (≤90j), monthly (>90j)."""
     from datetime import timedelta as _td
     end = datetime.now(timezone.utc)
-    start = end - _td(days=30)
-    pipeline = [
-        {"$match": {"clicked_at": {"$gte": start.isoformat()}}},
-        {"$group": {
-            "_id": {"$substr": ["$clicked_at", 0, 10]},
-            "clicks": {"$sum": 1},
-            "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
-        }},
-        {"$sort": {"_id": 1}}
-    ]
-    results = await db.click_events.aggregate(pipeline).to_list(31)
-    data_by_day = {r["_id"]: r for r in results}
+    start = end - _td(days=days)
     timeline = []
-    current = start
-    while current <= end:
-        day = current.strftime("%Y-%m-%d")
-        d = data_by_day.get(day, {})
-        timeline.append({"date": day, "clicks": d.get("clicks", 0), "unique_clicks": d.get("unique_clicks", 0)})
-        current += _td(days=1)
-    return {"timeline": timeline}
+
+    if days == 1:
+        # ── Hourly ────────────────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"clicked_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$clicked_at", 0, 13]},
+                "clicks": {"$sum": 1},
+                "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.click_events.aggregate(pipeline).to_list(25)
+        data_map = {r["_id"]: r for r in results}
+        current = start.replace(minute=0, second=0, microsecond=0)
+        while current <= end:
+            key = current.strftime("%Y-%m-%dT%H")
+            d = data_map.get(key, {})
+            timeline.append({"date": current.strftime("%H:00"), "clicks": d.get("clicks", 0), "unique_clicks": d.get("unique_clicks", 0)})
+            current += _td(hours=1)
+
+    elif days <= 90:
+        # ── Daily ─────────────────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"clicked_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$clicked_at", 0, 10]},
+                "clicks": {"$sum": 1},
+                "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.click_events.aggregate(pipeline).to_list(days + 1)
+        data_map = {r["_id"]: r for r in results}
+        current = start
+        while current <= end:
+            day = current.strftime("%Y-%m-%d")
+            d = data_map.get(day, {})
+            timeline.append({"date": day, "clicks": d.get("clicks", 0), "unique_clicks": d.get("unique_clicks", 0)})
+            current += _td(days=1)
+
+    else:
+        # ── Monthly ───────────────────────────────────────────────────────────
+        pipeline = [
+            {"$match": {"clicked_at": {"$gte": start.isoformat()}}},
+            {"$group": {
+                "_id": {"$substr": ["$clicked_at", 0, 7]},
+                "clicks": {"$sum": 1},
+                "unique_clicks": {"$sum": {"$cond": ["$is_unique", 1, 0]}}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        results = await db.click_events.aggregate(pipeline).to_list(13)
+        data_map = {r["_id"]: r for r in results}
+        from calendar import monthrange
+        current = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        while current <= end:
+            key = current.strftime("%Y-%m")
+            d = data_map.get(key, {})
+            timeline.append({"date": key, "clicks": d.get("clicks", 0), "unique_clicks": d.get("unique_clicks", 0)})
+            days_in_month = monthrange(current.year, current.month)[1]
+            current = current + _td(days=days_in_month)
+
+    return {"timeline": timeline, "period": days}
 
 @api_router.get("/admin/campaigns/{campaign_id}/detail")
 async def admin_campaign_detail(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
@@ -8254,10 +8769,9 @@ async def admin_api_usage(request: Request, _: bool = Depends(verify_admin_code)
     month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d")
 
     services = [
-        {"key": "youtube",   "label": "YouTube Data API",  "free_limit": "10 000 req/jour"},
-        {"key": "tikwm",     "label": "TikWm (TikTok)",    "free_limit": "~500 req/jour (sans clé)"},
-        {"key": "instagram", "label": "Instagram Scraping","free_limit": "Variable (Apify $29/mois)"},
-        {"key": "resend",    "label": "Resend (Emails)",   "free_limit": "3 000 emails/mois"},
+        {"key": "youtube",   "label": "YouTube Data API",       "free_limit": "10 000 req/jour"},
+        {"key": "apify",     "label": "Apify (TikTok + Insta)", "free_limit": "$5/mois inclus"},
+        {"key": "resend",    "label": "Resend (Emails)",        "free_limit": "3 000 emails/mois"},
     ]
 
     result = {}
@@ -8344,15 +8858,29 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
         except Exception as e:
             return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
 
-    async def test_playwright():
+    async def test_apify():
         t = time.time()
-        if not PLAYWRIGHT_AVAILABLE:
-            return {"status": "not_installed", "error": "Playwright non installé"}
+        if not APIFY_TOKEN:
+            return {"status": "not_configured", "error": "APIFY_TOKEN manquant"}
         try:
-            async with _playwright_api() as pw:
-                browser = await pw.chromium.launch(headless=True, args=["--no-sandbox"])
-                await browser.close()
-            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(
+                    "https://api.apify.com/v2/users/me",
+                    params={"token": APIFY_TOKEN}
+                )
+            if r.status_code == 200:
+                data = r.json().get("data", {})
+                plan = data.get("plan", {}).get("id", "unknown")
+                usage_usd = data.get("monthlyUsage", {}).get("ACTOR_COMPUTE_UNITS", 0)
+                limit_usd = data.get("plan", {}).get("monthlyActorComputeUnits", 0)
+                return {
+                    "status": "ok",
+                    "latency_ms": round((time.time() - t) * 1000),
+                    "plan": plan,
+                    "usage_usd": round(usage_usd, 3),
+                    "limit_usd": round(limit_usd, 3),
+                }
+            return {"status": "error", "error": f"HTTP {r.status_code}", "latency_ms": round((time.time() - t) * 1000)}
         except Exception as e:
             return {"status": "error", "error": str(e)[:100], "latency_ms": round((time.time() - t) * 1000)}
 
@@ -8385,13 +8913,13 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
             return {"status": "error", "error": str(e), "latency_ms": round((time.time() - t) * 1000)}
 
     results = await asyncio.gather(
-        test_mongodb(), test_youtube(), test_playwright(), test_stripe(), test_google_oauth(),
+        test_mongodb(), test_youtube(), test_apify(), test_stripe(), test_google_oauth(),
         return_exceptions=False
     )
     return {
         "mongodb": results[0],
         "youtube_api": results[1],
-        "playwright": results[2],
+        "apify": results[2],
         "stripe": results[3],
         "google_oauth": results[4],
         "checked_at": datetime.now(timezone.utc).isoformat()
@@ -9057,6 +9585,162 @@ async def regenerate_click_link(campaign_id: str, clipper_id: str, user: dict = 
 class AddBudgetRequest(BaseModel):
     amount: float  # montant en euros à ajouter
 
+@api_router.patch("/campaigns/{campaign_id}/settings")
+async def update_campaign_settings(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Agency/Manager: edit campaign settings mid-flight or after budget exhaustion.
+    - Always editable: name, description, destination_url, rate_per_click, click_window_hours, application_form_enabled, application_questions, platforms, max_clippers, min_views_payout, max_views_payout.
+    - RPM editable ONLY when budget exhausted (budget_used >= budget_total) OR budget_unlimited.
+    - Cannot change payment_model after creation.
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("agency_id") != user.get("user_id") and user.get("role") != "manager":
+        raise HTTPException(status_code=403, detail="Non autorisé")
+
+    ALWAYS_EDITABLE = {
+        "name", "description", "destination_url", "rate_per_click",
+        "click_window_hours", "application_form_enabled", "application_questions",
+        "platforms", "max_clippers", "min_view_payout", "max_view_payout",
+    }
+    RPM_EDITABLE_WHEN_EXHAUSTED = {"rpm"}
+
+    updates: dict = {}
+    budget_total = campaign.get("budget_total") or 0
+    budget_used = campaign.get("budget_used") or 0
+    budget_unlimited = campaign.get("budget_unlimited", False)
+    budget_exhausted = budget_unlimited or (budget_total > 0 and budget_used >= budget_total)
+
+    for key, val in body.items():
+        if key in ALWAYS_EDITABLE:
+            updates[key] = val
+        elif key in RPM_EDITABLE_WHEN_EXHAUSTED:
+            if not budget_exhausted:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Le RPM ne peut être modifié qu'une fois la cagnotte épuisée. Rechargez le budget d'abord ou attendez l'épuisement."
+                )
+            if val is not None:
+                updates["rpm"] = float(val)
+        elif key == "payment_model":
+            raise HTTPException(status_code=400, detail="Le modèle de paiement ne peut pas être modifié après création")
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="Aucun champ modifiable fourni")
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.campaigns.update_one({"campaign_id": campaign_id}, {"$set": updates})
+
+    # If RPM changed and campaign was paused due to budget exhaustion, keep paused — agency must add budget to relaunch
+    # If campaign was paused due to budget and budget is reloaded (handled in add-budget), auto-reactivate there
+    updated = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    return {"campaign": updated}
+
+
+@api_router.post("/campaigns/{campaign_id}/leave")
+async def leave_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Clipper voluntarily leaves a campaign."""
+    if user.get("role") not in ["clipper"]:
+        raise HTTPException(status_code=403, detail="Clippeurs uniquement")
+    user_id = user["user_id"]
+    member = await db.campaign_members.find_one(
+        {"campaign_id": campaign_id, "user_id": user_id, "role": "clipper"},
+        {"_id": 0}
+    )
+    if not member:
+        raise HTTPException(status_code=404, detail="Vous n'êtes pas membre de cette campagne")
+    if member.get("status") in ("left", "rejected"):
+        raise HTTPException(status_code=400, detail="Vous avez déjà quitté cette campagne")
+
+    await db.campaign_members.update_one(
+        {"campaign_id": campaign_id, "user_id": user_id, "role": "clipper"},
+        {"$set": {"status": "left", "left_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    # Notify agency/manager via WebSocket
+    try:
+        campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+        if campaign:
+            await manager.broadcast_to_campaign(campaign_id, {
+                "type": "clipper_left",
+                "campaign_id": campaign_id,
+                "user_id": user_id,
+                "display_name": user.get("display_name") or user.get("name", ""),
+            })
+    except Exception:
+        pass
+    return {"message": "Vous avez quitté la campagne"}
+
+
+@api_router.delete("/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Agency: delete a campaign.
+    Conditions:
+      1. Budget must be exhausted (used >= total) OR budget_unlimited=True.
+      2. All active clippers must have been paid (no pending payments owed > 0).
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("agency_id") != user.get("user_id") and user.get("role") != "manager":
+        raise HTTPException(status_code=403, detail="Non autorisé")
+
+    budget_total = campaign.get("budget_total") or 0
+    budget_used = campaign.get("budget_used") or 0
+    budget_unlimited = campaign.get("budget_unlimited", False)
+
+    if not budget_unlimited and budget_total > 0 and budget_used < budget_total:
+        remaining = round(budget_total - budget_used, 2)
+        raise HTTPException(
+            status_code=400,
+            detail=f"La cagnotte n'est pas encore épuisée. Il reste {remaining}€. Épuisez le budget ou passez en mode illimité avant de supprimer."
+        )
+
+    # Check all clippers are paid (total owed ≈ 0)
+    active_members = await db.campaign_members.find(
+        {"campaign_id": campaign_id, "role": "clipper", "status": {"$in": ["active", "left"]}},
+        {"_id": 0, "user_id": 1}
+    ).to_list(500)
+    clipper_ids = [m["user_id"] for m in active_members]
+    unpaid_count = 0
+    for clipper_user_id in clipper_ids:
+        # Compute views earnings
+        vids = await db.tracked_videos.find(
+            {"campaign_id": campaign_id, "user_id": clipper_user_id},
+            {"_id": 0, "views": 1}
+        ).to_list(10000)
+        total_views = sum(v.get("views", 0) for v in vids)
+        rpm = campaign.get("rpm") or 0
+        owed = round((total_views / 1000) * rpm, 2) if rpm else 0
+
+        confirmed_payments = await db.payments.find(
+            {"user_id": clipper_user_id, "campaign_id": campaign_id, "status": "confirmed"},
+            {"_id": 0, "amount_eur": 1}
+        ).to_list(1000)
+        paid = round(sum(p.get("amount_eur", 0) for p in confirmed_payments), 2)
+
+        if owed - paid > 0.5:  # 50 cent tolerance
+            unpaid_count += 1
+
+    if unpaid_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{unpaid_count} clippeur(s) n'ont pas encore été payé(s). Confirmez tous les paiements avant de supprimer la campagne."
+        )
+
+    # All conditions met — delete campaign and related data
+    await db.campaigns.delete_one({"campaign_id": campaign_id})
+    await db.campaign_members.delete_many({"campaign_id": campaign_id})
+    await db.messages.delete_many({"campaign_id": campaign_id})
+    await db.tracked_videos.delete_many({"campaign_id": campaign_id})
+    await db.posts.delete_many({"campaign_id": campaign_id})
+
+    return {"message": "Campagne supprimée avec succès"}
+
+
 @api_router.post("/campaigns/{campaign_id}/add-budget")
 async def add_campaign_budget(campaign_id: str, body: AddBudgetRequest, user: dict = Depends(get_current_user)):
     """Agency: add more budget to an existing campaign."""
@@ -9071,12 +9755,17 @@ async def add_campaign_budget(campaign_id: str, body: AddBudgetRequest, user: di
         raise HTTPException(status_code=403, detail="Non autorisé")
     current_budget = campaign.get("budget_total") or 0
     new_budget = round(current_budget + body.amount, 2)
+    set_fields: dict = {"budget_total": new_budget, "budget_unlimited": False}
+    # Auto-reactivate if the campaign was paused due to budget exhaustion
+    if campaign.get("status") == "paused" and campaign.get("paused_reason") == "budget_exhausted":
+        set_fields["status"] = "active"
+        set_fields["paused_reason"] = None
     await db.campaigns.update_one(
         {"campaign_id": campaign_id},
-        {"$set": {"budget_total": new_budget, "budget_unlimited": False}}
+        {"$set": set_fields}
     )
     updated = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
-    return {"budget_total": new_budget, "budget_used": updated.get("budget_used", 0)}
+    return {"budget_total": new_budget, "budget_used": updated.get("budget_used", 0), "status": updated.get("status")}
 
 # Include router
 app.include_router(api_router)
@@ -9128,6 +9817,8 @@ async def startup_event():
         (db.social_accounts, [("status", 1)], {}),
         # announcements
         (db.announcements, [("created_at", -1)], {}),
+        # message comments
+        (db.message_comments, [("message_id", 1), ("created_at", 1)], {}),
         # posts (for views aggregation)
         (db.posts, [("campaign_id", 1), ("user_id", 1)], {}),
         (db.posts, [("user_id", 1)], {}),

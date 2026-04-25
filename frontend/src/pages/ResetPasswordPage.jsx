@@ -26,8 +26,16 @@ export default function ResetPasswordPage() {
     }
   }, [token, navigate]);
 
+  // Password rules
+  const pwdRules = {
+    length:  password.length >= 6,
+    upper:   /[A-Z]/.test(password),
+    special: /[^A-Za-z0-9]/.test(password),
+  };
+  const pwdValid = pwdRules.length && pwdRules.upper && pwdRules.special;
+
   const handleSubmit = async () => {
-    if (password.length < 6) { toast.error("Minimum 6 caractères"); return; }
+    if (!pwdValid) { toast.error("Le mot de passe ne respecte pas les règles de sécurité"); return; }
     if (password !== confirmPassword) { toast.error("Les mots de passe ne correspondent pas"); return; }
     setLoading(true);
     setError("");
@@ -50,7 +58,8 @@ export default function ResetPasswordPage() {
     }
   };
 
-  const strength = password.length === 0 ? null : password.length < 6 ? "weak" : password.length < 10 ? "ok" : "strong";
+  // strength kept for colour bar (derived from pwdRules)
+  const strengthScore = [pwdRules.length, pwdRules.upper, pwdRules.special].filter(Boolean).length;
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] flex items-center justify-center px-4">
@@ -105,7 +114,7 @@ export default function ResetPasswordPage() {
                 <div className="relative">
                   <input
                     type={showPwd ? "text" : "password"}
-                    placeholder="Minimum 6 caractères"
+                    placeholder="Ex: MonMotDePasse1!"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
@@ -119,12 +128,25 @@ export default function ResetPasswordPage() {
                     {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
-                {/* Barre de force */}
-                {strength && (
-                  <div className="flex gap-1 mt-1.5">
-                    <div className={`h-1 flex-1 rounded-full transition-colors ${strength === "weak" ? "bg-red-500" : "bg-[#39FF14]"}`} />
-                    <div className={`h-1 flex-1 rounded-full transition-colors ${strength === "ok" || strength === "strong" ? "bg-[#39FF14]" : "bg-white/10"}`} />
-                    <div className={`h-1 flex-1 rounded-full transition-colors ${strength === "strong" ? "bg-[#39FF14]" : "bg-white/10"}`} />
+                {/* Checklist des 3 règles */}
+                {password.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {[
+                      { ok: pwdRules.length,  label: "6 caractères minimum" },
+                      { ok: pwdRules.upper,   label: "1 lettre majuscule (A-Z)" },
+                      { ok: pwdRules.special, label: "1 caractère spécial (!@#$%...)" },
+                    ].map(({ ok, label }) => (
+                      <div key={label} className="flex items-center gap-1.5">
+                        <span className={`text-xs font-bold ${ok ? "text-[#39FF14]" : "text-white/25"}`}>{ok ? "✓" : "×"}</span>
+                        <span className={`text-xs ${ok ? "text-[#39FF14]/80" : "text-white/35"}`}>{label}</span>
+                      </div>
+                    ))}
+                    {/* Colour bar */}
+                    <div className="flex gap-1 mt-1.5">
+                      {[0,1,2].map(i => (
+                        <div key={i} className={`h-1 flex-1 rounded-full transition-all ${i < strengthScore ? (strengthScore === 3 ? "bg-[#39FF14]" : strengthScore === 2 ? "bg-amber-400" : "bg-red-500") : "bg-white/10"}`} />
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -161,7 +183,7 @@ export default function ResetPasswordPage() {
               {/* Bouton */}
               <button
                 onClick={handleSubmit}
-                disabled={loading || password.length < 6 || password !== confirmPassword}
+                disabled={loading || !pwdValid || password !== confirmPassword}
                 className="w-full py-3 rounded-xl bg-[#f0c040] text-black font-semibold hover:bg-[#f0c040]/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {loading ? "Mise à jour..." : "Mettre à jour le mot de passe"}

@@ -761,15 +761,28 @@ function CampaignDashboard({ campaigns }) {
             <div className="flex items-center justify-between mb-4">
               <p className="text-white font-medium">Vues par jour</p>
               <div className="flex items-center gap-2">
-                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
-                  {[["7","7j"],["30","30j"],["90","90j"]].map(([val, label]) => (
-                    <button key={val}
-                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
-                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {/* Period selector + flèches */}
+                {(() => {
+                  const PL = [["7","7j"],["30","30j"],["90","90j"],["365","1an"]];
+                  const idx = PL.findIndex(([v]) => v === viewsPeriod);
+                  const go = (v) => { setViewsPeriod(v); fetchViewsTimeline(v); };
+                  return (
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => idx > 0 && go(PL[idx-1][0])} disabled={idx === 0}
+                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">‹</button>
+                      <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                        {PL.map(([val, label]) => (
+                          <button key={val} onClick={() => go(val)}
+                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => idx < PL.length-1 && go(PL[idx+1][0])} disabled={idx === PL.length-1}
+                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">›</button>
+                    </div>
+                  );
+                })()}
                 {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: ACCENT + "50", borderTopColor: ACCENT }} />}
               </div>
             </div>

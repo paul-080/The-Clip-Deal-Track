@@ -336,18 +336,37 @@ function AgencyHome({ announcements, onUpdate }) {
   );
 }
 
+const SORT_OPTIONS_DISCOVER = [
+  { value: "recent", label: "Plus récentes" },
+  { value: "rpm", label: "Meilleure rémunération" },
+  { value: "budget", label: "Budget restant" },
+  { value: "views", label: "Plus de vues" },
+];
+
 // Discover Page for Agency
 function DiscoverPage() {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [sort, setSort] = useState("recent");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
     fetchCampaigns();
-  }, []);
+  }, [debouncedSearch, sort]);
 
   const fetchCampaigns = async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/discover`, { credentials: "include" });
+      const params = new URLSearchParams();
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+      params.set("sort", sort);
+      const res = await fetch(`${API}/campaigns/discover?${params}`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         setCampaigns(data.campaigns || []);
@@ -371,6 +390,39 @@ function DiscoverPage() {
         <p className="text-white/50">Campagnes des autres agences (lecture seule)</p>
       </div>
 
+      {/* Search + Sort */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Rechercher une campagne ou une agence…"
+            className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25 transition-colors"
+          />
+          {search && (
+            <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white transition-colors">
+              ✕
+            </button>
+          )}
+        </div>
+        <div className="flex gap-1.5 flex-wrap">
+          {SORT_OPTIONS_DISCOVER.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setSort(opt.value)}
+              className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                sort === opt.value
+                  ? "bg-white/15 text-white border border-white/25"
+                  : "bg-white/5 text-white/50 border border-white/8 hover:bg-white/10 hover:text-white/80"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3].map((i) => (
@@ -382,6 +434,12 @@ function DiscoverPage() {
             </Card>
           ))}
         </div>
+      ) : campaigns.length === 0 ? (
+        <Card className="bg-[#121212] border-white/10">
+          <CardContent className="p-8 text-center">
+            <p className="text-white/50">{search ? `Aucun résultat pour "${search}"` : "Aucune campagne disponible"}</p>
+          </CardContent>
+        </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {campaigns.map((campaign) => (
@@ -1077,6 +1135,7 @@ function CreateCampaign({ onCreated }) {
 // Campaign Dashboard for Agency — Shortimize style
 function CampaignDashboard({ campaigns }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const campaignId = location.pathname.split("/")[3];
   const [campaign, setCampaign] = useState(null);
   const [stats, setStats] = useState(null);
@@ -1105,6 +1164,11 @@ function CampaignDashboard({ campaigns }) {
   const [showAddBudget, setShowAddBudget] = useState(false);
   const [addBudgetAmount, setAddBudgetAmount] = useState("");
   const [addingBudget, setAddingBudget] = useState(false);
+  // ── Campaign settings editor ───────────────────────────────────────────────
+  const [settingsForm, setSettingsForm] = useState(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [deletingCampaign, setDeletingCampaign] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   // ── Click campaign stats ───────────────────────────────────────────────────
   const [clickStats, setClickStats] = useState(null);
   const [clickStatsLoading, setClickStatsLoading] = useState(false);
@@ -1251,6 +1315,50 @@ function CampaignDashboard({ campaigns }) {
       }
     } catch { toast.error("Erreur réseau"); }
     finally { setAddingBudget(false); }
+  };
+
+  const handleSaveSettings = async () => {
+    if (!settingsForm) return;
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(settingsForm),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCampaign(data.campaign);
+        toast.success("Paramètres sauvegardés ✓");
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Erreur lors de la sauvegarde");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setSavingSettings(false); }
+  };
+
+  const handleDeleteCampaign = async () => {
+    if (deleteConfirmText !== "SUPPRIMER") {
+      toast.error("Saisissez SUPPRIMER pour confirmer");
+      return;
+    }
+    setDeletingCampaign(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.ok) {
+        toast.success("Campagne supprimée");
+        navigate("/agency");
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Impossible de supprimer");
+      }
+    } catch { toast.error("Erreur réseau"); }
+    finally { setDeletingCampaign(false); }
   };
 
   const handleAddManualVideo = async () => {
@@ -1508,12 +1616,26 @@ function CampaignDashboard({ campaigns }) {
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length },
           ...(campaign.payment_model === "clicks" ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
+          { id: "settings", label: "⚙️ Paramètres" },
         ].map(tab => (
           <button key={tab.id}
             onClick={() => {
               setActiveTab(tab.id);
               if (tab.id === "candidatures") fetchPendingMembers();
               if (tab.id === "liens") fetchClickLinks();
+              if (tab.id === "settings") {
+                setSettingsForm({
+                  name: campaign.name || "",
+                  description: campaign.description || "",
+                  destination_url: campaign.destination_url || "",
+                  rate_per_click: campaign.rate_per_click || 0,
+                  click_window_hours: campaign.click_window_hours || 24,
+                  rpm: campaign.rpm || 0,
+                  max_clippers: campaign.max_clippers || "",
+                  platforms: campaign.platforms || [],
+                });
+                setDeleteConfirmText("");
+              }
             }}
             className={`relative flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-medium transition-all ${
               activeTab === tab.id ? "bg-[#FF007F] text-white shadow-lg" : "text-white/50 hover:text-white"
@@ -1741,16 +1863,28 @@ function CampaignDashboard({ campaigns }) {
             <div className="flex items-center justify-between mb-4">
               <p className="text-white font-medium">Vues par jour</p>
               <div className="flex items-center gap-2">
-                {/* Period selector */}
-                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
-                  {[["7","7j"], ["30","30j"], ["90","90j"]].map(([val, label]) => (
-                    <button key={val}
-                      onClick={() => { setViewsPeriod(val); fetchViewsTimeline(val); }}
-                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {/* Period selector + flèches */}
+                {(() => {
+                  const PL = [["7","7j"],["30","30j"],["90","90j"],["365","1an"]];
+                  const idx = PL.findIndex(([v]) => v === viewsPeriod);
+                  const go = (v) => { setViewsPeriod(v); fetchViewsTimeline(v); };
+                  return (
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => idx > 0 && go(PL[idx-1][0])} disabled={idx === 0}
+                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">‹</button>
+                      <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                        {PL.map(([val, label]) => (
+                          <button key={val} onClick={() => go(val)}
+                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => idx < PL.length-1 && go(PL[idx+1][0])} disabled={idx === PL.length-1}
+                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">›</button>
+                    </div>
+                  );
+                })()}
                 {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />}
               </div>
             </div>
@@ -2522,6 +2656,203 @@ function CampaignDashboard({ campaigns }) {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══════════ SETTINGS TAB ═══════════ */}
+      {activeTab === "settings" && settingsForm && (
+        <div className="space-y-6 max-w-2xl">
+          {/* Editable anytime */}
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 space-y-5">
+            <h3 className="text-white font-semibold text-base">Paramètres généraux</h3>
+
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-medium">Nom de la campagne</label>
+              <input
+                value={settingsForm.name}
+                onChange={e => setSettingsForm(p => ({ ...p, name: e.target.value }))}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-medium">Description</label>
+              <textarea
+                value={settingsForm.description}
+                onChange={e => setSettingsForm(p => ({ ...p, description: e.target.value }))}
+                rows={3}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25 resize-none"
+              />
+            </div>
+
+            {campaign.payment_model === "clicks" && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-xs text-white/50 font-medium">URL de destination</label>
+                  <input
+                    value={settingsForm.destination_url}
+                    onChange={e => setSettingsForm(p => ({ ...p, destination_url: e.target.value }))}
+                    placeholder="https://..."
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs text-white/50 font-medium">Tarif / 1 000 clics (€)</label>
+                    <input
+                      type="number" min="0" step="0.01"
+                      value={settingsForm.rate_per_click}
+                      onChange={e => setSettingsForm(p => ({ ...p, rate_per_click: parseFloat(e.target.value) || 0 }))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/25"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-white/50 font-medium">Fenêtre de clic (heures)</label>
+                    <input
+                      type="number" min="1" max="720"
+                      value={settingsForm.click_window_hours}
+                      onChange={e => setSettingsForm(p => ({ ...p, click_window_hours: parseInt(e.target.value) || 24 }))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/25"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-medium">Nombre max de clippers</label>
+              <input
+                type="number" min="1"
+                value={settingsForm.max_clippers}
+                onChange={e => setSettingsForm(p => ({ ...p, max_clippers: parseInt(e.target.value) || "" }))}
+                placeholder="Illimité"
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
+              />
+            </div>
+
+            <button
+              onClick={handleSaveSettings}
+              disabled={savingSettings}
+              className="w-full py-2.5 rounded-xl bg-[#FF007F] hover:bg-[#FF007F]/80 text-white font-semibold text-sm transition-colors disabled:opacity-50"
+            >
+              {savingSettings ? "Sauvegarde…" : "Sauvegarder les paramètres"}
+            </button>
+          </div>
+
+          {/* RPM — only editable when budget exhausted */}
+          {campaign.payment_model === "views" && (
+            <div className={`border rounded-2xl p-6 space-y-4 ${
+              (campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0))
+                ? "bg-[#1a1a1a] border-white/10"
+                : "bg-white/3 border-white/5 opacity-60"
+            }`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-white font-semibold text-base">RPM (€ / 1 000 vues)</h3>
+                  <p className="text-xs text-white/40 mt-0.5">
+                    {(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0))
+                      ? "Modifiable car la cagnotte est épuisée."
+                      : "Disponible uniquement une fois la cagnotte épuisée."}
+                  </p>
+                </div>
+                {!(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0)) && (
+                  <span className="text-xs px-2 py-1 rounded-lg bg-yellow-400/10 border border-yellow-400/20 text-yellow-400 whitespace-nowrap">
+                    🔒 Verrouillé
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-3 items-end">
+                <div className="flex-1 space-y-1">
+                  <label className="text-xs text-white/50 font-medium">Nouveau RPM (€)</label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={settingsForm.rpm}
+                    onChange={e => setSettingsForm(p => ({ ...p, rpm: parseFloat(e.target.value) || 0 }))}
+                    disabled={!(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/25 disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                </div>
+                <button
+                  onClick={() => handleSaveSettings()}
+                  disabled={savingSettings || !(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0))}
+                  className="py-2.5 px-5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Appliquer
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Budget section */}
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 space-y-4">
+            <h3 className="text-white font-semibold text-base">Budget</h3>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-white/50">Utilisé</span>
+              <span className="text-white font-mono">€{(campaign.budget_used || 0).toFixed(2)} / {campaign.budget_unlimited ? "∞" : `€${(campaign.budget_total || 0).toFixed(2)}`}</span>
+            </div>
+            {!campaign.budget_unlimited && (
+              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(100, Math.round(((campaign.budget_used || 0) / Math.max(1, campaign.budget_total || 1)) * 100))}%`,
+                    background: (campaign.budget_used || 0) >= (campaign.budget_total || 0) ? "#ef4444" : "#FF007F",
+                  }}
+                />
+              </div>
+            )}
+            {(campaign.budget_used || 0) >= (campaign.budget_total || 0) && !campaign.budget_unlimited && (
+              <div className="flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
+                <span className="text-red-400 text-sm">⚠️ Budget épuisé — la campagne est en pause</span>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <input
+                type="number" min="1" step="1"
+                value={addBudgetAmount}
+                onChange={e => setAddBudgetAmount(e.target.value)}
+                placeholder="Montant à ajouter (€)"
+                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
+              />
+              <button
+                onClick={handleAddBudget}
+                disabled={addingBudget || !addBudgetAmount}
+                className="px-5 py-2.5 rounded-xl bg-[#39FF14]/15 border border-[#39FF14]/25 text-[#39FF14] text-sm font-semibold hover:bg-[#39FF14]/25 transition-colors disabled:opacity-40"
+              >
+                {addingBudget ? "…" : "+ Recharger"}
+              </button>
+            </div>
+          </div>
+
+          {/* Danger zone */}
+          <div className="bg-red-950/20 border border-red-500/20 rounded-2xl p-6 space-y-4">
+            <h3 className="text-red-400 font-semibold text-base">⚠️ Zone dangereuse</h3>
+            <p className="text-white/50 text-sm">
+              La suppression est définitive et irréversible. Conditions requises :
+            </p>
+            <ul className="text-xs text-white/40 space-y-1 list-disc list-inside">
+              <li className={`${(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0)) ? "text-green-400" : "text-white/40"}`}>
+                {(campaign.budget_unlimited || (campaign.budget_used || 0) >= (campaign.budget_total || 0)) ? "✓" : "○"} Budget épuisé ou illimité
+              </li>
+              <li>Tous les paiements clippers confirmés</li>
+            </ul>
+            <div className="space-y-2">
+              <label className="text-xs text-white/50">Saisissez <strong className="text-white">SUPPRIMER</strong> pour confirmer</label>
+              <input
+                value={deleteConfirmText}
+                onChange={e => setDeleteConfirmText(e.target.value)}
+                placeholder="SUPPRIMER"
+                className="w-full bg-white/5 border border-red-500/20 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-red-500/40"
+              />
+              <button
+                onClick={handleDeleteCampaign}
+                disabled={deletingCampaign || deleteConfirmText !== "SUPPRIMER"}
+                className="w-full py-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 font-semibold text-sm hover:bg-red-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {deletingCampaign ? "Suppression…" : "Supprimer la campagne"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
