@@ -9114,7 +9114,7 @@ async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
         link = await db.click_links.find_one({"link_id": link_id}, {"_id": 0})
         if link:
             billable = link["unique_click_count"] if unique_only else link["click_count"]
-            earnings = round(billable * rate_per_click, 4)
+            earnings = round((billable / 1000) * rate_per_click, 4)  # tarif par 1000 clics
             await db.click_links.update_one({"link_id": link_id}, {"$set": {"earnings": earnings}})
     except Exception as e:
         logger.warning(f"Click record error for {link_id}: {e}")
