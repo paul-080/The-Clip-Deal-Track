@@ -1,18 +1,6 @@
 """
-ClipScraper API — Service de scraping TikTok + Instagram.
-Adapté pour theclipdealtrack.com mais utilisable comme API publique standalone.
-
-Endpoints :
-  GET  /health
-  POST /v1/tiktok/{username}        — Profil + vidéos récentes
-  POST /v1/instagram/{username}     — Profil + reels récents
-  POST /v1/youtube/{username}       — Profil + vidéos récentes (via YouTube Data API)
-
-Auth : header X-API-Key obligatoire (sauf /health).
-Rate limit : configurable par clé.
-Cache : résultats cachés 30 minutes par défaut.
-
-Déploiement : voir README.md
+ClipScraper API — Service de scraping TikTok + Instagram + YouTube.
+Multi-instance ready (Redis cache, semaphore concurrency, métriques).
 """
 import os
 import asyncio
@@ -22,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -39,21 +27,37 @@ log = logging.getLogger("clip-scraper")
 # ── Config ──────────────────────────────────────────────────────────────
 API_KEYS = set(filter(None, os.environ.get("API_KEYS", "demo-key-change-me").split(",")))
 CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "1800"))   # 30 min
-RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "1000"))
-PROXY_URL = os.environ.get("PROXY_URL", "").strip() or None  # "http://user:pass@host:port"
+RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "5000"))
+PROXY_URL = os.environ.get("PROXY_URL", "").strip() or None
+# Concurrency : max scrapes Playwright en parallèle. Ajuste selon RAM VPS.
+# 4 GB RAM → 4 max. 8 GB RAM → 8 max.
+MAX_CONCURRENT_SCRAPES = int(os.environ.get("MAX_CONCURRENT_SCRAPES", "4"))
 
 # ── State ───────────────────────────────────────────────────────────────
 cache = Cache(default_ttl=CACHE_TTL_SECONDS)
-rate_limits: dict = {}  # {api_key: [timestamps]}
+rate_limits: dict = {}
+metrics = {
+    "scrapes_total": 0,
+    "scrapes_ok": 0,
+    "scrapes_failed": 0,
+    "scrapes_cached": 0,
+    "by_platform": {"tiktok": 0, "instagram": 0, "youtube": 0},
+    "started_at": None,
+}
+scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("ClipScraper starting…")
-    log.info(f"  API keys configured: {len(API_KEYS)}")
-    log.info(f"  Cache TTL: {CACHE_TTL_SECONDS}s")
+    log.info("=" * 60)
+    log.info(f"ClipScraper v0.2.0 starting…")
+    log.info(f"  API keys: {len(API_KEYS)}")
+    log.info(f"  Cache TTL: {CACHE_TTL_SECONDS}s ({'Redis' if cache._redis else 'in-memory'})")
     log.info(f"  Rate limit: {RATE_LIMIT_PER_HOUR}/h per key")
-    log.info(f"  Proxy: {'enabled' if PROXY_URL else 'disabled (direct IP)'}")
+    log.info(f"  Concurrent scrapes max: {MAX_CONCURRENT_SCRAPES}")
+    log.info(f"  Proxy: {'enabled' if PROXY_URL else 'DIRECT IP'}")
+    log.info("=" * 60)
+    metrics["started_at"] = datetime.now(timezone.utc).isoformat()
     yield
     log.info("ClipScraper shutting down…")
 
@@ -61,17 +65,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ClipScraper API",
     description="Scraping TikTok / Instagram / YouTube — alternative économique à Apify",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ── Auth + rate limit middleware ────────────────────────────────────────
+# ── Auth + rate limit ───────────────────────────────────────────────────
 async def check_auth(x_api_key: Optional[str]) -> str:
     if not x_api_key or x_api_key not in API_KEYS:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
-    # Rate limit
     now = datetime.now(timezone.utc)
     one_hour_ago = now - timedelta(hours=1)
     timestamps = rate_limits.get(x_api_key, [])
@@ -83,16 +86,55 @@ async def check_auth(x_api_key: Optional[str]) -> str:
     return x_api_key
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────
+async def _do_scrape(platform: str, fn, *args, **kwargs):
+    """Wrapper qui : check cache, semaphore, exécute, met à jour métriques."""
+    metrics["scrapes_total"] += 1
+    metrics["by_platform"][platform] += 1
+    async with scrape_semaphore:
+        try:
+            result = await fn(*args, **kwargs)
+            metrics["scrapes_ok"] += 1
+            return result
+        except Exception:
+            metrics["scrapes_failed"] += 1
+            raise
+
+
+# ── Endpoints ───────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
+    uptime_s = 0
+    if metrics["started_at"]:
+        uptime_s = int((datetime.now(timezone.utc) - datetime.fromisoformat(metrics["started_at"])).total_seconds())
     return {
         "status": "ok",
         "service": "clip-scraper",
-        "version": "0.1.0",
-        "cache_size": len(cache._store),
-        "uptime": "ok",
+        "version": "0.2.0",
+        "uptime_seconds": uptime_s,
+        "cache_backend": "redis" if cache._redis else "memory",
+        "cache_size": len(cache._store) if not cache._redis else "(redis)",
+        "concurrent_max": MAX_CONCURRENT_SCRAPES,
+        "concurrent_active": MAX_CONCURRENT_SCRAPES - scrape_semaphore._value,
+        "proxy": "configured" if PROXY_URL else "direct",
     }
+
+
+@app.get("/metrics")
+async def metrics_endpoint():
+    """Prometheus-compatible metrics. Public (lecture seule)."""
+    lines = [
+        f"# HELP clipscraper_scrapes_total Total number of scrape requests",
+        f"# TYPE clipscraper_scrapes_total counter",
+        f"clipscraper_scrapes_total {metrics['scrapes_total']}",
+        f"clipscraper_scrapes_ok {metrics['scrapes_ok']}",
+        f"clipscraper_scrapes_failed {metrics['scrapes_failed']}",
+        f"clipscraper_scrapes_cached {metrics['scrapes_cached']}",
+        f"clipscraper_concurrent_active {MAX_CONCURRENT_SCRAPES - scrape_semaphore._value}",
+        f"clipscraper_concurrent_max {MAX_CONCURRENT_SCRAPES}",
+    ]
+    for plat, count in metrics["by_platform"].items():
+        lines.append(f'clipscraper_scrapes_by_platform{{platform="{plat}"}} {count}')
+    return PlainTextResponse("\n".join(lines))
 
 
 @app.post("/v1/tiktok/{username}")
@@ -100,12 +142,13 @@ async def tiktok(username: str, x_api_key: Optional[str] = Header(None), max_vid
     await check_auth(x_api_key)
     username = username.lstrip("@")
     cache_key = f"tt:{username}:{max_videos}"
-    cached = cache.get(cache_key)
+    cached = await cache.aget(cache_key)
     if cached:
+        metrics["scrapes_cached"] += 1
         return {**cached, "_cached": True}
     try:
-        result = await scrape_tiktok(username, max_videos=max_videos, proxy=PROXY_URL)
-        cache.set(cache_key, result)
+        result = await _do_scrape("tiktok", scrape_tiktok, username, max_videos=max_videos, proxy=PROXY_URL)
+        await cache.aset(cache_key, result)
         return {**result, "_cached": False}
     except Exception as e:
         log.warning(f"TikTok scrape failed for @{username}: {e}")
@@ -117,12 +160,13 @@ async def instagram(username: str, x_api_key: Optional[str] = Header(None), max_
     await check_auth(x_api_key)
     username = username.lstrip("@")
     cache_key = f"ig:{username}:{max_videos}"
-    cached = cache.get(cache_key)
+    cached = await cache.aget(cache_key)
     if cached:
+        metrics["scrapes_cached"] += 1
         return {**cached, "_cached": True}
     try:
-        result = await scrape_instagram(username, max_videos=max_videos, proxy=PROXY_URL)
-        cache.set(cache_key, result)
+        result = await _do_scrape("instagram", scrape_instagram, username, max_videos=max_videos, proxy=PROXY_URL)
+        await cache.aset(cache_key, result)
         return {**result, "_cached": False}
     except Exception as e:
         log.warning(f"Instagram scrape failed for @{username}: {e}")
@@ -134,12 +178,13 @@ async def youtube(username: str, x_api_key: Optional[str] = Header(None), max_vi
     await check_auth(x_api_key)
     username = username.lstrip("@")
     cache_key = f"yt:{username}:{max_videos}"
-    cached = cache.get(cache_key)
+    cached = await cache.aget(cache_key)
     if cached:
+        metrics["scrapes_cached"] += 1
         return {**cached, "_cached": True}
     try:
-        result = await scrape_youtube(username, max_videos=max_videos)
-        cache.set(cache_key, result)
+        result = await _do_scrape("youtube", scrape_youtube, username, max_videos=max_videos)
+        await cache.aset(cache_key, result)
         return {**result, "_cached": False}
     except Exception as e:
         log.warning(f"YouTube scrape failed for @{username}: {e}")
@@ -164,4 +209,5 @@ async def usage(x_api_key: Optional[str] = Header(None)):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "8001"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+    workers = int(os.environ.get("WORKERS", "1"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", workers=workers)
