@@ -1417,8 +1417,14 @@ function CampaignDashboard({ campaigns }) {
         toast.error(detail);
       }
     } catch (e) {
-      console.error("track-video error:", e);
-      toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
+      console.error("track-video error full details:", { name: e?.name, message: e?.message, stack: e?.stack, url: manualVideoForm.url, platform: manualVideoForm.platform });
+      // Diagnostic friendly: si Failed to fetch, c'est probablement extension navigateur ou réseau
+      const isBrowserBlock = e?.message?.includes("Failed to fetch") || e?.name === "TypeError";
+      if (isBrowserBlock) {
+        toast.error("Requête bloquée par le navigateur. Désactive AdBlock/extensions ou essaie en navigation privée.", { duration: 8000 });
+      } else {
+        toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
+      }
     }
     finally { setAddingVideo(false); }
   };
