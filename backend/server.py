@@ -119,12 +119,27 @@ ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 
 # ─── Rate limiting (in-memory) ───────────────────────────────────────────────
 _rate_store: dict = defaultdict(list)
+_rate_cleanup_counter = 0
 
 def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
-    """Returns True if rate limit is exceeded for this key."""
+    """Returns True if rate limit is exceeded for this key. Periodic cleanup prevents OOM."""
+    global _rate_cleanup_counter
     now = time.time()
     calls = [t for t in _rate_store[key] if now - t < window_seconds]
-    _rate_store[key] = calls
+    if calls:
+        _rate_store[key] = calls
+    elif key in _rate_store:
+        del _rate_store[key]
+
+    # Periodic cleanup every 1000 calls to evict stale keys (prevent memory leak)
+    _rate_cleanup_counter += 1
+    if _rate_cleanup_counter >= 1000:
+        _rate_cleanup_counter = 0
+        cutoff = now - 3600  # any entry older than 1h is stale (max window)
+        stale = [k for k, v in _rate_store.items() if not v or all(t < cutoff for t in v)]
+        for k in stale:
+            _rate_store.pop(k, None)
+
     if len(calls) >= max_calls:
         return True
     _rate_store[key].append(now)
@@ -422,8 +437,19 @@ class ConnectionManager:
             {"campaign_id": campaign_id, "status": "active"},
             {"_id": 0, "user_id": 1}
         ).to_list(1000)
-        for member in members:
-            await self.send_to_user(member["user_id"], message)
+        # Inclure aussi l'agence (pas dans campaign_members)
+        campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "agency_id": 1, "manager_id": 1})
+        recipient_ids = {m["user_id"] for m in members}
+        if campaign:
+            if campaign.get("agency_id"):
+                recipient_ids.add(campaign["agency_id"])
+            if campaign.get("manager_id"):
+                recipient_ids.add(campaign["manager_id"])
+        # Send in parallel — un WS lent ne bloque plus le broadcast (audit 200 clippeurs)
+        await asyncio.gather(
+            *[self.send_to_user(uid, message) for uid in recipient_ids],
+            return_exceptions=True
+        )
 
 manager = ConnectionManager()
 
@@ -1447,15 +1473,17 @@ async def discover_campaigns(
         cid = m["campaign_id"]
         clipper_count_map[cid] = clipper_count_map.get(cid, 0) + 1
 
-    # Batch 4: total_views per campaign from tracked_videos
-    all_vids = await db.tracked_videos.find(
-        {"campaign_id": {"$in": campaign_ids}},
-        {"_id": 0, "campaign_id": 1, "views": 1}
-    ).to_list(50000)
-    views_map: dict = {}
-    for v in all_vids:
-        cid = v["campaign_id"]
-        views_map[cid] = views_map.get(cid, 0) + (v.get("views") or 0)
+    # Batch 4: total_views per campaign — Mongo aggregation au lieu de charger 50k docs en RAM
+    pipeline = [
+        {"$match": {"campaign_id": {"$in": campaign_ids}}},
+        {"$group": {"_id": "$campaign_id", "total_views": {"$sum": {"$ifNull": ["$views", 0]}}}}
+    ]
+    try:
+        agg_result = await db.tracked_videos.aggregate(pipeline).to_list(len(campaign_ids))
+        views_map = {r["_id"]: r["total_views"] for r in agg_result}
+    except Exception as e:
+        logger.warning(f"discover views aggregation error: {e}")
+        views_map = {}
 
     for campaign in campaigns:
         cid = campaign["campaign_id"]
@@ -9567,26 +9595,30 @@ async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
     try:
         now = datetime.now(timezone.utc).isoformat()
 
-        # Deduplication window based on billing mode
+        # Deduplication via atomic upsert on click_dedup collection (race-condition safe)
+        # Uses unique index on _dedup_key (created at startup)
         if click_billing_mode == "all":
             # No dedup — every click is unique for billing
             is_unique = True
-        elif click_billing_mode == "unique_lifetime":
-            # Check ALL previous clicks from this IP on this link (no time cutoff)
-            existing = await db.click_events.find_one({
-                "link_id": link_id,
-                "ip_hash": ip_hash,
-            })
-            is_unique = existing is None
         else:
-            # "unique_24h" (default) — rolling 24h window
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            existing = await db.click_events.find_one({
-                "link_id": link_id,
-                "ip_hash": ip_hash,
-                "clicked_at": {"$gte": cutoff}
-            })
-            is_unique = existing is None
+            # Bucket: lifetime OR daily for unique_24h (approximates rolling 24h)
+            if click_billing_mode == "unique_lifetime":
+                bucket = "lifetime"
+            else:
+                bucket = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            dedup_key = f"{link_id}:{ip_hash}:{bucket}"
+            try:
+                result = await db.click_dedup.update_one(
+                    {"_dedup_key": dedup_key},
+                    {"$setOnInsert": {"first_at": now, "link_id": link_id, "bucket": bucket}},
+                    upsert=True
+                )
+                is_unique = result.upserted_id is not None
+            except Exception as e:
+                # Fallback to non-atomic check if upsert fails (e.g. duplicate key collision before index ready)
+                logger.warning(f"click_dedup upsert error, fallback to find_one: {e}")
+                existing = await db.click_dedup.find_one({"_dedup_key": dedup_key})
+                is_unique = existing is None
 
         # Insert click event
         await db.click_events.insert_one({
@@ -10136,25 +10168,34 @@ async def delete_campaign(campaign_id: str, user: dict = Depends(get_current_use
         {"_id": 0, "user_id": 1}
     ).to_list(500)
     clipper_ids = [m["user_id"] for m in active_members]
+    rpm = campaign.get("rpm") or 0
     unpaid_count = 0
-    for clipper_user_id in clipper_ids:
-        # Compute views earnings
-        vids = await db.tracked_videos.find(
-            {"campaign_id": campaign_id, "user_id": clipper_user_id},
-            {"_id": 0, "views": 1}
-        ).to_list(10000)
-        total_views = sum(v.get("views", 0) for v in vids)
-        rpm = campaign.get("rpm") or 0
-        owed = round((total_views / 1000) * rpm, 2) if rpm else 0
-
-        confirmed_payments = await db.payments.find(
-            {"user_id": clipper_user_id, "campaign_id": campaign_id, "status": "confirmed"},
-            {"_id": 0, "amount_eur": 1}
-        ).to_list(1000)
-        paid = round(sum(p.get("amount_eur", 0) for p in confirmed_payments), 2)
-
-        if owed - paid > 0.5:  # 50 cent tolerance
-            unpaid_count += 1
+    if clipper_ids:
+        # Mongo aggregation : 2 queries au lieu de 2*N (passe de 2M docs à 2 reduce)
+        try:
+            views_agg = await db.tracked_videos.aggregate([
+                {"$match": {"campaign_id": campaign_id, "user_id": {"$in": clipper_ids}}},
+                {"$group": {"_id": "$user_id", "total_views": {"$sum": {"$ifNull": ["$views", 0]}}}}
+            ]).to_list(len(clipper_ids))
+            views_map = {r["_id"]: r["total_views"] for r in views_agg}
+        except Exception as e:
+            logger.warning(f"delete_campaign views agg error: {e}")
+            views_map = {}
+        try:
+            paid_agg = await db.payments.aggregate([
+                {"$match": {"campaign_id": campaign_id, "user_id": {"$in": clipper_ids}, "status": "confirmed"}},
+                {"$group": {"_id": "$user_id", "total_paid": {"$sum": {"$ifNull": ["$amount_eur", 0]}}}}
+            ]).to_list(len(clipper_ids))
+            paid_map = {r["_id"]: r["total_paid"] for r in paid_agg}
+        except Exception as e:
+            logger.warning(f"delete_campaign payments agg error: {e}")
+            paid_map = {}
+        for clipper_user_id in clipper_ids:
+            total_views = views_map.get(clipper_user_id, 0)
+            owed = round((total_views / 1000) * rpm, 2) if rpm else 0
+            paid = round(paid_map.get(clipper_user_id, 0), 2)
+            if owed - paid > 0.5:  # 50 cent tolerance
+                unpaid_count += 1
 
     if unpaid_count > 0:
         raise HTTPException(
@@ -10235,6 +10276,9 @@ async def startup_event():
         (db.click_events, [("link_id", 1), ("ip_hash", 1), ("clicked_at", 1)], {}),
         (db.click_events, [("campaign_id", 1), ("clicked_at", -1)], {}),
         (db.click_events, [("clipper_id", 1), ("clicked_at", -1)], {}),
+        (db.click_events, [("campaign_id", 1), ("is_unique", 1)], {}),
+        # click_dedup — atomic unique constraint pour prevention race condition (audit 200 clippeurs)
+        (db.click_dedup, [("_dedup_key", 1)], {"unique": True, "name": "dedup_key_unique"}),
         # campaigns + members
         (db.campaigns, [("agency_id", 1)], {}),
         (db.campaigns, [("status", 1)], {}),
