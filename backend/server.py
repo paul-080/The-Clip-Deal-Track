@@ -6570,6 +6570,7 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
     asyncio.create_task(run_video_tracking())
     return {"message": "Tracking lancé en arrière-plan"}
 
+@api_router.post("/campaigns/{campaign_id}/import-link")
 @api_router.post("/campaigns/{campaign_id}/add-video")
 @api_router.post("/campaigns/{campaign_id}/track-video")
 async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
