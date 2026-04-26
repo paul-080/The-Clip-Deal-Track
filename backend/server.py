@@ -5141,8 +5141,9 @@ async def _fetch_single_instagram_video(url: str) -> dict:
         return fallback
 
     # Strategy 0a: Apify Instagram Scraper unifié (acteur officiel maintenu 2026, proxies inclus)
-    # Cout: ~0.03€ pour 100 vidéos/mois. Acteur "apify/instagram-scraper" (slug 2026, pas l'ancien post-scraper).
+    # Cout: ~0.03€ pour 100 vidéos/mois. Acteur testé OK avec videoViewCount + likesCount renvoyés.
     if APIFY_TOKEN:
+        logger.info(f"_fetch_single_instagram_video: trying Apify for {shortcode}")
         for actor_id in ("apify~instagram-scraper", "apify~instagram-post-scraper"):
             try:
                 async with httpx.AsyncClient(timeout=180) as c:
@@ -5157,34 +5158,38 @@ async def _fetch_single_instagram_video(url: str) -> dict:
                         },
                     )
                 if ar.status_code != 200:
-                    logger.debug(f"Apify {actor_id} HTTP {ar.status_code}: {ar.text[:200]}")
+                    logger.warning(f"Apify {actor_id} HTTP {ar.status_code} for {shortcode}: {ar.text[:300]}")
                     continue
                 items = ar.json() or []
                 if not items or not isinstance(items, list):
-                    logger.debug(f"Apify {actor_id} empty dataset for {shortcode}")
+                    logger.warning(f"Apify {actor_id} empty dataset for {shortcode} (URL may be invalid or post deleted)")
                     continue
                 item = items[0] if isinstance(items[0], dict) else {}
                 if not item:
                     continue
                 views_val = (item.get("videoViewCount") or item.get("videoPlayCount")
                              or item.get("playCount") or item.get("viewsCount") or 0)
-                # Si toutes les vues sont None/0 sur l'item, peut-etre vues masquees par Insta -> on tente next actor
-                if not views_val and not item.get("likesCount"):
+                likes_val = item.get("likesCount") or 0
+                # Si vues ET likes a 0 = vraisemblablement vues masquees par Insta -> next actor
+                if not views_val and not likes_val:
+                    logger.warning(f"Apify {actor_id} returned item but views=0 likes=0 for {shortcode} (vues masquees ?)")
                     continue
-                logger.info(f"Apify {actor_id} OK for {shortcode}: views={views_val}")
+                logger.info(f"Apify {actor_id} SUCCESS for {shortcode}: views={views_val} likes={likes_val}")
                 return {
                     "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
                     "url": url,
                     "title": (item.get("caption") or "")[:200] or None,
                     "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
                     "views": int(views_val),
-                    "likes": int(item.get("likesCount") or 0),
+                    "likes": int(likes_val),
                     "comments": int(item.get("commentsCount") or 0),
                     "published_at": item.get("timestamp"),
                 }
             except Exception as e:
-                logger.warning(f"Apify {actor_id} error for {shortcode}: {type(e).__name__}: {e}")
+                logger.warning(f"Apify {actor_id} EXCEPTION for {shortcode}: {type(e).__name__}: {e}")
                 continue
+    else:
+        logger.warning(f"_fetch_single_instagram_video: APIFY_TOKEN not set - skipping Apify for {shortcode}")
 
     # Strategy 0b: ClipScraper VPS (yt-dlp + proxy résidentiel) — bypasse Railway IP blocks
     cs_result = await _fetch_video_stats_via_clipscraper(url)
@@ -9416,6 +9421,41 @@ async def admin_api_usage(request: Request, _: bool = Depends(verify_admin_code)
         }
 
     return {"services": result, "fetched_at": now.isoformat()}
+
+
+@api_router.post("/admin/test-fetch-video")
+async def admin_test_fetch_video(request: Request, body: dict, _: bool = Depends(verify_admin_code)):
+    """Diagnostic : test fetch_single_video_by_url avec une URL et retourne le résultat brut + détection plateforme."""
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    # Auto-detect platform
+    if "tiktok.com" in url:
+        platform = "tiktok"
+    elif "youtube.com" in url or "youtu.be" in url:
+        platform = "youtube"
+    elif "instagram.com" in url:
+        platform = "instagram"
+    else:
+        return {"error": "platform not detected from URL"}
+    try:
+        result = await fetch_single_video_by_url(url, platform)
+        return {
+            "platform": platform,
+            "url": url,
+            "result": result,
+            "diagnosis": {
+                "views_found": (result.get("views") or 0) > 0,
+                "title_found": bool(result.get("title")),
+                "thumbnail_found": bool(result.get("thumbnail_url")),
+                "apify_token_set": bool(APIFY_TOKEN),
+                "youtube_key_set": bool(YOUTUBE_API_KEY),
+                "clip_scraper_set": bool(CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY),
+                "backend_proxy_set": bool(BACKEND_PROXY_URL),
+            }
+        }
+    except Exception as e:
+        return {"platform": platform, "url": url, "error": f"{type(e).__name__}: {e}"}
 
 
 @api_router.get("/admin/api-status")
