@@ -191,6 +191,69 @@ async def youtube(username: str, x_api_key: Optional[str] = Header(None), max_vi
         raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")
 
 
+@app.post("/v1/video-stats")
+async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
+    """Fetch stats for a single video URL via yt-dlp + proxy. Bypass blocages Railway."""
+    await check_auth(x_api_key)
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    try:
+        import yt_dlp
+    except ImportError:
+        raise HTTPException(status_code=500, detail="yt-dlp not installed in scraper")
+
+    cache_key = f"vstats:{url}"
+    cached = await cache.aget(cache_key)
+    if cached:
+        return {**cached, "_cached": True}
+
+    loop = asyncio.get_event_loop()
+    def _extract():
+        opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
+        if PROXY_URL:
+            opts["proxy"] = PROXY_URL
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as e:
+            return {"_error": str(e)}
+
+    try:
+        info = await loop.run_in_executor(None, _extract)
+        if not info or info.get("_error"):
+            raise HTTPException(status_code=502, detail=f"yt-dlp failed: {info.get('_error') if info else 'no data'}")
+
+        from datetime import datetime as dt, timezone as tz
+        published = None
+        if info.get("timestamp"):
+            try:
+                published = dt.fromtimestamp(int(info["timestamp"]), tz=tz.utc).isoformat()
+            except Exception:
+                pass
+
+        result = {
+            "url": url,
+            "platform_video_id": str(info.get("id", "")),
+            "title": (info.get("title") or info.get("description") or "")[:200] or None,
+            "thumbnail_url": info.get("thumbnail"),
+            "views": int(info.get("view_count") or 0),
+            "likes": int(info.get("like_count") or 0),
+            "comments": int(info.get("comment_count") or 0),
+            "shares": int(info.get("repost_count") or 0),
+            "duration": int(info.get("duration") or 0),
+            "published_at": published,
+            "uploader": info.get("uploader") or info.get("channel"),
+        }
+        await cache.aset(cache_key, result, ttl=600)  # 10min cache
+        return {**result, "_cached": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning(f"video-stats failed for {url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
+
+
 @app.get("/v1/usage")
 async def usage(x_api_key: Optional[str] = Header(None)):
     await check_auth(x_api_key)

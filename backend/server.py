@@ -99,6 +99,27 @@ async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int =
         raise ValueError(f"ClipScraper {platform} HTTP {r.status_code}: {r.text[:200]}")
     return (r.json() or {}).get("videos", [])
 
+
+async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
+    """Appelle le ClipScraper VPS pour fetch UNE vidéo via son URL (yt-dlp + proxy résidentiel).
+    Bypasse les blocages Railway (Insta/TikTok). Retourne None si scraper non configuré ou échec."""
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=90) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/video-stats",
+                json={"url": url},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+        if r.status_code != 200:
+            logger.debug(f"ClipScraper video-stats HTTP {r.status_code} for {url}: {r.text[:150]}")
+            return None
+        return r.json() or None
+    except Exception as e:
+        logger.debug(f"ClipScraper video-stats error for {url}: {type(e).__name__}: {e}")
+        return None
+
 # Instagram session cookie rotation
 # Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
 # Also supports single: INSTAGRAM_SESSION_ID=cookie (legacy)
@@ -5118,6 +5139,20 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     }
     if not shortcode:
         return fallback
+
+    # Strategy 0: ClipScraper VPS (yt-dlp + proxy résidentiel) — bypasse Railway IP blocks
+    cs_result = await _fetch_video_stats_via_clipscraper(url)
+    if cs_result and (cs_result.get("views") or 0) > 0:
+        return {
+            "platform_video_id": cs_result.get("platform_video_id") or shortcode,
+            "url": url,
+            "title": cs_result.get("title"),
+            "thumbnail_url": cs_result.get("thumbnail_url"),
+            "views": int(cs_result.get("views") or 0),
+            "likes": int(cs_result.get("likes") or 0),
+            "comments": int(cs_result.get("comments") or 0),
+            "published_at": cs_result.get("published_at"),
+        }
 
     # Strategy 1: Instagram public web endpoint (avec proxy si configuré, sinon direct)
     try:
