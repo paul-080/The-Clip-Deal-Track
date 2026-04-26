@@ -5140,7 +5140,35 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     if not shortcode:
         return fallback
 
-    # Strategy 0: ClipScraper VPS (yt-dlp + proxy résidentiel) — bypasse Railway IP blocks
+    # Strategy 0a: Apify Instagram Post Scraper (proxies mobiles, garanti pour single video)
+    # Apify gère les proxies résidentiels/mobiles + bypass anti-bot. Ideal pour <500 vidéos/mois manuelles.
+    if APIFY_TOKEN:
+        try:
+            actor_id = "apify~instagram-post-scraper"
+            async with httpx.AsyncClient(timeout=120) as c:
+                ar = await c.post(
+                    f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                    params={"token": APIFY_TOKEN, "timeout": 60, "memory": 256},
+                    json={"directUrls": [url], "resultsLimit": 1, "addParentData": False},
+                )
+            if ar.status_code == 200:
+                items = ar.json() or []
+                if items and isinstance(items, list):
+                    item = items[0]
+                    return {
+                        "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
+                        "url": url,
+                        "title": (item.get("caption") or "")[:200] or None,
+                        "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
+                        "views": int(item.get("videoViewCount") or item.get("videoPlayCount") or item.get("playCount") or 0),
+                        "likes": int(item.get("likesCount") or 0),
+                        "comments": int(item.get("commentsCount") or 0),
+                        "published_at": item.get("timestamp"),
+                    }
+        except Exception as e:
+            logger.warning(f"Apify Instagram single video error for {shortcode}: {type(e).__name__}: {e}")
+
+    # Strategy 0b: ClipScraper VPS (yt-dlp + proxy résidentiel) — bypasse Railway IP blocks
     cs_result = await _fetch_video_stats_via_clipscraper(url)
     if cs_result and (cs_result.get("views") or 0) > 0:
         return {
