@@ -79,6 +79,8 @@ RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '').strip()
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN', '').strip()
 CLIP_SCRAPER_URL = os.environ.get('CLIP_SCRAPER_URL', '').strip().rstrip('/')
 CLIP_SCRAPER_KEY = os.environ.get('CLIP_SCRAPER_KEY', '').strip()
+# Proxy outbound pour bypasser blocages Insta/TikTok depuis Railway (format: http://user:pass@host:port)
+BACKEND_PROXY_URL = os.environ.get('BACKEND_PROXY_URL', '').strip() or None
 
 
 async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int = 30) -> list:
@@ -5117,7 +5119,7 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     if not shortcode:
         return fallback
 
-    # Strategy 1: Instagram public web endpoint
+    # Strategy 1: Instagram public web endpoint (avec proxy si configuré, sinon direct)
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 Instagram 295.0.0.32.119",
@@ -5130,7 +5132,10 @@ async def _fetch_single_instagram_video(url: str) -> dict:
         session = _get_instagram_session()
         if session:
             cookies["sessionid"] = session
-        async with httpx.AsyncClient(timeout=15, headers=headers, cookies=cookies, follow_redirects=True) as c:
+        client_kwargs = {"timeout": 15, "headers": headers, "cookies": cookies, "follow_redirects": True}
+        if BACKEND_PROXY_URL:
+            client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+        async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get(f"https://www.instagram.com/api/v1/media/{shortcode}/info/")
             if r.status_code == 200:
                 data = r.json()
@@ -5150,12 +5155,14 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     except Exception as e:
         logger.debug(f"Instagram web API failed for {shortcode}: {e}")
 
-    # Strategy 2: yt-dlp
+    # Strategy 2: yt-dlp (avec proxy si configuré)
     if YT_DLP_AVAILABLE:
         try:
             loop = asyncio.get_event_loop()
             def _ytdlp_extract():
                 opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
+                if BACKEND_PROXY_URL:
+                    opts["proxy"] = BACKEND_PROXY_URL
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
             info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
