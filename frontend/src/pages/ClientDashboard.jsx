@@ -165,7 +165,7 @@ function CampaignView({ campaigns }) {
   const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
   const [topClips, setTopClips] = useState([]);
   const [topClipsLoading, setTopClipsLoading] = useState(false);
-  const [sortField, setSortField] = useState("views");
+  const [sortField, setSortField] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
 

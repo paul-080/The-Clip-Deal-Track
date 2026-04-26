@@ -1301,7 +1301,7 @@ function CampaignDashboard({ campaigns }) {
     setAddingVideo(true);
     setTrackResult(null);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-video`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

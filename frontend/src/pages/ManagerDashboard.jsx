@@ -532,7 +532,7 @@ function CampaignDashboard({ campaigns }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [allVideos, setAllVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
-  const [sortField, setSortField] = useState("views");
+  const [sortField, setSortField] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
   const [filterClipper, setFilterClipper] = useState("all");

@@ -5070,13 +5070,13 @@ async def _fetch_single_youtube_video(url: str) -> dict:
         return fallback
 
 async def _fetch_single_instagram_video(url: str) -> dict:
-    """Best-effort: extract shortcode, return partial info. Never raises."""
+    """Fetch real stats for a single Instagram video via web API + yt-dlp fallback. Never raises."""
     try:
         m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
         shortcode = m.group(1) if m else None
     except Exception:
         shortcode = None
-    return {
+    fallback = {
         "platform_video_id": shortcode or f"ig_{uuid.uuid4().hex[:8]}",
         "url": url,
         "title": None,
@@ -5086,6 +5086,66 @@ async def _fetch_single_instagram_video(url: str) -> dict:
         "comments": 0,
         "published_at": None,
     }
+    if not shortcode:
+        return fallback
+
+    # Strategy 1: Instagram public web endpoint
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 Instagram 295.0.0.32.119",
+            "X-IG-App-ID": "936619743392459",
+            "Accept": "*/*",
+            "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+            "Referer": "https://www.instagram.com/",
+        }
+        cookies = {}
+        session = _get_instagram_session()
+        if session:
+            cookies["sessionid"] = session
+        async with httpx.AsyncClient(timeout=15, headers=headers, cookies=cookies, follow_redirects=True) as c:
+            r = await c.get(f"https://www.instagram.com/api/v1/media/{shortcode}/info/")
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("items") or []
+                if items:
+                    item = items[0]
+                    return {
+                        "platform_video_id": shortcode,
+                        "url": url,
+                        "title": (item.get("caption") or {}).get("text", "")[:200] or None,
+                        "thumbnail_url": (item.get("image_versions2") or {}).get("candidates", [{}])[0].get("url"),
+                        "views": int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0),
+                        "likes": int(item.get("like_count") or 0),
+                        "comments": int(item.get("comment_count") or 0),
+                        "published_at": datetime.fromtimestamp(item.get("taken_at", 0), tz=timezone.utc).isoformat() if item.get("taken_at") else None,
+                    }
+    except Exception as e:
+        logger.debug(f"Instagram web API failed for {shortcode}: {e}")
+
+    # Strategy 2: yt-dlp
+    if YT_DLP_AVAILABLE:
+        try:
+            loop = asyncio.get_event_loop()
+            def _ytdlp_extract():
+                opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
+            if info:
+                return {
+                    "platform_video_id": shortcode,
+                    "url": url,
+                    "title": (info.get("title") or info.get("description") or "")[:200] or None,
+                    "thumbnail_url": info.get("thumbnail"),
+                    "views": int(info.get("view_count") or 0),
+                    "likes": int(info.get("like_count") or 0),
+                    "comments": int(info.get("comment_count") or 0),
+                    "published_at": datetime.fromtimestamp(info["timestamp"], tz=timezone.utc).isoformat() if info.get("timestamp") else None,
+                }
+        except Exception as e:
+            logger.warning(f"_fetch_single_instagram_video yt-dlp failed for {url}: {type(e).__name__}: {e}")
+
+    return fallback
 
 async def fetch_single_video_by_url(url: str, platform: str) -> dict:
     """Dispatcher: fetch video stats from a URL by platform."""
@@ -6440,6 +6500,7 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
     asyncio.create_task(run_video_tracking())
     return {"message": "Tracking lancé en arrière-plan"}
 
+@api_router.post("/campaigns/{campaign_id}/add-video")
 @api_router.post("/campaigns/{campaign_id}/track-video")
 async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
     """
