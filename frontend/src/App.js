@@ -14,6 +14,7 @@ import ManagerDashboard from "./pages/ManagerDashboard";
 import ClientDashboard from "./pages/ClientDashboard";
 import JoinCampaign from "./pages/JoinCampaign";
 import AdminDashboard from "./pages/AdminDashboard";
+import ClaimPage from "./pages/ClaimPage";
 import TermsPage from "./pages/TermsPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 
@@ -383,6 +384,8 @@ const AppRouter = () => {
       <Route path="/cgu" element={<TermsPage />} />
       <Route path="/terms" element={<TermsPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/claim/agency/:token" element={<ClaimPage type="agency" />} />
+      <Route path="/claim/clipper/:token" element={<ClaimPage type="clipper" />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />

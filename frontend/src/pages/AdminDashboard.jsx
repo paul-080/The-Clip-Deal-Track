@@ -667,6 +667,166 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 
 // ─── ApiStatusTab ─────────────────────────────────────────────────────────────
 
+// ─── Prospects (campagnes pre-remplies pour demarcher agences) ─────
+function ProspectsTab() {
+  const [prospects, setProspects] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newCamp, setNewCamp] = useState({ name: "", agency_name: "", payment_model: "views", rpm: 5, rate_per_click: 5, destination_url: "" });
+  const [addingClipper, setAddingClipper] = useState(null);
+  const [newClipper, setNewClipper] = useState({ discord_username: "", platform: "tiktok", username: "" });
+
+  const baseUrl = window.location.origin;
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    adminFetch("/admin/prospects").then(d => setProspects(d.prospects || [])).catch(e => toast.error(e.message)).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const createCampaign = async () => {
+    if (!newCamp.name || !newCamp.agency_name) { toast.error("Nom + agence requis"); return; }
+    try {
+      const res = await fetch(`${API}/admin/prospects/create-campaign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+        body: JSON.stringify({ ...newCamp, budget_unlimited: true }),
+      });
+      if (res.ok) {
+        toast.success("Campagne prospect créée ✓");
+        setShowCreate(false);
+        setNewCamp({ name: "", agency_name: "", payment_model: "views", rpm: 5, rate_per_click: 5, destination_url: "" });
+        refresh();
+      } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const addClipper = async (cid) => {
+    if (!newClipper.discord_username || !newClipper.username) { toast.error("Discord + username requis"); return; }
+    try {
+      const res = await fetch(`${API}/admin/prospects/${cid}/add-clipper-account`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+        body: JSON.stringify(newClipper),
+      });
+      if (res.ok) {
+        toast.success("Compte ajouté ✓");
+        setNewClipper({ discord_username: "", platform: "tiktok", username: "" });
+        setAddingClipper(null);
+        refresh();
+      } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    toast.success("Copié !");
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-white">Prospects</h2>
+          <p className="text-sm text-white/50 mt-1">Crée des campagnes pré-remplies pour démarcher des agences</p>
+        </div>
+        <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 text-white text-sm font-medium transition">+ Nouvelle campagne prospect</button>
+      </div>
+
+      {showCreate && (
+        <div className="bg-[#121212] border border-[#FF007F]/30 rounded-xl p-5 space-y-3">
+          <h3 className="text-white font-semibold">Nouvelle campagne prospect</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <input value={newCamp.name} onChange={e => setNewCamp(p => ({...p, name: e.target.value}))} placeholder="Nom de la campagne" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+            <input value={newCamp.agency_name} onChange={e => setNewCamp(p => ({...p, agency_name: e.target.value}))} placeholder="Nom de l'agence cible" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+            <select value={newCamp.payment_model} onChange={e => setNewCamp(p => ({...p, payment_model: e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm">
+              <option value="views">Au vue (RPM)</option>
+              <option value="clicks">Au clic</option>
+            </select>
+            {newCamp.payment_model === "views" ? (
+              <input type="number" value={newCamp.rpm} onChange={e => setNewCamp(p => ({...p, rpm: e.target.value}))} placeholder="RPM €/1K vues" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+            ) : (
+              <>
+                <input type="number" value={newCamp.rate_per_click} onChange={e => setNewCamp(p => ({...p, rate_per_click: e.target.value}))} placeholder="€/1K clics" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                <input value={newCamp.destination_url} onChange={e => setNewCamp(p => ({...p, destination_url: e.target.value}))} placeholder="URL destination" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm col-span-2" />
+              </>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={createCampaign} className="flex-1 py-2 rounded-lg bg-[#FF007F] text-white text-sm font-medium">Créer</button>
+            <button onClick={() => setShowCreate(false)} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Annuler</button>
+          </div>
+        </div>
+      )}
+
+      {loading && <div className="text-white/40 text-sm">Chargement...</div>}
+      {!loading && prospects.length === 0 && (
+        <div className="text-center py-10 bg-[#121212] border border-white/10 rounded-xl">
+          <p className="text-white/40">Aucun prospect créé pour l'instant</p>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {prospects.map(p => {
+          const agencyLink = `${baseUrl}/claim/agency/${p.prospect_agency_token}`;
+          const clipperLink = `${baseUrl}/claim/clipper/${p.prospect_clipper_token}`;
+          return (
+            <div key={p.campaign_id} className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-semibold">{p.name}</p>
+                  <p className="text-white/40 text-xs">Agence cible : {p.agency_name} · {p.payment_model === "clicks" ? `${p.rate_per_click}€/1K clics` : `${p.rpm}€/1K vues`}</p>
+                </div>
+                <div className="flex gap-3 text-xs flex-shrink-0">
+                  <span className="text-white/60">{p.prospect_accounts_count} comptes</span>
+                  <span className="text-[#00E5FF]">{p.tracked_videos_count} vidéos</span>
+                  <span className="text-[#39FF14]">{(p.total_views || 0).toLocaleString("fr-FR")} vues</span>
+                </div>
+              </div>
+
+              {/* Liens magiques */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div className="bg-white/5 rounded-lg p-2 flex items-center gap-2">
+                  <span className="text-[10px] text-white/40 uppercase font-bold w-14">Agence</span>
+                  <code className="flex-1 text-xs text-white/70 truncate">{agencyLink}</code>
+                  <button onClick={() => copyToClipboard(agencyLink)} className="text-[#00E5FF] hover:text-white text-xs px-2 py-1 rounded bg-[#00E5FF]/10">Copier</button>
+                </div>
+                <div className="bg-white/5 rounded-lg p-2 flex items-center gap-2">
+                  <span className="text-[10px] text-white/40 uppercase font-bold w-14">Clipper</span>
+                  <code className="flex-1 text-xs text-white/70 truncate">{clipperLink}</code>
+                  <button onClick={() => copyToClipboard(clipperLink)} className="text-[#FF007F] hover:text-white text-xs px-2 py-1 rounded bg-[#FF007F]/10">Copier</button>
+                </div>
+              </div>
+
+              {/* Bouton ajouter clippeur */}
+              {addingClipper === p.campaign_id ? (
+                <div className="bg-white/3 rounded-lg p-3 space-y-2 border border-white/10">
+                  <div className="grid grid-cols-3 gap-2">
+                    <input value={newClipper.discord_username} onChange={e => setNewClipper(prev => ({...prev, discord_username: e.target.value}))} placeholder="Pseudo Discord" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                    <select value={newClipper.platform} onChange={e => setNewClipper(prev => ({...prev, platform: e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm">
+                      <option value="tiktok">TikTok</option>
+                      <option value="instagram">Instagram</option>
+                      <option value="youtube">YouTube</option>
+                    </select>
+                    <input value={newClipper.username} onChange={e => setNewClipper(prev => ({...prev, username: e.target.value}))} placeholder="Username (sans @)" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => addClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">Ajouter</button>
+                    <button onClick={() => setAddingClipper(null)} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Annuler</button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter un compte clippeur (Discord)</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Capacite & Couts ─────────────────────────────────────────────
 function UsageMonitorTab() {
   const [data, setData] = useState(null);
@@ -1984,6 +2144,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "preview-client", label: "Preview Client", icon: UserCircle, preview: true },
     { id: "api-status", label: "Connexions API", icon: Plug },
     { id: "usage-monitor", label: "Capacité & Coûts", icon: TrendingUp },
+    { id: "prospects", label: "Prospects", icon: Building2 },
     { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
   ];
@@ -2078,6 +2239,7 @@ export default function AdminDashboard() {
     if (active === "campaigns") return <AdminCampaignsTab />;
     if (active === "api-status") return <ApiStatusTab />;
     if (active === "usage-monitor") return <UsageMonitorTab />;
+    if (active === "prospects") return <ProspectsTab />;
     if (active === "settings") return <SettingsTab />;
     if (active === "support") return <SupportTab />;
     if (previewRoles[active]) {
