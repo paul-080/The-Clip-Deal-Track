@@ -1774,16 +1774,14 @@ function AdminCampaignsTab() {
                         onClick={async () => {
                           if (!c.agency_id) { toast.error("Pas d'agence assignée"); return; }
                           try {
-                            const res = await fetch(`${API}/admin/impersonate/${c.agency_id}`, {
-                              method: "POST",
+                            const res = await fetch(`${API}/admin/preview-as/${c.agency_id}`, {
+                              method: "POST", credentials: "include",
                               headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
                             });
                             if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
                             const d = await res.json();
-                            // Set cookie for the new tab + open
-                            // Mode preview admin via Bearer token (n'ecrase pas ta session admin)
-                            window.open(`/agency/campaign/${c.campaign_id}?admin_preview=1&session=${encodeURIComponent(d.session_token)}`, "_blank");
-                            toast.success(`Connecté en tant que ${d.user.display_name || d.user.email} (2h)`);
+                            window.open(`/agency/campaign/${c.campaign_id}`, "_blank");
+                            toast.success(`✓ Connecté comme ${d.user.display_name || d.user.email} (2h) - relog admin requis apres`);
                           } catch (e) { toast.error(e.message); }
                         }}
                         className="p-1.5 rounded bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] transition-all"
