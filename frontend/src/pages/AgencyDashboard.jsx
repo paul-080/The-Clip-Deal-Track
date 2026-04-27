@@ -1080,6 +1080,10 @@ function CampaignDashboard({ campaigns }) {
   const [expandedMembers, setExpandedMembers] = useState(new Set());
   const [allVideos, setAllVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
+  // Toggle "videos" / "accounts" dans l'onglet Vidéos & Comptes
+  const [videosSubView, setVideosSubView] = useState("videos");
+  const [allAccountsByClipper, setAllAccountsByClipper] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
   const [sortField, setSortField] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
@@ -1463,6 +1467,18 @@ function CampaignDashboard({ campaigns }) {
     finally { setVideosLoading(false); }
   };
 
+  const fetchAllAccounts = async () => {
+    setAccountsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/all-accounts`, { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setAllAccountsByClipper(data.clippers || []);
+      }
+    } catch {}
+    finally { setAccountsLoading(false); }
+  };
+
   const fetchCampaign = async () => {
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}`, { credentials: "include" });
@@ -1667,7 +1683,7 @@ function CampaignDashboard({ campaigns }) {
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
         {[
           { id: "overview", label: "Vue d'ensemble" },
-          { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
+          { id: "videos", label: `Vidéos & Comptes (${allVideos.length})`, dot: videosLoading },
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length + expulsionRequests.length },
           ...((campaign.payment_model === "clicks" || campaign.payment_model === "both") ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
@@ -2224,9 +2240,34 @@ function CampaignDashboard({ campaigns }) {
         </div>
       )}
 
-      {/* ═══════════ VIDEOS TAB ═══════════ */}
+      {/* ═══════════ VIDEOS & COMPTES TAB ═══════════ */}
       {activeTab === "videos" && (
         <div className="space-y-4">
+          {/* Toggle sous-vue : Vidéos / Comptes */}
+          <div className="flex items-center gap-2">
+            <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              <button
+                onClick={() => setVideosSubView("videos")}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${videosSubView === "videos" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                📹 Vidéos
+              </button>
+              <button
+                onClick={() => { setVideosSubView("accounts"); if (allAccountsByClipper.length === 0) fetchAllAccounts(); }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${videosSubView === "accounts" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                👥 Comptes
+              </button>
+            </div>
+            {videosSubView === "accounts" && (
+              <button onClick={fetchAllAccounts} disabled={accountsLoading}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
+                {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
+              </button>
+            )}
+          </div>
+
+          {/* Sous-vue VIDÉOS */}
+          {videosSubView === "videos" && (
+          <>
           {/* Filters */}
           <div className="flex gap-3 flex-wrap">
             <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
@@ -2536,6 +2577,110 @@ function CampaignDashboard({ campaigns }) {
                   );
                 })}
               </div>
+            </div>
+          )}
+          </>
+          )}
+
+          {/* Sous-vue COMPTES — groupé par clipper avec mini-vidéos */}
+          {videosSubView === "accounts" && (
+            <div className="space-y-4">
+              {accountsLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="w-8 h-8 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : allAccountsByClipper.length === 0 ? (
+                <div className="text-center py-20 bg-[#121212] border border-white/10 rounded-xl">
+                  <Users className="w-12 h-12 text-white/10 mx-auto mb-3" />
+                  <p className="text-white/40">Aucun compte assigné</p>
+                  <p className="text-white/20 text-sm mt-1">Les clippeurs doivent attribuer leurs comptes depuis leur dashboard</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-white/40 text-xs">
+                    {allAccountsByClipper.length} clippeur{allAccountsByClipper.length > 1 ? "s" : ""} ·{" "}
+                    {allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0)} compte{allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0) > 1 ? "s" : ""} au total
+                  </p>
+                  {allAccountsByClipper.map(clipper => (
+                    <div key={clipper.user_id} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                      {/* Header clipper */}
+                      <div className="flex items-center gap-3 mb-3 pb-3 border-b border-white/8">
+                        <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
+                          {clipper.picture
+                            ? <img src={clipper.picture} alt="" className="w-full h-full object-cover" />
+                            : <span className="text-sm font-bold text-[#00E5FF]">{(clipper.display_name || "?")[0].toUpperCase()}</span>
+                          }
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-sm font-semibold truncate">{clipper.display_name}</p>
+                          <p className="text-white/40 text-xs">
+                            {clipper.accounts.length} compte{clipper.accounts.length > 1 ? "s" : ""} · {clipper.recent_videos.length} vidéo{clipper.recent_videos.length > 1 ? "s" : ""} récente{clipper.recent_videos.length > 1 ? "s" : ""}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Comptes en grille */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
+                        {clipper.accounts.map(acc => {
+                          const link = acc.account_url || (
+                            acc.platform === "tiktok" ? `https://tiktok.com/@${acc.username}` :
+                            acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
+                            `https://youtube.com/@${acc.username}`
+                          );
+                          const color = PLAT_COLOR[acc.platform] || "#fff";
+                          return (
+                            <a key={acc.account_id} href={link} target="_blank" rel="noopener noreferrer"
+                              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/8 transition-all group">
+                              <span className="text-base">{PLAT_ICON[acc.platform]}</span>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-white text-xs font-medium truncate">@{acc.username}</p>
+                                {acc.follower_count != null && (
+                                  <p className="text-white/30 text-[10px]">{fmt(acc.follower_count)} abonnés</p>
+                                )}
+                              </div>
+                              <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
+                              {acc.status !== "verified" && (
+                                <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
+                              )}
+                            </a>
+                          );
+                        })}
+                      </div>
+
+                      {/* Vidéos récentes en petit en bas */}
+                      {clipper.recent_videos.length > 0 && (
+                        <div>
+                          <p className="text-white/30 text-[10px] uppercase tracking-wider mb-1.5">Vidéos récentes</p>
+                          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1.5">
+                            {clipper.recent_videos.map(v => (
+                              <a key={v.video_id} href={v.url} target="_blank" rel="noopener noreferrer"
+                                className="group block rounded-md overflow-hidden bg-white/5 hover:bg-white/10 transition-colors">
+                                <div className="relative aspect-video bg-black">
+                                  {v.thumbnail_url ? (
+                                    <img src={imgSrc(v.thumbnail_url)} alt="" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-base">{PLAT_ICON[v.platform]}</div>
+                                  )}
+                                  <span className="absolute top-0.5 left-0.5 text-[8px] px-1 py-0.5 rounded font-bold"
+                                    style={{ background: `${PLAT_COLOR[v.platform] || "#fff"}ee`, color: "#000" }}>
+                                    {v.platform}
+                                  </span>
+                                </div>
+                                <div className="px-1.5 py-1">
+                                  <div className="flex items-center justify-between text-[9px] text-white/40">
+                                    <span>👁 {fmt(v.views || 0)}</span>
+                                    {(v.earnings || 0) > 0 && <span className="text-[#39FF14]">€{v.earnings.toFixed(2)}</span>}
+                                  </div>
+                                </div>
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

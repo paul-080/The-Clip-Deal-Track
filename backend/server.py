@@ -5755,14 +5755,104 @@ async def get_campaign_social_accounts(campaign_id: str, user: dict = Depends(ge
         {"campaign_id": campaign_id, "user_id": user["user_id"]},
         {"_id": 0}
     ).to_list(50)
-    
+
     account_ids = [a["account_id"] for a in assignments]
     accounts = await db.social_accounts.find(
         {"account_id": {"$in": account_ids}},
         {"_id": 0}
     ).to_list(50)
-    
+
     return {"accounts": accounts}
+
+
+@api_router.get("/campaigns/{campaign_id}/all-accounts")
+async def get_all_campaign_accounts(campaign_id: str, user: dict = Depends(get_current_user)):
+    """
+    Pour agence/manager : retourne TOUS les comptes assignés à la campagne,
+    groupés par clippeur, avec les vidéos récentes du clippeur sur cette campagne.
+    """
+    # Vérifie l'accès
+    role = user.get("role")
+    if role not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Accès réservé à l'agence et au manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    if role == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+    if role == "manager":
+        member = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
+        if not member:
+            raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
+
+    # 1. Tous les assignments de la campagne
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0}
+    ).to_list(500)
+    if not assignments:
+        return {"clippers": []}
+
+    account_ids = list({a["account_id"] for a in assignments})
+    user_ids = list({a["user_id"] for a in assignments})
+
+    # 2. Comptes
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}},
+        {"_id": 0}
+    ).to_list(500)
+    accounts_map = {a["account_id"]: a for a in accounts}
+
+    # 3. Users
+    users = await db.users.find(
+        {"user_id": {"$in": user_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "picture": 1}
+    ).to_list(500)
+    users_map = {u["user_id"]: u for u in users}
+
+    # 4. Vidéos récentes (max 6 par clipper, triées par date)
+    videos = await db.tracked_videos.find(
+        {"campaign_id": campaign_id, "user_id": {"$in": user_ids}},
+        {"_id": 0, "video_id": 1, "user_id": 1, "platform": 1, "title": 1, "thumbnail_url": 1, "url": 1, "views": 1, "earnings": 1, "published_at": 1}
+    ).sort("published_at", -1).to_list(2000)
+
+    videos_by_user = {}
+    for v in videos:
+        videos_by_user.setdefault(v["user_id"], []).append(v)
+    # Limite à 6 par user (les plus récentes sont en haut grâce au sort)
+    for uid in videos_by_user:
+        videos_by_user[uid] = videos_by_user[uid][:6]
+
+    # 5. Regroupement par clipper
+    clippers = []
+    by_user = {}
+    for a in assignments:
+        uid = a["user_id"]
+        acc = accounts_map.get(a["account_id"])
+        if not acc:
+            continue
+        if uid not in by_user:
+            u = users_map.get(uid, {})
+            by_user[uid] = {
+                "user_id": uid,
+                "display_name": u.get("display_name") or u.get("name") or "Clipper",
+                "picture": u.get("picture"),
+                "accounts": [],
+                "recent_videos": videos_by_user.get(uid, []),
+            }
+        by_user[uid]["accounts"].append({
+            "account_id": acc.get("account_id"),
+            "platform": acc.get("platform"),
+            "username": acc.get("username"),
+            "follower_count": acc.get("follower_count"),
+            "status": acc.get("status"),
+            "account_url": acc.get("account_url"),
+        })
+
+    clippers = sorted(by_user.values(), key=lambda c: -len(c["accounts"]))
+    return {"clippers": clippers}
 
 @api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}")
 async def assign_account_to_campaign(campaign_id: str, account_id: str, user: dict = Depends(get_current_user)):
