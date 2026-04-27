@@ -5145,70 +5145,26 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     if not shortcode:
         return fallback
 
-    # Strategy 0a: Apify Instagram Scraper unifié (acteur officiel maintenu 2026, proxies inclus)
-    # Cout: ~0.03€ pour 100 vidéos/mois. Acteur testé OK avec videoViewCount + likesCount renvoyés.
-    if APIFY_TOKEN:
-        logger.info(f"_fetch_single_instagram_video: trying Apify for {shortcode}")
-        for actor_id in ("apify~instagram-scraper", "apify~instagram-post-scraper"):
-            try:
-                async with httpx.AsyncClient(timeout=180) as c:
-                    ar = await c.post(
-                        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                        params={"token": APIFY_TOKEN},
-                        json={
-                            "directUrls": [url],
-                            "resultsType": "details",
-                            "resultsLimit": 1,
-                            "addParentData": False,
-                        },
-                    )
-                if ar.status_code != 200:
-                    logger.warning(f"Apify {actor_id} HTTP {ar.status_code} for {shortcode}: {ar.text[:300]}")
-                    continue
-                items = ar.json() or []
-                if not items or not isinstance(items, list):
-                    logger.warning(f"Apify {actor_id} empty dataset for {shortcode} (URL may be invalid or post deleted)")
-                    continue
-                item = items[0] if isinstance(items[0], dict) else {}
-                if not item:
-                    continue
-                views_val = (item.get("videoViewCount") or item.get("videoPlayCount")
-                             or item.get("playCount") or item.get("viewsCount") or 0)
-                likes_val = item.get("likesCount") or 0
-                # Si vues ET likes a 0 = vraisemblablement vues masquees par Insta -> next actor
-                if not views_val and not likes_val:
-                    logger.warning(f"Apify {actor_id} returned item but views=0 likes=0 for {shortcode} (vues masquees ?)")
-                    continue
-                logger.info(f"Apify {actor_id} SUCCESS for {shortcode}: views={views_val} likes={likes_val}")
-                return {
-                    "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
-                    "url": url,
-                    "title": (item.get("caption") or "")[:200] or None,
-                    "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
-                    "views": int(views_val),
-                    "likes": int(likes_val),
-                    "comments": int(item.get("commentsCount") or 0),
-                    "published_at": item.get("timestamp"),
-                }
-            except Exception as e:
-                logger.warning(f"Apify {actor_id} EXCEPTION for {shortcode}: {type(e).__name__}: {e}")
-                continue
-    else:
-        logger.warning(f"_fetch_single_instagram_video: APIFY_TOKEN not set - skipping Apify for {shortcode}")
-
-    # Strategy 0b: ClipScraper VPS (yt-dlp + proxy résidentiel) — bypasse Railway IP blocks
+    # Strategy 1 (PRIORITAIRE - gratuit) : ClipScraper VPS (yt-dlp + proxy résidentiel webshare)
+    # Bypasse les blocages Railway, gratuit illimite (proxy webshare deja paye 11€/mois fixe)
+    logger.info(f"_fetch_single_instagram_video: trying ClipScraper VPS for {shortcode}")
     cs_result = await _fetch_video_stats_via_clipscraper(url)
-    if cs_result and (cs_result.get("views") or 0) > 0:
-        return {
-            "platform_video_id": cs_result.get("platform_video_id") or shortcode,
-            "url": url,
-            "title": cs_result.get("title"),
-            "thumbnail_url": cs_result.get("thumbnail_url"),
-            "views": int(cs_result.get("views") or 0),
-            "likes": int(cs_result.get("likes") or 0),
-            "comments": int(cs_result.get("comments") or 0),
-            "published_at": cs_result.get("published_at"),
-        }
+    if cs_result:
+        views_cs = int(cs_result.get("views") or 0)
+        likes_cs = int(cs_result.get("likes") or 0)
+        if views_cs > 0 or likes_cs > 0:
+            logger.info(f"ClipScraper VPS SUCCESS for {shortcode}: views={views_cs} likes={likes_cs}")
+            return {
+                "platform_video_id": cs_result.get("platform_video_id") or shortcode,
+                "url": url,
+                "title": cs_result.get("title"),
+                "thumbnail_url": cs_result.get("thumbnail_url"),
+                "views": views_cs,
+                "likes": likes_cs,
+                "comments": int(cs_result.get("comments") or 0),
+                "published_at": cs_result.get("published_at"),
+            }
+        logger.warning(f"ClipScraper VPS returned 0 views/likes for {shortcode}")
 
     # Strategy 1: Instagram public web endpoint (avec proxy si configuré, sinon direct)
     try:
@@ -5246,7 +5202,7 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     except Exception as e:
         logger.debug(f"Instagram web API failed for {shortcode}: {e}")
 
-    # Strategy 2: yt-dlp (avec proxy si configuré)
+    # Strategy 3: yt-dlp local Railway (avec proxy backend si configuré, sinon direct)
     if YT_DLP_AVAILABLE:
         try:
             loop = asyncio.get_event_loop()
@@ -5258,18 +5214,60 @@ async def _fetch_single_instagram_video(url: str) -> dict:
                     return ydl.extract_info(url, download=False)
             info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
             if info:
-                return {
-                    "platform_video_id": shortcode,
-                    "url": url,
-                    "title": (info.get("title") or info.get("description") or "")[:200] or None,
-                    "thumbnail_url": info.get("thumbnail"),
-                    "views": int(info.get("view_count") or 0),
-                    "likes": int(info.get("like_count") or 0),
-                    "comments": int(info.get("comment_count") or 0),
-                    "published_at": datetime.fromtimestamp(info["timestamp"], tz=timezone.utc).isoformat() if info.get("timestamp") else None,
-                }
+                vws = int(info.get("view_count") or 0)
+                lks = int(info.get("like_count") or 0)
+                if vws > 0 or lks > 0:
+                    logger.info(f"yt-dlp local SUCCESS for {shortcode}: views={vws} likes={lks}")
+                    return {
+                        "platform_video_id": shortcode,
+                        "url": url,
+                        "title": (info.get("title") or info.get("description") or "")[:200] or None,
+                        "thumbnail_url": info.get("thumbnail"),
+                        "views": vws,
+                        "likes": lks,
+                        "comments": int(info.get("comment_count") or 0),
+                        "published_at": datetime.fromtimestamp(info["timestamp"], tz=timezone.utc).isoformat() if info.get("timestamp") else None,
+                    }
         except Exception as e:
             logger.warning(f"_fetch_single_instagram_video yt-dlp failed for {url}: {type(e).__name__}: {e}")
+
+    # Strategy 4 (DERNIER RECOURS) : Apify Instagram Scraper
+    # SEULEMENT si toutes les autres ont echoue. Coût ~$0.30/1000 = quasi rien sur 100 video/mois mais on evite quand meme.
+    if APIFY_TOKEN:
+        logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
+        for actor_id in ("apify~instagram-scraper", "apify~instagram-post-scraper"):
+            try:
+                async with httpx.AsyncClient(timeout=180) as c:
+                    ar = await c.post(
+                        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                        params={"token": APIFY_TOKEN},
+                        json={"directUrls": [url], "resultsType": "details", "resultsLimit": 1, "addParentData": False},
+                    )
+                if ar.status_code != 200:
+                    continue
+                items = ar.json() or []
+                if not items:
+                    continue
+                item = items[0] if isinstance(items[0], dict) else {}
+                views_val = (item.get("videoViewCount") or item.get("videoPlayCount")
+                             or item.get("playCount") or item.get("viewsCount") or 0)
+                likes_val = item.get("likesCount") or 0
+                if not views_val and not likes_val:
+                    continue
+                logger.info(f"Apify {actor_id} BACKUP SUCCESS for {shortcode}: views={views_val} likes={likes_val}")
+                return {
+                    "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
+                    "url": url,
+                    "title": (item.get("caption") or "")[:200] or None,
+                    "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
+                    "views": int(views_val),
+                    "likes": int(likes_val),
+                    "comments": int(item.get("commentsCount") or 0),
+                    "published_at": item.get("timestamp"),
+                }
+            except Exception as e:
+                logger.warning(f"Apify backup {actor_id} failed for {shortcode}: {type(e).__name__}: {e}")
+                continue
 
     return fallback
 
