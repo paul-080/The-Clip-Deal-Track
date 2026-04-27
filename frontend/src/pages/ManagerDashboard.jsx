@@ -535,6 +535,10 @@ function CampaignDashboard({ campaigns }) {
   const [videosSubView, setVideosSubView] = useState("videos");
   const [allAccountsByClipper, setAllAccountsByClipper] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
+  // Modal "Tracker un compte"
+  const [showTrackAccountModal, setShowTrackAccountModal] = useState(false);
+  const [trackAccountForm, setTrackAccountForm] = useState({ user_id: "", platform: "tiktok", username: "" });
+  const [trackingAccount, setTrackingAccount] = useState(false);
   const [sortField, setSortField] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
@@ -576,6 +580,41 @@ function CampaignDashboard({ campaigns }) {
       const res = await fetch(`${API}/campaigns/${campaignId}/all-accounts`, { credentials: "include" });
       if (res.ok) { const d = await res.json(); setAllAccountsByClipper(d.clippers || []); }
     } catch {} finally { setAccountsLoading(false); }
+  };
+
+  const handleTrackAccount = async () => {
+    if (!trackAccountForm.user_id || !trackAccountForm.platform || !trackAccountForm.username.trim()) {
+      toast.error("Sélectionne un clippeur, une plateforme et entre un @username ou une URL");
+      return;
+    }
+    setTrackingAccount(true);
+    try {
+      const isUrl = trackAccountForm.username.trim().startsWith("http");
+      const body = {
+        user_id: trackAccountForm.user_id,
+        platform: trackAccountForm.platform,
+        ...(isUrl ? { account_url: trackAccountForm.username.trim() } : { username: trackAccountForm.username.trim() }),
+      };
+      const res = await fetch(`${API}/campaigns/${campaignId}/track-account`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(data.already_assigned ? "Compte déjà assigné — ok" : "Compte ajouté ✓ vérification en cours…");
+        setShowTrackAccountModal(false);
+        setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" });
+        fetchAllAccounts();
+      } else {
+        toast.error(data.detail || "Erreur lors de l'ajout du compte");
+      }
+    } catch {
+      toast.error("Erreur réseau");
+    } finally {
+      setTrackingAccount(false);
+    }
   };
 
   const fetchTopClips = async (period = "all") => {
@@ -927,6 +966,71 @@ function CampaignDashboard({ campaigns }) {
       {/* ═══ VIDEOS TAB ═══ */}
       {activeTab === "videos" && (
         <div className="space-y-4">
+          {/* Modal "Tracker un compte" */}
+          {showTrackAccountModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+              <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <h3 className="text-white font-semibold text-lg">Tracker un compte</h3>
+                    <p className="text-white/40 text-xs mt-0.5">Ajoute un compte social pour un clippeur. Les vidéos seront trackées automatiquement.</p>
+                  </div>
+                  <button onClick={() => setShowTrackAccountModal(false)} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                </div>
+
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Clippeur *</label>
+                  <select value={trackAccountForm.user_id}
+                    onChange={e => setTrackAccountForm(f => ({ ...f, user_id: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#00E5FF]/50">
+                    <option value="">— Sélectionner un clippeur —</option>
+                    {activeMembers.map(m => (
+                      <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
+                    ))}
+                  </select>
+                  {activeMembers.length === 0 && (
+                    <p className="text-xs text-amber-400/70 mt-1">⚠️ Aucun clippeur actif dans cette campagne</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Plateforme *</label>
+                  <div className="flex gap-2">
+                    {(() => {
+                      const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : ["tiktok","instagram","youtube"];
+                      const ALL = [["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]];
+                      return ALL.filter(([p]) => allowed.includes(p)).map(([p, icon]) => (
+                        <button key={p} onClick={() => setTrackAccountForm(f => ({ ...f, platform: p }))}
+                          className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${trackAccountForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
+                          {icon} {p}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">@username ou URL du profil *</label>
+                  <input type="text" value={trackAccountForm.username}
+                    onChange={e => setTrackAccountForm(f => ({ ...f, username: e.target.value }))}
+                    placeholder="@username  ou  https://www.tiktok.com/@..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50" />
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button onClick={() => setShowTrackAccountModal(false)}
+                    className="flex-1 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
+                    Annuler
+                  </button>
+                  <button onClick={handleTrackAccount} disabled={trackingAccount}
+                    className="flex-1 py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black text-sm font-bold transition-all">
+                    {trackingAccount ? "Ajout…" : "✓ Ajouter le compte"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Toggle sous-vue */}
           <div className="flex items-center gap-2">
             <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
@@ -942,10 +1046,16 @@ function CampaignDashboard({ campaigns }) {
               </button>
             </div>
             {videosSubView === "accounts" && (
-              <button onClick={fetchAllAccounts} disabled={accountsLoading}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
-                {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
-              </button>
+              <>
+                <button onClick={fetchAllAccounts} disabled={accountsLoading}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
+                  {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
+                </button>
+                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+                  className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
+                  + Tracker un compte
+                </button>
+              </>
             )}
           </div>
 
@@ -973,6 +1083,10 @@ function CampaignDashboard({ campaigns }) {
               </select>
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
+            <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
+              + Tracker un compte
+            </button>
           </div>
 
           {/* Table header */}

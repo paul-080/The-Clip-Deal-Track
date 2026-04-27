@@ -5854,6 +5854,125 @@ async def get_all_campaign_accounts(campaign_id: str, user: dict = Depends(get_c
     clippers = sorted(by_user.values(), key=lambda c: -len(c["accounts"]))
     return {"clippers": clippers}
 
+
+@api_router.post("/campaigns/{campaign_id}/track-account")
+async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """
+    Pour agence/manager : crée un compte social pour un clippeur de la campagne
+    et l'assigne automatiquement à cette campagne.
+    body = { user_id, platform, username (ou account_url) }
+    """
+    role = user.get("role")
+    if role not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if role == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+    if role == "manager":
+        m = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
+        if not m:
+            raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
+
+    target_user_id = (body.get("user_id") or "").strip()
+    platform = (body.get("platform") or "").lower().strip()
+    raw_username = (body.get("username") or "").strip()
+    account_url = (body.get("account_url") or "").strip()
+
+    if not target_user_id or not platform:
+        raise HTTPException(status_code=400, detail="user_id et platform requis")
+    if platform not in ("tiktok", "instagram", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide")
+
+    # Vérifie que le clippeur cible appartient bien à la campagne
+    member = await db.campaign_members.find_one({
+        "campaign_id": campaign_id,
+        "user_id": target_user_id,
+        "role": "clipper",
+    })
+    if not member:
+        raise HTTPException(status_code=400, detail="Ce clippeur n'est pas membre de la campagne")
+
+    # Vérifie que la plateforme est autorisée par la campagne
+    allowed = campaign.get("platforms") or []
+    if allowed and platform not in allowed:
+        raise HTTPException(status_code=400, detail=f"La campagne n'accepte que : {', '.join(allowed)}")
+
+    # Determine username from URL or direct
+    via_url = False
+    if account_url:
+        username = extract_handle_from_url(account_url, platform)
+        via_url = True
+    elif raw_username.startswith("http"):
+        username = extract_handle_from_url(raw_username, platform)
+        via_url = True
+    else:
+        username = raw_username
+    username = (username or "").strip().lstrip("@")
+    if not username:
+        raise HTTPException(status_code=400, detail="Username ou URL invalide")
+
+    # Si compte deja existant pour ce clippeur, le reuse plutot que doublon
+    existing = await db.social_accounts.find_one({
+        "user_id": target_user_id,
+        "platform": platform,
+        "username": username,
+    })
+    if existing:
+        account_id = existing["account_id"]
+        # Verifie qu'il n'est pas deja assigne a une autre campagne
+        other = await db.campaign_social_accounts.find_one({
+            "account_id": account_id,
+            "campaign_id": {"$ne": campaign_id},
+        })
+        if other:
+            other_camp = await db.campaigns.find_one({"campaign_id": other["campaign_id"]}, {"_id": 0, "name": 1})
+            other_name = other_camp.get("name", "?") if other_camp else "?"
+            raise HTTPException(status_code=409, detail=f"Ce compte est déjà utilisé dans « {other_name} »")
+        # Verifie qu'il n'est pas deja assigne a CETTE campagne
+        already = await db.campaign_social_accounts.find_one({
+            "account_id": account_id, "campaign_id": campaign_id,
+        })
+        if already:
+            return {"account": existing, "already_assigned": True}
+    else:
+        account_id = f"acc_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        account_doc = {
+            "account_id": account_id,
+            "user_id": target_user_id,
+            "platform": platform,
+            "username": username,
+            "status": "pending",
+            "created_at": now,
+            "follower_count": None,
+            "avatar_url": None,
+            "display_name": None,
+            "verified_at": None,
+            "error_message": None,
+            "last_tracked_at": None,
+            "platform_channel_id": None,
+            "added_by": user["user_id"],
+            "added_by_role": role,
+        }
+        await db.social_accounts.insert_one(account_doc)
+        # Verification + scrape en background
+        asyncio.create_task(_verify_and_update_account(account_id, platform, username, via_url=via_url))
+
+    # Cree l'assignation campagne
+    await db.campaign_social_accounts.insert_one({
+        "id": f"csa_{uuid.uuid4().hex[:12]}",
+        "campaign_id": campaign_id,
+        "account_id": account_id,
+        "user_id": target_user_id,
+        "assigned_at": datetime.now(timezone.utc).isoformat(),
+        "assigned_by": user["user_id"],
+    })
+
+    return {"account_id": account_id, "ok": True}
+
 @api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}")
 async def assign_account_to_campaign(campaign_id: str, account_id: str, user: dict = Depends(get_current_user)):
     # Vérifier que le clipper est accepté (pas pending)
