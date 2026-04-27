@@ -10995,7 +10995,27 @@ async def admin_impersonate(user_id: str, request: Request, _: bool = Depends(ve
     """Cree une session temporaire en tant qu'un autre user. Permet a l'admin d'agir comme l'agence pour test."""
     target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1, "email": 1, "role": 1, "display_name": 1, "name": 1})
     if not target:
-        raise HTTPException(status_code=404, detail="User introuvable")
+        # Si c'est un prospect_xxx qui manque, on le cree a la volee depuis sa campagne
+        if user_id.startswith("prospect_"):
+            camp = await db.campaigns.find_one({"agency_id": user_id}, {"_id": 0, "agency_name": 1, "name": 1})
+            if camp:
+                agency_name = camp.get("agency_name") or camp.get("name") or "Agence prospect"
+                now_iso = datetime.now(timezone.utc).isoformat()
+                ghost_user = {
+                    "user_id": user_id,
+                    "email": f"prospect+{user_id}@theclipdealtrack.local",
+                    "name": agency_name,
+                    "display_name": agency_name,
+                    "agency_name": agency_name,
+                    "role": "agency",
+                    "email_verified": True,
+                    "is_prospect_ghost": True,
+                    "created_at": now_iso,
+                }
+                await db.users.insert_one(ghost_user)
+                target = {k: v for k, v in ghost_user.items() if k != "_id"}
+        if not target:
+            raise HTTPException(status_code=404, detail=f"User {user_id} introuvable et pas de campagne prospect associee")
     session_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=2)  # session courte 2h
     await db.user_sessions.insert_one({
