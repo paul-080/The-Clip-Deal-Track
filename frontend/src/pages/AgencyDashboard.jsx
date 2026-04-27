@@ -1185,14 +1185,14 @@ function CampaignDashboard({ campaigns }) {
     finally { setClickStatsLoading(false); }
   };
 
-  // Auto-fetch click stats when campaign is loaded and is click-based
+  // Auto-fetch click stats when campaign is loaded and is click-based (ou both)
   useEffect(() => {
-    if (campaign?.payment_model === "clicks") fetchClickStats();
+    if (campaign?.payment_model === "clicks" || campaign?.payment_model === "both") fetchClickStats();
   }, [campaign?.campaign_id, campaign?.payment_model]);
 
-  // Auto-fetch views timeline when campaign is loaded and is views-based
+  // Auto-fetch views timeline when campaign is loaded and is views-based (ou both)
   useEffect(() => {
-    if (campaign?.payment_model === "views") fetchViewsTimeline();
+    if (campaign?.payment_model === "views" || campaign?.payment_model === "both") fetchViewsTimeline();
   }, [campaign?.campaign_id, campaign?.payment_model]);
 
   const handlePeriodChange = (p) => {
@@ -1669,7 +1669,7 @@ function CampaignDashboard({ campaigns }) {
           { id: "overview", label: "Vue d'ensemble" },
           { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length + expulsionRequests.length },
-          ...(campaign.payment_model === "clicks" ? [{ id: "liens", label: "🔗 Liens" }] : []),
+          ...((campaign.payment_model === "clicks" || campaign.payment_model === "both") ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
           { id: "settings", label: "⚙️ Paramètres" },
         ].map(tab => (
@@ -1961,7 +1961,7 @@ function CampaignDashboard({ campaigns }) {
                     <p className="text-xs text-white/40 mb-1">Gains générés</p>
                     <p className="text-xl font-bold font-mono text-[#39FF14]">€{(periodStats?.earnings || 0).toFixed(2)}</p>
                   </div>
-                  {periodStats?.payment_model === "clicks" && (
+                  {(periodStats?.payment_model === "clicks" || periodStats?.payment_model === "both") && (
                     <div className="bg-white/5 rounded-lg p-3">
                       <p className="text-xs text-white/40 mb-1">Clics</p>
                       <p className="text-xl font-bold font-mono text-[#FF007F]">{fmt(periodStats?.clicks || 0)}</p>
@@ -2697,8 +2697,8 @@ function CampaignDashboard({ campaigns }) {
         </div>
       )}
 
-      {/* ═══════════ LIENS TAB (modèle au clic) ═══════════ */}
-      {activeTab === "liens" && campaign.payment_model === "clicks" && (
+      {/* ═══════════ LIENS TAB (modèle au clic ou both) ═══════════ */}
+      {activeTab === "liens" && (campaign.payment_model === "clicks" || campaign.payment_model === "both") && (
         <div className="space-y-5">
           {/* Header + actions */}
           <div className="flex items-center justify-between">

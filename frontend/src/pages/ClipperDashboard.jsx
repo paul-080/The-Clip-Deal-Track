@@ -578,6 +578,11 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
                         <MousePointerClick className="w-2.5 h-2.5" /> Clic
                       </span>
                     )}
+                    {cs.payment_model === "both" && (
+                      <span className="flex-shrink-0 flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-[#FF007F]/15 text-[#FF007F] border border-[#FF007F]/25 font-medium">
+                        Vues + Clic
+                      </span>
+                    )}
                   </div>
                   {cs.status === "pending" && (
                     <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
@@ -596,8 +601,8 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
                   )}
                 </div>
 
-                {/* Lien de tracking bio — visible uniquement si campagne active au clic */}
-                {cs.payment_model === "clicks" && cs.status === "active" && cs.tracking_url && (
+                {/* Lien de tracking bio — visible uniquement si campagne active au clic ou both */}
+                {(cs.payment_model === "clicks" || cs.payment_model === "both") && cs.status === "active" && cs.tracking_url && (
                   <div className="px-3 py-2.5 bg-[#f0c040]/6 border-t border-[#f0c040]/15 flex items-center gap-2">
                     <Link2 className="w-3.5 h-3.5 text-[#f0c040] flex-shrink-0" />
                     <p className="flex-1 font-mono text-xs text-white/60 truncate">{cs.tracking_url}</p>
@@ -613,8 +618,8 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
                   </div>
                 )}
 
-                {/* Message si campagne au clic mais lien pas encore généré */}
-                {cs.payment_model === "clicks" && cs.status === "active" && !cs.tracking_url && (
+                {/* Message si campagne au clic ou both mais lien pas encore généré */}
+                {(cs.payment_model === "clicks" || cs.payment_model === "both") && cs.status === "active" && !cs.tracking_url && (
                   <div className="px-3 py-2 bg-white/3 border-t border-white/5">
                     <p className="text-white/30 text-xs">Lien en cours de génération par l'agence…</p>
                   </div>
@@ -814,6 +819,11 @@ function DiscoverCampaigns({ onJoin }) {
                     <span className="text-white/30"> / 1K clics</span>
                     {selectedCampaign.unique_clicks_only && <span className="ml-2 text-[10px] text-white/30 border border-white/10 px-1.5 py-0.5 rounded-md">Clics uniques</span>}
                   </p>
+                ) : selectedCampaign.payment_model === "both" ? (
+                  <div className="text-sm text-white/50 mt-1 space-y-0.5">
+                    <p>RPM : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm || 0}</span> / 1K vues</p>
+                    <p>+ <span className="text-[#f0c040] font-mono font-bold">€{selectedCampaign.rate_per_click || 0}</span> / 1K clics</p>
+                  </div>
                 ) : (
                   <p className="text-sm text-white/50 mt-1">RPM : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm}</span></p>
                 )}
@@ -823,12 +833,17 @@ function DiscoverCampaigns({ onJoin }) {
               </button>
             </div>
             {/* Click campaign info box */}
-            {selectedCampaign.payment_model === "clicks" && (
+            {(selectedCampaign.payment_model === "clicks" || selectedCampaign.payment_model === "both") && (
               <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/25">
-                <p className="text-[#f0c040] text-xs font-semibold mb-1">🔗 Campagne au clic</p>
+                <p className="text-[#f0c040] text-xs font-semibold mb-1">
+                  {selectedCampaign.payment_model === "both" ? "🔗 Vues + Clics" : "🔗 Campagne au clic"}
+                </p>
                 <p className="text-white/50 text-xs">
                   Après acceptation, tu recevras un <strong className="text-white/70">lien de tracking unique</strong> à mettre dans ta bio.
-                  Gains = <strong className="text-[#f0c040]">(clics / 1 000) × €{selectedCampaign.rate_per_click || 0}</strong>{selectedCampaign.unique_clicks_only ? " — 1 IP = 1 clic" : ""}.
+                  Gains{selectedCampaign.payment_model === "both" ? " clics" : ""} = <strong className="text-[#f0c040]">(clics / 1 000) × €{selectedCampaign.rate_per_click || 0}</strong>{selectedCampaign.unique_clicks_only ? " — 1 IP = 1 clic" : ""}.
+                  {selectedCampaign.payment_model === "both" && (
+                    <> + Gains vues = <strong className="text-[#00E5FF]">(vues / 1 000) × €{selectedCampaign.rpm || 0}</strong>.</>
+                  )}
                 </p>
               </div>
             )}
@@ -938,6 +953,15 @@ function DiscoverCampaigns({ onJoin }) {
                     <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-md">
                       🔗 {c.rate_per_click || 0}€ / 1K clics
                     </span>
+                  ) : c.payment_model === "both" ? (
+                    <>
+                      <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-md">
+                        💰 {c.rpm || 0}€ / 1K vues
+                      </span>
+                      <span className="text-xs font-bold text-[#f0c040] bg-[#f0c040]/10 px-2 py-1 rounded-md">
+                        🔗 {c.rate_per_click || 0}€ / 1K clics
+                      </span>
+                    </>
                   ) : (
                     <span className="text-xs font-bold text-[#39FF14] bg-[#39FF14]/10 px-2 py-1 rounded-md">
                       💰 {c.rpm || 0}€ / 1K vues
@@ -1864,6 +1888,9 @@ function CampaignDashboard({ campaigns, clipperStats }) {
   // Stats perso depuis le parent (déjà fetchées)
   const myStats = clipperStats?.campaign_stats?.find((s) => s.campaign_id === campaignId);
   const isClickCampaign = campaign?.payment_model === "clicks";
+  const isBothCampaign = campaign?.payment_model === "both";
+  const hasClicks = isClickCampaign || isBothCampaign;
+  const hasViews = campaign?.payment_model === "views" || isBothCampaign;
   const budgetTotal = campaign?.budget_total || 0;
   const budgetUsed = campaign?.budget_used || 0;
   const budgetUnlimited = campaign?.budget_unlimited;
@@ -1871,14 +1898,14 @@ function CampaignDashboard({ campaigns, clipperStats }) {
 
   useEffect(() => {
     if (!campaignId) return;
-    if (isClickCampaign) { fetchClickLink(); fetchClickStats("30d"); }
-    else { fetchViewsTimeline("30"); }
+    if (hasClicks) { fetchClickLink(); fetchClickStats("30d"); }
+    if (hasViews) { fetchViewsTimeline("30"); }
     fetchMyVideos();
     fetchTopClips();
     // Auto-refresh Clip Winner every 5 minutes
     const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [campaignId, isClickCampaign]);
+  }, [campaignId, hasClicks, hasViews]);
 
   const fetchMyVideos = async () => {
     try {
@@ -2155,7 +2182,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                 <p className="text-xs text-white/40 mb-1">Mes gains</p>
                 <p className="text-xl font-bold font-mono text-[#39FF14]">€{(periodStats?.earnings || 0).toFixed(2)}</p>
               </div>
-              {periodStats?.payment_model === "clicks" && (
+              {(periodStats?.payment_model === "clicks" || periodStats?.payment_model === "both") && (
                 <div className="bg-white/5 rounded-lg p-3">
                   <p className="text-xs text-white/40 mb-1">Mes clics</p>
                   <p className="text-xl font-bold font-mono text-[#FF007F]">{fmtViews(periodStats?.clicks || 0)}</p>
@@ -2166,8 +2193,8 @@ function CampaignDashboard({ campaigns, clipperStats }) {
         );
       })()}
 
-      {/* ═══ LIEN DE TRACKING — visible uniquement pour campagnes au clic ═══ */}
-      {isClickCampaign && (
+      {/* ═══ LIEN DE TRACKING — visible pour campagnes au clic ou both ═══ */}
+      {hasClicks && (
         <div className="rounded-2xl border border-[#f0c040]/30 bg-[#f0c040]/6 p-5 space-y-4">
           <div className="flex items-center gap-2">
             <Link2 className="w-5 h-5 text-[#f0c040]" />
@@ -2756,6 +2783,8 @@ function PaymentPage({ stats }) {
               {stats.campaign_stats.map((cs) => {
                 const summary = campaignSummaries[cs.campaign_id];
                 const isClickModel = summary?.payment_model === "clicks";
+                const isBothModel = summary?.payment_model === "both";
+                const showClicks = isClickModel || isBothModel;
                 const myLink = clickLinks[cs.campaign_id];
                 return (
                   <div key={cs.campaign_id} className="p-4 bg-white/5 rounded-xl space-y-3">
@@ -2768,17 +2797,24 @@ function PaymentPage({ stats }) {
                               <MousePointerClick className="w-2.5 h-2.5" /> Au clic
                             </span>
                           )}
+                          {isBothModel && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#FF007F]/15 text-[#FF007F] border border-[#FF007F]/25 font-medium">
+                              Vues + Clics
+                            </span>
+                          )}
                         </div>
-                        {isClickModel
-                          ? <p className="text-xs text-white/40">{(summary?.clicks || 0).toLocaleString("fr-FR")} clics · {(summary?.unique_clicks || 0).toLocaleString("fr-FR")} uniques</p>
-                          : <p className="text-xs text-white/40">{fmt(cs.views)} vues</p>
+                        {isBothModel
+                          ? <p className="text-xs text-white/40">{fmt(cs.views)} vues · {(summary?.clicks || 0).toLocaleString("fr-FR")} clics</p>
+                          : isClickModel
+                            ? <p className="text-xs text-white/40">{(summary?.clicks || 0).toLocaleString("fr-FR")} clics · {(summary?.unique_clicks || 0).toLocaleString("fr-FR")} uniques</p>
+                            : <p className="text-xs text-white/40">{fmt(cs.views)} vues</p>
                         }
                       </div>
                       <p className="font-mono font-bold text-[#00E5FF] text-lg">€{cs.earnings?.toFixed(2)}</p>
                     </div>
 
-                    {/* Lien bio pour campagnes au clic */}
-                    {isClickModel && myLink?.tracking_url && (
+                    {/* Lien bio pour campagnes au clic ou both */}
+                    {showClicks && myLink?.tracking_url && (
                       <div className="p-3 rounded-xl bg-[#f0c040]/8 border border-[#f0c040]/20 space-y-2">
                         <div className="flex items-center gap-1.5">
                           <Link2 className="w-3.5 h-3.5 text-[#f0c040]" />
