@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { GoogleLogin } from "@react-oauth/google";
 
 const API = process.env.REACT_APP_BACKEND_URL || "";
 
@@ -136,6 +137,55 @@ export default function ClaimPage({ type = "agency" }) {
             style={{ background: accent }}>
             {submitting ? "Création..." : `Créer mon compte ${isAgency ? "agence" : "clipper"} et accéder`}
           </button>
+
+          {/* Separator + Google OAuth */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="text-xs text-white/30">ou</span>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+          <div className="flex flex-col items-center gap-2">
+            {!isAgency && !form.discord_username && (
+              <p className="text-amber-400 text-[11px] text-center">⚠ Renseigne ton pseudo Discord ci-dessus AVANT d'utiliser Google (sinon les comptes ne seront pas auto-liés)</p>
+            )}
+            <GoogleLogin
+              onSuccess={async (cred) => {
+                if (!isAgency && !form.discord_username) {
+                  toast.error("Renseigne ton pseudo Discord d'abord");
+                  return;
+                }
+                setSubmitting(true);
+                try {
+                  // 1. Auth via Google -> cree le user + session
+                  const r = await fetch(`${API}/api/auth/google`, {
+                    method: "POST", credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id_token: cred.credential, role: type, display_name: form.display_name || (isAgency ? info.agency_name : form.discord_username) }),
+                  });
+                  if (!r.ok) { const d = await r.json(); toast.error(d.detail || "Erreur Google"); return; }
+                  // 2. Finalise le claim avec ce user
+                  const finalizeBody = isAgency ? {} : { discord_username: form.discord_username };
+                  const r2 = await fetch(`${API}/api/claim/${type}/${token}/finalize`, {
+                    method: "POST", credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(finalizeBody),
+                  });
+                  if (!r2.ok) { const d = await r2.json(); toast.error(d.detail || "Erreur claim"); return; }
+                  const d2 = await r2.json();
+                  if (!isAgency && d2.linked_count > 0) {
+                    toast.success(`✓ ${d2.linked_count} compte(s) auto-lié(s)`);
+                  } else {
+                    toast.success("✓ Compte connecté !");
+                  }
+                  setTimeout(() => navigate(isAgency ? "/agency" : "/clipper"), 1000);
+                } catch (e) { toast.error(e.message); }
+                finally { setSubmitting(false); }
+              }}
+              onError={() => toast.error("Connexion Google échouée")}
+              theme="filled_black" shape="pill" text="continue_with" locale="fr" useOneTap={false}
+            />
+          </div>
+
           <p className="text-center text-[11px] text-white/30">Inscription instantanée, sans email de vérification</p>
         </div>
       </div>

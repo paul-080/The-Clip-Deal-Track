@@ -10918,6 +10918,79 @@ async def claim_agency(token: str, body: dict, request: Request):
     return {"session_token": session_token, "user": {"user_id": user_id, "email": email, "role": "agency", "display_name": display_name}, "campaign_id": camp["campaign_id"]}
 
 
+@api_router.post("/claim/agency/{token}/finalize")
+async def claim_agency_finalize(token: str, user: dict = Depends(get_current_user)):
+    """Finalise le claim agence pour un user DEJA cree (typiquement via Google OAuth).
+    Reassigne la campagne prospect a cet user_id."""
+    camp = await db.campaigns.find_one({"prospect_agency_token": token, "is_prospect": True}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lien invalide ou deja utilise")
+    # Promouvoir le user en agency si pas deja
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"role": "agency"}})
+    await db.campaigns.update_one(
+        {"campaign_id": camp["campaign_id"]},
+        {"$set": {"agency_id": user["user_id"], "is_prospect": False},
+         "$unset": {"prospect_agency_token": "", "prospect_clipper_token": ""}}
+    )
+    return {"campaign_id": camp["campaign_id"]}
+
+
+@api_router.post("/claim/clipper/{token}/finalize")
+async def claim_clipper_finalize(token: str, body: dict, user: dict = Depends(get_current_user)):
+    """Finalise le claim clipper pour un user DEJA cree (Google OAuth).
+    Body: { discord_username }. Auto-link comptes pre-enregistres."""
+    camp = await db.campaigns.find_one({"prospect_clipper_token": token}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lien invalide")
+    discord_username = _norm_discord(body.get("discord_username") or "")
+    if not discord_username:
+        raise HTTPException(status_code=400, detail="discord_username requis")
+    user_id = user["user_id"]
+    now = datetime.now(timezone.utc).isoformat()
+    # Save discord_username sur user
+    await db.users.update_one({"user_id": user_id}, {"$set": {"discord_username": discord_username, "role": "clipper"}})
+    # Auto-link
+    matching_accounts = await db.social_accounts.find(
+        {"discord_username": discord_username, "is_prospect": True, "user_id": None}, {"_id": 0}
+    ).to_list(50)
+    linked = []
+    for acc in matching_accounts:
+        await db.social_accounts.update_one({"account_id": acc["account_id"]}, {"$set": {"user_id": user_id, "is_prospect": False}})
+        await db.campaign_social_accounts.update_one({"account_id": acc["account_id"]}, {"$set": {"user_id": user_id, "is_prospect": False}})
+        prospect_cid = acc.get("prospect_campaign_id")
+        if prospect_cid:
+            existing_member = await db.campaign_members.find_one({"campaign_id": prospect_cid, "user_id": user_id})
+            if not existing_member:
+                await db.campaign_members.insert_one({
+                    "member_id": f"mem_{uuid.uuid4().hex[:12]}", "campaign_id": prospect_cid, "user_id": user_id,
+                    "role": "clipper", "status": "active", "strikes": 0, "joined_at": now,
+                })
+        linked.append({"platform": acc["platform"], "username": acc["username"]})
+    return {"linked_count": len(linked), "linked_accounts": linked, "campaign_id": camp.get("campaign_id")}
+
+
+@api_router.post("/admin/impersonate/{user_id}")
+async def admin_impersonate(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Cree une session temporaire en tant qu'un autre user. Permet a l'admin d'agir comme l'agence pour test."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1, "email": 1, "role": 1, "display_name": 1, "name": 1})
+    if not target:
+        raise HTTPException(status_code=404, detail="User introuvable")
+    session_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=2)  # session courte 2h
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_admin_impersonation": True,
+    })
+    return {
+        "session_token": session_token,
+        "user": {"user_id": target["user_id"], "email": target.get("email"), "role": target.get("role"), "display_name": target.get("display_name") or target.get("name")},
+        "expires_in_hours": 2,
+    }
+
+
 @api_router.post("/claim/clipper/{token}")
 async def claim_clipper(token: str, body: dict, request: Request):
     """Le clippeur cree son compte via lien magique. Si pseudo Discord matche un compte pre-enregistre -> auto-link."""

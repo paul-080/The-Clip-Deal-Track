@@ -1752,9 +1752,31 @@ function AdminCampaignsTab() {
                   <td className="py-3 px-4" onClick={e => e.stopPropagation()}>
                     <div className="flex gap-2 justify-end">
                       <button
+                        onClick={async () => {
+                          if (!c.agency_id) { toast.error("Pas d'agence assignée"); return; }
+                          try {
+                            const res = await fetch(`${API}/admin/impersonate/${c.agency_id}`, {
+                              method: "POST",
+                              headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+                            });
+                            if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
+                            const d = await res.json();
+                            // Set cookie for the new tab + open
+                            document.cookie = `session_token=${d.session_token}; path=/; max-age=7200; SameSite=Lax`;
+                            localStorage.setItem("session_token", d.session_token);
+                            window.open(`/agency/campaign/${c.campaign_id}`, "_blank");
+                            toast.success(`Connecté en tant que ${d.user.display_name || d.user.email} (2h)`);
+                          } catch (e) { toast.error(e.message); }
+                        }}
+                        className="p-1.5 rounded bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] transition-all"
+                        title="Voir comme l'agence (impersonate 2h)"
+                      >
+                        <Building2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
                         onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}
                         className={`p-1.5 rounded transition-all ${detailId === c.campaign_id ? "bg-[#00E5FF]/20 text-[#00E5FF]" : "bg-white/5 hover:bg-white/10 text-white/50 hover:text-white"}`}
-                        title="Voir détail"
+                        title="Voir détail (panneau)"
                       >
                         <Eye className="w-3.5 h-3.5" />
                       </button>
