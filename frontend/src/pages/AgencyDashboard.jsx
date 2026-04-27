@@ -1779,7 +1779,60 @@ function CampaignDashboard({ campaigns }) {
       {activeTab === "overview" && campaign.payment_model === "clicks" ? (
         /* ── CLICK CAMPAIGN OVERVIEW ── */
         <div className="space-y-5">
-          {/* Period filter */}
+          {/* ── Barre fine : budget restant + budget généré ce mois (campagne clic) ── */}
+          {(() => {
+            const now = new Date();
+            const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            // Pour click campaigns, on calcule depuis click_events seraient idéals
+            // mais on a déjà clickStats.total_earnings (cumulé). On approxime "ce mois" via filtrage chart si dispo
+            const monthFromChart = (clickStats?.chart || []).reduce((s, d) => {
+              const dt = new Date(d.date || d.label);
+              return dt >= firstOfMonth ? s + (d.earnings || 0) : s;
+            }, 0);
+            const earningsThisMonth = monthFromChart > 0 ? monthFromChart : (clickStats?.total_earnings || 0);
+            const budgetTotal = campaign.budget_total || 0;
+            const budgetUsed = campaign.budget_used || 0;
+            const budgetUnlimited = campaign.budget_unlimited;
+            const pctRemaining = budgetTotal > 0 ? Math.max(0, 100 - (budgetUsed / budgetTotal) * 100) : 100;
+            const monthLabel = now.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+            return (
+              <div className="bg-[#121212] border border-white/10 rounded-xl px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between gap-3 flex-wrap text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="text-white/40">💰 Budget</span>
+                    {budgetUnlimited ? (
+                      <span className="text-[#39FF14] font-mono font-bold">∞ Illimité</span>
+                    ) : budgetTotal > 0 ? (
+                      <>
+                        <span className="text-white font-mono font-bold">€{budgetUsed.toFixed(0)} / €{budgetTotal.toFixed(0)}</span>
+                        <span className={`font-mono font-bold ${pctRemaining < 10 ? "text-red-400" : pctRemaining < 30 ? "text-amber-400" : "text-[#39FF14]"}`}>
+                          {pctRemaining.toFixed(0)}% restant
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-white/30">Pas de budget défini</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-white/40">Généré ce mois ({monthLabel})</span>
+                    <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
+                  </div>
+                </div>
+                {!budgetUnlimited && budgetTotal > 0 && (
+                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full transition-all"
+                      style={{
+                        width: `${100 - pctRemaining}%`,
+                        background: pctRemaining < 10 ? "#FF4444" : pctRemaining < 30 ? "#f0c040" : "#39FF14",
+                      }} />
+                  </div>
+                )}
+                <p className="text-[10px] text-white/30">↻ Le compteur "Généré ce mois" se réinitialise automatiquement chaque 1er du mois</p>
+              </div>
+            );
+          })()}
+
+          {/* Period filter — synchronise les KPIs ET le graphique des clics */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
               {[
@@ -1811,24 +1864,28 @@ function CampaignDashboard({ campaigns }) {
             {clickStatsLoading && <div className="w-4 h-4 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" />}
           </div>
 
-          {/* KPI row — clics */}
-          {clickStats && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {[
-                { label: "Clics totaux", value: (clickStats.total_clicks || 0).toLocaleString("fr-FR"), color: "text-white" },
-                { label: "Clics uniques", value: (clickStats.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]" },
-                { label: "Taux unicité", value: clickStats.total_clicks > 0 ? `${Math.round((clickStats.unique_clicks / clickStats.total_clicks) * 100)}%` : "—", color: "text-[#39FF14]" },
-                { label: "Gains estimés", value: `€${(clickStats.total_earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]" },
-                { label: "Prix / 1K clics", value: `€${clickStats.rate_per_click || 0}`, color: "text-[#FF007F]" },
-                { label: "Moy. clics/jour", value: clickStats.chart?.length > 0 ? Math.round(clickStats.total_clicks / Math.max(1, clickStats.chart.filter(d => d.clicks > 0).length)).toLocaleString("fr-FR") : "0", color: "text-white/70" },
-              ].map(kpi => (
-                <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                  <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
-                  <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* KPI row — clics ET vues (si disponible) — synchronisé avec period */}
+          {clickStats && (() => {
+            const periodLabels = { "1d": "24h", "7d": "7j", "30d": "30j", "all": "Tout", "custom": "perso" };
+            const lbl = periodLabels[period] || period;
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {[
+                  { label: `Clics totaux (${lbl})`, value: (clickStats.total_clicks || 0).toLocaleString("fr-FR"), color: "text-white" },
+                  { label: `Clics uniques (${lbl})`, value: (clickStats.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]" },
+                  { label: `Taux unicité (${lbl})`, value: clickStats.total_clicks > 0 ? `${Math.round((clickStats.unique_clicks / clickStats.total_clicks) * 100)}%` : "—", color: "text-[#39FF14]" },
+                  { label: `Gains générés (${lbl})`, value: `€${(clickStats.total_earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]" },
+                  { label: "Prix / 1K clics", value: `€${clickStats.rate_per_click || 0}`, color: "text-[#FF007F]" },
+                  { label: `Moy. clics/jour (${lbl})`, value: clickStats.chart?.length > 0 ? Math.round(clickStats.total_clicks / Math.max(1, clickStats.chart.filter(d => d.clicks > 0).length)).toLocaleString("fr-FR") : "0", color: "text-white/70" },
+                ].map(kpi => (
+                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                    <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Clicks chart */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
