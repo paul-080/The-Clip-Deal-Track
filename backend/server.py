@@ -10740,6 +10740,20 @@ async def admin_create_prospect_campaign(request: Request, body: dict, _: bool =
     prospect_user_id = f"prospect_{uuid.uuid4().hex[:8]}"
     now = datetime.now(timezone.utc).isoformat()
 
+    # Cree un "ghost user" agency pour cette campagne prospect
+    # (permet a l'admin d'impersonate et voir l'apercu agence avant claim)
+    await db.users.insert_one({
+        "user_id": prospect_user_id,
+        "email": f"prospect+{prospect_user_id}@theclipdealtrack.local",
+        "name": agency_name,
+        "display_name": agency_name,
+        "agency_name": agency_name,
+        "role": "agency",
+        "email_verified": True,
+        "is_prospect_ghost": True,  # marqueur pour pouvoir filtrer/cleanup
+        "created_at": now,
+    })
+
     campaign_doc = {
         "campaign_id": cid,
         "name": name,
@@ -10900,11 +10914,15 @@ async def claim_agency(token: str, body: dict, request: Request):
     })
 
     # Reassigne la campagne a cette agence + retire le flag prospect
+    old_agency_id = camp.get("agency_id")
     await db.campaigns.update_one(
         {"campaign_id": camp["campaign_id"]},
         {"$set": {"agency_id": user_id, "is_prospect": False},
          "$unset": {"prospect_agency_token": "", "prospect_clipper_token": ""}}
     )
+    # Supprime le ghost user si c'etait un prospect ghost
+    if old_agency_id and old_agency_id.startswith("prospect_"):
+        await db.users.delete_one({"user_id": old_agency_id, "is_prospect_ghost": True})
 
     # Cree session immediate
     session_token = secrets.token_urlsafe(32)
@@ -10927,11 +10945,14 @@ async def claim_agency_finalize(token: str, user: dict = Depends(get_current_use
         raise HTTPException(status_code=404, detail="Lien invalide ou deja utilise")
     # Promouvoir le user en agency si pas deja
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"role": "agency"}})
+    old_agency_id = camp.get("agency_id")
     await db.campaigns.update_one(
         {"campaign_id": camp["campaign_id"]},
         {"$set": {"agency_id": user["user_id"], "is_prospect": False},
          "$unset": {"prospect_agency_token": "", "prospect_clipper_token": ""}}
     )
+    if old_agency_id and old_agency_id.startswith("prospect_"):
+        await db.users.delete_one({"user_id": old_agency_id, "is_prospect_ghost": True})
     return {"campaign_id": camp["campaign_id"]}
 
 

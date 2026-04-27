@@ -784,7 +784,7 @@ function ProspectsTab() {
                 </div>
               </div>
 
-              {/* Liens magiques */}
+              {/* Liens magiques + Apercu */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <div className="bg-white/5 rounded-lg p-2 flex items-center gap-2">
                   <span className="text-[10px] text-white/40 uppercase font-bold w-14">Agence</span>
@@ -797,6 +797,27 @@ function ProspectsTab() {
                   <button onClick={() => copyToClipboard(clipperLink)} className="text-[#FF007F] hover:text-white text-xs px-2 py-1 rounded bg-[#FF007F]/10">Copier</button>
                 </div>
               </div>
+
+              {/* Bouton Apercu agence */}
+              <button
+                onClick={async () => {
+                  if (!p.agency_id) { toast.error("Pas d'agence ghost"); return; }
+                  try {
+                    const res = await fetch(`${API}/admin/impersonate/${p.agency_id}`, {
+                      method: "POST",
+                      headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+                    });
+                    if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
+                    const d = await res.json();
+                    document.cookie = `session_token=${d.session_token}; path=/; max-age=7200; SameSite=Lax`;
+                    localStorage.setItem("session_token", d.session_token);
+                    window.open(`/agency/campaign/${p.campaign_id}`, "_blank");
+                    toast.success(`Aperçu agence (2h)`);
+                  } catch (e) { toast.error(e.message); }
+                }}
+                className="w-full py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 text-[#00E5FF] text-xs font-medium border border-[#00E5FF]/30 transition flex items-center justify-center gap-2">
+                👁 Aperçu — voir comme l'agence verra cette campagne
+              </button>
 
               {/* Bouton ajouter clippeur */}
               {addingClipper === p.campaign_id ? (
