@@ -1435,12 +1435,42 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
     
     await db.campaigns.insert_one(campaign)
     campaign.pop("_id", None)
-    
+
     await manager.send_to_user(user["user_id"], {
         "type": "campaign_created",
         "campaign": campaign
     })
-    
+
+    # Auto-scrape immédiat : utile pour les campagnes prospects qui ont déjà des comptes pré-assignés
+    async def _initial_scrape_campaign(cid: str):
+        try:
+            await asyncio.sleep(5)  # laisse le temps a tout d'etre commit
+            cam = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+            if not cam:
+                return
+            assignments = await db.campaign_social_accounts.find(
+                {"campaign_id": cid}, {"_id": 0}
+            ).to_list(500)
+            if not assignments:
+                logger.info(f"Initial scrape skip campaign {cid} : aucun compte assigné")
+                return
+            cutoff = _parse_utc(cam.get("tracking_start_date")) or datetime.now(timezone.utc) - timedelta(days=30)
+            days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+            days_back = min(days_back, 365)
+            sem = asyncio.Semaphore(5)
+            async def _do(a):
+                async with sem:
+                    acc = await db.social_accounts.find_one({"account_id": a["account_id"]}, {"_id": 0})
+                    if not acc:
+                        return
+                    await _scrape_one_account_into_campaign(acc, cam, cutoff, since_days=days_back, wait_verification=False)
+            await asyncio.gather(*[_do(a) for a in assignments], return_exceptions=True)
+            logger.info(f"Initial scrape terminé pour campagne {cid}")
+        except Exception as e:
+            logger.warning(f"Initial scrape failed for {cid}: {e}")
+
+    asyncio.create_task(_initial_scrape_campaign(campaign["campaign_id"]))
+
     return campaign
 
 @api_router.get("/campaigns")
@@ -2181,15 +2211,15 @@ async def get_public_stats(token: str):
          "platform": 1, "thumbnail_url": 1, "published_at": 1}
     ).sort("views", -1).to_list(50)
 
-    # Timeline vues sur 30 derniers jours (pour la courbe)
+    # Timeline vues sur 30 derniers jours — par jour de PUBLICATION (pas de scraping)
     from collections import defaultdict
     views_by_day: dict = defaultdict(int)
     all_vids = await db.tracked_videos.find(
         {"campaign_id": campaign_id},
-        {"_id": 0, "fetched_at": 1, "views": 1}
+        {"_id": 0, "published_at": 1, "views": 1}
     ).to_list(1000)
     for v in all_vids:
-        day = (v.get("fetched_at") or "")[:10]
+        day = (v.get("published_at") or "")[:10]
         if day:
             views_by_day[day] += v.get("views", 0)
     timeline = [{"date": d, "views": views_by_day[d]} for d in sorted(views_by_day)[-30:]]
@@ -5992,20 +6022,14 @@ async def cleanup_and_rescrape(campaign_id: str, user: dict = Depends(get_curren
 @api_router.post("/campaigns/{campaign_id}/force-scrape")
 async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
     """Force le scraping immédiat de TOUS les comptes d'une campagne.
-    Réservé agence/manager. Renvoie un résumé détaillé après ~30-60s.
+    Réservé ADMIN uniquement (les agences ne peuvent pas forcer le scrape, ça se fait sur les horaires fixes).
     Auto-cleanup d'abord les usernames sales (URLs) puis attend 30s pour re-vérification."""
-    if user.get("role") not in ("agency", "manager"):
-        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Réservé à l'admin. Le scraping se fait automatiquement sur horaires fixes.")
 
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
-    if user.get("role") == "agency" and campaign.get("agency_id") != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
-    if user.get("role") == "manager":
-        m = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
-        if not m:
-            raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
 
     # Auto-cleanup : si des comptes ont des usernames sales, on les nettoie d'abord
     pre_assignments = await db.campaign_social_accounts.find(
@@ -7249,101 +7273,82 @@ async def get_my_period_stats(
 @api_router.get("/campaigns/{campaign_id}/views-chart")
 async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
     """
-    Daily NEW views for a campaign chart (delta, not cumulative).
-    views_snapshots stores cumulative totals → we compute day-to-day differences.
+    Vues par jour de PUBLICATION des vidéos (pas par jour de scraping).
+    Chaque vidéo apporte ses vues actuelles au jour où elle a été publiée.
     """
     from datetime import timedelta
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
-    start_str = start.strftime("%Y-%m-%d")
 
-    # Fetch snapshots from window. Also fetch the snapshot just before the window
-    # to correctly compute the delta for the first day.
-    snapshots = await db.views_snapshots.find(
-        {"campaign_id": campaign_id, "date": {"$gte": start_str}},
-        {"_id": 0, "date": 1, "total_views": 1}
-    ).sort("date", 1).to_list(days + 2)
+    # Aggregation MongoDB : groupe par jour de publication, somme les vues actuelles
+    pipeline = [
+        {"$match": {
+            "campaign_id": campaign_id,
+            "published_at": {"$ne": None},
+        }},
+        {"$addFields": {
+            # Convertit published_at en string de date
+            "_pub_dt": {"$cond": [
+                {"$eq": [{"$type": "$published_at"}, "string"]},
+                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
+                "$published_at",
+            ]}
+        }},
+        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}},
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}},
+            "views": {"$sum": "$views"},
+        }},
+    ]
+    rows = await db.tracked_videos.aggregate(pipeline).to_list(days + 2)
+    views_by_day = {r["_id"]: r["views"] for r in rows}
 
-    if snapshots:
-        # Anchor: total_views the day before the window (so delta on day 1 is correct)
-        prev_snap = await db.views_snapshots.find_one(
-            {"campaign_id": campaign_id, "date": {"$lt": start_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        prev_total = prev_snap["total_views"] if prev_snap else 0
-
-        snap_by_date = {s["date"]: s["total_views"] for s in snapshots}
-
-        # Compute daily delta: new views = total_today - total_prev_day
-        sorted_dates = sorted(snap_by_date.keys())
-        delta_by_day: dict = {}
-        running_prev = prev_total
-        for d in sorted_dates:
-            cum = snap_by_date[d]
-            delta_by_day[d] = max(0, cum - running_prev)
-            running_prev = cum
-
-        timeline = []
-        current = start
-        while current <= end:
-            day = current.strftime("%Y-%m-%d")
-            timeline.append({"date": day, "views": delta_by_day.get(day, 0)})
-            current += timedelta(days=1)
-        return {"timeline": timeline, "source": "snapshots"}
-
-    # Fallback (no snapshots yet): return zeros — chart will be empty until first tracking run
     timeline = []
     current = start
     while current <= end:
-        timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
+        day = current.strftime("%Y-%m-%d")
+        timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
         current += timedelta(days=1)
-    return {"timeline": timeline, "source": "no_data"}
+    return {"timeline": timeline, "source": "by_published_at"}
+
 
 @api_router.get("/campaigns/{campaign_id}/my-views-chart")
 async def get_my_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
     """
-    Personal daily NEW views chart for the current clipper on a given campaign.
-    Computes deltas from user_views_snapshots (same logic as campaign chart).
+    Vues du clippeur connecté par jour de publication des vidéos.
     """
     from datetime import timedelta
     uid = user["user_id"]
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
-    start_str = start.strftime("%Y-%m-%d")
 
-    snapshots = await db.user_views_snapshots.find(
-        {"campaign_id": campaign_id, "user_id": uid, "date": {"$gte": start_str}},
-        {"_id": 0, "date": 1, "total_views": 1}
-    ).sort("date", 1).to_list(days + 2)
+    pipeline = [
+        {"$match": {
+            "campaign_id": campaign_id,
+            "user_id": uid,
+            "published_at": {"$ne": None},
+        }},
+        {"$addFields": {
+            "_pub_dt": {"$cond": [
+                {"$eq": [{"$type": "$published_at"}, "string"]},
+                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
+                "$published_at",
+            ]}
+        }},
+        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}},
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}},
+            "views": {"$sum": "$views"},
+        }},
+    ]
+    rows = await db.tracked_videos.aggregate(pipeline).to_list(days + 2)
+    views_by_day = {r["_id"]: r["views"] for r in rows}
 
-    if snapshots:
-        prev_snap = await db.user_views_snapshots.find_one(
-            {"campaign_id": campaign_id, "user_id": uid, "date": {"$lt": start_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        prev_total = prev_snap["total_views"] if prev_snap else 0
-        snap_by_date = {s["date"]: s["total_views"] for s in snapshots}
-        delta_by_day: dict = {}
-        running = prev_total
-        for d in sorted(snap_by_date.keys()):
-            cum = snap_by_date[d]
-            delta_by_day[d] = max(0, cum - running)
-            running = cum
-        timeline = []
-        current = start
-        while current <= end:
-            day = current.strftime("%Y-%m-%d")
-            timeline.append({"date": day, "views": delta_by_day.get(day, 0)})
-            current += timedelta(days=1)
-        return {"timeline": timeline}
-
-    # No snapshots yet — return zeros
     timeline = []
     current = start
     while current <= end:
-        timeline.append({"date": current.strftime("%Y-%m-%d"), "views": 0})
+        day = current.strftime("%Y-%m-%d")
+        timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
         current += timedelta(days=1)
     return {"timeline": timeline}
 

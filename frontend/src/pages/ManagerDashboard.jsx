@@ -526,6 +526,7 @@ function DiscoverCampaigns({ onJoin }) {
 function CampaignDashboard({ campaigns }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const campaignId = location.pathname.split("/")[3];
   const [campaign, setCampaign] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -770,15 +771,13 @@ function CampaignDashboard({ campaigns }) {
         </div>
       </div>
 
-      {/* Panel scraping (horaires + statut + force-scrape) */}
-      <ScrapeStatusPanel campaignId={campaignId} onScrapeComplete={() => { fetchAllVideos(); fetchAllAccounts(); }} />
-
       {/* TABS */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
         {[
           { id: "overview", label: "Vue d'ensemble" },
           { id: "videos", label: `Vidéos & Comptes (${allVideos.length})`, dot: videosLoading },
           { id: "clip-winner", label: "🏆 Clip Winner" },
+          { id: "scraping", label: "🔄 Scraping" },
         ].map(tab => (
           <button key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -1245,6 +1244,20 @@ function CampaignDashboard({ campaigns }) {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══ SCRAPING TAB ═══ */}
+      {activeTab === "scraping" && (
+        <div className="space-y-4 max-w-4xl">
+          <div className="bg-[#0d0d0d] border border-white/8 rounded-xl p-3 text-xs text-white/50">
+            ℹ️ Le scraping est <strong>automatique</strong> 4 fois par jour aux horaires fixes. Seul l'admin peut forcer un scrape manuel.
+          </div>
+          <ScrapeStatusPanel
+            campaignId={campaignId}
+            canForceScrape={user?.role === "admin" || sessionStorage.getItem("preview_mode") === "1"}
+            onScrapeComplete={() => { fetchAllVideos(); fetchAllAccounts(); }}
+          />
         </div>
       )}
 

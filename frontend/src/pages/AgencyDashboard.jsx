@@ -1066,6 +1066,7 @@ function CreateCampaign({ onCreated }) {
 function CampaignDashboard({ campaigns }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const campaignId = location.pathname.split("/")[3];
   const [campaign, setCampaign] = useState(null);
   const [stats, setStats] = useState(null);
@@ -1725,9 +1726,6 @@ function CampaignDashboard({ campaigns }) {
         </button>
       </div>
 
-      {/* Panel scraping (horaires + statut + force-scrape) */}
-      <ScrapeStatusPanel campaignId={campaignId} onScrapeComplete={() => { fetchAllVideos(); fetchStats(); fetchAllAccounts(); }} />
-
 
       {/* TABS — Shortimize style */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
@@ -1737,6 +1735,7 @@ function CampaignDashboard({ campaigns }) {
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length + expulsionRequests.length },
           ...((campaign.payment_model === "clicks" || campaign.payment_model === "both") ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
+          { id: "scraping", label: "🔄 Scraping" },
           { id: "settings", label: "⚙️ Paramètres" },
         ].map(tab => (
           <button key={tab.id}
@@ -3220,6 +3219,21 @@ function CampaignDashboard({ campaigns }) {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ═══════════ SCRAPING TAB ═══════════ */}
+      {activeTab === "scraping" && (
+        <div className="space-y-4 max-w-4xl">
+          <div className="bg-[#0d0d0d] border border-white/8 rounded-xl p-3 text-xs text-white/50">
+            ℹ️ Le scraping est <strong>automatique</strong> : il tourne 4 fois par jour aux horaires fixes affichés ci-dessous.
+            Les agences ne peuvent pas le déclencher manuellement — l'admin gère ça.
+          </div>
+          <ScrapeStatusPanel
+            campaignId={campaignId}
+            canForceScrape={user?.role === "admin" || sessionStorage.getItem("preview_mode") === "1"}
+            onScrapeComplete={() => { fetchAllVideos(); fetchStats(); fetchAllAccounts(); }}
+          />
         </div>
       )}
 

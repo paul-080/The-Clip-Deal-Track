@@ -5,10 +5,11 @@ import { RefreshCw, Clock, CheckCircle, AlertCircle, Loader2 } from "lucide-reac
 
 /**
  * Panel de statut de scraping pour une campagne.
- * Affiche : horaires planifiés, prochain scrape, statut par compte, bouton force-scrape.
- * Visible : agence + manager.
+ * Affiche : horaires planifiés, prochain scrape, statut par compte.
+ * Bouton force-scrape : visible uniquement si canForceScrape=true (admin).
+ * Visible : agence + manager (lecture) + admin (lecture + force).
  */
-export default function ScrapeStatusPanel({ campaignId, onScrapeComplete }) {
+export default function ScrapeStatusPanel({ campaignId, onScrapeComplete, canForceScrape = false }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
@@ -109,15 +110,17 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete }) {
             className="text-white/40 hover:text-white text-xs px-2 py-1 rounded-md hover:bg-white/5 transition-all">
             {expanded ? "Masquer détails" : "Voir détails"}
           </button>
-          <button
-            onClick={handleForceScrape}
-            disabled={scraping || accounts.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all">
-            {scraping
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Scraping…</>
-              : <><RefreshCw className="w-3.5 h-3.5" /> Lancer le scraping maintenant</>
-            }
-          </button>
+          {canForceScrape && (
+            <button
+              onClick={handleForceScrape}
+              disabled={scraping || accounts.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition-all">
+              {scraping
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Scraping…</>
+                : <><RefreshCw className="w-3.5 h-3.5" /> Lancer scrape (admin)</>
+              }
+            </button>
+          )}
         </div>
       </div>
 
