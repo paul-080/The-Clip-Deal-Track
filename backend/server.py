@@ -5304,9 +5304,13 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
 async def run_video_tracking():
     logger.info("Starting video tracking run...")
     campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
+    # Pour les campagnes au CLIC : on track les vues plus rarement (24h vs 6h) car la facturation est au clic
+    # On verifie si on a deja trackke ce compte dans les 24h pour les campagnes click
+    now_track_run = datetime.now(timezone.utc)
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
         rpm = campaign.get("rpm", 0)
+        is_clicks_campaign = campaign.get("payment_model") == "clicks"
         # Get all assignments for this campaign
         assignments = await db.campaign_social_accounts.find(
             {"campaign_id": campaign_id}, {"_id": 0}
@@ -5325,25 +5329,30 @@ async def run_video_tracking():
             username = account["username"]
 
             # ── Smart cache COMPTE : skip Apify si pas de growth récent ──
-            # Seuls les comptes "actifs" (avec growth) gardent un tracking 6h.
-            # Comptes "stagnants" (no growth depuis 1 scan) → tracking 12h.
-            # Comptes "morts" (no growth depuis 3 scans + total < 1000 vues) → tracking 24h.
+            # Campagnes au CLIC : tracking soft 24h (la facturation est au clic, vues = info)
+            # Campagnes au VUE : tracking 6h actif, 12h stagnant, 24h mort
             # YouTube est gratuit (API officielle), on ne skip jamais.
             try:
                 last_tracked = account.get("last_tracked_at")
                 last_growth = account.get("last_growth", None)
                 last_total = account.get("last_total_views", 0) or 0
-                if platform != "youtube" and last_tracked and last_growth is not None:
+                if platform != "youtube" and last_tracked:
                     last_dt = _parse_utc(last_tracked) or datetime.now(timezone.utc)
                     elapsed_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-                    # Comptes très inactifs : 24h
-                    if last_growth == 0 and last_total < 1000 and elapsed_hours < 24:
-                        logger.info(f"Skip {platform}/@{username} — cold (no growth, low views) — wait 24h")
-                        continue
-                    # Comptes stagnants : 12h
-                    if last_growth == 0 and elapsed_hours < 12:
-                        logger.info(f"Skip {platform}/@{username} — stagnant (no growth) — wait 12h")
-                        continue
+                    if is_clicks_campaign:
+                        # Campagne au clic : 24h fixe, peu importe l'activite
+                        if elapsed_hours < 24:
+                            logger.info(f"Skip {platform}/@{username} — campaign clicks (soft tracking 24h) - last {elapsed_hours:.1f}h")
+                            continue
+                    elif last_growth is not None:
+                        # Comptes très inactifs (campagne vues) : 24h
+                        if last_growth == 0 and last_total < 1000 and elapsed_hours < 24:
+                            logger.info(f"Skip {platform}/@{username} — cold (no growth, low views) — wait 24h")
+                            continue
+                        # Comptes stagnants : 12h
+                        if last_growth == 0 and elapsed_hours < 12:
+                            logger.info(f"Skip {platform}/@{username} — stagnant (no growth) — wait 12h")
+                            continue
             except Exception:
                 pass  # En cas de doute, on scrape
             # YouTube: if channel_id is missing (verified via HTTP fallback), try to re-verify
@@ -10783,6 +10792,7 @@ async def check_and_issue_strikes():
         campaign_id = campaign["campaign_id"]
         strike_days = campaign.get("strike_days", 3)
         max_strikes = campaign.get("max_strikes", 3)
+        is_clicks_campaign = campaign.get("payment_model") == "clicks"
 
         members = await db.campaign_members.find(
             {"campaign_id": campaign_id, "role": "clipper", "status": "active"},
@@ -10790,9 +10800,67 @@ async def check_and_issue_strikes():
         ).to_list(500)
 
         for member in members:
-            last_post_at = member.get("last_post_at")
-            if not last_post_at:
-                # No posts yet — check join date
+            user_id = member["user_id"]
+            # Pour les campagnes au clic : "last_post_at" = max(last_post, last click_link cree, last click recu)
+            # Pour les campagnes au vue : "last_post_at" classique (ou tracked_videos recente)
+            last_activity = None
+            lp = member.get("last_post_at")
+            if lp:
+                try:
+                    last_activity = datetime.fromisoformat(lp.replace("Z", "+00:00")) if isinstance(lp, str) else lp
+                    if last_activity.tzinfo is None:
+                        last_activity = last_activity.replace(tzinfo=timezone.utc)
+                except (ValueError, AttributeError):
+                    pass
+
+            # Check campagnes click : derniere activite sur click_links / click_events
+            if is_clicks_campaign:
+                try:
+                    last_link = await db.click_links.find_one(
+                        {"campaign_id": campaign_id, "clipper_id": user_id},
+                        {"_id": 0, "created_at": 1, "last_clicked_at": 1},
+                        sort=[("created_at", -1)]
+                    )
+                    if last_link:
+                        for k in ("last_clicked_at", "created_at"):
+                            v = last_link.get(k)
+                            if v:
+                                try:
+                                    dt = datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
+                                    if dt.tzinfo is None:
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                    if not last_activity or dt > last_activity:
+                                        last_activity = dt
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+            # Check campagnes vue : derniere video trackee (cas ou last_post_at pas update mais videos automatiquement scrapees)
+            if not is_clicks_campaign:
+                try:
+                    last_vid = await db.tracked_videos.find_one(
+                        {"campaign_id": campaign_id, "user_id": user_id},
+                        {"_id": 0, "fetched_at": 1, "published_at": 1},
+                        sort=[("published_at", -1)]
+                    )
+                    if last_vid:
+                        for k in ("published_at", "fetched_at"):
+                            v = last_vid.get(k)
+                            if v:
+                                try:
+                                    dt = datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
+                                    if dt.tzinfo is None:
+                                        dt = dt.replace(tzinfo=timezone.utc)
+                                    if not last_activity or dt > last_activity:
+                                        last_activity = dt
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+            if not last_activity:
+                # Aucune activite -> check joined_at
                 joined_at = member.get("joined_at")
                 if not joined_at:
                     continue
@@ -10805,11 +10873,7 @@ async def check_and_issue_strikes():
                     continue
                 days_inactive = (now - joined_at).days
             else:
-                if isinstance(last_post_at, str):
-                    last_post_at = datetime.fromisoformat(last_post_at)
-                if last_post_at.tzinfo is None:
-                    last_post_at = last_post_at.replace(tzinfo=timezone.utc)
-                days_inactive = (now - last_post_at).days
+                days_inactive = (now - last_activity).days
 
             if days_inactive >= strike_days:
                 # Strike ID déterministe basé sur date du jour : empêche les doublons même sous race condition
