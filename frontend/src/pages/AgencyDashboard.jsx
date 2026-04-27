@@ -1854,22 +1854,43 @@ function CampaignDashboard({ campaigns }) {
                 <p className="text-white/30 text-sm text-center py-4">Aucun clic enregistré</p>
               ) : (
                 <div className="space-y-2">
-                  {clickStats.clippers.map((c, idx) => (
-                    <div key={c.clipper_id} className="flex items-center gap-3 p-2.5 rounded-lg bg-white/5">
-                      <span className="font-mono text-sm text-white/30 w-6">#{idx + 1}</span>
-                      <div className="w-7 h-7 rounded-full bg-[#f0c040]/20 flex items-center justify-center text-xs font-bold text-[#f0c040] flex-shrink-0">
-                        {(c.name || "?")[0].toUpperCase()}
+                  {clickStats.clippers.map((c, idx) => {
+                    // Match avec le member correspondant pour avoir strikes + status
+                    const member = (campaign?.members || []).find(m => m.user_id === c.clipper_id) || {};
+                    const maxStrikes = campaign?.max_strikes || 3;
+                    const strikes = member.strikes || 0;
+                    return (
+                      <div key={c.clipper_id} className="flex items-center gap-2.5 p-2 rounded-lg bg-white/5">
+                        <span className="font-mono text-xs text-white/30 w-5">#{idx + 1}</span>
+                        <div className="w-6 h-6 rounded-full bg-[#f0c040]/20 flex items-center justify-center text-[10px] font-bold text-[#f0c040] flex-shrink-0">
+                          {(c.name || "?")[0].toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs truncate">{c.name}</p>
+                          <p className="text-white/30 text-[10px]">{c.total_clicks || c.clicks} clics · {c.unique_clicks} uniques · <span className="text-[#f0c040]">€{c.earnings.toFixed(2)}</span></p>
+                        </div>
+                        {/* Strikes - toujours visibles */}
+                        {member.user_id && (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button onClick={() => handleRemoveStrike(member.user_id)}
+                              disabled={strikingMember === member.user_id || strikes === 0}
+                              title="Retirer un strike"
+                              className="w-5 h-5 rounded bg-white/5 hover:bg-white/15 text-white/40 hover:text-white text-xs font-bold border border-white/10 disabled:opacity-30 transition">−</button>
+                            <div className="flex gap-0.5" title={`${strikes}/${maxStrikes} strikes`}>
+                              {Array.from({ length: maxStrikes }).map((_, i) => (
+                                <span key={i} className={`w-2 h-2 rounded-full ${i < strikes ? "bg-[#FF007F]" : "bg-white/10"}`} />
+                              ))}
+                            </div>
+                            <button onClick={() => handleAddStrike(member.user_id)}
+                              disabled={strikingMember === member.user_id}
+                              title="Ajouter un strike"
+                              className="w-5 h-5 rounded bg-[#FF007F]/10 hover:bg-[#FF007F]/25 text-[#FF007F] text-xs font-bold border border-[#FF007F]/20 disabled:opacity-50 transition">+</button>
+                            {member.status === "suspended" && <span className="text-[9px] px-1 py-0.5 rounded bg-red-500/20 text-red-400 font-bold ml-1">BAN</span>}
+                          </div>
+                        )}
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm truncate">{c.name}</p>
-                        <p className="text-white/30 text-xs">{c.total_clicks || c.clicks} clics · {c.unique_clicks} uniques</p>
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className="text-[#f0c040] font-mono text-sm font-bold">{c.unique_clicks.toLocaleString("fr-FR")}</p>
-                        <p className="text-white/40 text-xs">€{c.earnings.toFixed(2)}</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
