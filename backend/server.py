@@ -2606,37 +2606,67 @@ async def remove_manual_strike(campaign_id: str, member_user_id: str, user: dict
 _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 def extract_handle_from_url(url: str, platform: str) -> str:
-    """Extract @handle from a social media URL"""
+    """Extract @handle from a social media URL or raw handle.
+    Robuste : gère query params, fragments, www/non-www, http/https, mobile (m.tiktok.com), espaces, /@.
+    """
     import re
-    url = url.strip()
+    if not url:
+        return ""
+    url = url.strip().strip('"\'').strip()
+    # Coupe tout ce qui suit ?, &, # (query params, fragments)
+    base = re.split(r'[?&#]', url, 1)[0].strip()
     if platform == "tiktok":
-        # https://www.tiktok.com/@username or https://tiktok.com/@username
-        m = re.search(r'tiktok\.com/@([^/?&\s]+)', url)
+        # https://www.tiktok.com/@user, https://tiktok.com/@user, m.tiktok.com/@user, vm.tiktok.com/...
+        m = re.search(r'(?:www\.|m\.|vm\.)?tiktok\.com/@([^/?&#\s]+)', base, re.IGNORECASE)
         if m:
-            return m.group(1)
-        # If no URL pattern, treat as raw handle
-        return url.lstrip("@")
+            return m.group(1).strip("/").lstrip("@")
+        # Si pas d'URL pattern, retire les http/// et @ et garde seulement le handle
+        cleaned = re.sub(r'^https?://', '', base, flags=re.IGNORECASE).strip("/").lstrip("@")
+        # S'il reste un / dedans (ex: tiktok.com/@xxx tronqué), prendre le dernier segment
+        if "/" in cleaned:
+            parts = [p for p in cleaned.split("/") if p]
+            cleaned = parts[-1].lstrip("@")
+        return cleaned
     elif platform == "instagram":
         # https://www.instagram.com/username/
-        m = re.search(r'instagram\.com/([^/?&\s]+)', url)
+        m = re.search(r'instagram\.com/([^/?&#\s]+)', base, re.IGNORECASE)
         if m:
-            handle = m.group(1).strip("/")
-            if handle not in ("p", "reel", "explore", "accounts", "stories"):
+            handle = m.group(1).strip("/").lstrip("@")
+            if handle not in ("p", "reel", "reels", "explore", "accounts", "stories", "tv", "direct"):
                 return handle
-        return url.lstrip("@")
+        cleaned = re.sub(r'^https?://', '', base, flags=re.IGNORECASE).strip("/").lstrip("@")
+        if "/" in cleaned:
+            parts = [p for p in cleaned.split("/") if p]
+            cleaned = parts[-1].lstrip("@")
+        return cleaned
     elif platform == "youtube":
-        # https://www.youtube.com/@handle or /c/name or /channel/UCxxx
-        m = re.search(r'youtube\.com/@([^/?&\s]+)', url)
+        # https://www.youtube.com/@handle or /c/name or /channel/UCxxx or /user/name
+        m = re.search(r'youtube\.com/@([^/?&#\s]+)', base, re.IGNORECASE)
         if m:
-            return m.group(1)
-        m = re.search(r'youtube\.com/c/([^/?&\s]+)', url)
+            return m.group(1).strip("/").lstrip("@")
+        m = re.search(r'youtube\.com/(?:c|user)/([^/?&#\s]+)', base, re.IGNORECASE)
         if m:
-            return m.group(1)
-        m = re.search(r'youtube\.com/channel/([^/?&\s]+)', url)
+            return m.group(1).strip("/").lstrip("@")
+        m = re.search(r'youtube\.com/channel/([^/?&#\s]+)', base, re.IGNORECASE)
         if m:
-            return m.group(1)
-        return url.lstrip("@")
-    return url.lstrip("@")
+            return m.group(1).strip("/").lstrip("@")
+        cleaned = re.sub(r'^https?://', '', base, flags=re.IGNORECASE).strip("/").lstrip("@")
+        if "/" in cleaned:
+            parts = [p for p in cleaned.split("/") if p]
+            cleaned = parts[-1].lstrip("@")
+        return cleaned
+    return base.lstrip("@").strip("/")
+
+
+def _looks_like_url_or_dirty(s: str) -> bool:
+    """Detect a username that's actually an URL or contains URL noise."""
+    if not s:
+        return False
+    s = s.strip()
+    return bool(
+        s.startswith("http") or "/" in s or "?" in s or "&" in s or "%" in s or
+        ".com" in s or ".io" in s or "\\" in s
+    )
 
 async def _verify_youtube(username: str) -> dict:
     if not YOUTUBE_API_KEY:
@@ -5886,10 +5916,92 @@ async def get_scrape_schedule():
     }
 
 
+async def _cleanup_dirty_usernames(scope_query: dict = None) -> dict:
+    """Nettoie tous les comptes dont username = URL ou contient des caractères louches.
+    scope_query : optionnel, restreint à une campagne via account_ids.
+    Retourne {fixed: int, sample: [...]}."""
+    query = scope_query or {}
+    accounts = await db.social_accounts.find(query, {"_id": 0}).to_list(2000)
+    fixed = 0
+    samples = []
+    for acc in accounts:
+        old_username = acc.get("username") or ""
+        if not _looks_like_url_or_dirty(old_username):
+            continue
+        platform = acc.get("platform")
+        new_username = extract_handle_from_url(old_username, platform)
+        new_username = (new_username or "").strip().lstrip("@").strip("/")
+        if not new_username or new_username == old_username:
+            continue
+        # Update DB : nouveau username + reset status pour re-vérification + reset channel_id
+        await db.social_accounts.update_one(
+            {"account_id": acc["account_id"]},
+            {"$set": {
+                "username": new_username,
+                "status": "pending",
+                "platform_channel_id": None,
+                "error_message": None,
+                "last_scrape_error": None,
+                "_username_fixed_from": old_username,
+                "_username_fixed_at": datetime.now(timezone.utc).isoformat(),
+            }}
+        )
+        # Re-launch verification in background
+        try:
+            asyncio.create_task(_verify_and_update_account(acc["account_id"], platform, new_username))
+        except Exception:
+            pass
+        fixed += 1
+        if len(samples) < 20:
+            samples.append({
+                "account_id": acc["account_id"],
+                "platform": platform,
+                "old": old_username,
+                "new": new_username,
+            })
+    return {"fixed": fixed, "samples": samples}
+
+
+@api_router.post("/admin/cleanup-account-usernames")
+async def admin_cleanup_account_usernames(_: bool = Depends(verify_admin_code)):
+    """Migration : nettoie TOUS les comptes du système qui ont une URL comme username.
+    Re-vérifie chaque compte fixé."""
+    result = await _cleanup_dirty_usernames()
+    return result
+
+
+@api_router.post("/campaigns/{campaign_id}/cleanup-and-rescrape")
+async def cleanup_and_rescrape(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Pour une campagne : nettoie les usernames sales + re-scrape tout.
+    Accessible agence/manager."""
+    if user.get("role") not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if user.get("role") == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+
+    # Cleanup limité aux comptes de cette campagne
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    account_ids = [a["account_id"] for a in assignments]
+    cleanup = await _cleanup_dirty_usernames({"account_id": {"$in": account_ids}})
+
+    return {
+        "ok": True,
+        "fixed_count": cleanup["fixed"],
+        "samples": cleanup["samples"],
+        "message": f"{cleanup['fixed']} comptes nettoyés. Re-vérification en cours (~30-60s). Lance ensuite 'Scraping maintenant'.",
+    }
+
+
 @api_router.post("/campaigns/{campaign_id}/force-scrape")
 async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
     """Force le scraping immédiat de TOUS les comptes d'une campagne.
-    Réservé agence/manager. Renvoie un résumé détaillé après ~30-60s."""
+    Réservé agence/manager. Renvoie un résumé détaillé après ~30-60s.
+    Auto-cleanup d'abord les usernames sales (URLs) puis attend 30s pour re-vérification."""
     if user.get("role") not in ("agency", "manager"):
         raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
 
@@ -5902,6 +6014,16 @@ async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_curre
         m = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
         if not m:
             raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
+
+    # Auto-cleanup : si des comptes ont des usernames sales, on les nettoie d'abord
+    pre_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    pre_account_ids = [a["account_id"] for a in pre_assignments]
+    cleanup_res = await _cleanup_dirty_usernames({"account_id": {"$in": pre_account_ids}})
+    if cleanup_res["fixed"] > 0:
+        logger.info(f"force-scrape: nettoyé {cleanup_res['fixed']} usernames sales avant scrape, attente 30s pour re-vérification")
+        await asyncio.sleep(30)  # laisse la vérification se faire
 
     # Calcule cutoff = tracking_start_date sinon assigned_at par compte
     campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
@@ -6051,10 +6173,10 @@ async def add_social_account(account_data: SocialAccountCreate, user: dict = Dep
     if account_data.account_url:
         username = extract_handle_from_url(account_data.account_url, account_data.platform)
         via_url = True
-    elif username.startswith("http"):
+    elif _looks_like_url_or_dirty(username):
         username = extract_handle_from_url(username, account_data.platform)
         via_url = True
-    username = username.strip().lstrip("@")
+    username = (username or "").strip().lstrip("@").strip("/")
     if not username:
         raise HTTPException(status_code=400, detail="Veuillez fournir un nom d'utilisateur ou une URL")
 
@@ -6259,12 +6381,12 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
     if account_url:
         username = extract_handle_from_url(account_url, platform)
         via_url = True
-    elif raw_username.startswith("http"):
+    elif _looks_like_url_or_dirty(raw_username):
         username = extract_handle_from_url(raw_username, platform)
         via_url = True
     else:
         username = raw_username
-    username = (username or "").strip().lstrip("@")
+    username = (username or "").strip().lstrip("@").strip("/")
     if not username:
         raise HTTPException(status_code=400, detail="Username ou URL invalide")
 
@@ -11478,7 +11600,13 @@ async def admin_add_prospect_clipper(campaign_id: str, body: dict, _: bool = Dep
         raise HTTPException(status_code=404, detail="Campagne prospect introuvable")
     discord_username = _norm_discord(body.get("discord_username") or "")
     platform = (body.get("platform") or "").lower()
-    username = (body.get("username") or "").lstrip("@").strip()
+    raw_username = (body.get("username") or "").strip()
+    # Si l'admin a colle une URL au lieu d'un handle, on extrait le handle
+    if _looks_like_url_or_dirty(raw_username):
+        username = extract_handle_from_url(raw_username, platform)
+    else:
+        username = raw_username
+    username = (username or "").strip().lstrip("@").strip("/")
     if not discord_username or not platform or not username:
         raise HTTPException(status_code=400, detail="discord_username + platform + username requis")
     if platform not in ("tiktok", "instagram", "youtube"):
