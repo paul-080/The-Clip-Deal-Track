@@ -1986,73 +1986,92 @@ function CampaignDashboard({ campaigns }) {
         </div>
       ) : activeTab === "overview" && (
         <div className="space-y-5">
-          {/* ── Period stats (24h / 7j / 30j / an / tout) ──────────────── */}
+          {/* ── Barre fine : budget restant + budget généré ce mois ─────── */}
           {(() => {
-            const PERIODS = [["24h","24h"],["7d","7j"],["30d","30j"],["year","An"],["all","Tout"]];
-            const idx = PERIODS.findIndex(([v]) => v === periodSel);
-            const canPrev = periodSel !== "all";
-            const canNext = periodOffset > 0;
+            const now = new Date();
+            const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            const earningsThisMonth = (allVideos || []).reduce((s, v) => {
+              if (!v.published_at) return s;
+              const pub = new Date(v.published_at);
+              return pub >= firstOfMonth ? s + (v.earnings || 0) : s;
+            }, 0);
+            const budgetTotal = campaign.budget_total || 0;
+            const budgetUsed = campaign.budget_used || 0;
+            const budgetUnlimited = campaign.budget_unlimited;
+            const pctRemaining = budgetTotal > 0 ? Math.max(0, 100 - (budgetUsed / budgetTotal) * 100) : 100;
+            const monthLabel = now.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
             return (
-              <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div>
-                    <p className="text-white font-medium text-sm">Stats par période</p>
-                    <p className="text-xs text-white/40 mt-0.5">{periodStats?.period_label || "Sélectionnez une période"}{periodOffset > 0 ? ` (il y a ${periodOffset} période${periodOffset > 1 ? "s" : ""})` : ""}</p>
+              <div className="bg-[#121212] border border-white/10 rounded-xl px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between gap-3 flex-wrap text-xs">
+                  <div className="flex items-center gap-3">
+                    <span className="text-white/40">💰 Budget</span>
+                    {budgetUnlimited ? (
+                      <span className="text-[#39FF14] font-mono font-bold">∞ Illimité</span>
+                    ) : budgetTotal > 0 ? (
+                      <>
+                        <span className="text-white font-mono font-bold">€{budgetUsed.toFixed(0)} / €{budgetTotal.toFixed(0)}</span>
+                        <span className={`font-mono font-bold ${pctRemaining < 10 ? "text-red-400" : pctRemaining < 30 ? "text-amber-400" : "text-[#39FF14]"}`}>
+                          {pctRemaining.toFixed(0)}% restant
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-white/30">Pas de budget défini</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => canPrev && setPeriodOffset(o => o + 1)} disabled={!canPrev}
-                      title="Période précédente"
-                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">‹</button>
-                    <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
-                      {PERIODS.map(([val, label]) => (
-                        <button key={val} onClick={() => { setPeriodSel(val); setPeriodOffset(0); }}
-                          className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${periodSel === val ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <button onClick={() => canNext && setPeriodOffset(o => Math.max(0, o - 1))} disabled={!canNext}
-                      title="Période suivante"
-                      className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">›</button>
-                    {periodLoading && <div className="w-4 h-4 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin ml-1" />}
+                    <span className="text-white/40">Généré ce mois ({monthLabel})</span>
+                    <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-xs text-white/40 mb-1">Vues</p>
-                    <p className="text-xl font-bold font-mono text-[#00E5FF]">{fmt(periodStats?.views || 0)}</p>
+                {!budgetUnlimited && budgetTotal > 0 && (
+                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full transition-all"
+                      style={{
+                        width: `${100 - pctRemaining}%`,
+                        background: pctRemaining < 10 ? "#FF4444" : pctRemaining < 30 ? "#f0c040" : "#39FF14",
+                      }} />
                   </div>
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-xs text-white/40 mb-1">Gains générés</p>
-                    <p className="text-xl font-bold font-mono text-[#39FF14]">€{(periodStats?.earnings || 0).toFixed(2)}</p>
-                  </div>
-                  {(periodStats?.payment_model === "clicks" || periodStats?.payment_model === "both") && (
-                    <div className="bg-white/5 rounded-lg p-3">
-                      <p className="text-xs text-white/40 mb-1">Clics</p>
-                      <p className="text-xl font-bold font-mono text-[#FF007F]">{fmt(periodStats?.clicks || 0)}</p>
-                    </div>
-                  )}
-                </div>
+                )}
+                <p className="text-[10px] text-white/30">↻ Le compteur "Généré ce mois" se réinitialise automatiquement chaque 1er du mois</p>
               </div>
             );
           })()}
 
-          {/* KPI row */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            {[
-              { label: "Vues totales", value: fmt(totalViews), color: "text-white" },
-              { label: "Likes", value: fmt(totalLikes), color: "text-[#FF007F]" },
-              { label: "Commentaires", value: fmt(totalComments), color: "text-white/70" },
-              { label: "Engagement", value: `${engagementRate}%`, color: "text-[#39FF14]" },
-              { label: "Moy. vues/vidéo", value: fmt(avgViews), color: "text-[#00E5FF]" },
-              { label: "Gains estimés", value: `€${totalEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
-            ].map((kpi) => (
-              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
-                <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+          {/* KPI row — synchronisé avec la période du graphique ci-dessous */}
+          {(() => {
+            // Filtre les vidéos par période (jour de publication)
+            const days = parseInt(viewsPeriod) || 30;
+            const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+            const periodVideos = (allVideos || []).filter(v => {
+              if (!v.published_at) return false;
+              return new Date(v.published_at) >= cutoff;
+            });
+            const pViews = periodVideos.reduce((s, v) => s + (v.views || 0), 0);
+            const pLikes = periodVideos.reduce((s, v) => s + (v.likes || 0), 0);
+            const pComments = periodVideos.reduce((s, v) => s + (v.comments || 0), 0);
+            const pEarnings = periodVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+            const pEngagement = pViews > 0 ? ((pLikes + pComments) / pViews * 100).toFixed(1) : "0.0";
+            const pAvgViews = periodVideos.length > 0 ? Math.round(pViews / periodVideos.length) : 0;
+            const periodLabels = { "1": "24h", "7": "7j", "30": "30j", "90": "90j", "365": "1 an" };
+            const lbl = periodLabels[viewsPeriod] || "30j";
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                {[
+                  { label: `Vues (${lbl})`, value: fmt(pViews), color: "text-white" },
+                  { label: `Likes (${lbl})`, value: fmt(pLikes), color: "text-[#FF007F]" },
+                  { label: `Commentaires (${lbl})`, value: fmt(pComments), color: "text-white/70" },
+                  { label: `Engagement (${lbl})`, value: `${pEngagement}%`, color: "text-[#39FF14]" },
+                  { label: `Moy. vues/vidéo (${lbl})`, value: fmt(pAvgViews), color: "text-[#00E5FF]" },
+                  { label: `Gains générés (${lbl})`, value: `€${pEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
+                ].map((kpi) => (
+                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+                    <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
+                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            );
+          })()}
 
           {/* Views timeline chart */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
@@ -2061,7 +2080,7 @@ function CampaignDashboard({ campaigns }) {
               <div className="flex items-center gap-2">
                 {/* Period selector + flèches */}
                 {(() => {
-                  const PL = [["7","7j"],["30","30j"],["90","90j"],["365","1an"]];
+                  const PL = [["1","24h"],["7","7j"],["30","30j"],["90","90j"],["365","1an"]];
                   const idx = PL.findIndex(([v]) => v === viewsPeriod);
                   const go = (v) => { setViewsPeriod(v); fetchViewsTimeline(v); };
                   return (
