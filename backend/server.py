@@ -479,12 +479,14 @@ manager = ConnectionManager()
 # ================= AUTH HELPERS =================
 
 async def get_current_user(request: Request) -> dict:
-    session_token = request.cookies.get("session_token")
+    # PRIORITE Bearer token > cookies (permet admin impersonate sans ecraser session admin cookie)
+    session_token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        session_token = auth_header[7:]
     if not session_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            session_token = auth_header[7:]
-    
+        session_token = request.cookies.get("session_token")
+
     if not session_token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
