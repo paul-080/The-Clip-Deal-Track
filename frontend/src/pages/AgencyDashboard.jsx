@@ -1666,6 +1666,8 @@ function CampaignDashboard({ campaigns }) {
                   rpm: campaign.rpm || 0,
                   max_clippers: campaign.max_clippers || "",
                   platforms: campaign.platforms || [],
+                  max_strikes: campaign.max_strikes ?? 3,
+                  strike_days: campaign.strike_days ?? 3,
                 });
                 setDeleteConfirmText("");
               }
@@ -2970,6 +2972,34 @@ function CampaignDashboard({ campaigns }) {
                 placeholder="Illimité"
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
               />
+            </div>
+
+            {/* Strikes : nb max + jours d'inactivite */}
+            <div className="bg-white/3 border border-white/10 rounded-xl p-4 space-y-3">
+              <h4 className="text-sm font-semibold text-white">Système de strikes</h4>
+              <p className="text-xs text-white/40">Quand un clippeur ne poste pas de vidéo pendant X jours, il reçoit un strike. Au max de strikes, une demande d'expulsion arrive dans Candidatures.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs text-white/50 font-medium">Strikes max avant expulsion</label>
+                  <input
+                    type="number" min="1" max="10"
+                    value={settingsForm.max_strikes ?? 3}
+                    onChange={e => setSettingsForm(p => ({ ...p, max_strikes: parseInt(e.target.value) || 3 }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/25"
+                  />
+                  <p className="text-[10px] text-white/30">Défaut : 3</p>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-white/50 font-medium">Jours d'inactivité avant strike</label>
+                  <input
+                    type="number" min="1" max="30"
+                    value={settingsForm.strike_days ?? 3}
+                    onChange={e => setSettingsForm(p => ({ ...p, strike_days: parseInt(e.target.value) || 3 }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-white/25"
+                  />
+                  <p className="text-[10px] text-white/30">Défaut : 3 jours</p>
+                </div>
+              </div>
             </div>
 
             {/* Plateformes acceptées (modifiable) */}

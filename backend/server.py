@@ -10532,6 +10532,8 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
         "name", "description", "destination_url", "rate_per_click",
         "click_window_hours", "application_form_enabled", "application_questions",
         "platforms", "max_clippers", "min_view_payout", "max_view_payout",
+        "max_strikes", "strike_days",  # Modifiables : combien de strikes max + jours d'inactivite avant strike
+        "click_billing_mode",
     }
     RPM_EDITABLE_WHEN_EXHAUSTED = {"rpm"}
 
