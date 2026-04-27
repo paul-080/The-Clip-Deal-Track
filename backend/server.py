@@ -1865,6 +1865,81 @@ async def get_clippers_global_stats_batch(user_ids: list) -> dict:
             out[uid] = {"total_views": 0, "video_count": 0}
     return out
 
+@api_router.get("/campaigns/{campaign_id}/expulsion-requests")
+async def get_expulsion_requests(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Get pending expulsion requests pour cette campagne (agency/manager only)."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    await _assert_campaign_authority(user, campaign)
+    requests_list = await db.expulsion_requests.find(
+        {"campaign_id": campaign_id, "status": "pending"},
+        {"_id": 0}
+    ).to_list(100)
+    # Enrich with user info
+    user_ids = [r["user_id"] for r in requests_list]
+    user_docs = await db.users.find(
+        {"user_id": {"$in": user_ids}},
+        {"_id": 0, "user_id": 1, "display_name": 1, "name": 1, "email": 1, "picture": 1}
+    ).to_list(len(user_ids))
+    umap = {u["user_id"]: u for u in user_docs}
+    for r in requests_list:
+        r["user_info"] = umap.get(r["user_id"], {})
+    return {"expulsion_requests": requests_list}
+
+
+@api_router.post("/campaigns/{campaign_id}/expulsion-requests/{expulsion_id}/decide")
+async def decide_expulsion(campaign_id: str, expulsion_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Approve (expulse le clipper) ou reject (le maintient avec ses strikes) une demande d'expulsion."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    await _assert_campaign_authority(user, campaign)
+    decision = (body.get("decision") or "").lower().strip()
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision = 'approve' ou 'reject'")
+    req = await db.expulsion_requests.find_one({"expulsion_id": expulsion_id, "campaign_id": campaign_id})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande introuvable")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Demande deja traitee")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if decision == "approve":
+        # Expulse le clipper de la campagne (suspend)
+        await db.campaign_members.update_one(
+            {"campaign_id": campaign_id, "user_id": req["user_id"]},
+            {"$set": {"status": "suspended", "suspended_at": now_iso}}
+        )
+        await db.expulsion_requests.update_one(
+            {"expulsion_id": expulsion_id},
+            {"$set": {"status": "approved", "decided_at": now_iso, "decided_by": user["user_id"]}}
+        )
+        # Notify clipper
+        await manager.send_to_user(req["user_id"], {
+            "type": "expulsion_approved",
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.get("name", ""),
+        })
+        return {"message": "Clippeur expulse de la campagne", "status": "approved"}
+    else:
+        # Reject : on garde le clipper, on reset ses strikes pour lui donner une 2eme chance
+        await db.campaign_members.update_one(
+            {"campaign_id": campaign_id, "user_id": req["user_id"]},
+            {"$set": {"strikes": 0}}
+        )
+        await db.expulsion_requests.update_one(
+            {"expulsion_id": expulsion_id},
+            {"$set": {"status": "rejected", "decided_at": now_iso, "decided_by": user["user_id"]}}
+        )
+        await manager.send_to_user(req["user_id"], {
+            "type": "expulsion_rejected",
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.get("name", ""),
+            "message": "L'agence vous donne une 2eme chance, vos strikes ont ete remis a zero",
+        })
+        return {"message": "Demande refusee, strikes du clipper remis a zero", "status": "rejected"}
+
+
 @api_router.get("/campaigns/{campaign_id}/pending-members")
 async def get_pending_members(campaign_id: str, user: dict = Depends(get_current_user)):
     """Get pending clippers who applied to this campaign (agency/manager only)"""
@@ -10907,11 +10982,24 @@ async def check_and_issue_strikes():
                 new_strikes = (updated_member or {}).get("strikes", member.get("strikes", 0) + 1)
 
                 if new_strikes >= max_strikes:
-                    await db.campaign_members.update_one(
-                        {"member_id": member["member_id"]},
-                        {"$set": {"status": "suspended"}}
+                    # Au lieu de suspendre auto, on cree une demande d'expulsion en attente
+                    # que l'agence valide/refuse depuis l'onglet Candidatures
+                    expulsion_id = f"expel_{campaign_id}_{member['user_id']}"
+                    expulsion_doc = {
+                        "expulsion_id": expulsion_id,
+                        "campaign_id": campaign_id,
+                        "user_id": member["user_id"],
+                        "reason": f"Max strikes atteint ({new_strikes}/{max_strikes}) - inactivite {days_inactive}j",
+                        "strikes_at_request": new_strikes,
+                        "status": "pending",  # pending | approved | rejected
+                        "created_at": now.isoformat(),
+                    }
+                    await db.expulsion_requests.update_one(
+                        {"expulsion_id": expulsion_id, "status": "pending"},
+                        {"$setOnInsert": expulsion_doc},
+                        upsert=True
                     )
-                    logger.info(f"Clipper {member['user_id']} suspended in campaign {campaign_id}")
+                    logger.info(f"Clipper {member['user_id']} - expulsion request created for campaign {campaign_id} (waiting agency approval)")
 
                 # Notify clipper via WebSocket
                 await manager.send_to_user(member["user_id"], {

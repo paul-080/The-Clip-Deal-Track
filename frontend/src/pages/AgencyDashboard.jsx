@@ -1056,6 +1056,8 @@ function CampaignDashboard({ campaigns }) {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
   const [pendingMembers, setPendingMembers] = useState([]);
+  const [expulsionRequests, setExpulsionRequests] = useState([]);
+  const [decidingExpulsion, setDecidingExpulsion] = useState(null);
   const [processingMember, setProcessingMember] = useState(null);
   const [kickingMember, setKickingMember] = useState(null);
   const [strikingMember, setStrikingMember] = useState(null);
@@ -1455,6 +1457,11 @@ function CampaignDashboard({ campaigns }) {
 
   const fetchPendingMembers = async () => {
     try {
+      // En meme temps : fetch expulsion requests
+      try {
+        const er = await fetch(`${API}/campaigns/${campaignId}/expulsion-requests`, { credentials: "include" });
+        if (er.ok) { const ed = await er.json(); setExpulsionRequests(ed.expulsion_requests || []); }
+      } catch {}
       const res = await fetch(`${API}/campaigns/${campaignId}/pending-members`, { credentials: "include" });
       if (res.ok) {
         const data = await res.json();
@@ -1639,7 +1646,7 @@ function CampaignDashboard({ campaigns }) {
         {[
           { id: "overview", label: "Vue d'ensemble" },
           { id: "videos", label: `Vidéos (${allVideos.length})`, dot: videosLoading },
-          { id: "candidatures", label: "Candidatures", badge: pendingMembers.length },
+          { id: "candidatures", label: "Candidatures", badge: pendingMembers.length + expulsionRequests.length },
           ...(campaign.payment_model === "clicks" ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
           { id: "settings", label: "⚙️ Paramètres" },
@@ -2489,7 +2496,66 @@ function CampaignDashboard({ campaigns }) {
 
       {/* ═══════════ CANDIDATURES TAB ═══════════ */}
       {activeTab === "candidatures" && (
-        <div className="space-y-3">
+        <div className="space-y-5">
+          {/* === DEMANDES D'EXPULSION === */}
+          {expulsionRequests.length > 0 && (
+            <div className="bg-red-500/5 border border-red-500/20 rounded-xl p-4">
+              <h3 className="text-red-400 font-semibold text-base mb-3 flex items-center gap-2">
+                ⚠️ Clippeurs à expulser ({expulsionRequests.length})
+              </h3>
+              <div className="space-y-2">
+                {expulsionRequests.map(r => {
+                  const u = r.user_info || {};
+                  const isDeciding = decidingExpulsion === r.expulsion_id;
+                  const decide = async (decision) => {
+                    setDecidingExpulsion(r.expulsion_id);
+                    try {
+                      const res = await fetch(`${API}/campaigns/${campaignId}/expulsion-requests/${r.expulsion_id}/decide`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ decision }),
+                      });
+                      if (res.ok) {
+                        const d = await res.json();
+                        toast.success(d.message);
+                        setExpulsionRequests(prev => prev.filter(x => x.expulsion_id !== r.expulsion_id));
+                        if (decision === "approve") fetchCampaign();
+                      } else {
+                        const e = await res.json();
+                        toast.error(e.detail || "Erreur");
+                      }
+                    } catch (e) { toast.error(e.message); }
+                    finally { setDecidingExpulsion(null); }
+                  };
+                  return (
+                    <div key={r.expulsion_id} className="bg-[#121212] border border-red-500/30 rounded-lg p-3 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full bg-red-500/20 flex items-center justify-center font-bold text-red-400 text-sm flex-shrink-0">
+                        {(u.display_name || u.name || "?")[0].toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium">{u.display_name || u.name || "?"}</p>
+                        <p className="text-white/50 text-xs">{r.reason}</p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <button onClick={() => decide("reject")}
+                          disabled={isDeciding}
+                          className="px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/15 text-white/70 text-xs font-medium border border-white/10 transition disabled:opacity-50">
+                          Garder (2e chance)
+                        </button>
+                        <button onClick={() => decide("approve")}
+                          disabled={isDeciding}
+                          className="px-3 py-1.5 rounded-md bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-bold border border-red-500/40 transition disabled:opacity-50">
+                          {isDeciding ? "..." : "Expulser"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between">
             <h3 className="text-white font-semibold text-lg">
               Candidatures en attente
