@@ -5962,14 +5962,6 @@ async def _cleanup_dirty_usernames(scope_query: dict = None) -> dict:
     return {"fixed": fixed, "samples": samples}
 
 
-@api_router.post("/admin/cleanup-account-usernames")
-async def admin_cleanup_account_usernames(_: bool = Depends(verify_admin_code)):
-    """Migration : nettoie TOUS les comptes du système qui ont une URL comme username.
-    Re-vérifie chaque compte fixé."""
-    result = await _cleanup_dirty_usernames()
-    return result
-
-
 @api_router.post("/campaigns/{campaign_id}/cleanup-and-rescrape")
 async def cleanup_and_rescrape(campaign_id: str, user: dict = Depends(get_current_user)):
     """Pour une campagne : nettoie les usernames sales + re-scrape tout.
