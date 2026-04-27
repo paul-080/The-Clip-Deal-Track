@@ -710,9 +710,9 @@ function ProspectsTab() {
         body: JSON.stringify(newClipper),
       });
       if (res.ok) {
-        toast.success("Compte ajouté ✓");
-        setNewClipper({ discord_username: "", platform: "tiktok", username: "" });
-        setAddingClipper(null);
+        toast.success(`✓ ${newClipper.platform} @${newClipper.username} ajouté pour ${newClipper.discord_username}`);
+        // Garde le discord_username pour permettre d'ajouter d'autres comptes au meme clipper rapidement
+        setNewClipper(prev => ({ discord_username: prev.discord_username, platform: prev.platform === "tiktok" ? "instagram" : prev.platform === "instagram" ? "youtube" : "tiktok", username: "" }));
         refresh();
       } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
     } catch (e) { toast.error(e.message); }
@@ -820,22 +820,25 @@ function ProspectsTab() {
               {/* Bouton ajouter clippeur */}
               {addingClipper === p.campaign_id ? (
                 <div className="bg-white/3 rounded-lg p-3 space-y-2 border border-white/10">
+                  <p className="text-[11px] text-white/50">Astuce : après chaque ajout, le pseudo Discord reste — tu peux ajouter plusieurs comptes (TikTok + Insta + YouTube) pour un même clippeur.</p>
                   <div className="grid grid-cols-3 gap-2">
-                    <input value={newClipper.discord_username} onChange={e => setNewClipper(prev => ({...prev, discord_username: e.target.value}))} placeholder="Pseudo Discord" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                    <input value={newClipper.discord_username} onChange={e => setNewClipper(prev => ({...prev, discord_username: e.target.value}))} placeholder="Pseudo Discord" className="bg-white/5 border border-[#39FF14]/30 rounded-lg px-3 py-2 text-white text-sm" />
                     <select value={newClipper.platform} onChange={e => setNewClipper(prev => ({...prev, platform: e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm">
                       <option value="tiktok">TikTok</option>
                       <option value="instagram">Instagram</option>
                       <option value="youtube">YouTube</option>
                     </select>
-                    <input value={newClipper.username} onChange={e => setNewClipper(prev => ({...prev, username: e.target.value}))} placeholder="Username (sans @)" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                    <input value={newClipper.username} onChange={e => setNewClipper(prev => ({...prev, username: e.target.value}))}
+                      onKeyDown={e => { if (e.key === "Enter" && newClipper.username) addClipper(p.campaign_id); }}
+                      placeholder="Username (sans @)" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => addClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">Ajouter</button>
-                    <button onClick={() => setAddingClipper(null)} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Annuler</button>
+                    <button onClick={() => addClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">Ajouter ce compte</button>
+                    <button onClick={() => { setAddingClipper(null); setNewClipper({ discord_username: "", platform: "tiktok", username: "" }); }} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Fermer</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter un compte clippeur (Discord)</button>
+                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter des comptes clippeur (Discord)</button>
               )}
             </div>
           );
