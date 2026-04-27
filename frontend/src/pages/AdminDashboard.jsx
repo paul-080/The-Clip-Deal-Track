@@ -645,6 +645,144 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 
 // ─── ApiStatusTab ─────────────────────────────────────────────────────────────
 
+// ─── Capacite & Couts ─────────────────────────────────────────────
+function UsageMonitorTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    adminFetch("/admin/usage-monitor")
+      .then(setData)
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const barColor = (pct) => pct < 60 ? "#39FF14" : pct < 80 ? "#FFB300" : "#FF2A2A";
+  const Bar = ({ pct, color }) => (
+    <div className="w-full h-2.5 bg-white/5 rounded-full overflow-hidden">
+      <div className="h-full transition-all" style={{ width: `${Math.min(100, pct || 0)}%`, background: color || barColor(pct) }} />
+    </div>
+  );
+
+  if (loading && !data) {
+    return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" /></div>;
+  }
+  if (!data) return <div className="text-white/40 p-8">Aucune donnée. <button onClick={refresh} className="text-[#00E5FF] underline">Réessayer</button></div>;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-white">Capacité & Coûts</h2>
+          <p className="text-sm text-white/50 mt-1">Utilisation actuelle des APIs et recommandations d'upgrade</p>
+        </div>
+        <button onClick={refresh} disabled={loading}
+          className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition disabled:opacity-50">
+          {loading ? "..." : "Actualiser"}
+        </button>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
+          <p className="text-xs text-white/40 mb-1">Clippeurs actifs</p>
+          <p className="text-2xl font-mono font-bold text-white">{data.clippers_active}</p>
+        </div>
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
+          <p className="text-xs text-white/40 mb-1">Campagnes actives</p>
+          <p className="text-2xl font-mono font-bold text-[#FF007F]">{data.campaigns_active}</p>
+        </div>
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
+          <p className="text-xs text-white/40 mb-1">Vidéos trackées (total)</p>
+          <p className="text-2xl font-mono font-bold text-[#00E5FF]">{(data.total_videos_tracked || 0).toLocaleString("fr-FR")}</p>
+        </div>
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
+          <p className="text-xs text-white/40 mb-1">Coût total/mois (estim.)</p>
+          <p className="text-2xl font-mono font-bold text-[#39FF14]">{data.total_monthly_cost_eur || 0}€</p>
+        </div>
+      </div>
+
+      {/* Recommendations */}
+      {data.recommendations && data.recommendations.length > 0 && (
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+          <p className="text-sm font-medium text-white mb-3">Recommandations</p>
+          <div className="space-y-2">
+            {data.recommendations.map((r, i) => (
+              <div key={i} className={`px-3 py-2 rounded-lg text-sm ${r.startsWith("✅") ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-amber-500/10 text-amber-400 border border-amber-500/20"}`}>
+                {r}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Service cards */}
+      <div className="space-y-3">
+        {Object.entries(data.services || {}).map(([key, svc]) => {
+          const pct = typeof svc.percent_used === "number" ? svc.percent_used : 0;
+          const isError = svc.status === "error";
+          const isNotConfig = svc.status === "not_configured";
+          return (
+            <div key={key} className="bg-[#121212] border border-white/10 rounded-xl p-5">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <p className="text-white font-medium">{svc.name}</p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs text-white/40">{svc.cost_per_month_eur || 0}€/mois</span>
+                    {isError && <span className="text-xs text-red-400">⚠ erreur</span>}
+                    {isNotConfig && <span className="text-xs text-amber-400">non configuré</span>}
+                    {!isError && !isNotConfig && <span className="text-xs text-green-400">✓ OK</span>}
+                  </div>
+                </div>
+                {typeof svc.percent_used === "number" && (
+                  <span className="text-xl font-mono font-bold" style={{ color: barColor(pct) }}>{pct}%</span>
+                )}
+              </div>
+              {typeof svc.percent_used === "number" && <Bar pct={pct} />}
+
+              {/* Détails par service */}
+              <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                {svc.capacity_clippers && (
+                  <div><span className="text-white/40">Capacité max :</span> <span className="text-white font-mono">{svc.capacity_clippers} clippeurs</span></div>
+                )}
+                {svc.bandwidth_estimated_gb !== undefined && (
+                  <div><span className="text-white/40">Bandwidth utilisée :</span> <span className="text-white font-mono">{svc.bandwidth_estimated_gb} / {svc.bandwidth_total_gb} GB</span></div>
+                )}
+                {svc.monthly_usage_usd !== undefined && (
+                  <div><span className="text-white/40">Utilisation Apify :</span> <span className="text-white font-mono">${svc.monthly_usage_usd} / ${svc.monthly_credit_usd}</span></div>
+                )}
+                {svc.quota_used_estimated !== undefined && (
+                  <div><span className="text-white/40">Quota utilisé/jour :</span> <span className="text-white font-mono">{svc.quota_used_estimated} / {svc.quota_per_day}</span></div>
+                )}
+                {svc.uptime_hours !== undefined && (
+                  <div><span className="text-white/40">Uptime :</span> <span className="text-white font-mono">{svc.uptime_hours}h</span></div>
+                )}
+                {svc.concurrent_now !== undefined && (
+                  <div><span className="text-white/40">Concurrent :</span> <span className="text-white font-mono">{svc.concurrent_now} / {svc.concurrent_max}</span></div>
+                )}
+                {svc.proxy && (
+                  <div><span className="text-white/40">Proxy :</span> <span className="text-white font-mono">{svc.proxy}</span></div>
+                )}
+                {svc.ip_count && (
+                  <div><span className="text-white/40">IPs :</span> <span className="text-white font-mono">{svc.ip_count}</span></div>
+                )}
+                {svc.error && (
+                  <div className="col-span-full"><span className="text-red-400 text-xs">{svc.error}</span></div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-xs text-white/30 text-center">Mise à jour : {new Date(data.timestamp).toLocaleString("fr-FR")}</p>
+    </div>
+  );
+}
+
+
 function ApiStatusTab() {
   const [status, setStatus]   = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1822,6 +1960,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "preview-manager", label: "Preview Manager", icon: Briefcase, preview: true },
     { id: "preview-client", label: "Preview Client", icon: UserCircle, preview: true },
     { id: "api-status", label: "Connexions API", icon: Plug },
+    { id: "usage-monitor", label: "Capacité & Coûts", icon: TrendingUp },
     { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
   ];
@@ -1915,6 +2054,7 @@ export default function AdminDashboard() {
     if (active === "posts") return <PostsTab />;
     if (active === "campaigns") return <AdminCampaignsTab />;
     if (active === "api-status") return <ApiStatusTab />;
+    if (active === "usage-monitor") return <UsageMonitorTab />;
     if (active === "settings") return <SettingsTab />;
     if (active === "support") return <SupportTab />;
     if (previewRoles[active]) {

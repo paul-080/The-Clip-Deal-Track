@@ -9428,6 +9428,149 @@ async def admin_api_usage(request: Request, _: bool = Depends(verify_admin_code)
     return {"services": result, "fetched_at": now.isoformat()}
 
 
+@api_router.get("/admin/usage-monitor")
+async def admin_usage_monitor(request: Request, _: bool = Depends(verify_admin_code)):
+    """Suivi capacite et utilisation des APIs - dis a l'agence quand upgrader."""
+    import time
+    result = {"timestamp": datetime.now(timezone.utc).isoformat(), "services": {}, "recommendations": []}
+
+    # Compte les clippeurs actifs (estime la conso)
+    try:
+        active_clippers = await db.campaign_members.count_documents({"role": "clipper", "status": "active"})
+        active_campaigns = await db.campaigns.count_documents({"status": "active"})
+        total_videos = await db.tracked_videos.count_documents({})
+        result["clippers_active"] = active_clippers
+        result["campaigns_active"] = active_campaigns
+        result["total_videos_tracked"] = total_videos
+    except Exception as e:
+        logger.warning(f"usage-monitor counts error: {e}")
+        result["clippers_active"] = 0
+
+    # === ClipScraper VPS ===
+    cs_status = {"name": "Scraper VPS Hostinger", "cost_per_month_eur": 5}
+    if CLIP_SCRAPER_URL:
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{CLIP_SCRAPER_URL}/health")
+            if r.status_code == 200:
+                d = r.json()
+                cs_status["status"] = "ok"
+                cs_status["uptime_hours"] = round(d.get("uptime_seconds", 0) / 3600, 1)
+                cs_status["concurrent_max"] = d.get("concurrent_max", 4)
+                cs_status["concurrent_now"] = d.get("concurrent_active", 0)
+                cs_status["proxy"] = d.get("proxy", "unknown")
+                # Capacite : ~700 clippeurs sur KVM 2 (8GB RAM)
+                cs_status["capacity_clippers"] = 700
+                cs_status["percent_used"] = min(100, round((result.get("clippers_active", 0) / 700) * 100))
+            else:
+                cs_status["status"] = "error"
+        except Exception as e:
+            cs_status["status"] = "error"
+            cs_status["error"] = str(e)[:200]
+    else:
+        cs_status["status"] = "not_configured"
+    result["services"]["scraper_vps"] = cs_status
+
+    # === Webshare proxy (estime via bandwidth tracker - sans appel API direct on a pas) ===
+    ws_status = {"name": "Webshare proxy 20 IPs", "cost_per_month_eur": 11, "ip_count": 20}
+    # Estimation : ~3 scrapes/clippeur/jour * 1MB = 3MB/jour/clippeur. 30j -> 90MB/clippeur/mois
+    estimated_gb_used = (result.get("clippers_active", 0) * 90) / 1024
+    ws_status["bandwidth_estimated_gb"] = round(estimated_gb_used, 1)
+    ws_status["bandwidth_total_gb"] = 250
+    ws_status["percent_used"] = min(100, round((estimated_gb_used / 250) * 100))
+    # Capacite IPs : ~30 req/IP/jour safe -> 20 IPs * 30 = 600 req/jour = 200 clippeurs (3 scrapes/jour)
+    ws_status["capacity_clippers"] = 200
+    ws_status["percent_clippers"] = min(100, round((result.get("clippers_active", 0) / 200) * 100))
+    ws_status["status"] = "ok"
+    result["services"]["webshare"] = ws_status
+
+    # === Apify (backup, devrait etre minimal) ===
+    apify_status = {"name": "Apify (backup uniquement)", "cost_per_month_eur": 0, "free_credit_eur": 5}
+    if APIFY_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=8) as c:
+                r = await c.get("https://api.apify.com/v2/users/me", params={"token": APIFY_TOKEN})
+                r2 = await c.get("https://api.apify.com/v2/users/me/usage/monthly", params={"token": APIFY_TOKEN})
+            if r.status_code == 200 and r2.status_code == 200:
+                d2 = r2.json().get("data", {})
+                # Compute total monthly cost
+                total_cost = 0
+                for k, v in (d2.get("monthlyServiceUsage") or {}).items():
+                    total_cost += v.get("baseAmountUsd", 0)
+                apify_status["status"] = "ok"
+                apify_status["monthly_usage_usd"] = round(total_cost, 4)
+                apify_status["monthly_credit_usd"] = 5
+                apify_status["percent_used"] = min(100, round((total_cost / 5) * 100))
+                if total_cost > 4:
+                    result["recommendations"].append(
+                        f"Apify : tu as utilise ${total_cost:.2f}/$5 gratuit ce mois. "
+                        "Trop d'appels Apify -> verifie pourquoi le scraper VPS ne prend pas le relais."
+                    )
+            else:
+                apify_status["status"] = "error"
+        except Exception as e:
+            apify_status["status"] = "error"
+            apify_status["error"] = str(e)[:200]
+    else:
+        apify_status["status"] = "not_configured"
+    result["services"]["apify"] = apify_status
+
+    # === YouTube API (gratuit 10k/jour) ===
+    yt_status = {"name": "YouTube Data API (gratuit)", "cost_per_month_eur": 0,
+                 "quota_per_day": 10000, "quota_used_estimated": result.get("clippers_active", 0) * 3,
+                 "percent_used": min(100, round((result.get("clippers_active", 0) * 3 / 10000) * 100))}
+    yt_status["status"] = "ok" if YOUTUBE_API_KEY else "not_configured"
+    result["services"]["youtube_api"] = yt_status
+
+    # === Resend ===
+    resend_key = os.environ.get('RESEND_API_KEY', '').strip()
+    resend_status = {"name": "Resend (emails)", "cost_per_month_eur": 0,
+                     "limit_per_day": 100, "limit_per_month": 3000}
+    if resend_key:
+        resend_status["status"] = "ok"
+        # Estimation : 1 email/nouveau signup
+        resend_status["percent_used"] = "?"
+    else:
+        resend_status["status"] = "not_configured"
+    result["services"]["resend"] = resend_status
+
+    # === Railway (backend hosting) ===
+    result["services"]["railway"] = {
+        "name": "Railway (backend + frontend + MongoDB)",
+        "cost_per_month_eur": 10,  # estimation Hobby
+        "status": "ok",
+        "capacity_clippers": 200,  # Hobby plan ~200 clippeurs
+        "percent_used": min(100, round((result.get("clippers_active", 0) / 200) * 100)),
+    }
+
+    # === RECOMMANDATIONS ===
+    nb_clippers = result.get("clippers_active", 0)
+    if nb_clippers >= 200:
+        result["recommendations"].append(
+            f"⚠️ {nb_clippers} clippeurs actifs - tu approches la limite Webshare 20 IPs (200 max). "
+            "Upgrade a 50 IPs ($30/mois) sur webshare.io."
+        )
+    if nb_clippers >= 180:
+        result["recommendations"].append(
+            f"⚠️ Railway Hobby plan limite ~200 clippeurs. "
+            "Passe en Pro (20€/mois) sur railway.app pour eviter les ralentissements."
+        )
+    if nb_clippers >= 600:
+        result["recommendations"].append(
+            f"⚠️ Tu approches la limite VPS Hostinger KVM 2 (700 clippeurs). "
+            "Ajoute un 2eme VPS (5€/mois) ou upgrade vers KVM 4 (15€/mois)."
+        )
+    if not result["recommendations"]:
+        result["recommendations"].append(f"✅ Tout est OK pour {nb_clippers} clippeurs actifs - aucune action necessaire.")
+
+    # Cout total mensuel estime
+    result["total_monthly_cost_eur"] = sum(
+        s.get("cost_per_month_eur", 0) for s in result["services"].values()
+    )
+
+    return result
+
+
 @api_router.post("/admin/test-fetch-video")
 async def admin_test_fetch_video(request: Request, body: dict, _: bool = Depends(verify_admin_code)):
     """Diagnostic : test fetch_single_video_by_url avec une URL et retourne le résultat brut + détection plateforme."""
