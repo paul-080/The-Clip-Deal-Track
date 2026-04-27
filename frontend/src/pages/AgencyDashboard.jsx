@@ -590,11 +590,11 @@ function CreateCampaign({ onCreated }) {
       toast.error("Veuillez remplir le nom de la campagne");
       return;
     }
-    if (formData.payment_model === "views" && !formData.rpm) {
+    if ((formData.payment_model === "views" || formData.payment_model === "both") && !formData.rpm) {
       toast.error("Veuillez renseigner le RPM (€ par 1000 vues)");
       return;
     }
-    if (formData.payment_model === "clicks" && (!formData.rate_per_click || !formData.destination_url.trim())) {
+    if ((formData.payment_model === "clicks" || formData.payment_model === "both") && (!formData.rate_per_click || !formData.destination_url.trim())) {
       toast.error("Veuillez renseigner le prix pour 1 000 clics et l'URL de destination");
       return;
     }
@@ -603,8 +603,8 @@ function CreateCampaign({ onCreated }) {
     try {
       const payload = {
         ...formData,
-        rpm: formData.payment_model === "views" ? parseFloat(formData.rpm) || 0 : 0,
-        rate_per_click: formData.payment_model === "clicks" ? parseFloat(formData.rate_per_click) || 0 : 0,
+        rpm: (formData.payment_model === "views" || formData.payment_model === "both") ? parseFloat(formData.rpm) || 0 : 0,
+        rate_per_click: (formData.payment_model === "clicks" || formData.payment_model === "both") ? parseFloat(formData.rate_per_click) || 0 : 0,
         destination_url: formData.destination_url.trim() || null,
         budget_total: formData.budget_unlimited ? null : parseFloat(formData.budget_total) || null,
         min_view_payout: parseInt(formData.min_view_payout) || 0,
@@ -735,8 +735,9 @@ function CreateCampaign({ onCreated }) {
             <label className="block text-sm text-white/70 mb-3">Modèle de rémunération *</label>
             <div className="flex gap-2">
               {[
-                { id: "views", label: "👁 Au nombre de vues", desc: "Payé selon les vues générées" },
-                { id: "clicks", label: "🔗 Au clic (lien bio)", desc: "Lien unique dans la bio — payé par clic" },
+                { id: "views", label: "👁 Vues", desc: "Payé selon les vues générées" },
+                { id: "clicks", label: "🔗 Clics", desc: "Lien dans la bio — payé par clic" },
+                { id: "both", label: "👁🔗 Vues + Clics", desc: "Payé pour les vues ET les clics combinés" },
               ].map(m => (
                 <button
                   key={m.id}
@@ -756,7 +757,7 @@ function CreateCampaign({ onCreated }) {
           </div>
 
           {/* Champs spécifiques au modèle VUES */}
-          {formData.payment_model === "views" && (
+          {(formData.payment_model === "views" || formData.payment_model === "both") && (
             <>
               <div>
                 <label className="block text-sm text-white/70 mb-2">RPM (€ par 1000 vues) *</label>
@@ -784,7 +785,7 @@ function CreateCampaign({ onCreated }) {
           )}
 
           {/* Champs spécifiques au modèle CLICS */}
-          {formData.payment_model === "clicks" && (
+          {(formData.payment_model === "clicks" || formData.payment_model === "both") && (
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>

@@ -1786,7 +1786,7 @@ async def generate_my_click_link(campaign_id: str, user: dict = Depends(get_curr
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
-    if campaign.get("payment_model") != "clicks":
+    if campaign.get("payment_model") not in ("clicks", "both"):
         raise HTTPException(status_code=400, detail="Cette campagne n'est pas au clic")
     # Must be an active member
     membership = await db.campaign_members.find_one({
@@ -2026,7 +2026,7 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
     )
 
     # Auto-generate a click tracking link if this is a click-based campaign
-    if campaign.get("payment_model") == "clicks":
+    if campaign.get("payment_model") in ("clicks", "both"):
         existing_link = await db.click_links.find_one({
             "campaign_id": campaign_id,
             "clipper_id": member["user_id"],
@@ -5387,7 +5387,7 @@ async def run_video_tracking():
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
         rpm = campaign.get("rpm", 0)
-        is_clicks_campaign = campaign.get("payment_model") == "clicks"
+        is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
         # Get all assignments for this campaign
         assignments = await db.campaign_social_accounts.find(
             {"campaign_id": campaign_id}, {"_id": 0}
@@ -6399,10 +6399,10 @@ async def get_campaign_period_stats(
     clicks_in_period = 0
     unique_clicks_in_period = 0
 
-    if payment_model == "views":
-        earnings_in_period = round((views_in_period / 1000) * rpm, 2)
-    elif payment_model == "clicks":
-        # Aggregate clicks from click_events in the window
+    # SI payment_model = "both", on cumule les 2 sources de gains (views + clicks)
+    if payment_model in ("views", "both"):
+        earnings_in_period += round((views_in_period / 1000) * rpm, 2)
+    if payment_model in ("clicks", "both"):
         click_match = {
             "campaign_id": campaign_id,
             "clicked_at": {"$gte": start.isoformat(), "$lte": end.isoformat()},
@@ -6411,7 +6411,8 @@ async def get_campaign_period_stats(
         unique_clicks_in_period = await db.click_events.count_documents({**click_match, "is_unique": True})
         billing_mode = campaign.get("click_billing_mode", "all")
         billable = unique_clicks_in_period if billing_mode != "all" else clicks_in_period
-        earnings_in_period = round((billable / 1000) * rate_per_click, 2)
+        earnings_in_period += round((billable / 1000) * rate_per_click, 2)
+    earnings_in_period = round(earnings_in_period, 2)
 
     return {
         "period": period,
@@ -6497,10 +6498,9 @@ async def get_my_period_stats(
     clicks_in_period = 0
     unique_clicks_in_period = 0
 
-    if payment_model == "views":
-        earnings_in_period = round((views_in_period / 1000) * rpm, 2)
-    elif payment_model == "clicks":
-        # Aggregate this clipper's clicks via their click_links
+    if payment_model in ("views", "both"):
+        earnings_in_period += round((views_in_period / 1000) * rpm, 2)
+    if payment_model in ("clicks", "both"):
         my_links = await db.click_links.find(
             {"campaign_id": campaign_id, "clipper_id": user_id},
             {"_id": 0, "link_id": 1}
@@ -6515,7 +6515,8 @@ async def get_my_period_stats(
             unique_clicks_in_period = await db.click_events.count_documents({**click_match, "is_unique": True})
         billing_mode = campaign.get("click_billing_mode", "all")
         billable = unique_clicks_in_period if billing_mode != "all" else clicks_in_period
-        earnings_in_period = round((billable / 1000) * rate_per_click, 2)
+        earnings_in_period += round((billable / 1000) * rate_per_click, 2)
+    earnings_in_period = round(earnings_in_period, 2)
 
     return {
         "period": period,
@@ -7754,7 +7755,7 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
             rate_per_click = campaign.get("rate_per_click", 0.0)
             unique_only = campaign.get("unique_clicks_only", True)
 
-            if payment_model == "clicks":
+            if payment_model in ("clicks", "both"):
                 calc = await _calc_clicks_for_member(campaign["campaign_id"], user["user_id"], rate_per_click, unique_only)
             else:
                 calc = await _calc_earnings_for_member(campaign["campaign_id"], user["user_id"], rpm)
@@ -7777,7 +7778,7 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
                 "rate_per_click": rate_per_click,
             }
             # For click-based campaigns, include the tracking link directly
-            if payment_model == "clicks":
+            if payment_model in ("clicks", "both"):
                 stat["clicks"] = calc.get("clicks", 0)
                 stat["unique_clicks"] = calc.get("unique_clicks", 0)
                 stat["tracking_url"] = calc.get("tracking_url")
@@ -8101,7 +8102,7 @@ async def get_campaign_payment_summary(campaign_id: str, user: dict = Depends(ge
     unique_only = campaign.get("unique_clicks_only", True)
 
     async def _calc(uid):
-        if payment_model == "clicks":
+        if payment_model in ("clicks", "both"):
             return await _calc_clicks_for_member(campaign_id, uid, rate_per_click, unique_only)
         return await _calc_earnings_for_member(campaign_id, uid, rpm)
 
@@ -8181,7 +8182,7 @@ async def get_owed_payments(user: dict = Depends(get_current_user)):
             clipper = clippers_map.get(m["user_id"])
             if not clipper:
                 continue
-            if payment_model == "clicks":
+            if payment_model in ("clicks", "both"):
                 data = await _calc_clicks_for_member(cid, m["user_id"], rate_per_click, unique_only)
             else:
                 data = await _calc_earnings_for_member(cid, m["user_id"], rpm)
@@ -8972,7 +8973,7 @@ async def admin_campaign_detail(campaign_id: str, request: Request, _: bool = De
         m["user_info"] = users_map.get(m["user_id"], {})
 
     # Payment-model–specific stats
-    if campaign.get("payment_model") == "clicks":
+    if campaign.get("payment_model") in ("clicks", "both"):
         links = await db.click_links.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(200)
         # Attach clipper info to each link
         link_clipper_ids = [l.get("clipper_id") for l in links if l.get("clipper_id")]
@@ -10238,7 +10239,7 @@ async def generate_click_links(campaign_id: str, user: dict = Depends(get_curren
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
-    if campaign.get("payment_model") != "clicks":
+    if campaign.get("payment_model") not in ("clicks", "both"):
         raise HTTPException(status_code=400, detail="Cette campagne n'est pas au modèle 'clics'")
 
     members = await db.campaign_members.find(
@@ -11344,7 +11345,7 @@ async def check_and_issue_strikes():
         campaign_id = campaign["campaign_id"]
         strike_days = campaign.get("strike_days", 3)
         max_strikes = campaign.get("max_strikes", 3)
-        is_clicks_campaign = campaign.get("payment_model") == "clicks"
+        is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
 
         members = await db.campaign_members.find(
             {"campaign_id": campaign_id, "role": "clipper", "status": "active"},
