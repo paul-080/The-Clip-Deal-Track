@@ -5377,7 +5377,7 @@ async def _scrape_one_account_into_campaign(
     wait_verification: bool = True,
 ) -> dict:
     """Helper centralisé : scrape un compte dans une campagne.
-    Retourne {ok, inserted, error, platform, username}.
+    Retourne {ok, inserted, fetched, skipped_pre_cutoff, error, platform, username, account_id}.
     Réutilisable par : /track-account, /force-scrape, backfill, run_video_tracking.
     """
     acc_id = account.get("account_id")
@@ -5387,36 +5387,82 @@ async def _scrape_one_account_into_campaign(
     cid = campaign.get("campaign_id")
     rpm = campaign.get("rpm", 0) or 0
 
+    base_result = {"platform": plat, "username": uname, "account_id": acc_id}
+
     # Attente vérification (si compte fraîchement créé)
     if wait_verification and account.get("status") != "verified":
         for _ in range(45):  # max 90s
             fresh = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
             if not fresh:
-                return {"ok": False, "error": "compte introuvable", "platform": plat, "username": uname}
+                return {**base_result, "ok": False, "error": "compte introuvable en DB"}
             if fresh.get("status") == "verified":
                 account = fresh
                 break
             if fresh.get("status") == "error":
-                return {"ok": False, "error": fresh.get("error_message") or "verification failed", "platform": plat, "username": uname}
+                err = fresh.get("error_message") or "vérification échouée"
+                return {**base_result, "ok": False, "error": f"compte non vérifié : {err}"}
             await asyncio.sleep(2)
         else:
-            return {"ok": False, "error": "verification timeout (>90s)", "platform": plat, "username": uname}
+            return {**base_result, "ok": False, "error": "vérification timeout (>90s) — compte toujours en pending"}
 
-    # Fetch avec retry (1 retry après 5s si exception)
+    # Si compte est en error/pending, refuse direct (pour force-scrape sans wait)
+    if account.get("status") == "error":
+        return {**base_result, "ok": False, "error": f"compte en erreur : {account.get('error_message') or 'inconnu'}"}
+    if account.get("status") == "pending":
+        # Tente de relancer la vérification puis abandonne
+        try:
+            asyncio.create_task(_verify_and_update_account(acc_id, plat, uname))
+        except Exception:
+            pass
+        return {**base_result, "ok": False, "error": "compte en cours de vérification — réessaye dans 1 min"}
+
+    # Re-vérifie le compte si platform_channel_id manquant pour TikTok/IG (essentiel pour le scrape)
+    if plat in ("tiktok", "instagram") and not account.get("platform_channel_id"):
+        logger.info(f"platform_channel_id manquant pour {plat}/@{uname}, re-verify avant scrape")
+        try:
+            await _verify_and_update_account(acc_id, plat, uname)
+            account = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0}) or account
+        except Exception as e:
+            logger.warning(f"Re-verify {plat}/@{uname} a échoué : {e}")
+
+    # Fetch avec retry (3 tentatives, backoff 5s puis 15s)
     videos = []
     last_err = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             videos = await fetch_videos(plat, uname, account, since_days=since_days)
-            break
+            if videos:
+                break
+            # 0 vidéos sans exception : essaie encore (peut être rate-limit silencieux)
+            last_err = "aucune vidéo retournée"
         except Exception as e:
-            last_err = str(e)
-            logger.warning(f"Scrape attempt {attempt+1} failed for {plat}/@{uname}: {e}")
-            if attempt < 1:
-                await asyncio.sleep(5)
-    if not videos and last_err:
-        return {"ok": False, "error": last_err, "platform": plat, "username": uname}
+            last_err = str(e)[:300]
+            logger.warning(f"Scrape attempt {attempt+1}/3 failed for {plat}/@{uname}: {e}")
+        if attempt < 2:
+            await asyncio.sleep(5 if attempt == 0 else 15)
 
+    # Cas 1 : aucune vidéo et erreur explicite
+    if not videos and last_err and last_err != "aucune vidéo retournée":
+        await db.social_accounts.update_one(
+            {"account_id": acc_id},
+            {"$set": {"last_scrape_error": last_err, "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        return {**base_result, "ok": False, "error": last_err, "fetched": 0}
+
+    # Cas 2 : aucune vidéo retournée et pas d'erreur (toutes les APIs ont retourné [])
+    if not videos:
+        msg = (
+            f"Toutes les sources de scraping ont retourné 0 vidéos pour @{uname} ({plat}). "
+            f"Causes possibles : compte privé, compte sans vidéos, API keys manquantes (APIFY_TOKEN, RAPIDAPI_KEY, INSTAGRAM_SESSION_ID), ou compte bloqué par la plateforme."
+        )
+        await db.social_accounts.update_one(
+            {"account_id": acc_id},
+            {"$set": {"last_scrape_error": msg, "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        logger.warning(f"Scrape KO {plat}/@{uname} : 0 vidéos toutes sources confondues")
+        return {**base_result, "ok": False, "error": msg, "fetched": 0}
+
+    # Cas 3 : on a des vidéos
     now_iso = datetime.now(timezone.utc).isoformat()
     inserted = 0
     skipped_pre_cutoff = 0
@@ -5459,13 +5505,26 @@ async def _scrape_one_account_into_campaign(
 
     await db.social_accounts.update_one(
         {"account_id": acc_id},
-        {"$set": {"last_tracked_at": now_iso, "last_scrape_error": None}}
+        {"$set": {"last_tracked_at": now_iso, "last_scrape_error": None,
+                  "last_scrape_attempt_at": now_iso}}
     )
-    logger.info(f"Scrape OK {plat}/@{uname} → {inserted} vidéos insérées (skipped pre-cutoff: {skipped_pre_cutoff})")
+
+    # Si fetched > 0 mais inserted = 0 et tout filtré par cutoff : warning
+    warning = None
+    if inserted == 0 and skipped_pre_cutoff > 0:
+        from_date = cutoff.strftime("%d/%m/%Y") if cutoff else "?"
+        warning = (
+            f"⚠️ {len(videos)} vidéos trouvées mais TOUTES publiées avant le {from_date} "
+            f"(tracking_start_date) — aucune ne compte. Recule la date pour les inclure."
+        )
+        logger.warning(f"{plat}/@{uname} : {warning}")
+
+    logger.info(f"Scrape OK {plat}/@{uname} → {inserted} insérées sur {len(videos)} fetched (skipped pre-cutoff: {skipped_pre_cutoff})")
     return {
+        **base_result,
         "ok": True, "inserted": inserted, "fetched": len(videos),
         "skipped_pre_cutoff": skipped_pre_cutoff,
-        "platform": plat, "username": uname,
+        "warning": warning,
     }
 
 
@@ -5874,15 +5933,22 @@ async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_curre
     results = await asyncio.gather(*[_scrape_with_semaphore(a) for a in assignments], return_exceptions=True)
     final_results = []
     total_inserted = 0
+    total_fetched = 0
+    total_skipped = 0
     total_errors = 0
+    total_warnings = 0
     for r in results:
         if isinstance(r, Exception):
-            final_results.append({"ok": False, "error": str(r), "username": "?", "platform": "?"})
+            final_results.append({"ok": False, "error": str(r)[:300], "username": "?", "platform": "?"})
             total_errors += 1
         else:
             final_results.append(r)
             if r.get("ok"):
                 total_inserted += r.get("inserted", 0)
+                total_fetched += r.get("fetched", 0)
+                total_skipped += r.get("skipped_pre_cutoff", 0)
+                if r.get("warning"):
+                    total_warnings += 1
             else:
                 total_errors += 1
 
@@ -5895,13 +5961,22 @@ async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_curre
         }}
     )
 
+    # Calcule la date cutoff humaine pour le résumé
+    cutoff_str = None
+    if campaign_tracking_start:
+        cutoff_str = campaign_tracking_start.astimezone(PARIS_TZ).strftime("%d/%m/%Y")
+
     return {
         "ok": True,
         "campaign_id": campaign_id,
         "accounts_scraped": len(assignments),
+        "total_videos_fetched": total_fetched,
         "total_videos_inserted": total_inserted,
+        "total_skipped_pre_cutoff": total_skipped,
         "total_errors": total_errors,
+        "total_warnings": total_warnings,
         "since_days": days_back,
+        "tracking_start_date_human": cutoff_str,
         "results": final_results,
     }
 

@@ -36,6 +36,7 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete }) {
     if (!window.confirm("Lancer le scraping de tous les comptes maintenant ? Ça peut prendre 30s à 2 min.")) return;
     setScraping(true);
     setScrapeResult(null);
+    setExpanded(true);  // Ouvre auto les détails pour voir le résultat
     toast.info("Scraping en cours… ça peut prendre 30s à 2 min selon le nombre de comptes");
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/force-scrape`, {
@@ -45,7 +46,18 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete }) {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setScrapeResult(data);
-        toast.success(`Scraping terminé : ${data.total_videos_inserted} vidéos · ${data.total_errors} erreurs`);
+        const ins = data.total_videos_inserted || 0;
+        const errs = data.total_errors || 0;
+        const skipped = data.total_skipped_pre_cutoff || 0;
+        if (ins === 0 && errs > 0) {
+          toast.error(`Scraping : 0 vidéos insérées · ${errs} erreurs — voir le détail par compte ci-dessous`, { duration: 10000 });
+        } else if (ins === 0 && skipped > 0) {
+          toast.warning(`Scraping : ${data.total_videos_fetched} vidéos trouvées mais TOUTES avant ${data.tracking_start_date_human} (cutoff) — recule la date dans Paramètres`, { duration: 12000 });
+        } else if (ins === 0) {
+          toast.warning(`Scraping : 0 vidéos trouvées — vérifie que les comptes sont vérifiés et publient des vidéos`, { duration: 8000 });
+        } else {
+          toast.success(`✓ Scraping : ${ins} vidéos insérées${errs > 0 ? ` (${errs} comptes en erreur)` : ""}`);
+        }
         fetchStatus();
         onScrapeComplete?.();
       } else {
@@ -132,15 +144,65 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete }) {
         </div>
       </div>
 
-      {/* Résultat dernier force-scrape */}
-      {scrapeResult && (
-        <div className="bg-[#39FF14]/5 border border-[#39FF14]/20 rounded-lg p-3 text-xs">
-          <p className="text-[#39FF14] font-bold mb-1">✓ Dernier scraping terminé</p>
-          <p className="text-white/60">
-            {scrapeResult.accounts_scraped} comptes · {scrapeResult.total_videos_inserted} vidéos insérées · {scrapeResult.total_errors} erreurs · fenêtre {scrapeResult.since_days} jours
-          </p>
-        </div>
-      )}
+      {/* Résultat dernier force-scrape — résumé global */}
+      {scrapeResult && (() => {
+        const ins = scrapeResult.total_videos_inserted || 0;
+        const errs = scrapeResult.total_errors || 0;
+        const fetched = scrapeResult.total_videos_fetched || 0;
+        const skipped = scrapeResult.total_skipped_pre_cutoff || 0;
+        const isOK = ins > 0 && errs === 0;
+        const isProblematic = ins === 0;
+        return (
+          <div className={`border rounded-lg p-3 text-xs space-y-2 ${
+            isOK ? "bg-[#39FF14]/5 border-[#39FF14]/20" :
+            isProblematic ? "bg-red-500/5 border-red-500/30" :
+            "bg-amber-500/5 border-amber-500/30"
+          }`}>
+            <p className={`font-bold ${isOK ? "text-[#39FF14]" : isProblematic ? "text-red-400" : "text-amber-400"}`}>
+              {isOK ? "✓" : isProblematic ? "⚠" : "⚠"} Dernier scraping
+            </p>
+            <p className="text-white/70">
+              {scrapeResult.accounts_scraped} comptes · <strong>{ins}</strong> vidéos insérées · {fetched} trouvées au total · {skipped} avant cutoff · {errs} erreurs · fenêtre {scrapeResult.since_days}j
+            </p>
+            {skipped > 0 && ins === 0 && (
+              <p className="text-amber-300 text-[11px]">
+                ⚠️ {fetched} vidéos trouvées mais TOUTES publiées avant {scrapeResult.tracking_start_date_human || "la date de cutoff"}.
+                Recule <strong>tracking_start_date</strong> dans Paramètres pour les inclure.
+              </p>
+            )}
+            {/* Détail par compte du dernier scrape */}
+            {scrapeResult.results && scrapeResult.results.length > 0 && (
+              <div className="space-y-1 pt-2 border-t border-white/10">
+                <p className="text-[10px] text-white/40 uppercase tracking-wider">Détail par compte</p>
+                {scrapeResult.results.map((r, i) => (
+                  <div key={i} className={`flex items-start gap-2 px-2 py-1.5 rounded text-[11px] ${
+                    r.ok && r.inserted > 0 ? "bg-[#39FF14]/5" :
+                    r.ok && r.inserted === 0 ? "bg-amber-500/5" :
+                    "bg-red-500/5"
+                  }`}>
+                    <span className="flex-shrink-0">
+                      {r.ok && r.inserted > 0 ? "✓" : r.ok ? "⚠" : "✗"}
+                    </span>
+                    <span className="text-white/80 flex-shrink-0 font-medium">
+                      {r.platform === "tiktok" ? "🎵" : r.platform === "instagram" ? "📸" : "▶️"} @{r.username}
+                    </span>
+                    <span className="text-white/50 flex-1">
+                      {r.ok ? (
+                        <>
+                          {r.inserted} insérées · {r.fetched} trouvées · {r.skipped_pre_cutoff || 0} pré-cutoff
+                          {r.warning && <span className="text-amber-400 block mt-0.5">{r.warning}</span>}
+                        </>
+                      ) : (
+                        <span className="text-red-300">{r.error || "erreur inconnue"}</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Détails par compte */}
       {expanded && accounts.length > 0 && (
