@@ -1279,11 +1279,18 @@ function CampaignDashboard({ campaigns }) {
     if (!settingsForm) return;
     setSavingSettings(true);
     try {
+      // Convert tracking_start_date (YYYY-MM-DD) to ISO datetime
+      const payload = { ...settingsForm };
+      if (payload.tracking_start_date) {
+        payload.tracking_start_date = new Date(payload.tracking_start_date + "T00:00:00Z").toISOString();
+      } else {
+        payload.tracking_start_date = null;
+      }
       const res = await fetch(`${API}/campaigns/${campaignId}/settings`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(settingsForm),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         const data = await res.json();
@@ -1684,6 +1691,7 @@ function CampaignDashboard({ campaigns }) {
                   max_strikes: campaign.max_strikes ?? 3,
                   strike_days: campaign.strike_days ?? 3,
                   cadence: campaign.cadence ?? 1,
+                  tracking_start_date: campaign.tracking_start_date ? campaign.tracking_start_date.slice(0, 10) : "",
                 });
                 setDeleteConfirmText("");
               }
@@ -3008,6 +3016,18 @@ function CampaignDashboard({ campaigns }) {
                 onChange={e => setSettingsForm(p => ({ ...p, max_clippers: parseInt(e.target.value) || "" }))}
                 placeholder="Illimité"
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
+              />
+            </div>
+
+            {/* Tracking start date - permet de modifier la date de debut tracking */}
+            <div className="bg-white/3 border border-white/10 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-semibold text-white">📅 Date de début du tracking</h4>
+              <p className="text-xs text-white/40">Toutes les vidéos publiées par tes clippeurs depuis cette date sont trackées + rémunérées. Modifier permet d'inclure/exclure des vidéos déjà postées.</p>
+              <input
+                type="date"
+                value={settingsForm.tracking_start_date || ""}
+                onChange={e => setSettingsForm(p => ({ ...p, tracking_start_date: e.target.value }))}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/25"
               />
             </div>
 

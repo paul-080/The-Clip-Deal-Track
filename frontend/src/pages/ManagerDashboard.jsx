@@ -593,7 +593,7 @@ function CampaignDashboard({ campaigns }) {
   }, [campaignId]);
 
   useEffect(() => {
-    if (campaign?.payment_model === "views") fetchViewsTimeline();
+    if (campaign?.payment_model === "views" || campaign.payment_model === "both") fetchViewsTimeline();
   }, [campaign?.campaign_id]);
 
   const handleAddStrike = async (userId) => {
