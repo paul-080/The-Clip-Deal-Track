@@ -10708,6 +10708,302 @@ async def add_campaign_budget(campaign_id: str, body: AddBudgetRequest, user: di
     return {"budget_total": new_budget, "budget_used": updated.get("budget_used", 0), "status": updated.get("status")}
 
 # Include router
+# ================== PROSPECTS SYSTEM (campagnes pré-remplies pour démarcher agences) ==================
+
+def _norm_discord(name: str) -> str:
+    """Normalise un pseudo Discord pour matching (lowercase, strip, remove #1234)."""
+    if not name:
+        return ""
+    n = name.strip().lower().lstrip("@")
+    # Strip discord discriminator (#1234) si present
+    if "#" in n:
+        n = n.split("#", 1)[0]
+    return n
+
+
+@api_router.post("/admin/prospects/create-campaign")
+async def admin_create_prospect_campaign(request: Request, body: dict, _: bool = Depends(verify_admin_code)):
+    """Cree une campagne 'prospect' (sans agence reelle) avec tokens uniques pour claim."""
+    name = (body.get("name") or "").strip()
+    agency_name = (body.get("agency_name") or "").strip()
+    if not name or not agency_name:
+        raise HTTPException(status_code=400, detail="name + agency_name requis")
+    payment_model = body.get("payment_model") or "views"
+    rpm = float(body.get("rpm") or 0)
+    rate_per_click = float(body.get("rate_per_click") or 0)
+    destination_url = body.get("destination_url") or ""
+    platforms = body.get("platforms") or ["tiktok", "instagram", "youtube"]
+
+    cid = f"camp_{uuid.uuid4().hex[:12]}"
+    agency_token = secrets.token_urlsafe(16)
+    clipper_token = secrets.token_urlsafe(16)
+    prospect_user_id = f"prospect_{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    campaign_doc = {
+        "campaign_id": cid,
+        "name": name,
+        "description": body.get("description") or "",
+        "agency_id": prospect_user_id,  # placeholder - sera reassigne quand l'agence claim
+        "agency_name": agency_name,
+        "payment_model": payment_model,
+        "rpm": rpm,
+        "rate_per_click": rate_per_click,
+        "destination_url": destination_url,
+        "click_billing_mode": body.get("click_billing_mode") or "unique_24h",
+        "click_window_hours": int(body.get("click_window_hours") or 24),
+        "platforms": platforms,
+        "max_clippers": body.get("max_clippers") or None,
+        "cadence": int(body.get("cadence") or 1),
+        "max_strikes": int(body.get("max_strikes") or 3),
+        "strike_days": int(body.get("strike_days") or 3),
+        "budget_total": float(body.get("budget_total") or 0),
+        "budget_used": 0,
+        "budget_unlimited": bool(body.get("budget_unlimited", True)),
+        "status": "active",
+        "is_prospect": True,
+        "prospect_agency_token": agency_token,
+        "prospect_clipper_token": clipper_token,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.campaigns.insert_one(campaign_doc)
+    campaign_doc.pop("_id", None)
+    return {
+        "campaign": campaign_doc,
+        "claim_links": {
+            "agency": f"/claim/agency/{agency_token}",
+            "clipper": f"/claim/clipper/{clipper_token}",
+        }
+    }
+
+
+@api_router.post("/admin/prospects/{campaign_id}/add-clipper-account")
+async def admin_add_prospect_clipper(campaign_id: str, body: dict, _: bool = Depends(verify_admin_code)):
+    """Ajoute un compte social (TikTok/Insta/YT) avec pseudo Discord pour matching futur."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id, "is_prospect": True})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne prospect introuvable")
+    discord_username = _norm_discord(body.get("discord_username") or "")
+    platform = (body.get("platform") or "").lower()
+    username = (body.get("username") or "").lstrip("@").strip()
+    if not discord_username or not platform or not username:
+        raise HTTPException(status_code=400, detail="discord_username + platform + username requis")
+    if platform not in ("tiktok", "instagram", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide")
+
+    # Cree un social_account "ghost" : pas encore claim par un user
+    account_id = f"acc_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    account_doc = {
+        "account_id": account_id,
+        "user_id": None,  # pas encore claim
+        "platform": platform,
+        "username": username,
+        "discord_username": discord_username,
+        "status": "verified",
+        "is_prospect": True,
+        "prospect_campaign_id": campaign_id,
+        "created_at": now,
+        "verified_at": now,
+    }
+    await db.social_accounts.insert_one(account_doc)
+    # Pre-assigne le compte a la campagne (sans user_id pour l'instant)
+    await db.campaign_social_accounts.insert_one({
+        "campaign_id": campaign_id,
+        "account_id": account_id,
+        "user_id": None,
+        "discord_username": discord_username,
+        "is_prospect": True,
+        "assigned_at": now,
+    })
+    account_doc.pop("_id", None)
+    return {"account": account_doc}
+
+
+@api_router.get("/admin/prospects")
+async def admin_list_prospects(request: Request, _: bool = Depends(verify_admin_code)):
+    """Liste toutes les campagnes prospects avec leur stats."""
+    campaigns = await db.campaigns.find({"is_prospect": True}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    out = []
+    for c in campaigns:
+        cid = c["campaign_id"]
+        accounts = await db.social_accounts.count_documents({"prospect_campaign_id": cid, "is_prospect": True})
+        videos = await db.tracked_videos.count_documents({"campaign_id": cid})
+        views_agg = await db.tracked_videos.aggregate([
+            {"$match": {"campaign_id": cid}},
+            {"$group": {"_id": None, "total": {"$sum": "$views"}}}
+        ]).to_list(1)
+        total_views = views_agg[0]["total"] if views_agg else 0
+        out.append({
+            **c,
+            "prospect_accounts_count": accounts,
+            "tracked_videos_count": videos,
+            "total_views": total_views,
+        })
+    return {"prospects": out}
+
+
+@api_router.get("/claim/info/{token}")
+async def claim_info(token: str):
+    """Public : retourne infos minimales sur le claim (agence ou clipper)."""
+    camp = await db.campaigns.find_one({
+        "$or": [{"prospect_agency_token": token}, {"prospect_clipper_token": token}],
+        "is_prospect": True
+    }, {"_id": 0, "name": 1, "agency_name": 1, "payment_model": 1, "rpm": 1, "rate_per_click": 1, "prospect_agency_token": 1, "prospect_clipper_token": 1, "campaign_id": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lien invalide ou expire")
+    is_agency = camp.get("prospect_agency_token") == token
+    return {
+        "type": "agency" if is_agency else "clipper",
+        "campaign_name": camp.get("name"),
+        "agency_name": camp.get("agency_name"),
+        "payment_model": camp.get("payment_model"),
+        "rpm": camp.get("rpm"),
+        "rate_per_click": camp.get("rate_per_click"),
+    }
+
+
+@api_router.post("/claim/agency/{token}")
+async def claim_agency(token: str, body: dict, request: Request):
+    """L'agence cree son compte via le lien magique et reprend la campagne."""
+    camp = await db.campaigns.find_one({"prospect_agency_token": token, "is_prospect": True}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lien invalide ou deja utilise")
+    email = (body.get("email") or "").lower().strip()
+    password = body.get("password") or ""
+    display_name = (body.get("display_name") or camp.get("agency_name") or "Agence").strip()
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="email + password requis")
+    pwd_error = _validate_password(password)
+    if pwd_error:
+        raise HTTPException(status_code=400, detail=pwd_error)
+
+    # Check email pas deja pris
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email deja utilise - connecte-toi puis recharge ce lien")
+
+    # Cree l'agence
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.users.insert_one({
+        "user_id": user_id,
+        "email": email,
+        "password_hash": _hash_password(password),
+        "name": display_name,
+        "display_name": display_name,
+        "role": "agency",
+        "agency_name": camp.get("agency_name") or display_name,
+        "email_verified": True,  # claim direct = valide
+        "created_at": now,
+    })
+
+    # Reassigne la campagne a cette agence + retire le flag prospect
+    await db.campaigns.update_one(
+        {"campaign_id": camp["campaign_id"]},
+        {"$set": {"agency_id": user_id, "is_prospect": False},
+         "$unset": {"prospect_agency_token": "", "prospect_clipper_token": ""}}
+    )
+
+    # Cree session immediate
+    session_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=8)
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+        "created_at": now,
+    })
+    return {"session_token": session_token, "user": {"user_id": user_id, "email": email, "role": "agency", "display_name": display_name}, "campaign_id": camp["campaign_id"]}
+
+
+@api_router.post("/claim/clipper/{token}")
+async def claim_clipper(token: str, body: dict, request: Request):
+    """Le clippeur cree son compte via lien magique. Si pseudo Discord matche un compte pre-enregistre -> auto-link."""
+    camp = await db.campaigns.find_one({"prospect_clipper_token": token}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lien invalide")
+    email = (body.get("email") or "").lower().strip()
+    password = body.get("password") or ""
+    display_name = (body.get("display_name") or "").strip()
+    discord_username = _norm_discord(body.get("discord_username") or "")
+    if not email or not password or not discord_username:
+        raise HTTPException(status_code=400, detail="email + password + discord_username requis")
+    pwd_error = _validate_password(password)
+    if pwd_error:
+        raise HTTPException(status_code=400, detail=pwd_error)
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email deja utilise")
+
+    # Cree le clipper
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.users.insert_one({
+        "user_id": user_id,
+        "email": email,
+        "password_hash": _hash_password(password),
+        "name": display_name or discord_username,
+        "display_name": display_name or discord_username,
+        "discord_username": discord_username,
+        "role": "clipper",
+        "email_verified": True,
+        "created_at": now,
+    })
+
+    # Auto-link : trouve TOUS les comptes pre-enregistres avec ce discord_username
+    matching_accounts = await db.social_accounts.find(
+        {"discord_username": discord_username, "is_prospect": True, "user_id": None},
+        {"_id": 0}
+    ).to_list(50)
+    linked_accounts = []
+    for acc in matching_accounts:
+        # Reassigne le compte au nouveau user
+        await db.social_accounts.update_one(
+            {"account_id": acc["account_id"]},
+            {"$set": {"user_id": user_id, "is_prospect": False}}
+        )
+        # Reassigne le campaign_social_account
+        await db.campaign_social_accounts.update_one(
+            {"account_id": acc["account_id"]},
+            {"$set": {"user_id": user_id, "is_prospect": False}}
+        )
+        # Ajoute le user comme membre de la campagne associee
+        prospect_cid = acc.get("prospect_campaign_id")
+        if prospect_cid:
+            existing_member = await db.campaign_members.find_one({"campaign_id": prospect_cid, "user_id": user_id})
+            if not existing_member:
+                await db.campaign_members.insert_one({
+                    "member_id": f"mem_{uuid.uuid4().hex[:12]}",
+                    "campaign_id": prospect_cid,
+                    "user_id": user_id,
+                    "role": "clipper",
+                    "status": "active",
+                    "strikes": 0,
+                    "joined_at": now,
+                })
+        linked_accounts.append({"platform": acc["platform"], "username": acc["username"], "campaign_id": prospect_cid})
+
+    # Session immediate
+    session_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=8)
+    await db.user_sessions.insert_one({
+        "session_token": session_token,
+        "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+        "created_at": now,
+    })
+    return {
+        "session_token": session_token,
+        "user": {"user_id": user_id, "email": email, "role": "clipper", "display_name": display_name or discord_username},
+        "linked_accounts": linked_accounts,
+        "linked_count": len(linked_accounts),
+        "campaign_id": camp.get("campaign_id"),
+    }
+
+
 app.include_router(api_router)
 
 ALLOWED_ORIGINS = os.environ.get("FRONTEND_URL", "http://localhost:3000")
