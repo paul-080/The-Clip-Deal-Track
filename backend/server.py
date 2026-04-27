@@ -304,6 +304,9 @@ class CampaignCreate(BaseModel):
     destination_url: Optional[str] = None
     unique_clicks_only: bool = True
     click_billing_mode: str = "unique_24h"
+    # Date a partir de laquelle on tracke les videos (defaut : maintenant)
+    # Permet de demarrer une campagne deja en cours et compter les videos deja postees
+    tracking_start_date: Optional[str] = None
 
 class CampaignMember(BaseModel):
     member_id: str
@@ -1412,6 +1415,9 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
         "token_manager": uuid.uuid4().hex,
         "token_client": uuid.uuid4().hex,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # Date a partir de laquelle on tracke les videos (defaut : maintenant)
+        # Permet a l'agence de demarrer une campagne en cours et tracker les videos deja postees
+        "tracking_start_date": campaign_data.tracking_start_date or datetime.now(timezone.utc).isoformat(),
         "status": "active",
         # Rémunération au clic
         "payment_model": campaign_data.payment_model,
@@ -5396,7 +5402,11 @@ async def run_video_tracking():
             account_id = assignment["account_id"]
             user_id = assignment["user_id"]
             # Cutoff: only videos published AFTER the account was assigned to this campaign
-            assigned_cutoff = _parse_utc(assignment.get("assigned_at"))
+            # Cutoff date des videos a tracker :
+            # Si campaign.tracking_start_date defini -> on l'utilise (l'agence a explicitement choisi cette date)
+            # Sinon fallback sur assigned_at du compte (comportement legacy)
+            campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
+            assigned_cutoff = campaign_tracking_start if campaign_tracking_start else _parse_utc(assignment.get("assigned_at"))
             account = await db.social_accounts.find_one(
                 {"account_id": account_id, "status": "verified"}, {"_id": 0}
             )
@@ -10538,6 +10548,7 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
         "max_strikes", "strike_days",  # Modifiables : combien de strikes max + jours d'inactivite avant strike
         "click_billing_mode",
         "cadence",  # posts/jour minimum
+        "tracking_start_date",  # Date debut tracking videos (modifiable apres creation)
     }
     RPM_EDITABLE_WHEN_EXHAUSTED = {"rpm"}
 

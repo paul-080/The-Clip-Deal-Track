@@ -554,6 +554,7 @@ function CreateCampaign({ onCreated }) {
     application_questions: [],
     // Modèle de rémunération
     payment_model: "views",
+    tracking_start_date: "",  // ISO date - vide = aujourd'hui
     rate_per_click: "",
     destination_url: "",
     click_billing_mode: "unique_24h",
@@ -605,6 +606,7 @@ function CreateCampaign({ onCreated }) {
         ...formData,
         rpm: (formData.payment_model === "views" || formData.payment_model === "both") ? parseFloat(formData.rpm) || 0 : 0,
         rate_per_click: (formData.payment_model === "clicks" || formData.payment_model === "both") ? parseFloat(formData.rate_per_click) || 0 : 0,
+        tracking_start_date: formData.tracking_start_date ? new Date(formData.tracking_start_date).toISOString() : null,
         destination_url: formData.destination_url.trim() || null,
         budget_total: formData.budget_unlimited ? null : parseFloat(formData.budget_total) || null,
         min_view_payout: parseInt(formData.min_view_payout) || 0,
@@ -729,6 +731,18 @@ function CreateCampaign({ onCreated }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
+
+          {/* Date debut tracking - permet de tracker les videos deja postees pour migration agence */}
+          <div className="bg-[#FF007F]/5 border border-[#FF007F]/20 rounded-xl p-4 space-y-2">
+            <label className="block text-sm text-white font-medium">📅 Tracker les vidéos postées depuis :</label>
+            <input
+              type="date"
+              value={formData.tracking_start_date}
+              onChange={(e) => handleChange("tracking_start_date", e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF007F]/50"
+            />
+            <p className="text-xs text-white/50">Vide = à partir de maintenant. Mets une date passée si tu démarres ta campagne theclipdealtrack au milieu d'une campagne déjà en cours (les vidéos déjà postées seront tracker + rémunérées).</p>
+          </div>
 
           {/* Toggle modèle */}
           <div>
