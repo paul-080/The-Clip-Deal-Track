@@ -5971,6 +5971,71 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         "assigned_by": user["user_id"],
     })
 
+    # Trigger immediate scrape — utilise tracking_start_date si défini, sinon "now"
+    campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
+    cutoff = campaign_tracking_start if campaign_tracking_start else datetime.now(timezone.utc)
+
+    async def _scrape_now(acc_id: str, cid: str, uid: str, plat: str, uname: str, cut: datetime):
+        # Attend la verification du compte si il vient juste d'etre cree
+        for _ in range(30):  # max 60s wait
+            acc = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+            if acc and acc.get("status") == "verified":
+                break
+            if acc and acc.get("status") == "error":
+                logger.warning(f"Track-account: compte @{uname} ({plat}) en erreur, scrape annulé")
+                return
+            await asyncio.sleep(2)
+        try:
+            acc = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+            if not acc or acc.get("status") != "verified":
+                return
+            camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+            rpm = (camp or {}).get("rpm", 0)
+            videos = await fetch_videos(plat, uname, acc, since_days=30)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            inserted = 0
+            for vid in videos:
+                if not vid.get("platform_video_id"):
+                    continue
+                pub_dt = _parse_utc(vid.get("published_at"))
+                if pub_dt and pub_dt < cut:
+                    continue
+                earnings = (vid["views"] / 1000) * rpm
+                set_fields = {
+                    "platform_video_id": vid["platform_video_id"],
+                    "account_id": acc_id,
+                    "user_id": uid,
+                    "campaign_id": cid,
+                    "platform": plat,
+                    "url": vid.get("url", ""),
+                    "title": vid.get("title"),
+                    "thumbnail_url": vid.get("thumbnail_url"),
+                    "views": vid["views"],
+                    "likes": vid["likes"],
+                    "comments": vid["comments"],
+                    "published_at": vid.get("published_at"),
+                    "fetched_at": now_iso,
+                    "earnings": round(earnings, 4),
+                    "manually_added": False,
+                    "simulated": False,
+                }
+                try:
+                    await db.tracked_videos.update_one(
+                        {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
+                        {"$set": set_fields,
+                         "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
+                        upsert=True
+                    )
+                    inserted += 1
+                except Exception:
+                    pass
+            await db.social_accounts.update_one({"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}})
+            logger.info(f"Track-account scrape: {inserted} vidéos pour @{uname} ({plat}) sur campagne {cid}")
+        except Exception as e:
+            logger.warning(f"Track-account scrape failed for {acc_id}: {e}")
+
+    asyncio.create_task(_scrape_now(account_id, campaign_id, target_user_id, platform, username, cutoff))
+
     return {"account_id": account_id, "ok": True}
 
 @api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}")
