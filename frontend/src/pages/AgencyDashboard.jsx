@@ -1604,7 +1604,8 @@ function CampaignDashboard({ campaigns }) {
   const avgViews = allVideos.length > 0 ? Math.round(totalViews / allVideos.length) : 0;
 
   // Clippers list for filter dropdown
-  const activeMembers = campaign?.members?.filter(m => m.status === "active") || [];
+  // Filter clippeurs SEULEMENT (pas de manager dans le classement)
+  const activeMembers = campaign?.members?.filter(m => m.status === "active" && (m.role || "clipper") === "clipper") || [];
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
@@ -2095,25 +2096,42 @@ function CampaignDashboard({ campaigns }) {
                     const memberVideos = allVideos.filter(v => v.user_id === member.user_id);
                     const memberViews = memberVideos.reduce((s, v) => s + (v.views || 0), 0);
                     const memberEarnings = memberVideos.reduce((s, v) => s + (v.earnings || 0), 0);
+                    const maxStrikes = campaign?.max_strikes || 3;
+                    const strikes = member.strikes || 0;
                     return (
                       <div key={member.member_id} className="rounded-lg bg-white/5 overflow-hidden">
-                        <div className="flex items-center gap-3 p-2.5">
-                          <span className="font-mono text-sm text-white/30 w-6">#{index+1}</span>
-                          <div className="w-7 h-7 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-xs font-bold text-[#FF007F] flex-shrink-0">
+                        <div className="flex items-center gap-2.5 p-2">
+                          <span className="font-mono text-xs text-white/30 w-5">#{index+1}</span>
+                          <div className="w-6 h-6 rounded-full bg-[#FF007F]/20 flex items-center justify-center text-[10px] font-bold text-[#FF007F] flex-shrink-0">
                             {(member.user_info?.display_name || "?")[0].toUpperCase()}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className="text-white text-sm truncate">{member.user_info?.display_name || member.user_info?.name}</p>
-                            <p className="text-white/30 text-xs">{memberVideos.length} vidéo{memberVideos.length !== 1 ? "s" : ""}</p>
+                            <p className="text-white text-xs truncate">{member.user_info?.display_name || member.user_info?.name}</p>
+                            <p className="text-white/30 text-[10px]">{memberVideos.length} vid · {fmt(memberViews)} vues · <span className="text-[#FF007F]">€{memberEarnings.toFixed(2)}</span></p>
                           </div>
-                          <div className="text-right flex-shrink-0">
-                            <p className="text-white text-sm font-mono">{fmt(memberViews)}</p>
-                            <p className="text-[#FF007F] text-xs">€{memberEarnings.toFixed(2)}</p>
+                          {/* Strikes - toujours visible */}
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button
+                              onClick={() => handleRemoveStrike(member.user_id)}
+                              disabled={strikingMember === member.user_id || strikes === 0}
+                              title="Retirer un strike"
+                              className="w-5 h-5 rounded bg-white/5 hover:bg-white/15 text-white/40 hover:text-white text-xs font-bold border border-white/10 disabled:opacity-30 transition">−</button>
+                            <div className="flex gap-0.5" title={`${strikes}/${maxStrikes} strikes`}>
+                              {Array.from({ length: maxStrikes }).map((_, i) => (
+                                <span key={i} className={`w-2 h-2 rounded-full ${i < strikes ? "bg-[#FF007F]" : "bg-white/10"}`} />
+                              ))}
+                            </div>
+                            <button
+                              onClick={() => handleAddStrike(member.user_id)}
+                              disabled={strikingMember === member.user_id}
+                              title="Ajouter un strike"
+                              className="w-5 h-5 rounded bg-[#FF007F]/10 hover:bg-[#FF007F]/25 text-[#FF007F] text-xs font-bold border border-[#FF007F]/20 disabled:opacity-50 transition">+</button>
+                            {member.status === "suspended" && <span className="text-[9px] px-1 py-0.5 rounded bg-red-500/20 text-red-400 font-bold ml-1">BAN</span>}
                           </div>
                           <button
                             onClick={() => setExpandedMembers(prev => { const s = new Set(prev); s.has(member.user_id) ? s.delete(member.user_id) : s.add(member.user_id); return s; })}
-                            className="text-white/20 hover:text-white/60 text-xs px-1.5 transition-colors"
-                            title="Gérer"
+                            className="text-white/20 hover:text-white/60 text-xs px-1 transition-colors"
+                            title="Plus d'options"
                           >⋯</button>
                         </div>
                         {expandedMembers.has(member.user_id) && (
@@ -2133,33 +2151,6 @@ function CampaignDashboard({ campaigns }) {
                                 ))}
                               </div>
                             )}
-                            {/* ── Strike management ── */}
-                            <div className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-white/3 border border-white/8">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-white/40 uppercase tracking-wide">Strikes</span>
-                                <div className="flex gap-0.5">
-                                  {Array.from({ length: campaign?.max_strikes || 3 }).map((_, i) => (
-                                    <span key={i} className={`w-2.5 h-2.5 rounded-full ${i < (member.strikes || 0) ? "bg-[#FF007F]" : "bg-white/10"}`} />
-                                  ))}
-                                </div>
-                                <span className="text-xs font-mono text-white/60">{member.strikes || 0}/{campaign?.max_strikes || 3}</span>
-                                {member.status === "suspended" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold">SUSPENDU</span>}
-                              </div>
-                              <div className="flex gap-1">
-                                <button
-                                  onClick={() => handleRemoveStrike(member.user_id)}
-                                  disabled={strikingMember === member.user_id || (member.strikes || 0) === 0}
-                                  className="w-6 h-6 rounded-md bg-white/5 hover:bg-white/15 text-white/40 hover:text-white text-sm font-bold border border-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="Retirer un strike"
-                                >−</button>
-                                <button
-                                  onClick={() => handleAddStrike(member.user_id)}
-                                  disabled={strikingMember === member.user_id}
-                                  className="w-6 h-6 rounded-md bg-[#FF007F]/10 hover:bg-[#FF007F]/25 text-[#FF007F] text-sm font-bold border border-[#FF007F]/20 transition-colors disabled:opacity-50"
-                                  title="Ajouter un strike"
-                                >+</button>
-                              </div>
-                            </div>
                             <button
                               onClick={() => handleKickMember(member.user_id)}
                               disabled={kickingMember === member.user_id}
