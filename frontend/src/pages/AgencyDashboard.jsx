@@ -1314,15 +1314,24 @@ function CampaignDashboard({ campaigns }) {
       if (res.ok) {
         const data = await res.json();
         const v = data.video || {};
+        const vws = v.views || 0;
+        const lks = v.likes || 0;
+        const cmts = v.comments || 0;
         setTrackResult({
-          views: v.views || 0,
+          views: vws,
           title: v.title || "Sans titre",
           earnings: v.earnings || 0,
         });
-        if ((v.views || 0) === 0) {
-          toast.success("Vidéo enregistrée ✓ — stats en attente (API manquante ou vidéo privée)");
+        if (vws === 0 && lks === 0) {
+          // Aucune stat trouvee
+          toast.success("Vidéo enregistrée ✓ — stats en attente. Sera mise à jour au prochain tracking (toutes les 6h).", { duration: 6000 });
+          // Retry automatique 30s plus tard pour récupérer les stats si elles arrivent
+          setTimeout(() => { fetchAllVideos(); }, 30000);
+        } else if (vws === 0 && lks > 0) {
+          // Insta masque les vues sur certains posts
+          toast.success(`Vidéo trackée ✓ — ${lks.toLocaleString("fr-FR")} likes (vues masquées par Instagram)`, { duration: 6000 });
         } else {
-          toast.success(`Vidéo trackée ✓ — ${(v.views || 0).toLocaleString("fr-FR")} vues`);
+          toast.success(`Vidéo trackée ✓ — ${vws.toLocaleString("fr-FR")} vues`);
         }
         fetchAllVideos();
       } else {
@@ -1331,11 +1340,10 @@ function CampaignDashboard({ campaigns }) {
         toast.error(detail);
       }
     } catch (e) {
-      console.error("track-video error full details:", { name: e?.name, message: e?.message, stack: e?.stack, url: manualVideoForm.url, platform: manualVideoForm.platform });
-      // Diagnostic friendly: si Failed to fetch, c'est probablement extension navigateur ou réseau
+      console.error("import-link error:", { name: e?.name, message: e?.message, url: manualVideoForm.url, platform: manualVideoForm.platform });
       const isBrowserBlock = e?.message?.includes("Failed to fetch") || e?.name === "TypeError";
       if (isBrowserBlock) {
-        toast.error("Requête bloquée par le navigateur. Désactive AdBlock/extensions ou essaie en navigation privée.", { duration: 8000 });
+        toast.error("Requête bloquée par AdBlock/extensions. Désactive-le pour theclipdealtrack.com OU essaie en navigation privée (Ctrl+Shift+N).", { duration: 10000 });
       } else {
         toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
       }

@@ -533,14 +533,19 @@ async def create_session(request: Request):
         raise HTTPException(status_code=400, detail="session_id required")
     
     # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": session_id}
-        )
+    # Timeout 15s pour eviter de bloquer le worker FastAPI si demobackend hang (audit 200 clippeurs)
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            response = await client.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": session_id}
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="OAuth provider timeout, retry")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OAuth provider error: {type(e).__name__}")
         if response.status_code != 200:
             raise HTTPException(status_code=401, detail="Invalid session_id")
-        
         auth_data = response.json()
     
     user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -7708,13 +7713,15 @@ async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
+    # SECURITE: la signature Stripe est OBLIGATOIRE en prod (sinon n'importe qui credite des wallets via cURL)
+    if not STRIPE_WEBHOOK_SECRET:
+        logger.error("Stripe webhook called but STRIPE_WEBHOOK_SECRET not configured - rejecting for security")
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
     try:
-        if STRIPE_WEBHOOK_SECRET:
-            event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-        else:
-            event = json.loads(payload)
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(f"Stripe webhook signature verification failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
     if event.get("type") == "checkout.session.completed":
         session = event["data"]["object"]
