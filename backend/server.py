@@ -10992,6 +10992,41 @@ async def claim_clipper_finalize(token: str, body: dict, user: dict = Depends(ge
     return {"linked_count": len(linked), "linked_accounts": linked, "campaign_id": camp.get("campaign_id")}
 
 
+@api_router.post("/admin/preview-as/{user_id}")
+async def admin_preview_as(user_id: str, response: Response, request: Request, _: bool = Depends(verify_admin_code)):
+    """Pose un cookie session_token pour le user demande + retourne ok. Plus simple que Bearer."""
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1, "role": 1, "display_name": 1, "name": 1, "email": 1})
+    if not target and user_id.startswith("prospect_"):
+        # Cree ghost user a la volee pour les anciennes campagnes prospects
+        camp = await db.campaigns.find_one({"agency_id": user_id}, {"_id": 0, "agency_name": 1, "name": 1})
+        if camp:
+            agency_name = camp.get("agency_name") or camp.get("name") or "Agence prospect"
+            now_iso = datetime.now(timezone.utc).isoformat()
+            ghost = {
+                "user_id": user_id, "email": f"prospect+{user_id}@theclipdealtrack.local",
+                "name": agency_name, "display_name": agency_name, "agency_name": agency_name,
+                "role": "agency", "email_verified": True, "is_prospect_ghost": True, "created_at": now_iso,
+            }
+            await db.users.insert_one(ghost)
+            target = ghost
+    if not target:
+        raise HTTPException(status_code=404, detail=f"User {user_id} introuvable")
+    session_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    await db.user_sessions.insert_one({
+        "session_token": session_token, "user_id": user_id,
+        "expires_at": expires_at.isoformat(), "created_at": datetime.now(timezone.utc).isoformat(),
+        "is_admin_impersonation": True,
+    })
+    # Set le cookie immediatement -> le navigateur le posera sur le domaine
+    response.set_cookie(
+        key="session_token", value=session_token,
+        max_age=7200, samesite="lax", httponly=False,
+        path="/", secure=request.url.scheme == "https",
+    )
+    return {"ok": True, "user": {"user_id": target["user_id"], "role": target.get("role"), "display_name": target.get("display_name") or target.get("name") or target.get("email")}}
+
+
 @api_router.post("/admin/impersonate/{user_id}")
 async def admin_impersonate(user_id: str, request: Request, _: bool = Depends(verify_admin_code)):
     """Cree une session temporaire en tant qu'un autre user. Permet a l'admin d'agir comme l'agence pour test."""

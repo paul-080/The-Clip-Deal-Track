@@ -803,14 +803,14 @@ function ProspectsTab() {
                 onClick={async () => {
                   if (!p.agency_id) { toast.error("Pas d'agence ghost"); return; }
                   try {
-                    const res = await fetch(`${API}/admin/impersonate/${p.agency_id}`, {
-                      method: "POST",
+                    const res = await fetch(`${API}/admin/preview-as/${p.agency_id}`, {
+                      method: "POST", credentials: "include",
                       headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
                     });
                     if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
                     const d = await res.json();
-                    window.open(`/agency/campaign/${p.campaign_id}?admin_preview=1&session=${encodeURIComponent(d.session_token)}`, "_blank");
-                    toast.success(`Aperçu agence (2h)`);
+                    window.open(`/agency/campaign/${p.campaign_id}`, "_blank");
+                    toast.success(`✓ Aperçu (2h) - tu vas devoir te reconnecter en admin apres`);
                   } catch (e) { toast.error(e.message); }
                 }}
                 className="w-full py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 text-[#00E5FF] text-xs font-medium border border-[#00E5FF]/30 transition flex items-center justify-center gap-2">
