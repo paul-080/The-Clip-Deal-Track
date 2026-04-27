@@ -10888,51 +10888,28 @@ async def check_and_issue_strikes():
                 except (ValueError, AttributeError):
                     pass
 
-            # Check campagnes click : derniere activite sur click_links / click_events
-            if is_clicks_campaign:
-                try:
-                    last_link = await db.click_links.find_one(
-                        {"campaign_id": campaign_id, "clipper_id": user_id},
-                        {"_id": 0, "created_at": 1, "last_clicked_at": 1},
-                        sort=[("created_at", -1)]
-                    )
-                    if last_link:
-                        for k in ("last_clicked_at", "created_at"):
-                            v = last_link.get(k)
-                            if v:
-                                try:
-                                    dt = datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
-                                    if dt.tzinfo is None:
-                                        dt = dt.replace(tzinfo=timezone.utc)
-                                    if not last_activity or dt > last_activity:
-                                        last_activity = dt
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-
-            # Check campagnes vue : derniere video trackee (cas ou last_post_at pas update mais videos automatiquement scrapees)
-            if not is_clicks_campaign:
-                try:
-                    last_vid = await db.tracked_videos.find_one(
-                        {"campaign_id": campaign_id, "user_id": user_id},
-                        {"_id": 0, "fetched_at": 1, "published_at": 1},
-                        sort=[("published_at", -1)]
-                    )
-                    if last_vid:
-                        for k in ("published_at", "fetched_at"):
-                            v = last_vid.get(k)
-                            if v:
-                                try:
-                                    dt = datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
-                                    if dt.tzinfo is None:
-                                        dt = dt.replace(tzinfo=timezone.utc)
-                                    if not last_activity or dt > last_activity:
-                                        last_activity = dt
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
+            # Pour TOUS les types de campagne (vue ET clic) : check derniere video postee
+            # Le strike se base sur l'activite "poster une video" peu importe le payment_model
+            try:
+                last_vid = await db.tracked_videos.find_one(
+                    {"campaign_id": campaign_id, "user_id": user_id},
+                    {"_id": 0, "fetched_at": 1, "published_at": 1},
+                    sort=[("published_at", -1)]
+                )
+                if last_vid:
+                    for k in ("published_at", "fetched_at"):
+                        v = last_vid.get(k)
+                        if v:
+                            try:
+                                dt = datetime.fromisoformat(v.replace("Z", "+00:00")) if isinstance(v, str) else v
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                if not last_activity or dt > last_activity:
+                                    last_activity = dt
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
             if not last_activity:
                 # Aucune activite -> check joined_at
