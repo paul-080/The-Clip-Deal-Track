@@ -103,7 +103,6 @@ export default function ManagerDashboard() {
       ],
     })),
     ...(campaigns.length > 0 ? [{ type: "divider" }] : []),
-    { id: "advices", label: "Conseils", icon: ClipboardList, path: "/manager/advices" },
     { id: "support", label: "Support", icon: HelpCircle, path: "/manager/support", badge: supportUnread },
     { id: "settings", label: "Paramètres", icon: Settings, path: "/manager/settings" },
   ];
