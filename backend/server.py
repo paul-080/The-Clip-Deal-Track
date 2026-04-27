@@ -7095,35 +7095,27 @@ async def get_campaign_period_stats(
         period_label = {"24h": "24 dernières heures", "7d": "7 derniers jours",
                         "30d": "30 derniers jours", "year": "Cette année"}[period]
 
-    start_str = start.strftime("%Y-%m-%d")
-    end_str = end.strftime("%Y-%m-%d")
-
-    # ── Views aggregation via snapshots (delta = total_end - total_start) ──
-    views_in_period = 0
-    if period == "all":
-        # All-time = current total
-        latest = await db.views_snapshots.find_one(
-            {"campaign_id": campaign_id},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        views_in_period = latest["total_views"] if latest else 0
-    else:
-        # Snapshot at end of window
-        end_snap = await db.views_snapshots.find_one(
-            {"campaign_id": campaign_id, "date": {"$lte": end_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        # Snapshot just before window start (anchor)
-        start_snap = await db.views_snapshots.find_one(
-            {"campaign_id": campaign_id, "date": {"$lt": start_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        end_total = end_snap["total_views"] if end_snap else 0
-        start_total = start_snap["total_views"] if start_snap else 0
-        views_in_period = max(0, end_total - start_total)
+    # ── Views = somme des vues actuelles des vidéos PUBLIEES dans la période ──
+    # (cohérent avec views-chart : on agrège par published_at, pas par fetched_at)
+    views_match = {
+        "campaign_id": campaign_id,
+        "published_at": {"$ne": None},
+    }
+    pipeline = [
+        {"$match": views_match},
+        {"$addFields": {
+            "_pub_dt": {"$cond": [
+                {"$eq": [{"$type": "$published_at"}, "string"]},
+                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
+                "$published_at",
+            ]}
+        }},
+        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}} if period != "all" else {"$match": {}},
+        {"$group": {"_id": None, "views": {"$sum": "$views"}, "videos": {"$sum": 1}}},
+    ]
+    agg_res = await db.tracked_videos.aggregate(pipeline).to_list(1)
+    views_in_period = int(agg_res[0]["views"]) if agg_res else 0
+    videos_in_period = int(agg_res[0]["videos"]) if agg_res else 0
 
     # ── Earnings (depends on payment model) ──
     payment_model = campaign.get("payment_model", "views")
@@ -7134,7 +7126,6 @@ async def get_campaign_period_stats(
     clicks_in_period = 0
     unique_clicks_in_period = 0
 
-    # SI payment_model = "both", on cumule les 2 sources de gains (views + clicks)
     if payment_model in ("views", "both"):
         earnings_in_period += round((views_in_period / 1000) * rpm, 2)
     if payment_model in ("clicks", "both"):
@@ -7156,6 +7147,7 @@ async def get_campaign_period_stats(
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "views": views_in_period,
+        "videos": videos_in_period,
         "earnings": earnings_in_period,
         "clicks": clicks_in_period,
         "unique_clicks": unique_clicks_in_period,
@@ -7198,32 +7190,27 @@ async def get_my_period_stats(
         period_label = {"24h": "24 dernières heures", "7d": "7 derniers jours",
                         "30d": "30 derniers jours", "year": "Cette année"}[period]
 
-    start_str = start.strftime("%Y-%m-%d")
-    end_str = end.strftime("%Y-%m-%d")
-
-    # ── Views via user_views_snapshots (delta) ──
-    views_in_period = 0
-    if period == "all":
-        latest = await db.user_views_snapshots.find_one(
-            {"campaign_id": campaign_id, "user_id": user_id},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        views_in_period = latest["total_views"] if latest else 0
-    else:
-        end_snap = await db.user_views_snapshots.find_one(
-            {"campaign_id": campaign_id, "user_id": user_id, "date": {"$lte": end_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        start_snap = await db.user_views_snapshots.find_one(
-            {"campaign_id": campaign_id, "user_id": user_id, "date": {"$lt": start_str}},
-            {"_id": 0, "total_views": 1},
-            sort=[("date", -1)]
-        )
-        end_total = end_snap["total_views"] if end_snap else 0
-        start_total = start_snap["total_views"] if start_snap else 0
-        views_in_period = max(0, end_total - start_total)
+    # ── Views = somme des vues actuelles des vidéos PUBLIEES par ce clipper dans la période ──
+    views_match = {
+        "campaign_id": campaign_id,
+        "user_id": user_id,
+        "published_at": {"$ne": None},
+    }
+    pipeline = [
+        {"$match": views_match},
+        {"$addFields": {
+            "_pub_dt": {"$cond": [
+                {"$eq": [{"$type": "$published_at"}, "string"]},
+                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
+                "$published_at",
+            ]}
+        }},
+        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}} if period != "all" else {"$match": {}},
+        {"$group": {"_id": None, "views": {"$sum": "$views"}, "videos": {"$sum": 1}}},
+    ]
+    agg_res = await db.tracked_videos.aggregate(pipeline).to_list(1)
+    views_in_period = int(agg_res[0]["views"]) if agg_res else 0
+    videos_in_period = int(agg_res[0]["videos"]) if agg_res else 0
 
     payment_model = campaign.get("payment_model", "views")
     rpm = campaign.get("rpm", 0) or 0
