@@ -1069,6 +1069,12 @@ function CampaignDashboard({ campaigns }) {
   const [filterClipper, setFilterClipper] = useState("all");
   const [showManualVideoModal, setShowManualVideoModal] = useState(false);
   const [manualVideoForm, setManualVideoForm] = useState({ target: "", url: "", platform: "tiktok" });
+  // Mode "url" (URL directe) ou "account" (scrape compte + selection)
+  const [importMode, setImportMode] = useState("account");
+  const [scrapeUsername, setScrapeUsername] = useState("");
+  const [scrapedVideos, setScrapedVideos] = useState(null);
+  const [scrapingAccount, setScrapingAccount] = useState(false);
+  const [trackingVideoUrl, setTrackingVideoUrl] = useState(null);
   const [addingVideo, setAddingVideo] = useState(false);
   const [trackResult, setTrackResult] = useState(null); // { views, title, earnings }
   const [clickLinks, setClickLinks] = useState(null);      // { links, totals, rate_per_click }
@@ -1294,6 +1300,76 @@ function CampaignDashboard({ campaigns }) {
       }
     } catch { toast.error("Erreur réseau"); }
     finally { setDeletingCampaign(false); }
+  };
+
+  const handleScrapeAccount = async () => {
+    if (!scrapeUsername.trim()) return;
+    setScrapingAccount(true);
+    setScrapedVideos(null);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/list-account-videos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          username: scrapeUsername.trim().replace(/^@/, ""),
+          platform: manualVideoForm.platform,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScrapedVideos(data);
+        if ((data.videos || []).length === 0) {
+          toast.error("Aucune vidéo trouvée sur ce compte");
+        } else {
+          toast.success(`${data.videos.length} vidéos trouvées — clique sur celle à tracker`);
+        }
+      } else {
+        let detail = "Erreur scraping";
+        try { detail = (await res.json()).detail || detail; } catch {}
+        toast.error(detail);
+      }
+    } catch (e) {
+      toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
+    } finally {
+      setScrapingAccount(false);
+    }
+  };
+
+  const handleTrackVideoFromList = async (video) => {
+    setTrackingVideoUrl(video.url);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/import-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          url: video.url,
+          platform: manualVideoForm.platform,
+          target: manualVideoForm.target,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const v = data.video || video;
+        const vws = v.views || video.views || 0;
+        toast.success(`✓ Vidéo trackée — ${vws.toLocaleString("fr-FR")} vues`);
+        // Marque la vidéo comme déjà trackée dans la liste
+        setScrapedVideos(prev => prev ? {
+          ...prev,
+          videos: prev.videos.map(x => x.platform_video_id === video.platform_video_id ? { ...x, _tracked: true } : x)
+        } : prev);
+        fetchAllVideos();
+      } else {
+        let detail = "Erreur lors du tracking";
+        try { detail = (await res.json()).detail || detail; } catch {}
+        toast.error(detail);
+      }
+    } catch (e) {
+      toast.error(`Erreur: ${e?.message || "connexion impossible"}`);
+    } finally {
+      setTrackingVideoUrl(null);
+    }
   };
 
   const handleAddManualVideo = async () => {
@@ -2196,27 +2272,106 @@ function CampaignDashboard({ campaigns }) {
                   )}
                 </div>
 
-                {/* URL */}
+                {/* Mode toggle */}
                 <div>
-                  <label className="text-xs text-white/50 block mb-1.5">URL de la vidéo *</label>
-                  <input type="url" value={manualVideoForm.url}
-                    onChange={e => setManualVideoForm(f => ({ ...f, url: e.target.value }))}
-                    placeholder="https://www.tiktok.com/@..."
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                  <label className="text-xs text-white/50 block mb-1.5">Méthode</label>
+                  <div className="flex gap-2 bg-white/5 border border-white/10 rounded-lg p-1">
+                    <button onClick={() => { setImportMode("account"); setScrapedVideos(null); }}
+                      className={`flex-1 py-2 rounded-md text-xs font-medium transition-all ${importMode === "account" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                      🔍 Importer depuis un compte
+                    </button>
+                    <button onClick={() => setImportMode("url")}
+                      className={`flex-1 py-2 rounded-md text-xs font-medium transition-all ${importMode === "url" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                      🔗 URL directe
+                    </button>
+                  </div>
                 </div>
 
-                {/* Actions */}
-                <div className="flex gap-3 pt-2">
-                  <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); }}
-                    className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
-                    {trackResult ? "Fermer" : "Annuler"}
-                  </button>
-                  <button onClick={handleAddManualVideo}
-                    disabled={addingVideo || !manualVideoForm.url}
-                    className="flex-1 py-2.5 rounded-xl bg-[#f0c040] text-black font-semibold text-sm hover:bg-[#f0c040]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
-                    {addingVideo ? "Tracking..." : "Tracker cette vidéo"}
-                  </button>
-                </div>
+                {importMode === "url" ? (
+                  <>
+                    {/* URL directe */}
+                    <div>
+                      <label className="text-xs text-white/50 block mb-1.5">URL de la vidéo *</label>
+                      <input type="url" value={manualVideoForm.url}
+                        onChange={e => setManualVideoForm(f => ({ ...f, url: e.target.value }))}
+                        placeholder="https://www.tiktok.com/@..."
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                    </div>
+
+                    <div className="flex gap-3 pt-2">
+                      <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); setScrapedVideos(null); }}
+                        className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
+                        {trackResult ? "Fermer" : "Annuler"}
+                      </button>
+                      <button onClick={handleAddManualVideo}
+                        disabled={addingVideo || !manualVideoForm.url}
+                        className="flex-1 py-2.5 rounded-xl bg-[#f0c040] text-black font-semibold text-sm hover:bg-[#f0c040]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                        {addingVideo ? "Tracking..." : "Tracker cette vidéo"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Username scrape */}
+                    <div>
+                      <label className="text-xs text-white/50 block mb-1.5">Pseudo du compte (sans @) *</label>
+                      <div className="flex gap-2">
+                        <input type="text" value={scrapeUsername}
+                          onChange={e => setScrapeUsername(e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter" && scrapeUsername) handleScrapeAccount(); }}
+                          placeholder="ex: khaby.lame"
+                          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#f0c040]/50" />
+                        <button onClick={handleScrapeAccount}
+                          disabled={scrapingAccount || !scrapeUsername.trim()}
+                          className="px-4 py-2.5 rounded-lg bg-[#f0c040] text-black font-semibold text-sm hover:bg-[#f0c040]/90 disabled:opacity-40 transition-all">
+                          {scrapingAccount ? "Scrape..." : "Scraper"}
+                        </button>
+                      </div>
+                      <p className="text-xs text-white/30 mt-1">Plateforme sélectionnée : <span className="text-white/60 font-medium uppercase">{manualVideoForm.platform}</span></p>
+                    </div>
+
+                    {/* Liste des vidéos scrapées */}
+                    {scrapedVideos && (scrapedVideos.videos || []).length > 0 && (
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                        <p className="text-xs text-white/50">{(scrapedVideos.videos || []).length} vidéos trouvées — clique pour tracker</p>
+                        {scrapedVideos.videos.map((v) => {
+                          const isTracking = trackingVideoUrl === v.url;
+                          const isTracked = v._tracked;
+                          return (
+                            <button key={v.platform_video_id || v.url} onClick={() => !isTracked && handleTrackVideoFromList(v)}
+                              disabled={isTracking || isTracked}
+                              className={`w-full flex items-center gap-3 p-2.5 rounded-lg border transition-all text-left ${
+                                isTracked ? "bg-green-500/10 border-green-500/30" :
+                                isTracking ? "bg-white/5 border-white/20 opacity-60" :
+                                "bg-white/5 border-white/10 hover:border-[#f0c040]/40 hover:bg-white/10"
+                              }`}>
+                              {v.thumbnail_url && (
+                                <img src={v.thumbnail_url} alt="" className="w-12 h-12 rounded object-cover flex-shrink-0" onError={e => e.target.style.display = "none"} />
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-white text-xs truncate">{v.title || "Sans titre"}</p>
+                                <p className="text-white/40 text-[10px] mt-0.5">
+                                  {(v.views || 0).toLocaleString("fr-FR")} vues · {(v.likes || 0).toLocaleString("fr-FR")} likes
+                                  {v.published_at && ` · ${new Date(v.published_at).toLocaleDateString("fr-FR")}`}
+                                </p>
+                              </div>
+                              <span className="text-xs flex-shrink-0">
+                                {isTracked ? "✓ Tracké" : isTracking ? "..." : "Tracker"}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 pt-2">
+                      <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setScrapedVideos(null); setScrapeUsername(""); }}
+                        className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
+                        Fermer
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

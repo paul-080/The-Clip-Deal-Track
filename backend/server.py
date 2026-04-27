@@ -6625,6 +6625,43 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
     return {"message": "Tracking lancé en arrière-plan"}
 
 @api_router.post("/campaigns/{campaign_id}/import-link")
+@api_router.post("/campaigns/{campaign_id}/list-account-videos")
+async def list_account_videos(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """Scrape un compte (username + platform) et retourne ses dernieres videos pour que l'agence selectionne."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    username = (body.get("username") or "").lstrip("@").strip()
+    platform = (body.get("platform") or "").lower().strip()
+    if not username or platform not in ("tiktok", "instagram", "youtube"):
+        raise HTTPException(status_code=400, detail="username + platform (tiktok/instagram/youtube) requis")
+    # Use ClipScraper VPS qui marche pour TikTok+Insta+YT
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        raise HTTPException(status_code=503, detail="Scraper non configure")
+    try:
+        async with httpx.AsyncClient(timeout=120) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/{platform}/{username}",
+                params={"max_videos": 30},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Scraper {platform} HTTP {r.status_code}: {r.text[:200]}")
+        data = r.json() or {}
+        videos = data.get("videos") or []
+        profile = data.get("profile") or {}
+        return {
+            "username": username,
+            "platform": platform,
+            "profile": profile,
+            "videos": videos,
+            "count": len(videos),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur scraping : {type(e).__name__}: {e}")
+
+
 @api_router.post("/campaigns/{campaign_id}/add-video")
 @api_router.post("/campaigns/{campaign_id}/track-video")
 async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
