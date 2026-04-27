@@ -1303,7 +1303,14 @@ function CampaignDashboard({ campaigns }) {
       if (res.ok) {
         const data = await res.json();
         setCampaign(data.campaign);
-        toast.success("Paramètres sauvegardés ✓");
+        if (data.backfill_started) {
+          toast.success("Paramètres sauvegardés ✓ — Backfill lancé : les vidéos depuis la nouvelle date sont en cours de récupération (peut prendre 1-5 min)", { duration: 8000 });
+          // Rafraichit la liste des videos après quelques secondes
+          setTimeout(() => { fetchAllVideos(); fetchAllAccounts(); }, 60000);
+          setTimeout(() => { fetchAllVideos(); fetchAllAccounts(); }, 180000);
+        } else {
+          toast.success("Paramètres sauvegardés ✓");
+        }
       } else {
         const err = await res.json();
         toast.error(err.detail || "Erreur lors de la sauvegarde");

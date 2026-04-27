@@ -10882,13 +10882,99 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
     if not updates:
         raise HTTPException(status_code=400, detail="Aucun champ modifiable fourni")
 
+    # Détecte si tracking_start_date est reculée → besoin de backfill
+    old_start = _parse_utc(campaign.get("tracking_start_date"))
+    new_start = _parse_utc(updates.get("tracking_start_date")) if "tracking_start_date" in updates else None
+    needs_backfill = (
+        new_start is not None
+        and (old_start is None or new_start < old_start)
+    )
+
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.campaigns.update_one({"campaign_id": campaign_id}, {"$set": updates})
 
-    # If RPM changed and campaign was paused due to budget exhaustion, keep paused — agency must add budget to relaunch
-    # If campaign was paused due to budget and budget is reloaded (handled in add-budget), auto-reactivate there
+    # Backfill : re-scrape tous les comptes de la campagne sur la fenêtre adaptée
+    if needs_backfill:
+        async def _backfill_campaign(cid: str, cutoff: datetime):
+            try:
+                cam = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+                if not cam:
+                    return
+                rpm = cam.get("rpm", 0)
+                # Calcule la fenêtre nécessaire : nombre de jours depuis la nouvelle date
+                days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+                since_days = min(days_back, 365)  # max 1 an pour ne pas exploser les API
+                logger.info(f"Backfill campaign {cid} : tracking_start_date reculée, scrape sur {since_days} jours")
+
+                assignments = await db.campaign_social_accounts.find(
+                    {"campaign_id": cid}, {"_id": 0}
+                ).to_list(500)
+                for a in assignments:
+                    acc_id = a.get("account_id")
+                    uid = a.get("user_id")
+                    if not acc_id or not uid:
+                        continue
+                    acc = await db.social_accounts.find_one(
+                        {"account_id": acc_id, "status": "verified"}, {"_id": 0}
+                    )
+                    if not acc:
+                        continue
+                    plat = acc.get("platform")
+                    uname = acc.get("username")
+                    try:
+                        videos = await fetch_videos(plat, uname, acc, since_days=since_days)
+                    except Exception as fe:
+                        logger.warning(f"Backfill fetch_videos failed for {plat}/@{uname}: {fe}")
+                        continue
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    inserted = 0
+                    for vid in videos:
+                        if not vid.get("platform_video_id"):
+                            continue
+                        pub_dt = _parse_utc(vid.get("published_at"))
+                        if pub_dt and pub_dt < cutoff:
+                            continue  # avant la nouvelle tracking_start_date
+                        earnings = (vid.get("views", 0) / 1000) * rpm
+                        set_fields = {
+                            "platform_video_id": vid["platform_video_id"],
+                            "account_id": acc_id,
+                            "user_id": uid,
+                            "campaign_id": cid,
+                            "platform": plat,
+                            "url": vid.get("url", ""),
+                            "title": vid.get("title"),
+                            "thumbnail_url": vid.get("thumbnail_url"),
+                            "views": vid.get("views", 0),
+                            "likes": vid.get("likes", 0),
+                            "comments": vid.get("comments", 0),
+                            "published_at": vid.get("published_at"),
+                            "fetched_at": now_iso,
+                            "earnings": round(earnings, 4),
+                            "manually_added": False,
+                            "simulated": False,
+                        }
+                        try:
+                            await db.tracked_videos.update_one(
+                                {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
+                                {"$set": set_fields,
+                                 "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
+                                upsert=True
+                            )
+                            inserted += 1
+                        except Exception:
+                            pass
+                    await db.social_accounts.update_one(
+                        {"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}}
+                    )
+                    logger.info(f"Backfill {plat}/@{uname} : {inserted} vidéos insérées/mises à jour")
+                logger.info(f"Backfill campaign {cid} terminé")
+            except Exception as e:
+                logger.error(f"Backfill campaign {cid} error: {e}")
+
+        asyncio.create_task(_backfill_campaign(campaign_id, new_start))
+
     updated = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
-    return {"campaign": updated}
+    return {"campaign": updated, "backfill_started": needs_backfill}
 
 
 @api_router.post("/campaigns/{campaign_id}/leave")
