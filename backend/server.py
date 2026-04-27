@@ -6996,8 +6996,14 @@ async def delete_manual_video(campaign_id: str, video_id: str, user: dict = Depe
 
 @api_router.get("/campaigns/{campaign_id}/messages")
 async def get_messages(campaign_id: str, user: dict = Depends(get_current_user)):
+    # Le canal "manager" est privé entre agence et manager.
+    # On le cache aux clippeurs et clients pour qu'il n'apparaisse meme pas dans le reseau.
+    role = user.get("role")
+    query = {"campaign_id": campaign_id}
+    if role not in ("agency", "manager"):
+        query["message_type"] = {"$ne": "manager"}
     messages = await db.messages.find(
-        {"campaign_id": campaign_id},
+        query,
         {"_id": 0}
     ).sort("created_at", -1).to_list(200)
     result = list(reversed(messages))
@@ -7037,11 +7043,15 @@ async def get_unread_counts(user: dict = Depends(get_current_user)):
     seen_map = {d["campaign_id"]: d.get("last_seen_at") for d in seen_docs}
 
     # 1 aggregation: count unread per campaign
+    # Cache les messages du canal "manager" aux clippeurs/clients
+    match_filter = {
+        "campaign_id": {"$in": campaign_ids},
+        "sender_id": {"$ne": uid},
+    }
+    if user.get("role") not in ("agency", "manager"):
+        match_filter["message_type"] = {"$ne": "manager"}
     pipeline = [
-        {"$match": {
-            "campaign_id": {"$in": campaign_ids},
-            "sender_id": {"$ne": uid},
-        }},
+        {"$match": match_filter},
         {"$group": {
             "_id": "$campaign_id",
             "latest": {"$max": "$created_at"},
@@ -7091,6 +7101,10 @@ async def send_message(message_data: MessageCreate, user: dict = Depends(get_cur
         if member and member.get("status") == "pending":
             raise HTTPException(status_code=403, detail="Ta candidature est en attente de validation. Tu pourras écrire dans le chat une fois accepté.")
 
+    # Canal "manager" privé : reservé à agence + manager
+    if message_data.message_type == "manager" and user.get("role") not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Canal réservé à l'agence et au manager.")
+
     message = {
         "message_id": f"msg_{uuid.uuid4().hex[:12]}",
         "campaign_id": message_data.campaign_id,
@@ -7103,15 +7117,34 @@ async def send_message(message_data: MessageCreate, user: dict = Depends(get_cur
         "image_data": message_data.image_data,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.messages.insert_one(message)
     message.pop("_id", None)
-    
-    await manager.broadcast_to_campaign(message_data.campaign_id, {
-        "type": "new_message",
-        "message": message
-    })
-    
+
+    # Broadcast restreint pour le canal manager : seulement agence + managers
+    if message_data.message_type == "manager":
+        # Recupere agence + managers de la campagne
+        camp = await db.campaigns.find_one({"campaign_id": message_data.campaign_id}, {"_id": 0, "agency_id": 1})
+        recipient_ids = set()
+        if camp and camp.get("agency_id"):
+            recipient_ids.add(camp["agency_id"])
+        manager_members = await db.campaign_members.find(
+            {"campaign_id": message_data.campaign_id, "role": "manager"},
+            {"_id": 0, "user_id": 1}
+        ).to_list(50)
+        for m in manager_members:
+            if m.get("user_id"):
+                recipient_ids.add(m["user_id"])
+        await asyncio.gather(*[
+            manager.send_to_user(uid, {"type": "new_message", "message": message})
+            for uid in recipient_ids
+        ], return_exceptions=True)
+    else:
+        await manager.broadcast_to_campaign(message_data.campaign_id, {
+            "type": "new_message",
+            "message": message
+        })
+
     return message
 
 @api_router.post("/messages/{message_id}/react")

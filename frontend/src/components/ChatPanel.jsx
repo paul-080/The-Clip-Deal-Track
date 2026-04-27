@@ -6,7 +6,7 @@ import {
   Send, HelpCircle, Lightbulb, DollarSign, Eye, EyeOff,
   CheckCircle, CreditCard, ChevronLeft, User, AlertCircle,
   MessageSquare, ExternalLink, MousePointerClick, Copy, Check,
-  Megaphone, ImageIcon, Users, X
+  Megaphone, ImageIcon, Users, X, Shield
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -255,7 +255,7 @@ export default function ChatPanel({ campaigns }) {
   const [paymentSummary, setPaymentSummary] = useState(null);
   const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [receivedAdvices, setReceivedAdvices] = useState([]);
-  const [tabUnread, setTabUnread] = useState({ questions: 0, conseils: 0 });
+  const [tabUnread, setTabUnread] = useState({ questions: 0, conseils: 0, manager: 0 });
   const [claimingPayment, setClaimingPayment] = useState(false);
   const [ibanVisible, setIbanVisible] = useState(false);
   const [annonces, setAnnonces] = useState([]);
@@ -539,6 +539,12 @@ export default function ChatPanel({ campaigns }) {
                 conseils: curTab === "conseils" ? 0 : (prev.conseils || 0) + 1,
               }));
               if (curTab === "conseils") saveLastSeen("conseils");
+            } else if (msgType === "manager") {
+              setTabUnread(prev => ({
+                ...prev,
+                manager: curTab === "manager" ? 0 : (prev.manager || 0) + 1,
+              }));
+              if (curTab === "manager") saveLastSeen("manager");
             }
           }
         }
@@ -638,6 +644,7 @@ export default function ChatPanel({ campaigns }) {
     if (activeTab === "conseils") return "conseil";
     if (activeTab === "remuneration") return "remuneration";
     if (activeTab === "paiement") return "remuneration";
+    if (activeTab === "manager") return "manager";
     return "question";
   };
 
@@ -811,6 +818,7 @@ export default function ChatPanel({ campaigns }) {
   const conseilChatMessages = messages.filter(m => m.message_type === "conseil");
   const remunerationMessages = messages.filter(m => m.message_type === "remuneration");
   const visibleAnnonces = messages.filter(m => m.message_type === "annonce");
+  const managerMessages = messages.filter(m => m.message_type === "manager");
 
   const visibleMessages = selectedClipper
     ? questionMessages.filter(m => m.sender_id === selectedClipper.user_id || m.sender_id === user?.user_id)
@@ -843,6 +851,7 @@ export default function ChatPanel({ campaigns }) {
     { id: "annonces", label: "Annonces", icon: Megaphone },
     { id: "questions", label: "Questions", icon: HelpCircle },
     { id: "conseils", label: "Conseils", icon: Lightbulb },
+    ...(isAgency ? [{ id: "manager", label: "Manager", icon: Shield }] : []),
     ...(isAgencyOnly ? [{ id: "paiement", label: "Paiement", icon: DollarSign }] : []),
     ...(isClipper ? [{ id: "remuneration", label: "Rémunération", icon: DollarSign }] : []),
   ];
@@ -947,6 +956,7 @@ export default function ChatPanel({ campaigns }) {
             else if (tab.id === "conseils" && isAgency) badge = clippers.filter(c => c.needs_advice).length;
             else if (tab.id === "paiement") badge = paymentSummary?.clippers?.filter(c => c.owed > 0).length || 0;
             else if (tab.id === "annonces") badge = visibleAnnonces.filter(a => a.created_at > getLastSeen("annonces")).length;
+            else if (tab.id === "manager") badge = managerMessages.filter(m => m.sender_id !== user?.user_id && m.created_at > getLastSeen("manager")).length;
 
             const isActive = activeTab === tab.id;
             return (
@@ -957,11 +967,13 @@ export default function ChatPanel({ campaigns }) {
                   isActive
                     ? tab.id === "paiement" || tab.id === "remuneration"
                       ? "bg-[#f0c040]/15 text-[#f0c040] border-[#f0c040]/25"
-                      : tab.id === "annonces" || tab.id === "conseils"
-                        ? "bg-[#FF007F]/15 text-[#FF007F] border-[#FF007F]/25"
-                        : isClipper
-                          ? "bg-[#00E5FF]/15 text-[#00E5FF] border-[#00E5FF]/25"
-                          : "bg-[#FF007F]/15 text-[#FF007F] border-[#FF007F]/25"
+                      : tab.id === "manager"
+                        ? "bg-[#39FF14]/15 text-[#39FF14] border-[#39FF14]/25"
+                        : tab.id === "annonces" || tab.id === "conseils"
+                          ? "bg-[#FF007F]/15 text-[#FF007F] border-[#FF007F]/25"
+                          : isClipper
+                            ? "bg-[#00E5FF]/15 text-[#00E5FF] border-[#00E5FF]/25"
+                            : "bg-[#FF007F]/15 text-[#FF007F] border-[#FF007F]/25"
                     : "text-white/40 hover:text-white/70 hover:bg-white/5 border-transparent"
                 }`}
               >
@@ -969,7 +981,7 @@ export default function ChatPanel({ campaigns }) {
                 {tab.label}
                 {badge > 0 && (
                   <span className="flex items-center justify-center min-w-[18px] h-[18px] rounded-full text-[10px] font-bold text-black px-1"
-                    style={{ backgroundColor: tab.id === "questions" ? "#00E5FF" : (tab.id === "annonces" || tab.id === "conseils") ? "#FF007F" : "#f0c040" }}>
+                    style={{ backgroundColor: tab.id === "questions" ? "#00E5FF" : (tab.id === "annonces" || tab.id === "conseils") ? "#FF007F" : tab.id === "manager" ? "#39FF14" : "#f0c040" }}>
                     {badge > 99 ? "99+" : badge}
                   </span>
                 )}
@@ -1673,6 +1685,53 @@ export default function ChatPanel({ campaigns }) {
                 );
               })()}
             </>
+          )}
+
+          {/* ════════════════════════════════════════════════════════════
+              ONGLET MANAGER — Privé entre agence et manager(s)
+          ════════════════════════════════════════════════════════════ */}
+          {activeTab === "manager" && isAgency && (
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* Header info */}
+              <div className="flex-shrink-0 px-4 py-2.5 border-b border-white/8 bg-[#39FF14]/5 flex items-center gap-2">
+                <Shield className="w-3.5 h-3.5 text-[#39FF14]" />
+                <p className="text-[11px] text-[#39FF14]/90 font-medium">
+                  Canal privé — visible uniquement par l'agence et le(s) manager(s) de cette campagne
+                </p>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+                {managerMessages.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <Shield className="w-10 h-10 text-[#39FF14]/20 mb-3" />
+                    <p className="text-white/30 text-sm">Aucun message dans le canal Manager</p>
+                    <p className="text-white/15 text-xs mt-1">Discutez en privé entre agence et manager</p>
+                  </div>
+                ) : (
+                  managerMessages.map(msg => (
+                    <MessageBubble
+                      key={msg.message_id}
+                      msg={msg}
+                      userId={user?.user_id}
+                      isAgency={isAgency}
+                      onReact={handleReact}
+                    />
+                  ))
+                )}
+              </div>
+
+              {/* Input */}
+              <ChatInput
+                value={newMessage}
+                onChange={handleMsgChange}
+                onKeyDown={handleMsgKeyDown}
+                onSend={handleSendMessage}
+                sending={sending}
+                placeholder="Message privé agence ↔ manager..."
+                buttonColor="#39FF14"
+              />
+            </div>
           )}
 
         </div>
