@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, API } from "../App";
 import Sidebar from "../components/Sidebar";
+import ScrapeStatusPanel from "../components/ScrapeStatusPanel";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import {
@@ -768,6 +769,9 @@ function CampaignDashboard({ campaigns }) {
           </button>
         </div>
       </div>
+
+      {/* Panel scraping (horaires + statut + force-scrape) */}
+      <ScrapeStatusPanel campaignId={campaignId} onScrapeComplete={() => { fetchAllVideos(); fetchAllAccounts(); }} />
 
       {/* TABS */}
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">

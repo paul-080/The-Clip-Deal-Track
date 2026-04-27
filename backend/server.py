@@ -12,7 +12,11 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dt_time
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 import json
 import asyncio
 import concurrent.futures
@@ -5365,6 +5369,106 @@ async def fetch_single_video_by_url(url: str, platform: str) -> dict:
         return await _fetch_single_instagram_video(url)
     raise ValueError(f"Plateforme non supportée: {platform}")
 
+async def _scrape_one_account_into_campaign(
+    account: dict,
+    campaign: dict,
+    cutoff: datetime,
+    since_days: int = 30,
+    wait_verification: bool = True,
+) -> dict:
+    """Helper centralisé : scrape un compte dans une campagne.
+    Retourne {ok, inserted, error, platform, username}.
+    Réutilisable par : /track-account, /force-scrape, backfill, run_video_tracking.
+    """
+    acc_id = account.get("account_id")
+    plat = account.get("platform")
+    uname = account.get("username")
+    uid = account.get("user_id")
+    cid = campaign.get("campaign_id")
+    rpm = campaign.get("rpm", 0) or 0
+
+    # Attente vérification (si compte fraîchement créé)
+    if wait_verification and account.get("status") != "verified":
+        for _ in range(45):  # max 90s
+            fresh = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+            if not fresh:
+                return {"ok": False, "error": "compte introuvable", "platform": plat, "username": uname}
+            if fresh.get("status") == "verified":
+                account = fresh
+                break
+            if fresh.get("status") == "error":
+                return {"ok": False, "error": fresh.get("error_message") or "verification failed", "platform": plat, "username": uname}
+            await asyncio.sleep(2)
+        else:
+            return {"ok": False, "error": "verification timeout (>90s)", "platform": plat, "username": uname}
+
+    # Fetch avec retry (1 retry après 5s si exception)
+    videos = []
+    last_err = None
+    for attempt in range(2):
+        try:
+            videos = await fetch_videos(plat, uname, account, since_days=since_days)
+            break
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"Scrape attempt {attempt+1} failed for {plat}/@{uname}: {e}")
+            if attempt < 1:
+                await asyncio.sleep(5)
+    if not videos and last_err:
+        return {"ok": False, "error": last_err, "platform": plat, "username": uname}
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    inserted = 0
+    skipped_pre_cutoff = 0
+    for vid in videos:
+        if not vid.get("platform_video_id"):
+            continue
+        pub_dt = _parse_utc(vid.get("published_at"))
+        if pub_dt and cutoff and pub_dt < cutoff:
+            skipped_pre_cutoff += 1
+            continue
+        earnings = (vid.get("views", 0) / 1000) * rpm
+        set_fields = {
+            "platform_video_id": vid["platform_video_id"],
+            "account_id": acc_id,
+            "user_id": uid,
+            "campaign_id": cid,
+            "platform": plat,
+            "url": vid.get("url", ""),
+            "title": vid.get("title"),
+            "thumbnail_url": vid.get("thumbnail_url"),
+            "views": vid.get("views", 0),
+            "likes": vid.get("likes", 0),
+            "comments": vid.get("comments", 0),
+            "published_at": vid.get("published_at"),
+            "fetched_at": now_iso,
+            "earnings": round(earnings, 4),
+            "manually_added": False,
+            "simulated": False,
+        }
+        try:
+            await db.tracked_videos.update_one(
+                {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
+                {"$set": set_fields,
+                 "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
+                upsert=True
+            )
+            inserted += 1
+        except Exception as e:
+            logger.warning(f"Insert tracked_video failed: {e}")
+
+    await db.social_accounts.update_one(
+        {"account_id": acc_id},
+        {"$set": {"last_tracked_at": now_iso, "last_scrape_error": None}}
+    )
+    logger.info(f"Scrape OK {plat}/@{uname} → {inserted} vidéos insérées (skipped pre-cutoff: {skipped_pre_cutoff})")
+    return {
+        "ok": True, "inserted": inserted, "fetched": len(videos),
+        "skipped_pre_cutoff": skipped_pre_cutoff,
+        "platform": plat, "username": uname,
+    }
+
+
 async def fetch_videos(platform: str, username: str, account: dict, since_days: int = 30) -> list:
     service_map = {"youtube": "youtube", "tiktok": "apify", "instagram": "apify"}
     success = True
@@ -5668,13 +5772,188 @@ async def run_video_tracking():
         logger.warning(f"Failed to store global snapshot: {e}")
     logger.info("Video tracking run complete.")
 
+# ── Horaires fixes de scraping (Europe/Paris) ─────────────────────────────────
+# Affichés aux agences/clippeurs sur la campagne. Modifiables ici en 1 endroit.
+SCRAPE_SCHEDULE_PARIS = [(7, 30), (12, 0), (15, 30), (22, 0)]
+PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else timezone.utc
+
+
+def _next_scrape_time_utc(now_utc: datetime = None) -> datetime:
+    """Retourne le prochain horaire de scrape (en UTC) selon SCRAPE_SCHEDULE_PARIS."""
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    now_paris = now_utc.astimezone(PARIS_TZ)
+    candidates = []
+    # Aujourd'hui
+    for h, m in SCRAPE_SCHEDULE_PARIS:
+        cand = now_paris.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand > now_paris:
+            candidates.append(cand)
+    # Demain (au cas où plus rien aujourd'hui)
+    tomorrow = now_paris + timedelta(days=1)
+    for h, m in SCRAPE_SCHEDULE_PARIS:
+        cand = tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
+        candidates.append(cand)
+    next_paris = min(candidates)
+    return next_paris.astimezone(timezone.utc)
+
+
 async def track_videos_loop():
+    """Scrape sur horaires fixes (heure de Paris) plutôt que toutes les 6h.
+    Voir SCRAPE_SCHEDULE_PARIS en haut du fichier."""
     while True:
         try:
             await run_video_tracking()
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
-        await asyncio.sleep(6 * 3600)  # toutes les 6h — économise les crédits Apify
+        # Attend le prochain horaire programmé
+        next_run = _next_scrape_time_utc()
+        sleep_seconds = max(60, (next_run - datetime.now(timezone.utc)).total_seconds())
+        next_paris = next_run.astimezone(PARIS_TZ).strftime("%H:%M")
+        logger.info(f"Next scrape scheduled at {next_paris} Paris ({sleep_seconds/3600:.1f}h sleep)")
+        await asyncio.sleep(sleep_seconds)
+
+
+@api_router.get("/scrape-schedule")
+async def get_scrape_schedule():
+    """Retourne les horaires de scrape (Europe/Paris) + le prochain en UTC.
+    Public — affiché sur les campagnes."""
+    next_utc = _next_scrape_time_utc()
+    return {
+        "timezone": "Europe/Paris",
+        "schedule": [f"{h:02d}:{m:02d}" for h, m in SCRAPE_SCHEDULE_PARIS],
+        "next_scrape_utc": next_utc.isoformat(),
+        "next_scrape_paris": next_utc.astimezone(PARIS_TZ).strftime("%H:%M"),
+    }
+
+
+@api_router.post("/campaigns/{campaign_id}/force-scrape")
+async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Force le scraping immédiat de TOUS les comptes d'une campagne.
+    Réservé agence/manager. Renvoie un résumé détaillé après ~30-60s."""
+    if user.get("role") not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if user.get("role") == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+    if user.get("role") == "manager":
+        m = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
+        if not m:
+            raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
+
+    # Calcule cutoff = tracking_start_date sinon assigned_at par compte
+    campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
+    days_back = 30
+    if campaign_tracking_start:
+        days_back = max(2, int((datetime.now(timezone.utc) - campaign_tracking_start).total_seconds() / 86400) + 2)
+        days_back = min(days_back, 365)
+
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    if not assignments:
+        return {"ok": True, "message": "Aucun compte assigné à cette campagne", "results": []}
+
+    # Lance les scrapes en parallèle (max 5 concurrents)
+    semaphore = asyncio.Semaphore(5)
+
+    async def _scrape_with_semaphore(assignment):
+        async with semaphore:
+            acc_id = assignment.get("account_id")
+            account = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+            if not account:
+                return {"ok": False, "error": "compte DB introuvable", "username": "?", "platform": "?"}
+            cutoff = campaign_tracking_start or _parse_utc(assignment.get("assigned_at")) or datetime.now(timezone.utc) - timedelta(days=30)
+            return await _scrape_one_account_into_campaign(
+                account, campaign, cutoff, since_days=days_back, wait_verification=False
+            )
+
+    results = await asyncio.gather(*[_scrape_with_semaphore(a) for a in assignments], return_exceptions=True)
+    final_results = []
+    total_inserted = 0
+    total_errors = 0
+    for r in results:
+        if isinstance(r, Exception):
+            final_results.append({"ok": False, "error": str(r), "username": "?", "platform": "?"})
+            total_errors += 1
+        else:
+            final_results.append(r)
+            if r.get("ok"):
+                total_inserted += r.get("inserted", 0)
+            else:
+                total_errors += 1
+
+    # Marque la campagne avec last_force_scrape
+    await db.campaigns.update_one(
+        {"campaign_id": campaign_id},
+        {"$set": {
+            "last_force_scrape_at": datetime.now(timezone.utc).isoformat(),
+            "last_force_scrape_by": user["user_id"],
+        }}
+    )
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "accounts_scraped": len(assignments),
+        "total_videos_inserted": total_inserted,
+        "total_errors": total_errors,
+        "since_days": days_back,
+        "results": final_results,
+    }
+
+
+@api_router.get("/campaigns/{campaign_id}/scrape-status")
+async def get_campaign_scrape_status(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Retourne le status de scraping de chaque compte (last_tracked_at, errors).
+    Permet à l'agence de savoir où en est le scraping."""
+    if user.get("role") not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    account_ids = [a["account_id"] for a in assignments]
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}},
+        {"_id": 0, "account_id": 1, "platform": 1, "username": 1, "status": 1,
+         "last_tracked_at": 1, "error_message": 1, "last_scrape_error": 1, "user_id": 1}
+    ).to_list(500)
+
+    # Compte des vidéos par account
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id, "account_id": {"$in": account_ids}}},
+        {"$group": {"_id": "$account_id", "count": {"$sum": 1}, "total_views": {"$sum": "$views"}}},
+    ]
+    video_stats = await db.tracked_videos.aggregate(pipeline).to_list(500)
+    stats_map = {s["_id"]: s for s in video_stats}
+
+    enriched = []
+    for acc in accounts:
+        st = stats_map.get(acc["account_id"], {})
+        enriched.append({
+            **acc,
+            "videos_tracked": st.get("count", 0),
+            "total_views": st.get("total_views", 0),
+        })
+
+    next_scrape = _next_scrape_time_utc()
+    return {
+        "campaign_id": campaign_id,
+        "tracking_start_date": campaign.get("tracking_start_date"),
+        "last_force_scrape_at": campaign.get("last_force_scrape_at"),
+        "next_auto_scrape_paris": next_scrape.astimezone(PARIS_TZ).strftime("%H:%M"),
+        "next_auto_scrape_utc": next_scrape.isoformat(),
+        "scrape_schedule_paris": [f"{h:02d}:{m:02d}" for h, m in SCRAPE_SCHEDULE_PARIS],
+        "accounts": enriched,
+    }
 
 # ================= SOCIAL ACCOUNTS =================
 
@@ -5971,70 +6250,29 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         "assigned_by": user["user_id"],
     })
 
-    # Trigger immediate scrape — utilise tracking_start_date si défini, sinon "now"
+    # Trigger immediate scrape — utilise tracking_start_date si défini, sinon now-30j
     campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
     cutoff = campaign_tracking_start if campaign_tracking_start else datetime.now(timezone.utc)
+    days_back = 30
+    if campaign_tracking_start:
+        days_back = max(2, int((datetime.now(timezone.utc) - campaign_tracking_start).total_seconds() / 86400) + 2)
+        days_back = min(days_back, 365)
 
-    async def _scrape_now(acc_id: str, cid: str, uid: str, plat: str, uname: str, cut: datetime):
-        # Attend la verification du compte si il vient juste d'etre cree
-        for _ in range(30):  # max 60s wait
-            acc = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
-            if acc and acc.get("status") == "verified":
-                break
-            if acc and acc.get("status") == "error":
-                logger.warning(f"Track-account: compte @{uname} ({plat}) en erreur, scrape annulé")
-                return
-            await asyncio.sleep(2)
+    async def _scrape_after_create():
         try:
-            acc = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
-            if not acc or acc.get("status") != "verified":
-                return
-            camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
-            rpm = (camp or {}).get("rpm", 0)
-            videos = await fetch_videos(plat, uname, acc, since_days=30)
-            now_iso = datetime.now(timezone.utc).isoformat()
-            inserted = 0
-            for vid in videos:
-                if not vid.get("platform_video_id"):
-                    continue
-                pub_dt = _parse_utc(vid.get("published_at"))
-                if pub_dt and pub_dt < cut:
-                    continue
-                earnings = (vid["views"] / 1000) * rpm
-                set_fields = {
-                    "platform_video_id": vid["platform_video_id"],
-                    "account_id": acc_id,
-                    "user_id": uid,
-                    "campaign_id": cid,
-                    "platform": plat,
-                    "url": vid.get("url", ""),
-                    "title": vid.get("title"),
-                    "thumbnail_url": vid.get("thumbnail_url"),
-                    "views": vid["views"],
-                    "likes": vid["likes"],
-                    "comments": vid["comments"],
-                    "published_at": vid.get("published_at"),
-                    "fetched_at": now_iso,
-                    "earnings": round(earnings, 4),
-                    "manually_added": False,
-                    "simulated": False,
-                }
-                try:
-                    await db.tracked_videos.update_one(
-                        {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
-                        {"$set": set_fields,
-                         "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
-                        upsert=True
-                    )
-                    inserted += 1
-                except Exception:
-                    pass
-            await db.social_accounts.update_one({"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}})
-            logger.info(f"Track-account scrape: {inserted} vidéos pour @{uname} ({plat}) sur campagne {cid}")
+            acc_doc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+            if acc_doc:
+                await _scrape_one_account_into_campaign(
+                    acc_doc, campaign, cutoff, since_days=days_back, wait_verification=True
+                )
         except Exception as e:
-            logger.warning(f"Track-account scrape failed for {acc_id}: {e}")
+            logger.error(f"Track-account post-create scrape failed: {e}")
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {"last_scrape_error": str(e)[:500]}}
+            )
 
-    asyncio.create_task(_scrape_now(account_id, campaign_id, target_user_id, platform, username, cutoff))
+    asyncio.create_task(_scrape_after_create())
 
     return {"account_id": account_id, "ok": True}
 
@@ -10900,74 +11138,32 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
                 cam = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
                 if not cam:
                     return
-                rpm = cam.get("rpm", 0)
-                # Calcule la fenêtre nécessaire : nombre de jours depuis la nouvelle date
                 days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
-                since_days = min(days_back, 365)  # max 1 an pour ne pas exploser les API
+                since_days = min(days_back, 365)
                 logger.info(f"Backfill campaign {cid} : tracking_start_date reculée, scrape sur {since_days} jours")
 
                 assignments = await db.campaign_social_accounts.find(
                     {"campaign_id": cid}, {"_id": 0}
                 ).to_list(500)
-                for a in assignments:
-                    acc_id = a.get("account_id")
-                    uid = a.get("user_id")
-                    if not acc_id or not uid:
-                        continue
-                    acc = await db.social_accounts.find_one(
-                        {"account_id": acc_id, "status": "verified"}, {"_id": 0}
-                    )
-                    if not acc:
-                        continue
-                    plat = acc.get("platform")
-                    uname = acc.get("username")
-                    try:
-                        videos = await fetch_videos(plat, uname, acc, since_days=since_days)
-                    except Exception as fe:
-                        logger.warning(f"Backfill fetch_videos failed for {plat}/@{uname}: {fe}")
-                        continue
-                    now_iso = datetime.now(timezone.utc).isoformat()
-                    inserted = 0
-                    for vid in videos:
-                        if not vid.get("platform_video_id"):
-                            continue
-                        pub_dt = _parse_utc(vid.get("published_at"))
-                        if pub_dt and pub_dt < cutoff:
-                            continue  # avant la nouvelle tracking_start_date
-                        earnings = (vid.get("views", 0) / 1000) * rpm
-                        set_fields = {
-                            "platform_video_id": vid["platform_video_id"],
-                            "account_id": acc_id,
-                            "user_id": uid,
-                            "campaign_id": cid,
-                            "platform": plat,
-                            "url": vid.get("url", ""),
-                            "title": vid.get("title"),
-                            "thumbnail_url": vid.get("thumbnail_url"),
-                            "views": vid.get("views", 0),
-                            "likes": vid.get("likes", 0),
-                            "comments": vid.get("comments", 0),
-                            "published_at": vid.get("published_at"),
-                            "fetched_at": now_iso,
-                            "earnings": round(earnings, 4),
-                            "manually_added": False,
-                            "simulated": False,
-                        }
-                        try:
-                            await db.tracked_videos.update_one(
-                                {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
-                                {"$set": set_fields,
-                                 "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
-                                upsert=True
-                            )
-                            inserted += 1
-                        except Exception:
-                            pass
-                    await db.social_accounts.update_one(
-                        {"account_id": acc_id}, {"$set": {"last_tracked_at": now_iso}}
-                    )
-                    logger.info(f"Backfill {plat}/@{uname} : {inserted} vidéos insérées/mises à jour")
-                logger.info(f"Backfill campaign {cid} terminé")
+                # Parallélise avec semaphore (max 5 simultanés)
+                sem = asyncio.Semaphore(5)
+
+                async def _backfill_one(a):
+                    async with sem:
+                        acc_id = a.get("account_id")
+                        if not acc_id:
+                            return
+                        acc = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+                        if not acc:
+                            return
+                        return await _scrape_one_account_into_campaign(
+                            acc, cam, cutoff, since_days=since_days, wait_verification=False
+                        )
+
+                results = await asyncio.gather(*[_backfill_one(a) for a in assignments], return_exceptions=True)
+                ok_count = sum(1 for r in results if isinstance(r, dict) and r.get("ok"))
+                err_count = sum(1 for r in results if isinstance(r, Exception) or (isinstance(r, dict) and not r.get("ok")))
+                logger.info(f"Backfill campaign {cid} terminé : {ok_count} succès, {err_count} échecs")
             except Exception as e:
                 logger.error(f"Backfill campaign {cid} error: {e}")
 

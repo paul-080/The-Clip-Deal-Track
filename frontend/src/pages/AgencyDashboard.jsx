@@ -23,6 +23,7 @@ const fmtViews = (n) => {
   return n.toLocaleString("fr-FR");
 };
 import Sidebar from "../components/Sidebar";
+import ScrapeStatusPanel from "../components/ScrapeStatusPanel";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import {
@@ -1723,6 +1724,9 @@ function CampaignDashboard({ campaigns }) {
           <RefreshCw className="w-4 h-4" /> Actualiser
         </button>
       </div>
+
+      {/* Panel scraping (horaires + statut + force-scrape) */}
+      <ScrapeStatusPanel campaignId={campaignId} onScrapeComplete={() => { fetchAllVideos(); fetchStats(); fetchAllAccounts(); }} />
 
 
       {/* TABS — Shortimize style */}
