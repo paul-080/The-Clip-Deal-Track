@@ -289,6 +289,28 @@ function OverviewTab() {
             <MousePointerClick className="w-4 h-4 text-[#f0c040]" />
             <p className="text-white font-medium text-sm">Statistiques Clics</p>
             <span className="ml-auto text-[10px] text-white/30 bg-white/5 px-2 py-0.5 rounded-full">Anti-spam actif</span>
+            <button
+              onClick={async () => {
+                if (!window.confirm(`Réinitialiser TOUS les clics (events + counters + earnings) ?\n\nUtile pour purger les clics de test.\n\nIRRÉVERSIBLE.`)) return;
+                try {
+                  const res = await fetch(`${API}/admin/reset-click-stats`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+                    body: JSON.stringify({ confirm: "RESET_ALL_CLICKS" }),
+                  });
+                  if (res.ok) {
+                    const d = await res.json();
+                    toast.success(`✓ ${d.deleted_click_events} events purgés, ${d.reset_click_links} liens réinitialisés`);
+                    setTimeout(() => window.location.reload(), 1500);
+                  } else {
+                    const e = await res.json();
+                    toast.error(e.detail || "Erreur reset");
+                  }
+                } catch (e) { toast.error(e.message); }
+              }}
+              className="text-[10px] px-2 py-0.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition">
+              Reset clics test
+            </button>
           </div>
           <div className="grid grid-cols-3 gap-3">
             {clickCards.map(c => (
@@ -808,11 +830,12 @@ function ApiStatusTab() {
   useEffect(() => { testAll(); fetchUsage(); }, [testAll, fetchUsage]);
 
   const apis = [
-    { key: "mongodb",     label: "MongoDB",              icon: Database,   desc: "Base de données principale" },
-    { key: "youtube_api", label: "YouTube API",           icon: Youtube,    desc: "YouTube Data API v3" },
-    { key: "apify",       label: "Apify (TikTok + Insta)",icon: Globe,      desc: "Tracking TikTok & Instagram via Apify" },
-    { key: "stripe",      label: "Stripe",                icon: CreditCard, desc: "Paiements et abonnements" },
-    { key: "google_oauth",label: "Google OAuth",          icon: Shield,     desc: "Connexion Google" },
+    { key: "mongodb",      label: "MongoDB",                          icon: Database,   desc: "Base de données principale (Railway)" },
+    { key: "clipscraper",  label: "ClipScraper VPS Hostinger",        icon: Globe,      desc: "Scraping principal TikTok+Insta+YouTube (proxy Webshare)" },
+    { key: "youtube_api",  label: "YouTube Data API v3",              icon: Youtube,    desc: "Stats YouTube (gratuit, 10 000 req/jour)" },
+    { key: "apify",        label: "Apify (BACKUP uniquement)",        icon: Zap,        desc: "Dernier recours - $5/mois gratuit, devrait quasi jamais être appelé" },
+    { key: "google_oauth", label: "Google OAuth",                     icon: Shield,     desc: "Connexion Google (login)" },
+    { key: "stripe",       label: "Stripe (déprécié)",                icon: CreditCard, desc: "Ancien paiement, retiré au profit de GoCardless" },
   ];
 
   const usageServices = [
