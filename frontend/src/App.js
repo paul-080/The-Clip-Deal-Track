@@ -77,9 +77,9 @@ export const AuthProvider = ({ children }) => {
     const previewSession = params.get("session");
     const isAdminPreview = params.get("admin_preview") === "1";
     if (isAdminPreview && previewSession) {
-      // Sauvegarde le bearer + monkey-patch window.fetch pour injecter Bearer dans TOUS les fetch
-      // Sinon les fetch suivants utilisent les cookies (session admin) au lieu du bearer impersonate
+      // PREVIEW MODE : Bearer token + AUCUN cookie envoye (sinon backend voit le cookie admin et ignore)
       sessionStorage.setItem("preview_bearer", previewSession);
+      sessionStorage.setItem("preview_mode", "1");
       try {
         if (!window.__originalFetch) {
           window.__originalFetch = window.fetch.bind(window);
@@ -88,6 +88,7 @@ export const AuthProvider = ({ children }) => {
             if (b) {
               opts = opts || {};
               opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${b}` };
+              opts.credentials = "omit"; // CRITIQUE : force pas d'envoi cookie admin
             }
             return window.__originalFetch(url, opts);
           };
@@ -96,13 +97,16 @@ export const AuthProvider = ({ children }) => {
       // Use Bearer token auth (server already supports it)
       fetch(`${API}/auth/me`, {
         headers: { Authorization: `Bearer ${previewSession}` },
-        credentials: "include",
+        credentials: "omit",
       }).then(async (r) => {
         if (r.ok) {
           const userData = await r.json();
           setUser(userData);
-          // Store for subsequent requests (kept for retro-compat)
           localStorage.setItem("preview_bearer", previewSession);
+          // Nettoie l'URL pour eviter de re-trigger au refresh
+          window.history.replaceState({}, "", window.location.pathname);
+        } else {
+          console.error("Preview auth failed:", r.status);
         }
       }).finally(() => setLoading(false));
       return;
