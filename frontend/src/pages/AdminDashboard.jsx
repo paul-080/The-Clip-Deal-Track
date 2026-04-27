@@ -809,9 +809,7 @@ function ProspectsTab() {
                     });
                     if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
                     const d = await res.json();
-                    document.cookie = `session_token=${d.session_token}; path=/; max-age=7200; SameSite=Lax`;
-                    localStorage.setItem("session_token", d.session_token);
-                    window.open(`/agency/campaign/${p.campaign_id}`, "_blank");
+                    window.open(`/agency/campaign/${p.campaign_id}?admin_preview=1&session=${encodeURIComponent(d.session_token)}`, "_blank");
                     toast.success(`Aperçu agence (2h)`);
                   } catch (e) { toast.error(e.message); }
                 }}
@@ -1783,9 +1781,8 @@ function AdminCampaignsTab() {
                             if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
                             const d = await res.json();
                             // Set cookie for the new tab + open
-                            document.cookie = `session_token=${d.session_token}; path=/; max-age=7200; SameSite=Lax`;
-                            localStorage.setItem("session_token", d.session_token);
-                            window.open(`/agency/campaign/${c.campaign_id}`, "_blank");
+                            // Mode preview admin via Bearer token (n'ecrase pas ta session admin)
+                            window.open(`/agency/campaign/${c.campaign_id}?admin_preview=1&session=${encodeURIComponent(d.session_token)}`, "_blank");
                             toast.success(`Connecté en tant que ${d.user.display_name || d.user.email} (2h)`);
                           } catch (e) { toast.error(e.message); }
                         }}

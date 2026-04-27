@@ -77,6 +77,22 @@ export const AuthProvider = ({ children }) => {
     const previewSession = params.get("session");
     const isAdminPreview = params.get("admin_preview") === "1";
     if (isAdminPreview && previewSession) {
+      // Sauvegarde le bearer + monkey-patch window.fetch pour injecter Bearer dans TOUS les fetch
+      // Sinon les fetch suivants utilisent les cookies (session admin) au lieu du bearer impersonate
+      sessionStorage.setItem("preview_bearer", previewSession);
+      try {
+        if (!window.__originalFetch) {
+          window.__originalFetch = window.fetch.bind(window);
+          window.fetch = function (url, opts) {
+            const b = sessionStorage.getItem("preview_bearer");
+            if (b) {
+              opts = opts || {};
+              opts.headers = { ...(opts.headers || {}), Authorization: `Bearer ${b}` };
+            }
+            return window.__originalFetch(url, opts);
+          };
+        }
+      } catch (e) { console.warn("Monkey-patch fetch failed:", e); }
       // Use Bearer token auth (server already supports it)
       fetch(`${API}/auth/me`, {
         headers: { Authorization: `Bearer ${previewSession}` },
@@ -85,7 +101,7 @@ export const AuthProvider = ({ children }) => {
         if (r.ok) {
           const userData = await r.json();
           setUser(userData);
-          // Store for subsequent requests
+          // Store for subsequent requests (kept for retro-compat)
           localStorage.setItem("preview_bearer", previewSession);
         }
       }).finally(() => setLoading(false));
