@@ -10837,6 +10837,33 @@ async def admin_add_prospect_clipper(campaign_id: str, body: dict, _: bool = Dep
     return {"account": account_doc}
 
 
+@api_router.get("/admin/prospects/{campaign_id}/clipper-accounts")
+async def admin_list_prospect_accounts(campaign_id: str, _: bool = Depends(verify_admin_code)):
+    """Liste tous les comptes sociaux pre-enregistres pour une campagne prospect."""
+    accounts = await db.social_accounts.find(
+        {"prospect_campaign_id": campaign_id, "is_prospect": True},
+        {"_id": 0}
+    ).sort("discord_username", 1).to_list(500)
+    # Group by discord_username
+    grouped = {}
+    for acc in accounts:
+        d = acc.get("discord_username") or "?"
+        if d not in grouped:
+            grouped[d] = []
+        grouped[d].append({"account_id": acc["account_id"], "platform": acc["platform"], "username": acc["username"]})
+    return {"by_discord": grouped, "total": len(accounts)}
+
+
+@api_router.delete("/admin/prospects/clipper-accounts/{account_id}")
+async def admin_delete_prospect_account(account_id: str, _: bool = Depends(verify_admin_code)):
+    """Supprime un compte social pre-enregistre prospect (avant claim)."""
+    res = await db.social_accounts.delete_one({"account_id": account_id, "is_prospect": True})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Compte introuvable ou deja claim")
+    await db.campaign_social_accounts.delete_one({"account_id": account_id})
+    return {"ok": True}
+
+
 @api_router.get("/admin/prospects")
 async def admin_list_prospects(request: Request, _: bool = Depends(verify_admin_code)):
     """Liste toutes les campagnes prospects avec leur stats."""

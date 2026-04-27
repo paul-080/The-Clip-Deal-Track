@@ -674,14 +674,26 @@ function ProspectsTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [newCamp, setNewCamp] = useState({ name: "", agency_name: "", payment_model: "views", rpm: 5, rate_per_click: 5, destination_url: "" });
   const [addingClipper, setAddingClipper] = useState(null);
-  const [newClipper, setNewClipper] = useState({ discord_username: "", platform: "tiktok", username: "" });
+  const [bulkClipper, setBulkClipper] = useState({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] });
+  const [accountsMap, setAccountsMap] = useState({}); // { [campaign_id]: { by_discord: {...} } }
 
   const baseUrl = window.location.origin;
 
+  const fetchAccountsFor = useCallback(async (cid) => {
+    try {
+      const d = await adminFetch(`/admin/prospects/${cid}/clipper-accounts`);
+      setAccountsMap(prev => ({ ...prev, [cid]: d }));
+    } catch {}
+  }, []);
+
   const refresh = useCallback(() => {
     setLoading(true);
-    adminFetch("/admin/prospects").then(d => setProspects(d.prospects || [])).catch(e => toast.error(e.message)).finally(() => setLoading(false));
-  }, []);
+    adminFetch("/admin/prospects").then(d => {
+      setProspects(d.prospects || []);
+      // Auto-fetch accounts pour chaque
+      (d.prospects || []).forEach(p => fetchAccountsFor(p.campaign_id));
+    }).catch(e => toast.error(e.message)).finally(() => setLoading(false));
+  }, [fetchAccountsFor]);
   useEffect(() => { refresh(); }, [refresh]);
 
   const createCampaign = async () => {
@@ -701,20 +713,43 @@ function ProspectsTab() {
     } catch (e) { toast.error(e.message); }
   };
 
-  const addClipper = async (cid) => {
-    if (!newClipper.discord_username || !newClipper.username) { toast.error("Discord + username requis"); return; }
+  const submitBulkClipper = async (cid) => {
+    if (!bulkClipper.discord_username) { toast.error("Pseudo Discord requis"); return; }
+    const valid = bulkClipper.accounts.filter(a => a.username && a.username.trim());
+    if (valid.length === 0) { toast.error("Au moins 1 compte requis"); return; }
+    let okCount = 0;
+    for (const acc of valid) {
+      try {
+        const res = await fetch(`${API}/admin/prospects/${cid}/add-clipper-account`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+          body: JSON.stringify({ discord_username: bulkClipper.discord_username, platform: acc.platform, username: acc.username.trim().replace(/^@/, "") }),
+        });
+        if (res.ok) okCount++;
+      } catch {}
+    }
+    if (okCount > 0) {
+      toast.success(`✓ ${okCount}/${valid.length} compte(s) ajouté(s) pour ${bulkClipper.discord_username}`);
+      setBulkClipper({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] });
+      setAddingClipper(null);
+      fetchAccountsFor(cid);
+      refresh();
+    } else {
+      toast.error("Aucun compte ajouté");
+    }
+  };
+
+  const deleteProspectAccount = async (account_id, cid) => {
+    if (!window.confirm("Supprimer ce compte pré-enregistré ?")) return;
     try {
-      const res = await fetch(`${API}/admin/prospects/${cid}/add-clipper-account`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
-        body: JSON.stringify(newClipper),
+      const res = await fetch(`${API}/admin/prospects/clipper-accounts/${account_id}`, {
+        method: "DELETE",
+        headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
       });
       if (res.ok) {
-        toast.success(`✓ ${newClipper.platform} @${newClipper.username} ajouté pour ${newClipper.discord_username}`);
-        // Garde le discord_username pour permettre d'ajouter d'autres comptes au meme clipper rapidement
-        setNewClipper(prev => ({ discord_username: prev.discord_username, platform: prev.platform === "tiktok" ? "instagram" : prev.platform === "instagram" ? "youtube" : "tiktok", username: "" }));
-        refresh();
-      } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+        toast.success("Supprimé");
+        fetchAccountsFor(cid);
+      } else { toast.error("Erreur"); }
     } catch (e) { toast.error(e.message); }
   };
 
@@ -818,27 +853,69 @@ function ProspectsTab() {
               </button>
 
               {/* Bouton ajouter clippeur */}
-              {addingClipper === p.campaign_id ? (
-                <div className="bg-white/3 rounded-lg p-3 space-y-2 border border-white/10">
-                  <p className="text-[11px] text-white/50">Astuce : après chaque ajout, le pseudo Discord reste — tu peux ajouter plusieurs comptes (TikTok + Insta + YouTube) pour un même clippeur.</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <input value={newClipper.discord_username} onChange={e => setNewClipper(prev => ({...prev, discord_username: e.target.value}))} placeholder="Pseudo Discord" className="bg-white/5 border border-[#39FF14]/30 rounded-lg px-3 py-2 text-white text-sm" />
-                    <select value={newClipper.platform} onChange={e => setNewClipper(prev => ({...prev, platform: e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm">
-                      <option value="tiktok">TikTok</option>
-                      <option value="instagram">Instagram</option>
-                      <option value="youtube">YouTube</option>
-                    </select>
-                    <input value={newClipper.username} onChange={e => setNewClipper(prev => ({...prev, username: e.target.value}))}
-                      onKeyDown={e => { if (e.key === "Enter" && newClipper.username) addClipper(p.campaign_id); }}
-                      placeholder="Username (sans @)" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+              {/* Liste des comptes deja pre-enregistres */}
+              {accountsMap[p.campaign_id]?.total > 0 && (
+                <div className="bg-white/3 border border-white/5 rounded-lg p-3 space-y-2">
+                  <p className="text-xs text-white/50 font-medium">Clippeurs pré-enregistrés ({accountsMap[p.campaign_id].total} comptes) :</p>
+                  <div className="space-y-1.5">
+                    {Object.entries(accountsMap[p.campaign_id].by_discord || {}).map(([discord, accs]) => (
+                      <div key={discord} className="flex items-center gap-2 flex-wrap py-1 px-2 bg-white/5 rounded">
+                        <span className="text-xs text-[#39FF14] font-medium">@{discord}</span>
+                        <span className="text-white/30 text-xs">→</span>
+                        {accs.map(a => (
+                          <span key={a.account_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-[11px]">
+                            <span className="text-white/40">{a.platform === "tiktok" ? "🎵" : a.platform === "instagram" ? "📸" : "▶️"}</span>
+                            <span className="text-white/80">@{a.username}</span>
+                            <button onClick={() => deleteProspectAccount(a.account_id, p.campaign_id)}
+                              className="text-red-400/50 hover:text-red-400 ml-1">✕</button>
+                          </span>
+                        ))}
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => addClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">Ajouter ce compte</button>
-                    <button onClick={() => { setAddingClipper(null); setNewClipper({ discord_username: "", platform: "tiktok", username: "" }); }} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Fermer</button>
+                </div>
+              )}
+
+              {addingClipper === p.campaign_id ? (
+                <div className="bg-white/3 rounded-lg p-3 space-y-2 border border-[#39FF14]/30">
+                  <p className="text-xs text-white/60">Saisis le pseudo Discord puis ajoute autant de comptes sociaux que voulu pour ce clippeur :</p>
+                  <input value={bulkClipper.discord_username} onChange={e => setBulkClipper(prev => ({...prev, discord_username: e.target.value}))}
+                    placeholder="Pseudo Discord du clippeur (ex: paul_clipper)"
+                    className="w-full bg-white/5 border border-[#39FF14]/40 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
+                  <div className="space-y-1.5">
+                    {bulkClipper.accounts.map((acc, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <select value={acc.platform}
+                          onChange={e => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.map((a, i) => i === idx ? { ...a, platform: e.target.value } : a) }))}
+                          className="bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-white text-sm w-32">
+                          <option value="tiktok">🎵 TikTok</option>
+                          <option value="instagram">📸 Instagram</option>
+                          <option value="youtube">▶️ YouTube</option>
+                        </select>
+                        <input value={acc.username}
+                          onChange={e => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.map((a, i) => i === idx ? { ...a, username: e.target.value } : a) }))}
+                          placeholder="username (sans @)"
+                          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                        {bulkClipper.accounts.length > 1 && (
+                          <button onClick={() => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.filter((_, i) => i !== idx) }))}
+                            className="w-8 h-8 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 text-sm">✕</button>
+                        )}
+                      </div>
+                    ))}
+                    <button onClick={() => setBulkClipper(prev => ({ ...prev, accounts: [...prev.accounts, { platform: prev.accounts[prev.accounts.length-1]?.platform === "tiktok" ? "instagram" : "tiktok", username: "" }] }))}
+                      className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition border border-dashed border-white/10">
+                      + Ajouter un autre compte pour ce clippeur
+                    </button>
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={() => submitBulkClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">
+                      Ajouter tous les comptes
+                    </button>
+                    <button onClick={() => { setAddingClipper(null); setBulkClipper({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] }); }} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Fermer</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter des comptes clippeur (Discord)</button>
+                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter un clippeur (Discord + ses comptes)</button>
               )}
             </div>
           );
