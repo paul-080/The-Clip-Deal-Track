@@ -9428,6 +9428,73 @@ async def admin_api_usage(request: Request, _: bool = Depends(verify_admin_code)
     return {"services": result, "fetched_at": now.isoformat()}
 
 
+@api_router.post("/admin/reset-click-stats")
+async def admin_reset_click_stats(request: Request, body: dict, _: bool = Depends(verify_admin_code)):
+    """RESET les click_events + counters click_links. Utile pour purger les clics de test."""
+    campaign_id = (body.get("campaign_id") or "").strip()  # vide = TOUTES les campagnes
+    confirm = body.get("confirm") == "RESET_ALL_CLICKS"
+    if not confirm:
+        raise HTTPException(status_code=400, detail='confirm="RESET_ALL_CLICKS" requis')
+    filter_q = {"campaign_id": campaign_id} if campaign_id else {}
+    res_events = await db.click_events.delete_many(filter_q)
+    res_dedup = await db.click_dedup.delete_many({})  # purge tout dedup (cohérent avec events purgés)
+    # Reset les counters sur click_links
+    update_q = {"campaign_id": campaign_id} if campaign_id else {}
+    res_links = await db.click_links.update_many(update_q, {
+        "$set": {"click_count": 0, "unique_click_count": 0, "earnings": 0}
+    })
+    return {
+        "deleted_click_events": res_events.deleted_count,
+        "deleted_dedup_entries": res_dedup.deleted_count,
+        "reset_click_links": res_links.modified_count,
+        "scope": "all_campaigns" if not campaign_id else f"campaign_{campaign_id}",
+    }
+
+
+@api_router.get("/admin/click-stats-detail")
+async def admin_click_stats_detail(request: Request, _: bool = Depends(verify_admin_code)):
+    """Detail des stats clicks par campagne pour debug : nb clics, nb unique, tarif, earnings calcules."""
+    pipeline = [
+        {"$group": {
+            "_id": "$campaign_id",
+            "total_clicks": {"$sum": "$click_count"},
+            "total_unique": {"$sum": "$unique_click_count"},
+            "total_earnings": {"$sum": "$earnings"},
+            "nb_links": {"$sum": 1},
+        }},
+        {"$sort": {"total_earnings": -1}},
+        {"$limit": 50},
+    ]
+    by_campaign = await db.click_links.aggregate(pipeline).to_list(50)
+    # Enrich avec nom + tarif
+    cids = [d["_id"] for d in by_campaign if d.get("_id")]
+    campaigns = await db.campaigns.find({"campaign_id": {"$in": cids}}, {"_id": 0, "campaign_id": 1, "name": 1, "rate_per_click": 1}).to_list(len(cids))
+    cmap = {c["campaign_id"]: c for c in campaigns}
+    out = []
+    grand_total_clicks = 0
+    grand_total_earnings = 0
+    for d in by_campaign:
+        cid = d.get("_id")
+        cam = cmap.get(cid, {})
+        out.append({
+            "campaign_id": cid,
+            "campaign_name": cam.get("name", "?"),
+            "rate_per_1k_clicks_eur": cam.get("rate_per_click", 0),
+            "total_clicks": d.get("total_clicks", 0),
+            "total_unique_clicks": d.get("total_unique", 0),
+            "total_earnings_eur": round(d.get("total_earnings", 0), 2),
+            "nb_links": d.get("nb_links", 0),
+        })
+        grand_total_clicks += d.get("total_clicks", 0)
+        grand_total_earnings += d.get("total_earnings", 0)
+    return {
+        "by_campaign": out,
+        "grand_total_clicks": grand_total_clicks,
+        "grand_total_earnings_eur": round(grand_total_earnings, 2),
+        "explanation": "Formule : earnings = (clics / 1000) × tarif_par_1K_clics. Si total semble anormal, verifier nb_links et tarifs.",
+    }
+
+
 @api_router.get("/admin/usage-monitor")
 async def admin_usage_monitor(request: Request, _: bool = Depends(verify_admin_code)):
     """Suivi capacite et utilisation des APIs - dis a l'agence quand upgrader."""
