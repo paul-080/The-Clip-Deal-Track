@@ -115,7 +115,7 @@ export default function ManagerDashboard() {
         accentColor={ACCENT_COLOR}
         role="manager"
       />
-      <main className="flex-1 ml-64 p-8">
+      <main className="flex-1 md:ml-60 p-4 pt-16 md:p-8">
         <Routes>
           <Route index element={<HomePage reminderStatus={reminderStatus} campaigns={campaigns} />} />
           <Route path="discover" element={<DiscoverCampaigns onJoin={fetchData} />} />
@@ -141,7 +141,7 @@ function HomePage({ reminderStatus, campaigns }) {
       data-testid="manager-home-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Tableau de bord</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Tableau de bord</h1>
         <p className="text-white/50">Bienvenue dans votre espace manager</p>
       </div>
 
@@ -322,7 +322,7 @@ function DiscoverCampaigns({ onJoin }) {
       data-testid="manager-discover-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Découvrir</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Découvrir</h1>
         <p className="text-white/50">Explorez les campagnes disponibles et postulez en tant que manager</p>
       </div>
 
@@ -752,7 +752,7 @@ function CampaignDashboard({ campaigns }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-1">{campaign.name}</h1>
           <div className="flex items-center gap-3">
             <Badge variant="outline" className="border-white/20 text-white/50 text-xs">{campaign.status}</Badge>
             <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
@@ -1444,7 +1444,7 @@ function AdvicesPage({ campaigns }) {
       data-testid="advices-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Conseils</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Conseils</h1>
         <p className="text-white/50">Envoyez des conseils personnalisés à vos clippeurs</p>
       </div>
 
@@ -1570,7 +1570,7 @@ function SettingsPage() {
       data-testid="manager-settings-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Paramètres</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Paramètres</h1>
         <p className="text-white/50">Informations de votre compte</p>
       </div>
 

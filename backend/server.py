@@ -11549,6 +11549,7 @@ async def admin_create_prospect_campaign(request: Request, body: dict, _: bool =
         "rate_per_click": rate_per_click,
         "destination_url": destination_url,
         "click_billing_mode": body.get("click_billing_mode") or "unique_24h",
+        "unique_clicks_only": (body.get("click_billing_mode") or "unique_24h") != "all",
         "click_window_hours": int(body.get("click_window_hours") or 24),
         "platforms": platforms,
         "max_clippers": body.get("max_clippers") or None,
@@ -11558,6 +11559,16 @@ async def admin_create_prospect_campaign(request: Request, body: dict, _: bool =
         "budget_total": float(body.get("budget_total") or 0),
         "budget_used": 0,
         "budget_unlimited": bool(body.get("budget_unlimited", True)),
+        # Application form (candidature) - identique a une vraie campagne agence
+        "application_form_enabled": bool(body.get("application_form_enabled", True)),
+        "application_questions": body.get("application_questions") or [],
+        # Min/max payout
+        "min_view_payout": int(body.get("min_view_payout") or 0),
+        "max_view_payout": body.get("max_view_payout") or None,
+        # Date debut tracking (modifiable apres creation)
+        "tracking_start_date": body.get("tracking_start_date") or now,
+        # Image de couverture
+        "image_url": body.get("image_url") or "",
         "status": "active",
         "is_prospect": True,
         "prospect_agency_token": agency_token,

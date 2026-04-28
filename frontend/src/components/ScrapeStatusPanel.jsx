@@ -125,7 +125,7 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete, canFor
       </div>
 
       {/* Stats résumées */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <div className="bg-white/5 rounded-lg p-2.5">
           <p className="text-[10px] text-white/40 uppercase tracking-wider">Horaires (Paris)</p>
           <p className="text-white font-mono text-xs mt-0.5">{(status.scrape_schedule_paris || []).join(" · ")}</p>

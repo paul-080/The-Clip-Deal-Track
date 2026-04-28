@@ -139,7 +139,7 @@ export default function ClipperDashboard() {
         accentColor={ACCENT_COLOR}
         role="clipper"
       />
-      <main className={`flex-1 ml-64 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-8"}`}>
+      <main className={`flex-1 md:ml-60 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-4 pt-16 md:p-8"}`}>
         <Routes>
           <Route index element={<ClipperHome announcements={announcements} stats={stats} />} />
           <Route path="discover" element={<DiscoverCampaigns onJoin={fetchData} />} />
@@ -769,7 +769,7 @@ function DiscoverCampaigns({ onJoin }) {
       data-testid="discover-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Découvrir</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Découvrir</h1>
         <p className="text-white/50">Explorez les campagnes disponibles</p>
       </div>
 
@@ -1069,7 +1069,7 @@ function AllVideosPage() {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-1">Mes vidéos</h1>
+          <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-1">Mes vidéos</h1>
           <p className="text-white/50">{videos.length} vidéo{videos.length !== 1 ? "s" : ""} trackée{videos.length !== 1 ? "s" : ""} · {fmt(totalViews)} vues · €{totalEarnings.toFixed(2)} générés</p>
         </div>
         <button onClick={fetchAllVideos} className="text-white/40 hover:text-white text-sm transition-colors border border-white/10 rounded-lg px-3 py-1.5 hover:border-white/30">
@@ -1472,7 +1472,7 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
       data-testid="accounts-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Mes comptes</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Mes comptes</h1>
         <p className="text-white/50">Gérez vos comptes réseaux sociaux</p>
       </div>
 
@@ -2051,7 +2051,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="font-display font-bold text-3xl text-white">{campaign.name}</h1>
+            <h1 className="font-display font-bold text-2xl md:text-3xl text-white">{campaign.name}</h1>
             {isClickCampaign && (
               <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 font-medium">
                 <MousePointerClick className="w-3 h-3" /> Campagne au clic
@@ -2705,7 +2705,7 @@ function PaymentPage({ stats }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8" data-testid="payment-page">
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Paiement</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Paiement</h1>
         <p className="text-white/50">Vos gains et ce que l'agence vous doit</p>
       </div>
 
@@ -2933,7 +2933,7 @@ function SettingsPage() {
       data-testid="settings-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Paramètres</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Paramètres</h1>
         <p className="text-white/50">Gérez votre profil</p>
       </div>
 

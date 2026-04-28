@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard, Users, Play, Building2, Briefcase, UserCircle,
   Plug, Settings, LogOut, RefreshCw, Trash2, Ban, CheckCircle2,
   XCircle, AlertCircle, Clock, Database, Youtube, Zap, CreditCard,
   Globe, Eye, ExternalLink, Shield, AlertTriangle,
-  MessageCircle, Send, MousePointerClick, TrendingUp, X, ChevronDown
+  MessageCircle, Send, MousePointerClick, TrendingUp, X, ChevronDown, Menu
 } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from "recharts";
 import { API } from "../App";
@@ -672,7 +673,25 @@ function ProspectsTab() {
   const [prospects, setProspects] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [newCamp, setNewCamp] = useState({ name: "", agency_name: "", payment_model: "views", rpm: 5, rate_per_click: 5, destination_url: "" });
+  const [newCamp, setNewCamp] = useState({
+    // basics
+    name: "", description: "", agency_name: "", image_url: "",
+    payment_model: "views",
+    rpm: 5, rate_per_click: 5, destination_url: "",
+    click_billing_mode: "unique_24h", click_window_hours: 24,
+    // platforms
+    platforms: ["tiktok", "instagram", "youtube"],
+    // règles
+    max_clippers: "", cadence: 1, max_strikes: 3, strike_days: 3,
+    min_view_payout: 0, max_view_payout: "",
+    // budget
+    budget_unlimited: true, budget_total: 0,
+    // candidature
+    application_form_enabled: true,
+    application_questions: ["Pourquoi veux-tu rejoindre cette campagne ?"],
+    // tracking
+    tracking_start_date: "",
+  });
   const [addingClipper, setAddingClipper] = useState(null);
   const [bulkClipper, setBulkClipper] = useState({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] });
   const [accountsMap, setAccountsMap] = useState({}); // { [campaign_id]: { by_discord: {...} } }
@@ -698,19 +717,61 @@ function ProspectsTab() {
 
   const createCampaign = async () => {
     if (!newCamp.name || !newCamp.agency_name) { toast.error("Nom + agence requis"); return; }
+    if ((newCamp.payment_model === "views" || newCamp.payment_model === "both") && !newCamp.rpm) {
+      toast.error("RPM requis pour le modèle vues"); return;
+    }
+    if ((newCamp.payment_model === "clicks" || newCamp.payment_model === "both") && (!newCamp.rate_per_click || !newCamp.destination_url.trim())) {
+      toast.error("Tarif clic + URL destination requis"); return;
+    }
+    if (newCamp.platforms.length === 0) {
+      toast.error("Sélectionne au moins 1 plateforme"); return;
+    }
     try {
+      const payload = {
+        ...newCamp,
+        rpm: parseFloat(newCamp.rpm) || 0,
+        rate_per_click: parseFloat(newCamp.rate_per_click) || 0,
+        max_clippers: newCamp.max_clippers ? parseInt(newCamp.max_clippers) : null,
+        max_view_payout: newCamp.max_view_payout ? parseInt(newCamp.max_view_payout) : null,
+        budget_total: parseFloat(newCamp.budget_total) || 0,
+        application_questions: newCamp.application_form_enabled
+          ? (newCamp.application_questions || []).filter(q => q && q.trim())
+          : [],
+        tracking_start_date: newCamp.tracking_start_date
+          ? new Date(newCamp.tracking_start_date + "T00:00:00Z").toISOString()
+          : null,
+      };
       const res = await fetch(`${API}/admin/prospects/create-campaign`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
-        body: JSON.stringify({ ...newCamp, budget_unlimited: true }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         toast.success("Campagne prospect créée ✓");
         setShowCreate(false);
-        setNewCamp({ name: "", agency_name: "", payment_model: "views", rpm: 5, rate_per_click: 5, destination_url: "" });
+        setNewCamp({
+          name: "", description: "", agency_name: "", image_url: "",
+          payment_model: "views",
+          rpm: 5, rate_per_click: 5, destination_url: "",
+          click_billing_mode: "unique_24h", click_window_hours: 24,
+          platforms: ["tiktok", "instagram", "youtube"],
+          max_clippers: "", cadence: 1, max_strikes: 3, strike_days: 3,
+          min_view_payout: 0, max_view_payout: "",
+          budget_unlimited: true, budget_total: 0,
+          application_form_enabled: true,
+          application_questions: ["Pourquoi veux-tu rejoindre cette campagne ?"],
+          tracking_start_date: "",
+        });
         refresh();
       } else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
     } catch (e) { toast.error(e.message); }
+  };
+
+  const togglePlatform = (p) => {
+    setNewCamp(prev => ({
+      ...prev,
+      platforms: prev.platforms.includes(p) ? prev.platforms.filter(x => x !== p) : [...prev.platforms, p]
+    }));
   };
 
   const submitBulkClipper = async (cid) => {
@@ -769,27 +830,227 @@ function ProspectsTab() {
       </div>
 
       {showCreate && (
-        <div className="bg-[#121212] border border-[#FF007F]/30 rounded-xl p-5 space-y-3">
-          <h3 className="text-white font-semibold">Nouvelle campagne prospect</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <input value={newCamp.name} onChange={e => setNewCamp(p => ({...p, name: e.target.value}))} placeholder="Nom de la campagne" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
-            <input value={newCamp.agency_name} onChange={e => setNewCamp(p => ({...p, agency_name: e.target.value}))} placeholder="Nom de l'agence cible" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
-            <select value={newCamp.payment_model} onChange={e => setNewCamp(p => ({...p, payment_model: e.target.value}))} className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm">
-              <option value="views">Au vue (RPM)</option>
-              <option value="clicks">Au clic</option>
-            </select>
-            {newCamp.payment_model === "views" ? (
-              <input type="number" value={newCamp.rpm} onChange={e => setNewCamp(p => ({...p, rpm: e.target.value}))} placeholder="RPM €/1K vues" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
-            ) : (
-              <>
-                <input type="number" value={newCamp.rate_per_click} onChange={e => setNewCamp(p => ({...p, rate_per_click: e.target.value}))} placeholder="€/1K clics" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
-                <input value={newCamp.destination_url} onChange={e => setNewCamp(p => ({...p, destination_url: e.target.value}))} placeholder="URL destination" className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm col-span-2" />
-              </>
-            )}
+        <div className="bg-[#0d0d0d] border border-white/10 rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/8 flex items-center justify-between">
+            <div>
+              <h3 className="text-white font-semibold text-base">Nouvelle campagne prospect</h3>
+              <p className="text-white/40 text-xs mt-0.5">Mêmes options qu'une vraie campagne agence</p>
+            </div>
+            <button onClick={() => setShowCreate(false)} className="text-white/30 hover:text-white text-lg">✕</button>
           </div>
-          <div className="flex gap-2">
-            <button onClick={createCampaign} className="flex-1 py-2 rounded-lg bg-[#FF007F] text-white text-sm font-medium">Créer</button>
-            <button onClick={() => setShowCreate(false)} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Annuler</button>
+          <div className="p-5 space-y-6 max-h-[75vh] overflow-y-auto">
+
+            {/* ── Section : Informations de base ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Informations</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="md:col-span-2">
+                  <label className="text-xs text-white/50 block mb-1">Nom de la campagne *</label>
+                  <input value={newCamp.name} onChange={e => setNewCamp(p => ({...p, name: e.target.value}))}
+                    placeholder="Ex: Campagne MrBeast Highlights"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Nom de l'agence cible *</label>
+                  <input value={newCamp.agency_name} onChange={e => setNewCamp(p => ({...p, agency_name: e.target.value}))}
+                    placeholder="Ex: Marcus Lawrence Agency"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">URL image de couverture (optionnel)</label>
+                  <input value={newCamp.image_url} onChange={e => setNewCamp(p => ({...p, image_url: e.target.value}))}
+                    placeholder="https://..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="text-xs text-white/50 block mb-1">Description</label>
+                  <textarea value={newCamp.description} onChange={e => setNewCamp(p => ({...p, description: e.target.value}))}
+                    placeholder="Décris la campagne en quelques phrases..."
+                    rows={2}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30 resize-none" />
+                </div>
+              </div>
+            </section>
+
+            {/* ── Section : Modèle de paiement ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Modèle de paiement</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: "views", label: "💰 Vues", desc: "RPM (€ / 1000 vues)" },
+                  { id: "clicks", label: "🔗 Clics", desc: "€ / 1000 clics" },
+                  { id: "both", label: "Vues + Clics", desc: "Cumul des deux" },
+                ].map(m => (
+                  <button key={m.id} onClick={() => setNewCamp(p => ({...p, payment_model: m.id}))}
+                    className={`p-3 rounded-xl text-left transition-all border ${newCamp.payment_model === m.id ? "bg-[#FF007F]/10 border-[#FF007F]/40 text-white" : "bg-white/3 border-white/10 text-white/60 hover:bg-white/5"}`}>
+                    <p className="text-sm font-medium">{m.label}</p>
+                    <p className="text-[10px] text-white/40 mt-0.5">{m.desc}</p>
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {(newCamp.payment_model === "views" || newCamp.payment_model === "both") && (
+                  <div>
+                    <label className="text-xs text-white/50 block mb-1">RPM (€ / 1000 vues) *</label>
+                    <input type="number" step="0.1" value={newCamp.rpm} onChange={e => setNewCamp(p => ({...p, rpm: e.target.value}))}
+                      placeholder="Ex: 5"
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                  </div>
+                )}
+                {(newCamp.payment_model === "clicks" || newCamp.payment_model === "both") && (
+                  <>
+                    <div>
+                      <label className="text-xs text-white/50 block mb-1">Tarif (€ / 1000 clics) *</label>
+                      <input type="number" step="0.1" value={newCamp.rate_per_click} onChange={e => setNewCamp(p => ({...p, rate_per_click: e.target.value}))}
+                        placeholder="Ex: 5"
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="text-xs text-white/50 block mb-1">URL de destination *</label>
+                      <input value={newCamp.destination_url} onChange={e => setNewCamp(p => ({...p, destination_url: e.target.value}))}
+                        placeholder="https://..."
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-white/50 block mb-1">Comptage des clics</label>
+                      <select value={newCamp.click_billing_mode} onChange={e => setNewCamp(p => ({...p, click_billing_mode: e.target.value}))}
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30">
+                        <option value="all">Tous les clics</option>
+                        <option value="unique_24h">Uniques / 24h (recommandé)</option>
+                        <option value="unique_lifetime">Uniques à vie</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+
+            {/* ── Section : Plateformes ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Plateformes acceptées</p>
+              <div className="flex gap-2">
+                {[["tiktok", "🎵 TikTok"], ["instagram", "📸 Instagram"], ["youtube", "▶️ YouTube"]].map(([id, label]) => (
+                  <button key={id} onClick={() => togglePlatform(id)}
+                    className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all border ${newCamp.platforms.includes(id) ? "bg-white/15 border-white/30 text-white" : "bg-white/3 border-white/10 text-white/40 hover:text-white/70"}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {/* ── Section : Budget ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Budget</p>
+              <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer">
+                <input type="checkbox" checked={newCamp.budget_unlimited}
+                  onChange={e => setNewCamp(p => ({...p, budget_unlimited: e.target.checked}))}
+                  className="w-4 h-4 accent-[#FF007F]" />
+                Budget illimité
+              </label>
+              {!newCamp.budget_unlimited && (
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Budget total (€)</label>
+                  <input type="number" value={newCamp.budget_total} onChange={e => setNewCamp(p => ({...p, budget_total: e.target.value}))}
+                    placeholder="Ex: 1000"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+              )}
+            </section>
+
+            {/* ── Section : Règles & Strikes ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Règles de la campagne</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Max clippeurs</label>
+                  <input type="number" value={newCamp.max_clippers} onChange={e => setNewCamp(p => ({...p, max_clippers: e.target.value}))}
+                    placeholder="Illimité"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Posts/jour min</label>
+                  <input type="number" value={newCamp.cadence} onChange={e => setNewCamp(p => ({...p, cadence: e.target.value}))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Max strikes</label>
+                  <input type="number" value={newCamp.max_strikes} onChange={e => setNewCamp(p => ({...p, max_strikes: e.target.value}))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Jours d'inact.</label>
+                  <input type="number" value={newCamp.strike_days} onChange={e => setNewCamp(p => ({...p, strike_days: e.target.value}))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Vues min payées</label>
+                  <input type="number" value={newCamp.min_view_payout} onChange={e => setNewCamp(p => ({...p, min_view_payout: e.target.value}))}
+                    placeholder="0"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 block mb-1">Vues max payées (cap)</label>
+                  <input type="number" value={newCamp.max_view_payout} onChange={e => setNewCamp(p => ({...p, max_view_payout: e.target.value}))}
+                    placeholder="Sans plafond"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                </div>
+              </div>
+            </section>
+
+            {/* ── Section : Tracking ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Tracking</p>
+              <div>
+                <label className="text-xs text-white/50 block mb-1">Date de début du tracking</label>
+                <input type="date" value={newCamp.tracking_start_date} onChange={e => setNewCamp(p => ({...p, tracking_start_date: e.target.value}))}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                <p className="text-[10px] text-white/30 mt-1">Toutes les vidéos publiées depuis cette date seront trackées + rémunérées. Vide = aujourd'hui.</p>
+              </div>
+            </section>
+
+            {/* ── Section : Candidature ── */}
+            <section className="space-y-3">
+              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Candidature</p>
+              <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer">
+                <input type="checkbox" checked={newCamp.application_form_enabled}
+                  onChange={e => setNewCamp(p => ({...p, application_form_enabled: e.target.checked}))}
+                  className="w-4 h-4 accent-[#FF007F]" />
+                Activer le formulaire de candidature
+              </label>
+              {newCamp.application_form_enabled && (
+                <div className="space-y-2">
+                  <p className="text-xs text-white/50">Questions à poser aux candidats :</p>
+                  {(newCamp.application_questions || []).map((q, idx) => (
+                    <div key={idx} className="flex gap-2">
+                      <input value={q}
+                        onChange={e => setNewCamp(prev => ({ ...prev, application_questions: prev.application_questions.map((qq, i) => i === idx ? e.target.value : qq) }))}
+                        placeholder="Question..."
+                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30" />
+                      {newCamp.application_questions.length > 1 && (
+                        <button onClick={() => setNewCamp(prev => ({ ...prev, application_questions: prev.application_questions.filter((_, i) => i !== idx) }))}
+                          className="w-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">✕</button>
+                      )}
+                    </div>
+                  ))}
+                  <button onClick={() => setNewCamp(prev => ({ ...prev, application_questions: [...(prev.application_questions || []), ""] }))}
+                    className="w-full py-2 rounded-lg bg-white/3 hover:bg-white/8 text-white/50 hover:text-white text-xs border border-dashed border-white/10 transition">
+                    + Ajouter une question
+                  </button>
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* Footer fixe */}
+          <div className="px-5 py-4 border-t border-white/8 flex gap-2 bg-[#0a0a0a]">
+            <button onClick={() => setShowCreate(false)}
+              className="px-5 py-2.5 rounded-lg border border-white/10 text-white/60 hover:text-white text-sm transition">Annuler</button>
+            <button onClick={createCampaign}
+              className="flex-1 py-2.5 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 text-white text-sm font-semibold transition">
+              Créer la campagne prospect
+            </button>
           </div>
         </div>
       )}
@@ -2251,6 +2512,7 @@ function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onCance
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 function AdminSidebar({ active, setActive, onLogout }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   const items = [
     { id: "overview", label: "Vue d'ensemble", icon: LayoutDashboard },
     { id: "users", label: "Utilisateurs", icon: Users },
@@ -2267,29 +2529,38 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "settings", label: "Paramètres", icon: Settings },
   ];
 
-  return (
-    <aside className="w-64 min-h-screen bg-[#0d0d0d] border-r border-white/10 flex flex-col">
-      {/* Header */}
-      <div className="p-5 border-b border-white/10">
-        <div className="flex items-center gap-2">
-          <Shield className="w-5 h-5 text-[#00E5FF]" />
-          <span className="text-sm font-bold text-white">Admin Panel</span>
-        </div>
-        <p className="text-xs text-white/30 mt-1">The Clip Deal</p>
+  // Body scroll lock
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [mobileOpen]);
+
+  const handleSelect = (id) => {
+    setActive(id);
+    setMobileOpen(false);
+  };
+
+  const sidebarBody = (
+    <>
+      <div className="p-5 border-b border-white/10 flex items-center gap-2">
+        <Shield className="w-5 h-5 text-[#00E5FF]" />
+        <span className="text-sm font-bold text-white flex-1">Admin Panel</span>
+        <button onClick={() => setMobileOpen(false)} className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/50" aria-label="Fermer">
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 p-3 space-y-0.5">
+      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
         {items.map((item) => {
           const isActive = active === item.id;
           return (
             <button
               key={item.id}
-              onClick={() => setActive(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
+              onClick={() => handleSelect(item.id)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-all ${
                 isActive
                   ? "bg-[#00E5FF]/15 text-[#00E5FF]"
-                  : "text-white/50 hover:text-white hover:bg-white/5"
+                  : "text-white/55 hover:text-white hover:bg-white/5"
               } ${item.preview && !isActive ? "opacity-80" : ""}`}
             >
               <item.icon className="w-4 h-4 flex-shrink-0" />
@@ -2300,17 +2571,54 @@ function AdminSidebar({ active, setActive, onLogout }) {
         })}
       </nav>
 
-      {/* Footer */}
       <div className="p-3 border-t border-white/10">
         <button
           onClick={onLogout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
         >
           <LogOut className="w-4 h-4" />
           Déconnexion admin
         </button>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Hamburger mobile */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        className="md:hidden fixed top-3 left-3 z-40 w-10 h-10 rounded-xl bg-[#1a1a1a]/95 backdrop-blur border border-white/10 flex items-center justify-center text-white/80 shadow-lg"
+        aria-label="Ouvrir le menu admin"
+      >
+        <Menu className="w-5 h-5" />
+      </button>
+
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex w-60 min-h-screen bg-[#0d0d0d] border-r border-white/10 flex-col">
+        {sidebarBody}
+      </aside>
+
+      {/* Mobile drawer */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
+              className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+              onClick={() => setMobileOpen(false)}
+            />
+            <motion.aside
+              initial={{ x: "-100%" }} animate={{ x: 0 }} exit={{ x: "-100%" }}
+              transition={{ type: "tween", duration: 0.25, ease: "easeOut" }}
+              className="md:hidden fixed left-0 top-0 bottom-0 w-[85vw] max-w-[300px] bg-[#0d0d0d] border-r border-white/10 flex flex-col z-[60] shadow-2xl"
+            >
+              {sidebarBody}
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -2373,7 +2681,7 @@ export default function AdminDashboard() {
       onContextMenu={e => e.preventDefault()}
     >
       <AdminSidebar active={active} setActive={setActive} onLogout={handleLogout} />
-      <main className="flex-1 p-8 overflow-auto">
+      <main className="flex-1 p-4 pt-16 md:p-8 overflow-auto">
         {renderContent()}
       </main>
     </div>

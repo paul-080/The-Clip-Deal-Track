@@ -146,7 +146,7 @@ export default function AgencyDashboard() {
         accentColor={ACCENT_COLOR}
         role="agency"
       />
-      <main className={`flex-1 ml-64 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-8"}`}>
+      <main className={`flex-1 md:ml-60 ${location.pathname.includes("/chat") ? "h-screen overflow-hidden" : "p-4 pt-16 md:p-8"}`}>
         <Routes>
           <Route index element={<AgencyHome announcements={announcements} onUpdate={fetchData} />} />
           <Route path="welcome" element={<WelcomePage />} />
@@ -226,7 +226,7 @@ function AgencyHome({ announcements, onUpdate }) {
       data-testid="agency-home"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Accueil — Annonces</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Accueil — Annonces</h1>
         <p className="text-white/50">Publiez des annonces pour vos clippeurs (avec photo, like, dislike, commentaires)</p>
       </div>
 
@@ -301,7 +301,7 @@ function DiscoverPage() {
       data-testid="agency-discover"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Découvrir</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Découvrir</h1>
         <p className="text-white/50">Campagnes des autres agences (lecture seule)</p>
       </div>
 
@@ -653,7 +653,7 @@ function CreateCampaign({ onCreated }) {
       data-testid="create-campaign-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Lancer une campagne</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Lancer une campagne</h1>
         <p className="text-white/50">Créez une nouvelle campagne de clipping</p>
       </div>
 
@@ -1715,7 +1715,7 @@ function CampaignDashboard({ campaigns }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-1">{campaign.name}</h1>
           <div className="flex items-center gap-3">
             <Badge variant="outline" className="border-[#39FF14]/30 text-[#39FF14] text-xs">{campaign.status}</Badge>
             <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
@@ -3633,7 +3633,7 @@ function LinksPage() {
       data-testid="links-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Liens d'accès</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Liens d'accès</h1>
         <p className="text-white/50">Partagez ces liens pour inviter des participants</p>
       </div>
 
@@ -3743,7 +3743,7 @@ function PaymentPage() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8" data-testid="agency-payment-page">
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Portefeuille</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Portefeuille</h1>
         <p className="text-white/50">Ce que vous devez à vos clippeurs — virements directs hors plateforme</p>
       </div>
 
@@ -3952,7 +3952,7 @@ function SettingsPage() {
       data-testid="agency-settings-page"
     >
       <div>
-        <h1 className="font-display font-bold text-3xl text-white mb-2">Paramètres</h1>
+        <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Paramètres</h1>
         <p className="text-white/50">Configurez votre agence</p>
       </div>
 

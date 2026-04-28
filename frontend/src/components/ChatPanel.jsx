@@ -996,7 +996,7 @@ export default function ChatPanel({ campaigns }) {
 
         {/* Left sidebar — agency only */}
         {isAgency && (activeTab === "questions" || activeTab === "conseils" || activeTab === "paiement") && (
-          <div className="w-52 flex-shrink-0 flex flex-col border-r border-white/8 overflow-y-auto p-2">
+          <div className="w-32 md:w-52 flex-shrink-0 flex flex-col border-r border-white/8 overflow-y-auto p-2">
             {sidebarClippers().length === 0 ? (
               <div className="flex flex-col items-center justify-center pt-12 text-center px-2">
                 <User className="w-8 h-8 text-white/10 mb-2" />

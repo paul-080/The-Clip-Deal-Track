@@ -80,7 +80,7 @@ export default function ClientDashboard() {
   return (
     <div className="flex min-h-screen bg-[#0A0A0A]">
       <Sidebar items={sidebarItems} accentColor={ACCENT_COLOR} role="client" />
-      <main className="flex-1 ml-64 p-8">
+      <main className="flex-1 md:ml-60 p-4 pt-16 md:p-8">
         <Routes>
           <Route index element={<ClientHome campaigns={campaigns} loading={loading} />} />
           <Route path="discover" element={<DiscoverCampaigns onJoin={fetchData} />} />
@@ -248,7 +248,7 @@ function CampaignView({ campaigns }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-1">{campaign.name}</h1>
+          <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-1">{campaign.name}</h1>
           <div className="flex items-center gap-3">
             <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${
               campaign.status === "active" ? "bg-green-500/15 text-green-400 border-green-500/25" : "bg-white/5 text-white/40 border-white/10"
@@ -631,7 +631,7 @@ function DiscoverCampaigns({ onJoin }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display font-bold text-3xl text-white mb-1 flex items-center gap-3">
+          <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-1 flex items-center gap-3">
             <Compass className="w-8 h-8" style={{ color: "#FFB300" }} />
             Découvrir les campagnes
           </h1>
