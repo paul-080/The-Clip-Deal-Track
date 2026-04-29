@@ -7430,6 +7430,8 @@ async def get_campaign_views_chart(
     start, end = _compute_chart_window(days, offset)
 
     # Granularite HORAIRE : pour 24h, 7j, 30j (assez de points sans exploser)
+    # Fallback : si aucun snapshot horaire (collection nouvellement creee, pas encore rempli),
+    # retombe sur la granularite daily pour ne pas afficher un graph vide.
     use_hourly = days in (1, 7, 30)
 
     if use_hourly:
@@ -7438,33 +7440,24 @@ async def get_campaign_views_chart(
             {"_id": 0, "scraped_at": 1, "scraped_at_paris": 1, "hour": 1, "minute": 1, "total_views": 1}
         ).sort("scraped_at", 1).to_list(500)
 
-        if not snapshots:
+        if snapshots:
+            prev_snap = await db.views_snapshots_hourly.find_one(
+                {"campaign_id": campaign_id, "scraped_at": {"$lt": start.isoformat()}},
+                {"_id": 0, "total_views": 1},
+                sort=[("scraped_at", -1)]
+            )
+            prev_total = prev_snap["total_views"] if prev_snap else snapshots[0]["total_views"]
+            timeline = _hourly_chart_from_snapshots(snapshots, start, end, prev_total)
             return {
-                "timeline": [],
-                "source": "no_hourly_data",
+                "timeline": timeline,
+                "source": "hourly_snapshots",
                 "granularity": "hourly",
                 "period_start": start.isoformat(),
                 "period_end": end.isoformat(),
                 "offset": offset,
                 "days": days,
             }
-
-        prev_snap = await db.views_snapshots_hourly.find_one(
-            {"campaign_id": campaign_id, "scraped_at": {"$lt": start.isoformat()}},
-            {"_id": 0, "total_views": 1},
-            sort=[("scraped_at", -1)]
-        )
-        prev_total = prev_snap["total_views"] if prev_snap else snapshots[0]["total_views"]
-        timeline = _hourly_chart_from_snapshots(snapshots, start, end, prev_total)
-        return {
-            "timeline": timeline,
-            "source": "hourly_snapshots",
-            "granularity": "hourly",
-            "period_start": start.isoformat(),
-            "period_end": end.isoformat(),
-            "offset": offset,
-            "days": days,
-        }
+        # Pas de snapshots horaires -> fallback daily par published_at (ci-dessous)
 
     # Granularite JOUR (90j, 365j) : par published_at
     pipeline = [
