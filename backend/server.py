@@ -7457,14 +7457,61 @@ async def get_campaign_views_chart(
                 "offset": offset,
                 "days": days,
             }
-        # Pas de snapshots horaires -> fallback daily par published_at (ci-dessous)
+        # Pas de snapshots horaires -> fallback DAILY SNAPSHOTS (delta jour par jour)
+        return await _chart_from_daily_snapshots(campaign_id, start, end, days, offset)
 
-    # Granularite JOUR (90j, 365j) : par published_at
+    # Granularite JOUR pour 90j/365j : utilise daily snapshots (croissance reelle)
+    return await _chart_from_daily_snapshots(campaign_id, start, end, days, offset)
+
+
+async def _chart_from_daily_snapshots(campaign_id: str, start, end, days: int, offset: int):
+    """Graphique daily : delta des views_snapshots cumulés par jour.
+    + fallback si pas de snapshots : agrégation par published_at."""
+    from datetime import timedelta
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
+    # Tente d'abord les snapshots quotidiens (delta de croissance jour par jour)
+    snaps = await db.views_snapshots.find(
+        {"campaign_id": campaign_id, "date": {"$gte": start_str, "$lte": end_str}},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(days + 2)
+
+    if snaps:
+        # Snapshot juste avant la fenêtre comme ancre
+        prev_snap = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": {"$lt": start_str}},
+            {"_id": 0, "total_views": 1},
+            sort=[("date", -1)]
+        )
+        prev_total = prev_snap["total_views"] if prev_snap else 0
+        snap_by_date = {s["date"]: s["total_views"] for s in snaps}
+        delta_by_day = {}
+        running = prev_total
+        for d in sorted(snap_by_date.keys()):
+            cur = snap_by_date[d]
+            delta_by_day[d] = max(0, cur - running)
+            running = cur
+
+        timeline = []
+        current = start
+        while current <= end:
+            day = current.strftime("%Y-%m-%d")
+            timeline.append({"date": day, "views": int(delta_by_day.get(day, 0))})
+            current += timedelta(days=1)
+        return {
+            "timeline": timeline,
+            "source": "daily_snapshots",
+            "granularity": "daily",
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "offset": offset,
+            "days": days,
+        }
+
+    # Pas de snapshots du tout -> fallback ultime : agrégation par published_at
     pipeline = [
-        {"$match": {
-            "campaign_id": campaign_id,
-            "published_at": {"$ne": None},
-        }},
+        {"$match": {"campaign_id": campaign_id, "published_at": {"$ne": None}}},
         {"$addFields": {
             "_pub_dt": {"$cond": [
                 {"$eq": [{"$type": "$published_at"}, "string"]},
@@ -7473,14 +7520,10 @@ async def get_campaign_views_chart(
             ]}
         }},
         {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}},
-            "views": {"$sum": "$views"},
-        }},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}}, "views": {"$sum": "$views"}}},
     ]
     rows = await db.tracked_videos.aggregate(pipeline).to_list(days + 2)
     views_by_day = {r["_id"]: r["views"] for r in rows}
-
     timeline = []
     current = start
     while current <= end:
