@@ -2167,11 +2167,14 @@ function CampaignDashboard({ campaigns }) {
               </div>
             </div>
             {(() => {
+              const isHourly = viewsTimeline?.granularity === "hourly";
               const tlData = (viewsTimeline?.timeline || []).map(d => ({
                 ...d,
-                label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+                label: d.label || (isHourly
+                  ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+                  : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
               }));
-              const hasData = tlData.some(d => d.views > 0);
+              const hasData = tlData.some(d => d.views > 0 || d.total_views > 0);
               return hasData ? (
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
@@ -2187,15 +2190,19 @@ function CampaignDashboard({ campaigns }) {
                     <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
                     <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
                       labelStyle={{ color: "white", fontSize: 11 }}
-                      formatter={(v) => [fmt(v), "Vues"]} />
-                    <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={false} />
+                      formatter={(v, name) => [fmt(v), isHourly ? "Nouvelles vues" : "Vues"]} />
+                    <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={isHourly ? { fill: "#FF007F", r: 4 } : false} />
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="h-48 flex items-center justify-center">
                   {viewsTimelineLoading
                     ? <div className="w-6 h-6 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />
-                    : <p className="text-white/20 text-sm">Aucune donnée — les vues s'accumulent au fur et à mesure du tracking</p>
+                    : <p className="text-white/20 text-sm">
+                        {isHourly
+                          ? "Pas encore de données horaires — le premier scrape apparaîtra à 07:30 Paris"
+                          : "Aucune donnée — les vues s'accumulent au fur et à mesure du tracking"}
+                      </p>
                   }
                 </div>
               );
