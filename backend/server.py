@@ -20,7 +20,10 @@ except ImportError:
 import json
 import asyncio
 import concurrent.futures
-import stripe
+try:
+    import gocardless_pro
+except ImportError:
+    gocardless_pro = None
 import hashlib
 import hmac
 import secrets
@@ -141,8 +144,26 @@ def _get_instagram_session() -> str:
     cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
     _instagram_session_index += 1
     return cookie
-STRIPE_API_KEY = os.environ.get('STRIPE_API_KEY', 'sk_test_placeholder')
+GOCARDLESS_ACCESS_TOKEN = os.environ.get('GOCARDLESS_ACCESS_TOKEN', '').strip()
+GOCARDLESS_ENV = os.environ.get('GOCARDLESS_ENVIRONMENT', 'sandbox').strip()  # 'sandbox' | 'live'
+GOCARDLESS_WEBHOOK_SECRET = os.environ.get('GOCARDLESS_WEBHOOK_SECRET', '').strip()
 ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
+
+
+def _get_gocardless_client():
+    """Returns a gocardless_pro Client or None if not configured."""
+    if not gocardless_pro:
+        return None
+    if not GOCARDLESS_ACCESS_TOKEN:
+        return None
+    try:
+        return gocardless_pro.Client(
+            access_token=GOCARDLESS_ACCESS_TOKEN,
+            environment=GOCARDLESS_ENV
+        )
+    except Exception as e:
+        logger.error(f"GoCardless client init failed: {e}")
+        return None
 
 # ─── Rate limiting (in-memory) ───────────────────────────────────────────────
 _rate_store: dict = defaultdict(list)
@@ -172,8 +193,6 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
     _rate_store[key].append(now)
     return False
 CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
-stripe.api_key = STRIPE_API_KEY
-STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 # Email via Resend API (HTTP — works on Railway)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
@@ -8604,11 +8623,11 @@ async def get_clipper_stats(user: dict = Depends(get_current_user)):
         "campaign_stats": campaign_stats
     }
 
-# ================= STRIPE PAYMENTS =================
+# ================= GOCARDLESS PAYMENTS =================
 
 @api_router.post("/payments/create-checkout")
 async def create_checkout_session(body: dict, user: dict = Depends(get_current_user)):
-    """Agency top-up: create a Stripe Checkout session"""
+    """Agency top-up via GoCardless : crée un redirect flow pour mandat SEPA + paiement"""
     if user.get("role") != "agency":
         raise HTTPException(status_code=403, detail="Agencies only")
 
@@ -8616,70 +8635,206 @@ async def create_checkout_session(body: dict, user: dict = Depends(get_current_u
     if amount_eur < 10:
         raise HTTPException(status_code=400, detail="Minimum top-up is 10 EUR")
 
-    try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": "eur",
-                    "product_data": {"name": "Recharge budget The Clip Deal"},
-                    "unit_amount": int(amount_eur * 100),
-                },
-                "quantity": 1,
-            }],
-            mode="payment",
-            success_url=f"{FRONTEND_URL}/agency?payment=success&amount={amount_eur}",
-            cancel_url=f"{FRONTEND_URL}/agency?payment=cancelled",
-            metadata={"user_id": user["user_id"], "amount_eur": str(amount_eur)}
-        )
-        return {"url": session.url, "session_id": session.id}
-    except stripe.error.StripeError as e:
-        # In test/dev mode without real Stripe keys, return a mock response
-        logger.warning(f"Stripe error (likely test mode): {e}")
+    client = _get_gocardless_client()
+    if not client:
+        # Mode dev / non configuré : on simule (pour pouvoir tester localement)
+        logger.warning("GoCardless not configured, returning mock checkout URL")
         return {
             "url": f"{FRONTEND_URL}/agency?payment=success&amount={amount_eur}",
             "session_id": "mock_session",
             "mock": True
         }
 
-@api_router.post("/payments/webhook")
-async def stripe_webhook(request: Request):
-    """Handle Stripe webhook events"""
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-
-    # SECURITE: la signature Stripe est OBLIGATOIRE en prod (sinon n'importe qui credite des wallets via cURL)
-    if not STRIPE_WEBHOOK_SECRET:
-        logger.error("Stripe webhook called but STRIPE_WEBHOOK_SECRET not configured - rejecting for security")
-        raise HTTPException(status_code=503, detail="Webhook secret not configured")
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        # Reuse existing customer or create one
+        customer_id = user.get("gc_customer_id")
+        # Crée un Redirect Flow (URL hostée GoCardless pour signature mandat SEPA)
+        session_token = uuid.uuid4().hex
+        flow = client.redirect_flows.create(
+            params={
+                "description": f"Recharge budget The Clip Deal — {amount_eur}€",
+                "session_token": session_token,
+                "success_redirect_url": f"{FRONTEND_URL}/agency?payment=pending&topup={amount_eur}&flow={{flow_id}}",
+                "prefilled_customer": {
+                    "email": user.get("email", ""),
+                    "given_name": user.get("first_name") or (user.get("display_name") or "").split(" ")[0] or "Agence",
+                    "family_name": user.get("last_name") or "Client",
+                },
+            }
+        )
+        # Stocke le flow pour le valider après redirect
+        await db.gocardless_flows.insert_one({
+            "flow_id": flow.id,
+            "session_token": session_token,
+            "user_id": user["user_id"],
+            "type": "topup",
+            "amount_eur": amount_eur,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        })
+        return {"url": flow.redirect_url, "session_id": flow.id}
     except Exception as e:
-        logger.warning(f"Stripe webhook signature verification failed: {type(e).__name__}: {e}")
+        logger.error(f"GoCardless create checkout error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors de la création du paiement GoCardless")
+
+
+@api_router.post("/payments/gocardless/complete")
+async def complete_gocardless_flow(body: dict, user: dict = Depends(get_current_user)):
+    """Une fois l'utilisateur revenu de GoCardless avec ?flow=XXX, on complete le mandat
+    et on déclenche le paiement one-shot (top-up) ou la subscription récurrente."""
+    flow_id = (body.get("flow_id") or "").strip()
+    if not flow_id:
+        raise HTTPException(status_code=400, detail="flow_id manquant")
+    flow_doc = await db.gocardless_flows.find_one({"flow_id": flow_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not flow_doc:
+        raise HTTPException(status_code=404, detail="Flow introuvable")
+    if flow_doc.get("status") == "completed":
+        return {"ok": True, "already_completed": True}
+
+    client = _get_gocardless_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="GoCardless non configuré")
+
+    try:
+        # Complete le redirect flow pour obtenir le mandate_id
+        completed = client.redirect_flows.complete(
+            identity=flow_id,
+            params={"session_token": flow_doc["session_token"]}
+        )
+        mandate_id = completed.links.mandate
+        customer_id = completed.links.customer
+
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"gc_customer_id": customer_id, "gc_mandate_id": mandate_id}}
+        )
+
+        flow_type = flow_doc.get("type")
+        if flow_type == "topup":
+            # Crée un payment one-shot
+            amount_eur = float(flow_doc.get("amount_eur", 0))
+            if amount_eur > 0:
+                payment = client.payments.create(
+                    params={
+                        "amount": int(amount_eur * 100),  # en centimes
+                        "currency": "EUR",
+                        "links": {"mandate": mandate_id},
+                        "description": f"Top-up The Clip Deal {amount_eur}€",
+                        "metadata": {"user_id": user["user_id"], "type": "topup"},
+                    }
+                )
+                # Le paiement n'est pas instantané (SEPA prend ~3 jours), mais on le marque pending
+                # Le webhook payment_confirmed l'actualisera
+                await db.payments.insert_one({
+                    "payment_id": f"pay_{uuid.uuid4().hex[:12]}",
+                    "user_id": user["user_id"],
+                    "type": "topup",
+                    "amount_eur": amount_eur,
+                    "gc_payment_id": payment.id,
+                    "gc_mandate_id": mandate_id,
+                    "status": "pending",  # devient "completed" via webhook
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+        elif flow_type == "subscription":
+            plan_id = flow_doc.get("plan_id")
+            plan = SUBSCRIPTION_PLANS.get(plan_id)
+            if plan and plan["amount"] > 0:
+                sub = client.subscriptions.create(
+                    params={
+                        "amount": plan["amount"],
+                        "currency": "EUR",
+                        "interval_unit": "monthly",
+                        "name": f"The Clip Deal Track — {plan['name']}",
+                        "links": {"mandate": mandate_id},
+                        "metadata": {"user_id": user["user_id"], "plan_id": plan_id},
+                    }
+                )
+                await db.users.update_one(
+                    {"user_id": user["user_id"]},
+                    {"$set": {
+                        "subscription_status": "active",
+                        "subscription_plan": plan_id,
+                        "gc_subscription_id": sub.id,
+                        "subscription_started_at": datetime.now(timezone.utc).isoformat(),
+                    }}
+                )
+
+        await db.gocardless_flows.update_one(
+            {"flow_id": flow_id},
+            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat(),
+                      "mandate_id": mandate_id, "customer_id": customer_id}}
+        )
+        return {"ok": True, "mandate_id": mandate_id}
+    except Exception as e:
+        logger.error(f"GoCardless complete error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur GoCardless : {str(e)[:200]}")
+
+
+@api_router.post("/payments/webhook")
+async def gocardless_webhook(request: Request):
+    """Handle GoCardless webhook events.
+    Documentation : https://developer.gocardless.com/api-reference/#webhooks-overview
+    """
+    payload = await request.body()
+    signature_header = request.headers.get("Webhook-Signature", "")
+
+    if not GOCARDLESS_WEBHOOK_SECRET:
+        logger.error("GoCardless webhook called but GOCARDLESS_WEBHOOK_SECRET not configured")
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
+
+    # Vérifie la signature HMAC-SHA256
+    expected = hmac.new(
+        GOCARDLESS_WEBHOOK_SECRET.encode("utf-8"),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature_header):
+        logger.warning("GoCardless webhook signature mismatch")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    if event.get("type") == "checkout.session.completed":
-        session = event["data"]["object"]
-        metadata = session.get("metadata", {})
-        user_id = metadata.get("user_id")
-        amount_eur = float(metadata.get("amount_eur", 0))
+    try:
+        body = json.loads(payload.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
-        if user_id and amount_eur > 0:
-            # Record the top-up
-            await db.payments.insert_one({
-                "payment_id": f"pay_{uuid.uuid4().hex[:12]}",
-                "user_id": user_id,
-                "type": "topup",
-                "amount_eur": amount_eur,
-                "stripe_session_id": session.get("id"),
-                "status": "completed",
-                "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            # Add to agency budget_used ceiling (increase available balance)
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {"wallet_balance": amount_eur}}
-            )
+    events = body.get("events", [])
+    for ev in events:
+        resource_type = ev.get("resource_type")
+        action = ev.get("action")
+        links = ev.get("links", {})
+        try:
+            if resource_type == "payments" and action in ("confirmed", "paid_out"):
+                # Top-up confirmé : crédite le wallet
+                payment_id = links.get("payment")
+                pay_doc = await db.payments.find_one({"gc_payment_id": payment_id}, {"_id": 0})
+                if pay_doc and pay_doc.get("type") == "topup" and pay_doc.get("status") != "completed":
+                    await db.payments.update_one(
+                        {"gc_payment_id": payment_id},
+                        {"$set": {"status": "completed", "confirmed_at": datetime.now(timezone.utc).isoformat()}}
+                    )
+                    await db.users.update_one(
+                        {"user_id": pay_doc["user_id"]},
+                        {"$inc": {"wallet_balance": pay_doc["amount_eur"]}}
+                    )
+                    logger.info(f"Top-up confirmé pour user {pay_doc['user_id']} : {pay_doc['amount_eur']}€")
+            elif resource_type == "subscriptions" and action in ("cancelled", "finished"):
+                sub_id = links.get("subscription")
+                if sub_id:
+                    await db.users.update_one(
+                        {"gc_subscription_id": sub_id},
+                        {"$set": {"subscription_status": "expired", "subscription_plan": None}}
+                    )
+                    logger.info(f"Subscription cancelled : {sub_id}")
+            elif resource_type == "mandates" and action in ("cancelled", "expired"):
+                mandate_id = links.get("mandate")
+                if mandate_id:
+                    await db.users.update_one(
+                        {"gc_mandate_id": mandate_id},
+                        {"$set": {"subscription_status": "expired"}}
+                    )
+                    logger.info(f"Mandate cancelled : {mandate_id}")
+        except Exception as e:
+            logger.error(f"GoCardless webhook event processing error: {e}")
 
     return {"received": True}
 
@@ -8737,7 +8892,7 @@ async def get_payment_history(user: dict = Depends(get_current_user)):
     ).sort("created_at", -1).to_list(100)
     return {"payments": payments}
 
-# ================= PAIEMENTS DIRECTS (sans Stripe) =================
+# ================= PAIEMENTS DIRECTS (virements clippers — hors GoCardless) =================
 
 async def _calc_clicks_for_member(campaign_id: str, user_id: str, rate_per_click: float, unique_only: bool) -> dict:
     """Calculate click-based earnings for a clipper on a click-model campaign."""
@@ -9210,7 +9365,8 @@ def _get_plan_limits(user: dict) -> dict:
 
 @api_router.post("/subscription/checkout")
 async def create_subscription_checkout(body: dict, user: dict = Depends(get_current_user)):
-    """Create a Stripe Checkout session for agency subscription"""
+    """Crée un GoCardless Redirect Flow pour souscrire à un abonnement.
+    L'utilisateur signe le mandat SEPA puis revient sur le frontend qui appelle /payments/gocardless/complete."""
     if user.get("role") != "agency":
         raise HTTPException(status_code=403, detail="Agences uniquement")
 
@@ -9218,121 +9374,95 @@ async def create_subscription_checkout(body: dict, user: dict = Depends(get_curr
     if plan_id not in SUBSCRIPTION_PLANS:
         raise HTTPException(status_code=400, detail="Plan invalide")
 
-    if STRIPE_API_KEY == "sk_test_placeholder" or not STRIPE_API_KEY:
-        raise HTTPException(status_code=503, detail="Paiement non configuré — ajoutez STRIPE_API_KEY dans Railway")
-
     plan = SUBSCRIPTION_PLANS[plan_id]
-    stripe.api_key = STRIPE_API_KEY
+    if plan.get("is_custom"):
+        raise HTTPException(status_code=400, detail="Plan Enterprise : merci de nous contacter directement")
+
+    client = _get_gocardless_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Paiement non configuré — ajoutez GOCARDLESS_ACCESS_TOKEN dans Railway")
 
     try:
-        # Reuse existing customer or create a new one
-        customer_id = user.get("stripe_customer_id")
-        if not customer_id:
-            customer = stripe.Customer.create(
-                email=user.get("email", ""),
-                name=user.get("display_name") or user.get("name", ""),
-                metadata={"user_id": user["user_id"]},
-            )
-            customer_id = customer.id
-            await db.users.update_one(
-                {"user_id": user["user_id"]},
-                {"$set": {"stripe_customer_id": customer_id}}
-            )
+        # Si l'utilisateur a déjà un mandat actif, créer directement la subscription sans redirect flow
+        existing_mandate = user.get("gc_mandate_id")
+        if existing_mandate:
+            try:
+                # Vérifie que le mandat est toujours actif
+                mandate = client.mandates.get(existing_mandate)
+                if mandate.status in ("active", "pending_submission", "submitted"):
+                    sub = client.subscriptions.create(
+                        params={
+                            "amount": plan["amount"],
+                            "currency": "EUR",
+                            "interval_unit": "monthly",
+                            "name": f"The Clip Deal Track — {plan['name']}",
+                            "links": {"mandate": existing_mandate},
+                            "metadata": {"user_id": user["user_id"], "plan_id": plan_id},
+                        }
+                    )
+                    await db.users.update_one(
+                        {"user_id": user["user_id"]},
+                        {"$set": {
+                            "subscription_status": "active",
+                            "subscription_plan": plan_id,
+                            "gc_subscription_id": sub.id,
+                            "subscription_started_at": datetime.now(timezone.utc).isoformat(),
+                        }}
+                    )
+                    return {"url": f"{FRONTEND_URL}/agency/settings?sub=success&plan={plan_id}", "direct": True}
+            except Exception as e:
+                logger.warning(f"Existing mandate check failed, falling back to redirect flow: {e}")
 
-        session = stripe.checkout.Session.create(
-            customer=customer_id,
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": "eur",
-                    "product_data": {
-                        "name": f"The Clip Deal Track — {plan['name']}",
-                        "description": f"Abonnement mensuel {plan['label']} (HT)",
-                    },
-                    "unit_amount": plan["amount"],
-                    "recurring": {"interval": "month"},
+        # Sinon : crée un Redirect Flow pour signer un nouveau mandat
+        session_token = uuid.uuid4().hex
+        flow = client.redirect_flows.create(
+            params={
+                "description": f"Abonnement {plan['name']} ({plan['label']}) — The Clip Deal Track",
+                "session_token": session_token,
+                "success_redirect_url": f"{FRONTEND_URL}/agency/settings?sub=pending&plan={plan_id}&flow={{flow_id}}",
+                "prefilled_customer": {
+                    "email": user.get("email", ""),
+                    "given_name": user.get("first_name") or (user.get("display_name") or "").split(" ")[0] or "Agence",
+                    "family_name": user.get("last_name") or "Client",
                 },
-                "quantity": 1,
-            }],
-            mode="subscription",
-            success_url=f"{FRONTEND_URL}/agency/settings?sub=success&plan={plan_id}",
-            cancel_url=f"{FRONTEND_URL}/agency/settings?sub=cancelled",
-            metadata={"user_id": user["user_id"], "plan_id": plan_id},
+            }
         )
-        return {"url": session.url, "session_id": session.id}
-    except stripe.error.StripeError as e:
-        msg = getattr(e, "user_message", None) or str(e)
-        raise HTTPException(status_code=400, detail=msg)
+        await db.gocardless_flows.insert_one({
+            "flow_id": flow.id,
+            "session_token": session_token,
+            "user_id": user["user_id"],
+            "type": "subscription",
+            "plan_id": plan_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        })
+        return {"url": flow.redirect_url, "session_id": flow.id}
     except Exception as e:
-        logger.error(f"Subscription checkout error: {e}")
-        raise HTTPException(status_code=500, detail="Erreur lors de la création du paiement")
+        logger.error(f"GoCardless subscription checkout error: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur GoCardless : {str(e)[:200]}")
 
-@api_router.post("/subscription/webhook")
-async def subscription_webhook(request: Request):
-    """Handle Stripe subscription webhook events"""
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-    if webhook_secret:
-        try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except stripe.error.SignatureVerificationError:
-            raise HTTPException(status_code=400, detail="Signature invalide")
-    else:
-        try:
-            event = json.loads(payload)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Payload invalide")
-
-    event_type = event.get("type", "")
-
-    if event_type == "checkout.session.completed":
-        session = event["data"]["object"]
-        user_id = session.get("metadata", {}).get("user_id")
-        plan_id = session.get("metadata", {}).get("plan_id")
-        stripe_sub_id = session.get("subscription")
-        if user_id and plan_id:
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {
-                    "subscription_status": "active",
-                    "subscription_plan": plan_id,
-                    "stripe_subscription_id": stripe_sub_id,
-                }}
-            )
-            logger.info(f"Subscription activated for {user_id}: {plan_id}")
-
-    elif event_type in ("customer.subscription.deleted", "customer.subscription.paused"):
-        sub = event["data"]["object"]
-        stripe_sub_id = sub.get("id")
-        user = await db.users.find_one({"stripe_subscription_id": stripe_sub_id}, {"_id": 0})
-        if user:
-            await db.users.update_one(
-                {"stripe_subscription_id": stripe_sub_id},
-                {"$set": {"subscription_status": "expired", "subscription_plan": None}}
-            )
-            logger.info(f"Subscription cancelled for {user.get('user_id')}")
-
-    elif event_type == "invoice.payment_succeeded":
-        invoice = event["data"]["object"]
-        stripe_sub_id = invoice.get("subscription")
-        if stripe_sub_id:
-            await db.users.update_one(
-                {"stripe_subscription_id": stripe_sub_id},
-                {"$set": {"subscription_status": "active"}}
-            )
-
-    elif event_type == "invoice.payment_failed":
-        invoice = event["data"]["object"]
-        stripe_sub_id = invoice.get("subscription")
-        if stripe_sub_id:
-            await db.users.update_one(
-                {"stripe_subscription_id": stripe_sub_id},
-                {"$set": {"subscription_status": "past_due"}}
-            )
-
-    return {"received": True}
+@api_router.post("/subscription/cancel")
+async def cancel_subscription(user: dict = Depends(get_current_user)):
+    """Annule la subscription GoCardless de l'agence."""
+    if user.get("role") != "agency":
+        raise HTTPException(status_code=403, detail="Agences uniquement")
+    sub_id = user.get("gc_subscription_id")
+    if not sub_id:
+        raise HTTPException(status_code=400, detail="Aucune subscription active")
+    client = _get_gocardless_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="GoCardless non configuré")
+    try:
+        client.subscriptions.cancel(sub_id)
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"subscription_status": "expired", "subscription_plan": None, "gc_subscription_id": None}}
+        )
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"GoCardless cancel subscription error: {e}")
+        raise HTTPException(status_code=500, detail="Erreur lors de l'annulation")
 
 # ================= SETTINGS =================
 
@@ -10736,15 +10866,19 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
         except Exception as e:
             return {"status": "error", "error": str(e)[:100], "latency_ms": round((time.time() - t) * 1000)}
 
-    async def test_stripe():
+    async def test_gocardless():
         t = time.time()
-        if STRIPE_API_KEY == "sk_test_placeholder" or not STRIPE_API_KEY:
-            return {"status": "not_configured", "error": "Clé Stripe non configurée"}
+        if not GOCARDLESS_ACCESS_TOKEN:
+            return {"status": "not_configured", "error": "GOCARDLESS_ACCESS_TOKEN non configuré"}
+        if not gocardless_pro:
+            return {"status": "not_installed", "error": "gocardless-pro non installé"}
         try:
-            import stripe as stripe_mod
-            stripe_mod.api_key = STRIPE_API_KEY
-            stripe_mod.Balance.retrieve()
-            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000)}
+            client = _get_gocardless_client()
+            if not client:
+                return {"status": "error", "error": "Client GoCardless null"}
+            # Test : list customers (lecture simple)
+            client.customers.list(params={"limit": 1})
+            return {"status": "ok", "latency_ms": round((time.time() - t) * 1000), "env": GOCARDLESS_ENV}
         except Exception as e:
             return {"status": "error", "error": str(e)[:100], "latency_ms": round((time.time() - t) * 1000)}
 
@@ -10785,14 +10919,14 @@ async def admin_api_status(request: Request, _: bool = Depends(verify_admin_code
             return {"status": "error", "error": str(e)[:150], "latency_ms": round((time.time() - t) * 1000)}
 
     results = await asyncio.gather(
-        test_mongodb(), test_youtube(), test_apify(), test_stripe(), test_google_oauth(), test_clipscraper(),
+        test_mongodb(), test_youtube(), test_apify(), test_gocardless(), test_google_oauth(), test_clipscraper(),
         return_exceptions=False
     )
     return {
         "mongodb": results[0],
         "youtube_api": results[1],
         "apify": results[2],
-        "stripe": results[3],
+        "gocardless": results[3],
         "google_oauth": results[4],
         "clipscraper": results[5],
         "env_summary": {

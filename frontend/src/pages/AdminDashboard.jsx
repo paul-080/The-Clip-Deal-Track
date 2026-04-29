@@ -1355,7 +1355,7 @@ function ApiStatusTab() {
     { key: "youtube_api",  label: "YouTube Data API v3",              icon: Youtube,    desc: "Stats YouTube (gratuit, 10 000 req/jour)" },
     { key: "apify",        label: "Apify (BACKUP uniquement)",        icon: Zap,        desc: "Dernier recours - $5/mois gratuit, devrait quasi jamais être appelé" },
     { key: "google_oauth", label: "Google OAuth",                     icon: Shield,     desc: "Connexion Google (login)" },
-    { key: "stripe",       label: "Stripe (déprécié)",                icon: CreditCard, desc: "Ancien paiement, retiré au profit de GoCardless" },
+    { key: "gocardless",   label: "GoCardless (SEPA)",                icon: CreditCard, desc: "Paiements SEPA + abonnements récurrents (sandbox/live)" },
   ];
 
   const usageServices = [

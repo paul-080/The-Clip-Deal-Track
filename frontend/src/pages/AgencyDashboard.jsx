@@ -3878,16 +3878,43 @@ function SettingsPage() {
       .catch(() => {});
   }, []);
 
-  // Handle return from Stripe
+  // Handle return from GoCardless
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("sub") === "success") {
+    const subStatusParam = params.get("sub");
+    const flowId = params.get("flow") || params.get("redirect_flow_id");
+    const planParam = params.get("plan");
+
+    if (subStatusParam === "success") {
       toast.success("Abonnement activé avec succès !");
       window.history.replaceState({}, "", window.location.pathname);
       fetch(`${API}/subscription/status`, { credentials: "include" })
         .then(r => r.ok ? r.json() : null)
         .then(d => d && setSubStatus(d));
-    } else if (params.get("sub") === "cancelled") {
+    } else if (subStatusParam === "pending" && flowId) {
+      // L'utilisateur revient de GoCardless après signature du mandat
+      // On complete le flow pour activer la subscription
+      toast.info("Activation de l'abonnement en cours...");
+      fetch(`${API}/payments/gocardless/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ flow_id: flowId }),
+      })
+        .then(r => r.json())
+        .then(d => {
+          if (d.ok) {
+            toast.success(`Abonnement ${planParam ? planParam.replace("plan_", "") : ""} activé !`);
+            window.history.replaceState({}, "", window.location.pathname);
+            fetch(`${API}/subscription/status`, { credentials: "include" })
+              .then(r => r.ok ? r.json() : null)
+              .then(d => d && setSubStatus(d));
+          } else {
+            toast.error(d.detail || "Erreur lors de l'activation");
+          }
+        })
+        .catch(() => toast.error("Erreur réseau"));
+    } else if (subStatusParam === "cancelled") {
       toast.info("Paiement annulé");
       window.history.replaceState({}, "", window.location.pathname);
     }
@@ -4233,7 +4260,7 @@ function SettingsPage() {
               );
             })}
           </div>
-          <p className="text-xs text-white/30">Paiement sécurisé par Stripe · HT · Résiliation possible à tout moment · Essai gratuit de 14 jours en plan Business</p>
+          <p className="text-xs text-white/30">Prélèvement SEPA sécurisé via GoCardless · HT · Résiliation possible à tout moment · Essai gratuit de 14 jours en plan Business</p>
         </CardContent>
       </Card>
 
