@@ -10391,6 +10391,86 @@ async def admin_ban_user(user_id: str, request: Request, _: bool = Depends(verif
     await db.user_sessions.delete_many({"user_id": user_id})
     return {"banned": user_id}
 
+@api_router.post("/admin/campaigns/{campaign_id}/force-scrape")
+async def admin_force_scrape_campaign(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """Admin : force le scraping immediat de TOUS les comptes d'une campagne.
+    Auto-cleanup d'abord les usernames sales (URLs) puis attend 30s pour re-verification."""
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    # Auto-cleanup : usernames sales sur les comptes de cette campagne
+    pre_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    pre_account_ids = [a["account_id"] for a in pre_assignments]
+    cleanup_res = await _cleanup_dirty_usernames({"account_id": {"$in": pre_account_ids}})
+    if cleanup_res["fixed"] > 0:
+        logger.info(f"admin force-scrape: nettoye {cleanup_res['fixed']} usernames sales avant scrape, attente 30s pour re-verification")
+        await asyncio.sleep(30)
+
+    # Calcule cutoff = tracking_start_date sinon assigned_at par compte
+    campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
+    days_back = 30
+    if campaign_tracking_start:
+        days_back = max(2, int((datetime.now(timezone.utc) - campaign_tracking_start).total_seconds() / 86400) + 2)
+        days_back = min(days_back, 365)
+
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(500)
+    if not assignments:
+        return {"ok": True, "message": "Aucun compte assigne a cette campagne", "results": []}
+
+    # Lance les scrapes en parallele (max 5 concurrents)
+    semaphore = asyncio.Semaphore(5)
+
+    async def _scrape_with_semaphore(assignment):
+        async with semaphore:
+            acc_id = assignment.get("account_id")
+            account = await db.social_accounts.find_one({"account_id": acc_id}, {"_id": 0})
+            if not account:
+                return {"ok": False, "error": "compte DB introuvable", "username": "?", "platform": "?"}
+            cutoff = campaign_tracking_start or _parse_utc(assignment.get("assigned_at")) or datetime.now(timezone.utc) - timedelta(days=30)
+            return await _scrape_one_account_into_campaign(
+                account, campaign, cutoff, since_days=days_back, wait_verification=False
+            )
+
+    results = await asyncio.gather(*[_scrape_with_semaphore(a) for a in assignments], return_exceptions=True)
+    final_results = []
+    total_inserted = 0
+    total_errors = 0
+    for r in results:
+        if isinstance(r, Exception):
+            final_results.append({"ok": False, "error": str(r), "username": "?", "platform": "?"})
+            total_errors += 1
+        else:
+            final_results.append(r)
+            if r.get("ok"):
+                total_inserted += r.get("inserted", 0)
+            else:
+                total_errors += 1
+
+    await db.campaigns.update_one(
+        {"campaign_id": campaign_id},
+        {"$set": {
+            "last_force_scrape_at": datetime.now(timezone.utc).isoformat(),
+            "last_force_scrape_by": "admin",
+        }}
+    )
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "accounts_scraped": len(assignments),
+        "total_videos_inserted": total_inserted,
+        "total_errors": total_errors,
+        "since_days": days_back,
+        "results": final_results,
+    }
+
+
 @api_router.delete("/admin/campaigns/{campaign_id}")
 async def admin_delete_campaign(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})

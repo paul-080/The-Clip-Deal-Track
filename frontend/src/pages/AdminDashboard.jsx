@@ -2020,6 +2020,7 @@ function AdminCampaignsTab() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [search, setSearch] = useState("");
   const [detailId, setDetailId] = useState(null); // campaign_id of open detail panel
+  const [scrapingId, setScrapingId] = useState(null); // campaign_id en cours de scrape
 
   const fetchCampaigns = useCallback(() => {
     setLoading(true);
@@ -2039,6 +2040,20 @@ function AdminCampaignsTab() {
       if (detailId === campaignId) setDetailId(null);
       fetchCampaigns();
     } catch (e) { toast.error(e.message); }
+  };
+
+  const handleForceScrape = async (campaignId, campaignName) => {
+    if (scrapingId) return; // déjà en cours
+    setScrapingId(campaignId);
+    toast.info(`Scraping en cours pour "${campaignName}" — peut prendre 30s à 2min...`);
+    try {
+      const res = await adminFetch(`/admin/campaigns/${campaignId}/force-scrape`, { method: "POST" });
+      toast.success(`✓ Scraping terminé : ${res.total_videos_inserted || 0} vidéos · ${res.total_errors || 0} erreurs · ${res.accounts_scraped || 0} comptes`, { duration: 6000 });
+    } catch (e) {
+      toast.error(`Erreur scraping : ${e.message}`);
+    } finally {
+      setScrapingId(null);
+    }
   };
 
   const statusColors = { active: "text-green-400", paused: "text-yellow-400", ended: "text-red-400", draft: "text-white/40" };
@@ -2129,6 +2144,14 @@ function AdminCampaignsTab() {
                         title="Voir comme l'agence (impersonate 2h)"
                       >
                         <Building2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleForceScrape(c.campaign_id, c.name)}
+                        disabled={scrapingId === c.campaign_id}
+                        className={`p-1.5 rounded transition-all ${scrapingId === c.campaign_id ? "bg-[#39FF14]/20 text-[#39FF14] cursor-wait" : "bg-[#39FF14]/10 hover:bg-[#39FF14]/20 text-[#39FF14]"}`}
+                        title={scrapingId === c.campaign_id ? "Scraping en cours..." : "Lancer un scraping de cette campagne (admin)"}
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${scrapingId === c.campaign_id ? "animate-spin" : ""}`} />
                       </button>
                       <button
                         onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}
