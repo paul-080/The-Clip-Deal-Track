@@ -1122,6 +1122,7 @@ function CampaignDashboard({ campaigns }) {
   const [viewsTimeline, setViewsTimeline] = useState(null);
   const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
   const [viewsPeriod, setViewsPeriod] = useState("30");
+  const [viewsOffset, setViewsOffset] = useState(0);
   const [period, setPeriod] = useState("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -1159,10 +1160,10 @@ function CampaignDashboard({ campaigns }) {
     }
   }, [campaignId]);
 
-  const fetchViewsTimeline = async (d = viewsPeriod) => {
+  const fetchViewsTimeline = async (d = viewsPeriod, off = viewsOffset) => {
     setViewsTimelineLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/views-chart?days=${d}`, { credentials: "include" });
+      const res = await fetch(`${API}/campaigns/${campaignId}/views-chart?days=${d}&offset=${off}`, { credentials: "include" });
       if (res.ok) setViewsTimeline(await res.json());
     } catch {}
     finally { setViewsTimelineLoading(false); }
@@ -1201,9 +1202,13 @@ function CampaignDashboard({ campaigns }) {
   }, [campaign?.campaign_id, campaign?.payment_model]);
 
   // Auto-fetch views timeline when campaign is loaded and is views-based (ou both)
+  // Refetch quand viewsPeriod ou viewsOffset change
   useEffect(() => {
-    if (campaign?.payment_model === "views" || campaign?.payment_model === "both") fetchViewsTimeline();
-  }, [campaign?.campaign_id, campaign?.payment_model]);
+    if (campaign?.payment_model === "views" || campaign?.payment_model === "both") {
+      fetchViewsTimeline(viewsPeriod, viewsOffset);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaign?.campaign_id, campaign?.payment_model, viewsPeriod, viewsOffset]);
 
   const handlePeriodChange = (p) => {
     setPeriod(p);
@@ -2138,36 +2143,48 @@ function CampaignDashboard({ campaigns }) {
 
           {/* Views timeline chart */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-white font-medium">Vues par jour</p>
-              <div className="flex items-center gap-2">
-                {/* Period selector + flèches */}
-                {(() => {
-                  const PL = [["1","24h"],["7","7j"],["30","30j"],["90","90j"],["365","1an"]];
-                  const idx = PL.findIndex(([v]) => v === viewsPeriod);
-                  const go = (v) => { setViewsPeriod(v); fetchViewsTimeline(v); };
-                  return (
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => idx > 0 && go(PL[idx-1][0])} disabled={idx === 0}
-                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">‹</button>
-                      <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
-                        {PL.map(([val, label]) => (
-                          <button key={val} onClick={() => go(val)}
-                            className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                      <button onClick={() => idx < PL.length-1 && go(PL[idx+1][0])} disabled={idx === PL.length-1}
-                        className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">›</button>
-                    </div>
-                  );
-                })()}
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div>
+                <p className="text-white font-medium">Vues</p>
+                {viewsTimeline?.period_start && viewsOffset > 0 && (
+                  <p className="text-[10px] text-white/40 mt-0.5">
+                    {new Date(viewsTimeline.period_start).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}
+                    {" → "}
+                    {new Date(viewsTimeline.period_end).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Flèches d'offset (navigation entre périodes) */}
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setViewsOffset(o => o + 1)}
+                    title="Période précédente"
+                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 transition-all">‹</button>
+                  {viewsOffset > 0 && (
+                    <span className="text-[10px] text-white/50 px-1">il y a {viewsOffset} période{viewsOffset > 1 ? "s" : ""}</span>
+                  )}
+                  <button
+                    onClick={() => setViewsOffset(o => Math.max(0, o - 1))}
+                    disabled={viewsOffset === 0}
+                    title="Période suivante"
+                    className="w-7 h-7 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-20 transition-all">›</button>
+                </div>
+                {/* Sélecteur de granularité */}
+                <div className="flex bg-white/5 border border-white/10 rounded-lg p-0.5 gap-0.5">
+                  {[["1","24h"],["7","7j"],["30","30j"],["90","90j"],["365","1an"]].map(([val, label]) => (
+                    <button key={val} onClick={() => { setViewsPeriod(val); setViewsOffset(0); }}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${viewsPeriod === val ? "bg-white/15 text-white" : "text-white/40 hover:text-white"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 {viewsTimelineLoading && <div className="w-4 h-4 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />}
               </div>
             </div>
             {(() => {
               const isHourly = viewsTimeline?.granularity === "hourly";
+              const days = parseInt(viewsTimeline?.days || viewsPeriod) || 30;
               const tlData = (viewsTimeline?.timeline || []).map(d => ({
                 ...d,
                 label: d.label || (isHourly
@@ -2175,6 +2192,9 @@ function CampaignDashboard({ campaigns }) {
                   : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
               }));
               const hasData = tlData.some(d => d.views > 0 || d.total_views > 0);
+              // En mode horaire 24h on a 4 points (Business) ou 1 (Starter/Pro)
+              // Sur 7j/30j on a beaucoup de points (28-120) → on cache les dots
+              const showDots = isHourly && days <= 1;
               return hasData ? (
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
@@ -2191,17 +2211,19 @@ function CampaignDashboard({ campaigns }) {
                     <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
                       labelStyle={{ color: "white", fontSize: 11 }}
                       formatter={(v, name) => [fmt(v), isHourly ? "Nouvelles vues" : "Vues"]} />
-                    <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={isHourly ? { fill: "#FF007F", r: 4 } : false} />
+                    <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={showDots ? { fill: "#FF007F", r: 4 } : false} />
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
                 <div className="h-48 flex items-center justify-center">
                   {viewsTimelineLoading
                     ? <div className="w-6 h-6 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />
-                    : <p className="text-white/20 text-sm">
-                        {isHourly
-                          ? "Pas encore de données horaires — le premier scrape apparaîtra à 07:30 Paris"
-                          : "Aucune donnée — les vues s'accumulent au fur et à mesure du tracking"}
+                    : <p className="text-white/20 text-sm text-center px-4">
+                        {viewsOffset > 0
+                          ? "Aucune donnée pour cette période passée"
+                          : isHourly
+                            ? "Pas encore de données — le premier scrape s'effectuera à 07:30 Paris"
+                            : "Aucune donnée — les vues s'accumulent au fur et à mesure du tracking"}
                       </p>
                   }
                 </div>

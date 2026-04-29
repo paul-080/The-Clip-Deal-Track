@@ -7373,51 +7373,100 @@ async def get_my_period_stats(
     }
 
 
+def _compute_chart_window(days: int, offset: int = 0):
+    """Calcule (start, end) pour une fenetre de `days` jours, decalee de `offset` periodes en arriere.
+    offset=0 = periode courante, offset=1 = periode precedente, etc."""
+    from datetime import timedelta
+    end = datetime.now(timezone.utc) - timedelta(days=days * offset)
+    start = end - timedelta(days=days)
+    return start, end
+
+
+def _hourly_chart_from_snapshots(snapshots, start, end, prev_total):
+    """Construit la timeline horaire a partir des snapshots tries chronologiquement.
+    Retourne liste de points avec label HH:MM (Paris) ou jour si on dépasse 1j."""
+    span_days = (end - start).total_seconds() / 86400
+    timeline = []
+    running = prev_total
+    for s in snapshots:
+        cur = s["total_views"]
+        delta = max(0, cur - running)
+        # Label : si on est sur 1 jour -> "HH:MM", sinon "JJ/MM HH:MM"
+        if span_days <= 1.5:
+            label = f"{s.get('hour', 0):02d}:{s.get('minute', 0):02d}"
+        else:
+            try:
+                dt_paris = datetime.fromisoformat(s["scraped_at_paris"].replace("Z", "+00:00")) if s.get("scraped_at_paris") else None
+                if dt_paris:
+                    label = dt_paris.strftime("%d/%m %Hh")
+                else:
+                    label = f"{s.get('hour', 0):02d}h"
+            except Exception:
+                label = f"{s.get('hour', 0):02d}h"
+        timeline.append({
+            "date": s["scraped_at"],
+            "label": label,
+            "views": delta,
+            "total_views": cur,
+        })
+        running = cur
+    return timeline
+
+
 @api_router.get("/campaigns/{campaign_id}/views-chart")
-async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
+async def get_campaign_views_chart(
+    campaign_id: str,
+    days: int = 30,
+    offset: int = 0,
+    user: dict = Depends(get_current_user)
+):
     """
-    Vues par jour de PUBLICATION des vidéos (granularite jour pour days >= 7).
-    Pour days=1 (24h) : granularite HORAIRE — points aux scrape times (07:30, 12:00, 15:30, 22:00 Paris).
+    Graphique des vues sur une fenetre `days` (en jours), decalee de `offset` periodes vers le passe.
+    - days=1, 7, 30 : granularite HORAIRE (utilise views_snapshots_hourly)
+    - days=90, 365 : granularite JOUR (par published_at, performance)
+    Le parametre offset permet la navigation entre periodes via les fleches.
     """
     from datetime import timedelta
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
+    start, end = _compute_chart_window(days, offset)
 
-    # ── Granularité HORAIRE (24h) : utilise les snapshots horodates ──
-    if days == 1:
-        # Récupère les snapshots des dernières 24h, triés chronologiquement
+    # Granularite HORAIRE : pour 24h, 7j, 30j (assez de points sans exploser)
+    use_hourly = days in (1, 7, 30)
+
+    if use_hourly:
         snapshots = await db.views_snapshots_hourly.find(
             {"campaign_id": campaign_id, "scraped_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
             {"_id": 0, "scraped_at": 1, "scraped_at_paris": 1, "hour": 1, "minute": 1, "total_views": 1}
-        ).sort("scraped_at", 1).to_list(100)
+        ).sort("scraped_at", 1).to_list(500)
 
         if not snapshots:
-            return {"timeline": [], "source": "no_hourly_data", "granularity": "hourly"}
+            return {
+                "timeline": [],
+                "source": "no_hourly_data",
+                "granularity": "hourly",
+                "period_start": start.isoformat(),
+                "period_end": end.isoformat(),
+                "offset": offset,
+                "days": days,
+            }
 
-        # Snapshot juste AVANT la fenêtre pour calculer le delta du premier point
         prev_snap = await db.views_snapshots_hourly.find_one(
             {"campaign_id": campaign_id, "scraped_at": {"$lt": start.isoformat()}},
             {"_id": 0, "total_views": 1},
             sort=[("scraped_at", -1)]
         )
         prev_total = prev_snap["total_views"] if prev_snap else snapshots[0]["total_views"]
+        timeline = _hourly_chart_from_snapshots(snapshots, start, end, prev_total)
+        return {
+            "timeline": timeline,
+            "source": "hourly_snapshots",
+            "granularity": "hourly",
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "offset": offset,
+            "days": days,
+        }
 
-        timeline = []
-        running = prev_total
-        for s in snapshots:
-            cur = s["total_views"]
-            delta = max(0, cur - running)
-            label = f"{s.get('hour', 0):02d}:{s.get('minute', 0):02d}"
-            timeline.append({
-                "date": s["scraped_at"],
-                "label": label,
-                "views": delta,           # vues nouvelles depuis le scrape précédent
-                "total_views": cur,        # total cumulé à ce moment
-            })
-            running = cur
-        return {"timeline": timeline, "source": "hourly_snapshots", "granularity": "hourly"}
-
-    # ── Granularité JOUR (7d, 30d, 90d, 365d) : par published_at ──
+    # Granularite JOUR (90j, 365j) : par published_at
     pipeline = [
         {"$match": {
             "campaign_id": campaign_id,
@@ -7445,18 +7494,33 @@ async def get_campaign_views_chart(campaign_id: str, days: int = 30, user: dict 
         day = current.strftime("%Y-%m-%d")
         timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
         current += timedelta(days=1)
-    return {"timeline": timeline, "source": "by_published_at", "granularity": "daily"}
+    return {
+        "timeline": timeline,
+        "source": "by_published_at",
+        "granularity": "daily",
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "offset": offset,
+        "days": days,
+    }
 
 
 @api_router.get("/campaigns/{campaign_id}/my-views-chart")
-async def get_my_views_chart(campaign_id: str, days: int = 30, user: dict = Depends(get_current_user)):
+async def get_my_views_chart(
+    campaign_id: str,
+    days: int = 30,
+    offset: int = 0,
+    user: dict = Depends(get_current_user)
+):
     """
-    Vues du clippeur connecté par jour de publication des vidéos.
+    Vues du clippeur connecté avec meme logique que campaign chart (horaire 24h/7j/30j, daily 90j/1an).
+    Note : les snapshots horaires sont par campagne (pas par user), donc pour le clipper on garde une approche simple :
+    - Pour 24h/7j/30j : agrege par jour de fetch (fetched_at) au lieu de published_at pour avoir l'evolution recente
+    - Pour 90j/365j : par published_at
     """
     from datetime import timedelta
     uid = user["user_id"]
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
+    start, end = _compute_chart_window(days, offset)
 
     pipeline = [
         {"$match": {
@@ -7486,7 +7550,14 @@ async def get_my_views_chart(campaign_id: str, days: int = 30, user: dict = Depe
         day = current.strftime("%Y-%m-%d")
         timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
         current += timedelta(days=1)
-    return {"timeline": timeline}
+    return {
+        "timeline": timeline,
+        "granularity": "daily",
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "offset": offset,
+        "days": days,
+    }
 
 @api_router.get("/campaigns/{campaign_id}/my-videos")
 async def get_my_campaign_videos(campaign_id: str, user: dict = Depends(get_current_user)):
