@@ -1770,6 +1770,11 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
               };
               const freeAccounts = verifiedAccounts.filter((a) => !getOtherCampaignName(a.account_id));
               const busyAccounts = verifiedAccounts.filter((a) => !!getOtherCampaignName(a.account_id));
+              // Plateformes autorisées par la campagne (vide = toutes)
+              const allowedPlatforms = (campaign.platforms && campaign.platforms.length > 0) ? campaign.platforms : null;
+              const isPlatformAllowed = (acc) => !allowedPlatforms || allowedPlatforms.includes(acc.platform);
+              const compatibleFreeAccounts = freeAccounts.filter(isPlatformAllowed);
+              const incompatibleFreeAccounts = freeAccounts.filter(a => !isPlatformAllowed(a));
               return (
                 <Card key={campaign.campaign_id} data-campaign-id={campaign.campaign_id} data-campaign-name={campaign.name} className="bg-[#121212] border-white/10">
                   <CardHeader className="pb-2">
@@ -1815,14 +1820,36 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                         ))}
                       </div>
                     )}
-                    {freeAccounts.length > 0 && (
+                    {/* Affiche le badge des plateformes autorisées */}
+                    {allowedPlatforms && (
+                      <p className="text-[11px] text-white/40">
+                        Plateformes acceptées : <span className="text-white/70">{allowedPlatforms.join(", ")}</span>
+                      </p>
+                    )}
+                    {/* Comptes incompatibles — grisés avec explication */}
+                    {incompatibleFreeAccounts.length > 0 && (
+                      <div className="space-y-1">
+                        {incompatibleFreeAccounts.map((account) => (
+                          <div key={account.account_id}
+                            className="flex items-center justify-between p-2 bg-white/3 rounded opacity-40 cursor-not-allowed"
+                            title={`Cette campagne n'accepte pas ${account.platform}`}>
+                            <div className="flex items-center gap-2">
+                              <Badge className="bg-white/10 text-white/50">{account.platform}</Badge>
+                              <span className="text-white/50 text-sm">{account.username}</span>
+                            </div>
+                            <span className="text-[10px] text-red-400/70">Plateforme non acceptée</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {compatibleFreeAccounts.length > 0 && (
                       <Select onValueChange={(accountId) => handleAssignAccount(campaign.campaign_id, accountId)}>
                         <SelectTrigger className="bg-white/5 border-white/10 text-white"
                           data-testid={`assign-account-${campaign.campaign_id}`}>
                           <SelectValue placeholder="+ Ajouter un compte" />
                         </SelectTrigger>
                         <SelectContent>
-                          {freeAccounts.map((account) => (
+                          {compatibleFreeAccounts.map((account) => (
                             <SelectItem key={account.account_id} value={account.account_id}>
                               {account.platform} — {account.username}
                             </SelectItem>
@@ -1832,6 +1859,11 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                     )}
                     {freeAccounts.length === 0 && busyAccounts.length === 0 && verifiedAccounts.length === 0 && (
                       <p className="text-white/30 text-xs">Tous vos comptes vérifiés sont déjà assignés ici.</p>
+                    )}
+                    {compatibleFreeAccounts.length === 0 && incompatibleFreeAccounts.length > 0 && verifiedAccounts.length > 0 && (
+                      <p className="text-amber-400/70 text-xs">
+                        Aucun de vos comptes ne correspond aux plateformes acceptées par cette campagne.
+                      </p>
                     )}
                   </CardContent>
                 </Card>

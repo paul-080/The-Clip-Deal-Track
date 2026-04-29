@@ -1497,6 +1497,12 @@ function CampaignDashboard({ campaigns }) {
       toast.error("Sélectionne un clippeur, une plateforme et entre un @username ou une URL");
       return;
     }
+    // Vérifie que la plateforme est autorisée par la campagne (defense en profondeur)
+    const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : null;
+    if (allowed && !allowed.includes(trackAccountForm.platform)) {
+      toast.error(`Cette campagne n'accepte que : ${allowed.join(", ")}`);
+      return;
+    }
     setTrackingAccount(true);
     try {
       const isUrl = trackAccountForm.username.trim().startsWith("http");
@@ -2388,7 +2394,7 @@ function CampaignDashboard({ campaigns }) {
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
                   {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
                 </button>
-                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
                   className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
                   + Tracker un compte
                 </button>
@@ -2421,11 +2427,11 @@ function CampaignDashboard({ campaigns }) {
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+              <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
                 + Tracker un compte
               </button>
-              <button onClick={() => { setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); setShowManualVideoModal(true); }}
+              <button onClick={() => { setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok") }); setShowManualVideoModal(true); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f0c040]/10 hover:bg-[#f0c040]/20 border border-[#f0c040]/30 text-[#f0c040] text-xs font-medium transition-all">
                 + Tracker une vidéo
               </button>
@@ -2509,7 +2515,7 @@ function CampaignDashboard({ campaigns }) {
                     <h3 className="text-white font-semibold text-lg">Tracker une vidéo</h3>
                     <p className="text-white/40 text-xs mt-0.5">Les stats sont récupérées automatiquement — toujours comptabilisées dans la rémunération.</p>
                   </div>
-                  <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                  <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok") }); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
                 </div>
 
                 {/* Résultat après tracking */}
@@ -2590,7 +2596,7 @@ function CampaignDashboard({ campaigns }) {
                     </div>
 
                     <div className="flex gap-3 pt-2">
-                      <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: "tiktok" }); setScrapedVideos(null); }}
+                      <button onClick={() => { setShowManualVideoModal(false); setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok") }); setScrapedVideos(null); }}
                         className="flex-1 py-2.5 rounded-xl border border-white/10 text-white/50 hover:text-white text-sm transition-all">
                         {trackResult ? "Fermer" : "Annuler"}
                       </button>

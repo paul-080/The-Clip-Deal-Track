@@ -589,6 +589,12 @@ function CampaignDashboard({ campaigns }) {
       toast.error("Sélectionne un clippeur, une plateforme et entre un @username ou une URL");
       return;
     }
+    // Vérifie que la plateforme est autorisée par la campagne (defense en profondeur)
+    const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : null;
+    if (allowed && !allowed.includes(trackAccountForm.platform)) {
+      toast.error(`Cette campagne n'accepte que : ${allowed.join(", ")}`);
+      return;
+    }
     setTrackingAccount(true);
     try {
       const isUrl = trackAccountForm.username.trim().startsWith("http");
@@ -1054,7 +1060,7 @@ function CampaignDashboard({ campaigns }) {
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
                   {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
                 </button>
-                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
                   className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
                   + Tracker un compte
                 </button>
@@ -1086,7 +1092,7 @@ function CampaignDashboard({ campaigns }) {
               </select>
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
-            <button onClick={() => { setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" }); setShowTrackAccountModal(true); }}
+            <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
               className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
               + Tracker un compte
             </button>
