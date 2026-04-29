@@ -12336,6 +12336,24 @@ async def startup_event():
         # payments
         (db.payments, [("user_id", 1), ("campaign_id", 1)], {}),
         (db.payments, [("agency_id", 1)], {}),
+        (db.payments, [("gc_payment_id", 1)], {"sparse": True}),
+        # tracked_videos : index pour graph par published_at + agregation
+        (db.tracked_videos, [("campaign_id", 1), ("published_at", -1)], {}),
+        (db.tracked_videos, [("campaign_id", 1), ("user_id", 1), ("published_at", -1)], {}),
+        # GoCardless flows
+        (db.gocardless_flows, [("flow_id", 1)], {"unique": True, "sparse": True}),
+        (db.gocardless_flows, [("user_id", 1), ("status", 1)], {}),
+        # strikes (anti-doublon par jour)
+        (db.strikes, [("strike_id", 1)], {"unique": True, "sparse": True}),
+        (db.strikes, [("campaign_id", 1), ("user_id", 1), ("created_at", -1)], {}),
+        # expulsion_requests
+        (db.expulsion_requests, [("expulsion_id", 1)], {"unique": True, "sparse": True}),
+        (db.expulsion_requests, [("campaign_id", 1), ("status", 1)], {}),
+        # click_links / click_events / click_dedup
+        (db.click_links, [("campaign_id", 1), ("clipper_id", 1), ("is_active", 1)], {}),
+        (db.click_links, [("short_code", 1)], {"unique": True, "sparse": True}),
+        (db.click_events, [("link_id", 1), ("clicked_at", -1)], {}),
+        (db.click_events, [("campaign_id", 1), ("clicked_at", -1)], {}),
     ]
     for collection, keys, opts in indexes:
         try:
