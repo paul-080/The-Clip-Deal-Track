@@ -15,6 +15,7 @@ export default function LandingPage() {
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [selectedRole, setSelectedRole] = useState(null);
   const [step, setStep] = useState(1); // 1 = role selection, 2 = form
+  const [pricingMode, setPricingMode] = useState("full"); // "full" | "click"
 
   // Form fields
   const [formData, setFormData] = useState({
@@ -621,12 +622,91 @@ export default function LandingPage() {
       {/* Pricing Section */}
       <section className="py-20 px-6 lg:px-16 bg-[#0A0A0A] border-t border-white/5">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-12">
+          <div className="text-center mb-8">
             <h2 className="text-3xl lg:text-4xl font-bold text-white mb-3">
               Tarifs <span className="text-[#f0c040]">agence</span>
             </h2>
-            <p className="text-white/50 text-base">HT · 2 semaines offertes à l'inscription</p>
+            <p className="text-white/50 text-base mb-6">HT · 2 semaines offertes à l'inscription</p>
+            {/* Toggle Vues & Clics / Clics */}
+            <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              <button onClick={() => setPricingMode("full")}
+                className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "full" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                Vues & Clics
+              </button>
+              <button onClick={() => setPricingMode("click")}
+                className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "click" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                Au clic uniquement
+              </button>
+            </div>
+            <p className="text-white/40 text-xs mt-3 max-w-md mx-auto">
+              {pricingMode === "full"
+                ? "Tracking complet : vues, likes, commentaires, gains au RPM + clics"
+                : "Tracking au clic uniquement (sans suivi des vues) — moins cher, idéal pour campagnes focus liens en bio"}
+            </p>
           </div>
+          {pricingMode === "click" ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-5xl mx-auto">
+              {/* Starter Click */}
+              <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+                <div>
+                  <p className="text-white/50 text-sm font-medium mb-1">Starter Clic</p>
+                  <p className="text-3xl font-bold text-white">89€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                </div>
+                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> 1 campagne active</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 15 clippeurs</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support standard</li>
+                </ul>
+                <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+                  Choisir ce plan
+                </Button>
+              </div>
+              {/* Pro Click */}
+              <div className="bg-[#121212] border-2 border-[#f0c040] rounded-2xl p-5 space-y-4 relative flex flex-col">
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#f0c040] text-black text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
+                  Recommandé
+                </div>
+                <div>
+                  <p className="text-white/50 text-sm font-medium mb-1">Pro Clic</p>
+                  <p className="text-3xl font-bold text-white">149€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                </div>
+                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> 3 campagnes actives</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support prioritaire</li>
+                </ul>
+                <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
+                  Choisir ce plan
+                </Button>
+              </div>
+              {/* Business Click */}
+              <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+                <div>
+                  <p className="text-white/50 text-sm font-medium mb-1">Business Clic</p>
+                  <p className="text-3xl font-bold text-white">225€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                </div>
+                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Campagnes illimitées</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 200 clippeurs</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support premium 24/7</li>
+                </ul>
+                <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+                  Choisir ce plan
+                </Button>
+              </div>
+            </div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 max-w-7xl mx-auto">
             {/* Starter */}
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
@@ -712,6 +792,7 @@ export default function LandingPage() {
               </Button>
             </div>
           </div>
+          )}
         </div>
       </section>
 

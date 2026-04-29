@@ -3868,6 +3868,8 @@ function SettingsPage() {
   const [subStatus, setSubStatus] = useState(null);
   const [subLoading, setSubLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(null);
+  // Toggle "Vues & Clics" (full) vs "Clics uniquement"
+  const [pricingMode, setPricingMode] = useState("full");
 
   useEffect(() => {
     fetch(`${API}/subscription/status`, { credentials: "include" })
@@ -3909,14 +3911,15 @@ function SettingsPage() {
     }
   };
 
-  const PLANS = [
+  // ===== Plans Vues & Clics (full tracking) =====
+  const PLANS_FULL = [
     {
       id: "plan_small", name: "Starter", price: "349€/mois",
       features: [
         "1 campagne active",
         "Jusqu'à 15 clippeurs",
         "Tracking 1× / jour (8h Paris)",
-        "Chat avec les clippeurs",
+        "Stats vues + clics complets",
         "Support standard"
       ]
     },
@@ -3926,8 +3929,8 @@ function SettingsPage() {
         "3 campagnes actives",
         "Jusqu'à 45 clippeurs (total)",
         "Tracking 1× / jour (8h Paris)",
+        "Stats vues + clics complets",
         "Analytics avancés",
-        "Liens de tracking bio",
         "Support prioritaire"
       ]
     },
@@ -3937,8 +3940,8 @@ function SettingsPage() {
         "Campagnes illimitées",
         "Jusqu'à 200 clippeurs (total)",
         "Tracking 4× / jour (07:30, 12:00, 15:30, 22:00)",
+        "Stats vues + clics complets",
         "Analytics avancés",
-        "Liens de tracking bio",
         "Support premium 24/7",
         "Accès API"
       ]
@@ -3949,13 +3952,51 @@ function SettingsPage() {
         "Campagnes illimitées",
         "Clippeurs illimités",
         "Serveur dédié sur mesure",
-        "Tracking personnalisé (intervalle libre)",
+        "Tracking personnalisé",
         "Intégrations sur mesure",
         "Account manager dédié",
         "SLA garanti"
       ]
     },
   ];
+
+  // ===== Plans Clics uniquement (sans tracking de vues, moins cher) =====
+  const PLANS_CLICK = [
+    {
+      id: "plan_small_click", name: "Starter Clic", price: "89€/mois",
+      features: [
+        "1 campagne active (au clic)",
+        "Jusqu'à 15 clippeurs",
+        "Tracking clics en temps réel",
+        "Liens bio personnalisés",
+        "Support standard"
+      ]
+    },
+    {
+      id: "plan_medium_click", name: "Pro Clic", price: "149€/mois", featured: true,
+      features: [
+        "3 campagnes actives (au clic)",
+        "Jusqu'à 45 clippeurs (total)",
+        "Tracking clics en temps réel",
+        "Liens bio personnalisés",
+        "Analytics clics avancés",
+        "Support prioritaire"
+      ]
+    },
+    {
+      id: "plan_unlimited_click", name: "Business Clic", price: "225€/mois",
+      features: [
+        "Campagnes illimitées (au clic)",
+        "Jusqu'à 200 clippeurs (total)",
+        "Tracking clics en temps réel",
+        "Liens bio personnalisés",
+        "Analytics clics avancés",
+        "Support premium 24/7"
+      ]
+    },
+  ];
+
+  const PLANS = pricingMode === "click" ? PLANS_CLICK : PLANS_FULL;
 
   const handlePicture = (e) => {
     const file = e.target.files?.[0];
@@ -4084,7 +4125,7 @@ function SettingsPage() {
                 <div>
                   <p className="text-[#39FF14] font-semibold text-sm">✓ Abonnement actif</p>
                   <p className="text-white/60 text-xs mt-0.5">
-                    Plan {PLANS.find(p => p.id === subStatus.subscription_plan)?.name || subStatus.subscription_plan}
+                    Plan {[...PLANS_FULL, ...PLANS_CLICK].find(p => p.id === subStatus.subscription_plan)?.name || subStatus.subscription_plan}
                   </p>
                 </div>
               )}
@@ -4117,8 +4158,27 @@ function SettingsPage() {
             </div>
           )}
 
+          {/* Toggle Vues & Clics / Clics seulement */}
+          <div className="flex justify-center">
+            <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+              <button onClick={() => setPricingMode("full")}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "full" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                Vues & Clics
+              </button>
+              <button onClick={() => setPricingMode("click")}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "click" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                Au clic uniquement
+              </button>
+            </div>
+          </div>
+          <p className="text-center text-xs text-white/40">
+            {pricingMode === "full"
+              ? "Tracking complet : vues + clics + analytics complets"
+              : "Tracking au clic uniquement (sans suivi des vues) — moins cher si vous gérez seulement des liens en bio"}
+          </p>
+
           {/* Plan cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className={`grid grid-cols-1 md:grid-cols-2 ${pricingMode === "full" ? "lg:grid-cols-4" : "lg:grid-cols-3"} gap-4`}>
             {PLANS.map(plan => {
               const isActive = subStatus?.subscription_plan === plan.id && subStatus?.subscription_status === "active";
               return (

@@ -1399,7 +1399,8 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
     _check_agency_subscription(user)
     # Check campaign limit for current plan
     limits = _get_plan_limits(user)
-    plan_name = SUBSCRIPTION_PLANS.get(_get_user_effective_plan(user), {}).get("name", "Starter")
+    effective_plan = _get_user_effective_plan(user)
+    plan_name = SUBSCRIPTION_PLANS.get(effective_plan, {}).get("name", "Starter")
     if limits["campaigns"] is not None:
         active_count = await db.campaigns.count_documents({"agency_id": user["user_id"], "status": "active"})
         if active_count >= limits["campaigns"]:
@@ -1407,6 +1408,13 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
                 status_code=403,
                 detail=f"Limite atteinte : votre plan {plan_name} autorise {limits['campaigns']} campagne(s) active(s). Passez au plan supérieur pour en créer plus."
             )
+
+    # Plan click-only : seules les campagnes au clic sont autorisees
+    if limits.get("click_only") and campaign_data.payment_model not in ("clicks",):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Votre plan {plan_name} ne permet que les campagnes 'Au clic'. Passez à une formule Vues & Clics pour créer des campagnes au RPM."
+        )
     campaign_id = f"camp_{uuid.uuid4().hex[:12]}"
     
     campaign = {
@@ -5667,11 +5675,16 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
 
         # Filtrage selon plan agence : si tracking_per_day=1, ne tourne qu'à 7h Paris (07:30)
+        # Si plan click_only (tracking_per_day=0), on skip toujours
         if scheduled_hour_paris is not None:
             agency = agency_map.get(campaign.get("agency_id"))
             if agency:
                 limits = _get_plan_limits(agency)
                 tracking_per_day = limits.get("tracking_per_day", 1)
+                # Plan click_only : pas de scraping de vues du tout
+                if tracking_per_day == 0:
+                    logger.info(f"Skip campaign {campaign_id} : agency plan click_only (no view tracking)")
+                    continue
                 # Plan starter/pro : tracking 1x/jour à 7h Paris (07:30) seulement
                 if tracking_per_day == 1 and scheduled_hour_paris != 7:
                     logger.info(f"Skip campaign {campaign_id} : agency plan tracking 1x/jour, current hour {scheduled_hour_paris} != 7")
@@ -9135,27 +9148,38 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
+    # ===== Plans VUES & CLICS (tracking complet : vues + clics) =====
     "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
-                       "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 1},
+                       "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 1, "click_only": False},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1},
+                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1, "click_only": False},
     "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
-                       "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 4},
+                       "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 4, "click_only": False},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
                        "max_campaigns": None, "max_clippers": None, "tracking_per_day": None,
-                       "is_custom": True},
+                       "click_only": False, "is_custom": True},
+    # ===== Plans CLICS UNIQUEMENT (pas de tracking de vues, moins cher) =====
+    "plan_small_click":     {"name": "Starter Clic",   "amount": 8900,   "label": "89€/mois",
+                             "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 0, "click_only": True},
+    "plan_medium_click":    {"name": "Pro Clic",       "amount": 14900,  "label": "149€/mois",
+                             "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 0, "click_only": True},
+    "plan_unlimited_click": {"name": "Business Clic",  "amount": 22500,  "label": "225€/mois",
+                             "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 0, "click_only": True},
     # Legacy aliases
     "plan_full":      {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1},
+                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1, "click_only": False},
 }
 
 # Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
 PLAN_LIMITS = {
-    "plan_small":     {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 1},
-    "plan_medium":    {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1},
-    "plan_unlimited": {"campaigns": None, "clippers": 200,   "tracking_per_day": 4},
-    "plan_custom":    {"campaigns": None, "clippers": None,  "tracking_per_day": 4},
-    "plan_full":      {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1},
+    "plan_small":           {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 1, "click_only": False},
+    "plan_medium":          {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1, "click_only": False},
+    "plan_unlimited":       {"campaigns": None, "clippers": 200,   "tracking_per_day": 4, "click_only": False},
+    "plan_custom":          {"campaigns": None, "clippers": None,  "tracking_per_day": 4, "click_only": False},
+    "plan_small_click":     {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 0, "click_only": True},
+    "plan_medium_click":    {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 0, "click_only": True},
+    "plan_unlimited_click": {"campaigns": None, "clippers": 200,   "tracking_per_day": 0, "click_only": True},
+    "plan_full":            {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1, "click_only": False},
 }
 
 def _get_user_effective_plan(user: dict) -> str:
