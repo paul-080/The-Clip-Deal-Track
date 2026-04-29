@@ -932,17 +932,26 @@ async def verify_email(req: VerifyEmailRequest):
 
     # Create or reactivate user
     existing_user = await db.users.find_one({"email": req.email.lower()}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    is_agency = pending["role"] == "agency"
+    # Trial 14j auto pour les agences = plan Business par défaut
+    trial_fields = {"subscription_status": "trial", "trial_started_at": now_iso} if is_agency else {}
+
     if existing_user:
         user_id = existing_user["user_id"]
-        await db.users.update_one({"user_id": user_id}, {"$set": {
+        update_set = {
             "email_verified": True,
             "password_hash": pending["password_hash"],
             "role": pending["role"],
             "display_name": pending["display_name"],
-        }})
+        }
+        # Active le trial uniquement si l'agence n'a jamais eu de subscription_status
+        if is_agency and not existing_user.get("subscription_status"):
+            update_set.update(trial_fields)
+        await db.users.update_one({"user_id": user_id}, {"$set": update_set})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
+        new_user = {
             "user_id": user_id,
             "email": req.email.lower(),
             "name": pending["display_name"],
@@ -954,9 +963,11 @@ async def verify_email(req: VerifyEmailRequest):
             "agency_name": pending.get("agency_name"),
             "password_hash": pending["password_hash"],
             "email_verified": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now_iso,
             "settings": {}
-        })
+        }
+        new_user.update(trial_fields)
+        await db.users.insert_one(new_user)
 
     # Clean up pending code
     await db.email_verifications.delete_one({"email": req.email.lower()})
@@ -1388,12 +1399,13 @@ async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(ge
     _check_agency_subscription(user)
     # Check campaign limit for current plan
     limits = _get_plan_limits(user)
+    plan_name = SUBSCRIPTION_PLANS.get(_get_user_effective_plan(user), {}).get("name", "Starter")
     if limits["campaigns"] is not None:
         active_count = await db.campaigns.count_documents({"agency_id": user["user_id"], "status": "active"})
         if active_count >= limits["campaigns"]:
             raise HTTPException(
                 status_code=403,
-                detail=f"Limite atteinte : votre plan Starter autorise {limits['campaigns']} campagne(s) active(s). Passez au plan Full pour continuer."
+                detail=f"Limite atteinte : votre plan {plan_name} autorise {limits['campaigns']} campagne(s) active(s). Passez au plan supérieur pour en créer plus."
             )
     campaign_id = f"camp_{uuid.uuid4().hex[:12]}"
     
@@ -2044,20 +2056,41 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    # Check clipper limit for agency's plan
+    # Check clipper limit for agency's plan (total UNIQUE clippeurs sur toutes campagnes)
     agency_id = campaign.get("agency_id")
     if agency_id:
         agency_user = await db.users.find_one({"user_id": agency_id}, {"_id": 0})
         if agency_user:
             limits = _get_plan_limits(agency_user)
+            plan_name = SUBSCRIPTION_PLANS.get(_get_user_effective_plan(agency_user), {}).get("name", "Starter")
             if limits["clippers"] is not None:
-                current_clippers = await db.campaign_members.count_documents({
-                    "campaign_id": campaign_id, "status": "active", "role": "clipper"
+                # Compte les clippeurs uniques sur TOUTES les campagnes de l'agence
+                pipeline = [
+                    {"$match": {"agency_id": agency_id}},
+                    {"$lookup": {
+                        "from": "campaign_members",
+                        "localField": "campaign_id",
+                        "foreignField": "campaign_id",
+                        "as": "members",
+                    }},
+                    {"$unwind": "$members"},
+                    {"$match": {"members.role": "clipper", "members.status": "active"}},
+                    {"$group": {"_id": "$members.user_id"}},
+                    {"$count": "total"}
+                ]
+                agg_res = await db.campaigns.aggregate(pipeline).to_list(1)
+                current_clippers = agg_res[0]["total"] if agg_res else 0
+                # Vérifie aussi que le clipper qu'on accepte n'est pas déjà comptabilisé
+                already_counted = await db.campaign_members.find_one({
+                    "user_id": member["user_id"],
+                    "role": "clipper",
+                    "status": "active",
+                    "campaign_id": {"$ne": campaign_id},
                 })
-                if current_clippers >= limits["clippers"]:
+                if not already_counted and current_clippers >= limits["clippers"]:
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Limite atteinte : votre plan autorise {limits['clippers']} clippeurs par campagne. Passez au plan Full pour en ajouter davantage."
+                        detail=f"Limite atteinte : votre plan {plan_name} autorise {limits['clippers']} clippeurs au total sur toutes vos campagnes. Passez au plan supérieur."
                     )
 
     await db.campaign_members.update_one(
@@ -5607,16 +5640,43 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
     finally:
         asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
-async def run_video_tracking():
-    logger.info("Starting video tracking run...")
+async def run_video_tracking(scheduled_hour_paris: int = None):
+    """Tourne le scrape pour toutes les campagnes actives.
+    scheduled_hour_paris : heure courante de l'horaire Paris (07/12/15/22).
+    Filtre les campagnes selon le tier de l'agence :
+    - plan_small / plan_medium : tracking_per_day=1 -> seulement à 8h Paris (heure 7=07:30)
+    - plan_unlimited : tracking_per_day=4 -> tous les horaires
+    - plan_custom : tous les horaires (custom)
+    Si scheduled_hour_paris=None -> on track toutes les campagnes (force-scrape, etc.)
+    """
+    logger.info(f"Starting video tracking run (scheduled_hour={scheduled_hour_paris})...")
     campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
-    # Pour les campagnes au CLIC : on track les vues plus rarement (24h vs 6h) car la facturation est au clic
-    # On verifie si on a deja trackke ce compte dans les 24h pour les campagnes click
     now_track_run = datetime.now(timezone.utc)
+
+    # Pre-fetch agency plans pour eviter N+1
+    agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
+    agencies = await db.users.find(
+        {"user_id": {"$in": agency_ids}},
+        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1, "trial_started_at": 1}
+    ).to_list(len(agency_ids)) if agency_ids else []
+    agency_map = {a["user_id"]: a for a in agencies}
+
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
         rpm = campaign.get("rpm", 0)
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
+
+        # Filtrage selon plan agence : si tracking_per_day=1, ne tourne qu'à 7h Paris (07:30)
+        if scheduled_hour_paris is not None:
+            agency = agency_map.get(campaign.get("agency_id"))
+            if agency:
+                limits = _get_plan_limits(agency)
+                tracking_per_day = limits.get("tracking_per_day", 1)
+                # Plan starter/pro : tracking 1x/jour à 7h Paris (07:30) seulement
+                if tracking_per_day == 1 and scheduled_hour_paris != 7:
+                    logger.info(f"Skip campaign {campaign_id} : agency plan tracking 1x/jour, current hour {scheduled_hour_paris} != 7")
+                    continue
+
         # Get all assignments for this campaign
         assignments = await db.campaign_social_accounts.find(
             {"campaign_id": campaign_id}, {"_id": 0}
@@ -5918,11 +5978,15 @@ def _next_scrape_time_utc(now_utc: datetime = None) -> datetime:
 
 
 async def track_videos_loop():
-    """Scrape sur horaires fixes (heure de Paris) plutôt que toutes les 6h.
-    Voir SCRAPE_SCHEDULE_PARIS en haut du fichier."""
+    """Scrape sur horaires fixes (heure de Paris). Filtre par tier d'agence.
+    - Toutes les campagnes (tier Business+) : 07:30, 12:00, 15:30, 22:00
+    - Tiers Starter/Pro : seulement 07:30 (1x/jour à 8h Paris)
+    """
     while True:
         try:
-            await run_video_tracking()
+            now_paris = datetime.now(timezone.utc).astimezone(PARIS_TZ)
+            current_hour = now_paris.hour
+            await run_video_tracking(scheduled_hour_paris=current_hour)
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
         # Attend le prochain horaire programmé
@@ -8979,7 +9043,7 @@ async def confirm_payment(body: dict, user: dict = Depends(get_current_user)):
 
 @api_router.get("/subscription/status")
 async def get_subscription_status(user: dict = Depends(get_current_user)):
-    """Get current subscription status for agency"""
+    """Get current subscription status for agency, with effective plan + usage."""
     if user.get("role") not in ["agency"]:
         raise HTTPException(status_code=403, detail="Agences uniquement")
 
@@ -8988,23 +9052,70 @@ async def get_subscription_status(user: dict = Depends(get_current_user)):
     subscription_plan = user.get("subscription_plan")
 
     trial_days_remaining = 0
+    trial_hours_remaining = 0
     trial_expired = False
     if trial_started_at and subscription_status == "trial":
         trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
         trial_end = trial_start + timedelta(days=14)
         now = datetime.now(timezone.utc)
         if now < trial_end:
-            trial_days_remaining = (trial_end - now).days
+            remaining_seconds = (trial_end - now).total_seconds()
+            trial_days_remaining = int(remaining_seconds // 86400)
+            trial_hours_remaining = int(remaining_seconds // 3600)
         else:
             trial_expired = True
             subscription_status = "expired"
 
+    # Plan effectif et limites
+    effective_plan = _get_user_effective_plan(user)
+    limits = PLAN_LIMITS.get(effective_plan, PLAN_LIMITS["plan_small"])
+    plan_details = SUBSCRIPTION_PLANS.get(effective_plan, SUBSCRIPTION_PLANS["plan_small"])
+
+    # Usage actuel
+    current_campaigns_count = await db.campaigns.count_documents({
+        "agency_id": user["user_id"],
+        "status": {"$ne": "deleted"}
+    })
+    current_clippers_count = 0
+    try:
+        # Aggregation : nb de clippers actifs sur toutes les campagnes de l'agence
+        pipeline = [
+            {"$match": {"agency_id": user["user_id"]}},
+            {"$lookup": {
+                "from": "campaign_members",
+                "localField": "campaign_id",
+                "foreignField": "campaign_id",
+                "as": "members",
+            }},
+            {"$unwind": "$members"},
+            {"$match": {"members.role": "clipper", "members.status": "active"}},
+            {"$group": {"_id": "$members.user_id"}},
+            {"$count": "total"}
+        ]
+        agg_res = await db.campaigns.aggregate(pipeline).to_list(1)
+        current_clippers_count = agg_res[0]["total"] if agg_res else 0
+    except Exception:
+        pass
+
     return {
         "subscription_status": subscription_status,
         "subscription_plan": subscription_plan,
+        "effective_plan": effective_plan,
+        "plan_name": plan_details.get("name"),
+        "plan_label": plan_details.get("label"),
         "trial_started_at": trial_started_at,
         "trial_days_remaining": trial_days_remaining,
+        "trial_hours_remaining": trial_hours_remaining,
         "trial_expired": trial_expired,
+        "limits": {
+            "max_campaigns": limits.get("campaigns"),
+            "max_clippers": limits.get("clippers"),
+            "tracking_per_day": limits.get("tracking_per_day"),
+        },
+        "usage": {
+            "campaigns": current_campaigns_count,
+            "clippers": current_clippers_count,
+        },
     }
 
 @api_router.post("/subscription/start-trial")
@@ -9024,41 +9135,54 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
-    "plan_small":     {"name": "Starter",  "amount": 24900,  "label": "249€/mois",
-                       "max_campaigns": 1,    "max_clippers": 15},
-    "plan_medium":    {"name": "Pro",       "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 10},
-    "plan_unlimited": {"name": "Illimité",  "amount": 74900,  "label": "749€/mois",
-                       "max_campaigns": None, "max_clippers": None},
-    # Legacy alias — redirect to plan_medium
-    "plan_full":      {"name": "Pro",       "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 10},
+    "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
+                       "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 1},
+    "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
+                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1},
+    "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
+                       "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 4},
+    "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
+                       "max_campaigns": None, "max_clippers": None, "tracking_per_day": None,
+                       "is_custom": True},
+    # Legacy aliases
+    "plan_full":      {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
+                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1},
 }
 
-# Limits per plan (None = unlimited). Trial period = always unlimited.
+# Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
 PLAN_LIMITS = {
-    "plan_small":     {"campaigns": 1,    "clippers": 15},
-    "plan_medium":    {"campaigns": 3,    "clippers": 10},
-    "plan_unlimited": {"campaigns": None, "clippers": None},
-    "plan_full":      {"campaigns": 3,    "clippers": 10},
+    "plan_small":     {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 1},
+    "plan_medium":    {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1},
+    "plan_unlimited": {"campaigns": None, "clippers": 200,   "tracking_per_day": 4},
+    "plan_custom":    {"campaigns": None, "clippers": None,  "tracking_per_day": 4},
+    "plan_full":      {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1},
 }
 
-def _get_plan_limits(user: dict) -> dict:
-    """Return {"campaigns": N|None, "clippers": N|None} for the user's plan.
-    During trial (14 days): always unlimited.
-    No subscription: unlimited (new account grace).
+def _get_user_effective_plan(user: dict) -> str:
+    """Return the effective plan_id for a user.
+    - Trial active = plan_unlimited (Business par default pendant 14 jours)
+    - Trial expired = plan_small forced (must upgrade)
+    - Subscription active = subscription_plan
+    - No subscription = plan_unlimited (new account grace)
     """
     sub_status = user.get("subscription_status", "none")
-    if sub_status in (None, "none"):
-        return {"campaigns": None, "clippers": None}  # new account grace
+    if sub_status == "active":
+        return user.get("subscription_plan") or "plan_small"
     if sub_status == "trial":
         trial_started_at = user.get("trial_started_at")
         if trial_started_at:
             trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
             if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
-                return {"campaigns": None, "clippers": None}  # trial unlimited
-    plan_id = user.get("subscription_plan", "plan_small")
-    return PLAN_LIMITS.get(plan_id, {"campaigns": 1, "clippers": 15})
+                return "plan_unlimited"  # Trial = Business
+        return "plan_small"  # trial expired -> forced down to Starter (until they pay)
+    # No subscription state -> grace = Business plan
+    return "plan_unlimited"
+
+
+def _get_plan_limits(user: dict) -> dict:
+    """Return {"campaigns": N|None, "clippers": N|None, "tracking_per_day": N} for the user's effective plan."""
+    plan_id = _get_user_effective_plan(user)
+    return PLAN_LIMITS.get(plan_id, PLAN_LIMITS["plan_small"])
 
 @api_router.post("/subscription/checkout")
 async def create_subscription_checkout(body: dict, user: dict = Depends(get_current_user)):

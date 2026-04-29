@@ -627,67 +627,88 @@ export default function LandingPage() {
             </h2>
             <p className="text-white/50 text-base">HT · 2 semaines offertes à l'inscription</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center max-w-5xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 max-w-7xl mx-auto">
             {/* Starter */}
-            <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 space-y-4 hover:border-white/20 transition-all">
+            <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Starter</p>
-                <p className="text-3xl font-bold text-white">249€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
+                <p className="text-3xl font-bold text-white">349€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business</p>
               </div>
-              <ul className="space-y-2 text-sm text-white/60">
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 1 campagne active</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Jusqu'à 15 clippers</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking automatique</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Chat avec les clippeurs</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support standard</li>
+              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 1 campagne active</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 15 clippeurs</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Chat avec les clippeurs</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support standard</li>
               </ul>
               <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
                 Commencer l'essai gratuit
               </Button>
             </div>
 
-            {/* Pro — FEATURED */}
-            <div className="bg-[#121212] border-2 border-[#FF007F] rounded-2xl p-6 space-y-4 relative">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#FF007F] text-white text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
-                Recommandé
-              </div>
+            {/* Pro */}
+            <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Pro</p>
                 <p className="text-3xl font-bold text-white">549€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
+                <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business</p>
               </div>
-              <ul className="space-y-2 text-sm text-white/60">
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 3 campagnes actives</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> 10 clippers max / campagne</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Tracking automatique</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Analytics avancés</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Support prioritaire</li>
-                <li className="flex items-center gap-2"><span className="text-[#39FF14]">✓</span> Liens de tracking bio</li>
+              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 3 campagnes actives</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Analytics avancés</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Liens de tracking bio</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support prioritaire</li>
+              </ul>
+              <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+                Commencer l'essai gratuit
+              </Button>
+            </div>
+
+            {/* Business — FEATURED */}
+            <div className="bg-[#121212] border-2 border-[#FF007F] rounded-2xl p-5 space-y-4 relative flex flex-col">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#FF007F] text-white text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
+                Recommandé · Essai 14j
+              </div>
+              <div>
+                <p className="text-white/50 text-sm font-medium mb-1">Business</p>
+                <p className="text-3xl font-bold text-white">749€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits ici</p>
+              </div>
+              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Campagnes illimitées</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Jusqu'à 200 clippeurs</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Tracking 4×/jour (07:30, 12:00, 15:30, 22:00)</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Analytics avancés</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Liens de tracking bio</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Support premium 24/7</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Accès API</li>
               </ul>
               <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#FF007F]/80 text-white rounded-lg py-2 text-sm font-semibold transition-colors">
                 Commencer l'essai gratuit
               </Button>
             </div>
 
-            {/* Illimité */}
-            <div className="bg-[#121212] border border-[#f0c040]/40 rounded-2xl p-6 space-y-4 hover:border-[#f0c040]/70 transition-all">
+            {/* Enterprise */}
+            <div className="bg-[#121212] border border-[#00E5FF]/40 rounded-2xl p-5 space-y-4 hover:border-[#00E5FF]/70 transition-all flex flex-col">
               <div>
-                <p className="text-[#f0c040] text-sm font-medium mb-1">Illimité</p>
-                <p className="text-3xl font-bold text-white">749€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits</p>
+                <p className="text-[#00E5FF] text-sm font-medium mb-1">Enterprise</p>
+                <p className="text-3xl font-bold text-white">Sur devis</p>
+                <p className="text-white/30 text-xs mt-1">Serveur dédié sur mesure</p>
               </div>
-              <ul className="space-y-2 text-sm text-white/60">
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Campagnes illimitées</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Clippers illimités</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Tracking automatique</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Analytics avancés</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Support premium 24/7</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Liens de tracking bio</li>
-                <li className="flex items-center gap-2"><span className="text-[#f0c040]">✓</span> Accès API</li>
+              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Campagnes illimitées</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Clippeurs illimités</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Serveur dédié sur mesure</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Tracking personnalisé</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Intégrations sur mesure</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Account manager dédié</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> SLA garanti</li>
               </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
-                Commencer l'essai gratuit
+              <Button onClick={() => window.location.href = "mailto:contact@theclipdealtrack.com?subject=Plan%20Enterprise"} className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
+                Nous contacter
               </Button>
             </div>
           </div>

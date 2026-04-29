@@ -3904,9 +3904,51 @@ function SettingsPage() {
   };
 
   const PLANS = [
-    { id: "plan_small",     name: "Starter",  price: "249€/mois", features: ["1 campagne active", "Jusqu'à 15 clippers", "Tracking automatique", "Chat avec les clippeurs", "Support standard"] },
-    { id: "plan_medium",    name: "Pro",      price: "549€/mois", features: ["3 campagnes actives", "10 clippers max / campagne", "Tracking automatique", "Analytics avancés", "Support prioritaire", "Liens de tracking bio"], featured: true },
-    { id: "plan_unlimited", name: "Illimité", price: "749€/mois", features: ["Campagnes illimitées", "Clippers illimités", "Tracking automatique", "Analytics avancés", "Support premium 24/7", "Liens de tracking bio", "Accès API"] },
+    {
+      id: "plan_small", name: "Starter", price: "349€/mois",
+      features: [
+        "1 campagne active",
+        "Jusqu'à 15 clippeurs",
+        "Tracking 1× / jour (8h Paris)",
+        "Chat avec les clippeurs",
+        "Support standard"
+      ]
+    },
+    {
+      id: "plan_medium", name: "Pro", price: "549€/mois", featured: true,
+      features: [
+        "3 campagnes actives",
+        "Jusqu'à 45 clippeurs (total)",
+        "Tracking 1× / jour (8h Paris)",
+        "Analytics avancés",
+        "Liens de tracking bio",
+        "Support prioritaire"
+      ]
+    },
+    {
+      id: "plan_unlimited", name: "Business", price: "749€/mois",
+      features: [
+        "Campagnes illimitées",
+        "Jusqu'à 200 clippeurs (total)",
+        "Tracking 4× / jour (07:30, 12:00, 15:30, 22:00)",
+        "Analytics avancés",
+        "Liens de tracking bio",
+        "Support premium 24/7",
+        "Accès API"
+      ]
+    },
+    {
+      id: "plan_custom", name: "Enterprise", price: "Sur devis", custom: true,
+      features: [
+        "Campagnes illimitées",
+        "Clippeurs illimités",
+        "Serveur dédié sur mesure",
+        "Tracking personnalisé (intervalle libre)",
+        "Intégrations sur mesure",
+        "Account manager dédié",
+        "SLA garanti"
+      ]
+    },
   ];
 
   const handlePicture = (e) => {
@@ -4042,12 +4084,17 @@ function SettingsPage() {
               )}
               {subStatus.subscription_status === "trial" && !subStatus.trial_expired && (
                 <div>
-                  <p className="text-[#00E5FF] font-semibold text-sm">Essai gratuit en cours</p>
+                  <p className="text-[#00E5FF] font-semibold text-sm">🎁 Essai gratuit — plan Business activé</p>
                   <p className="text-white/60 text-xs mt-0.5">
                     {subStatus.trial_days_remaining > 0
-                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""}`
-                      : "Dernier jour"}
+                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 749€/mois`
+                      : "Dernier jour — choisis un plan ci-dessous pour continuer"}
                   </p>
+                  {subStatus.usage && subStatus.limits && (
+                    <p className="text-white/40 text-[10px] mt-1.5">
+                      Usage actuel : {subStatus.usage.campaigns} campagne{subStatus.usage.campaigns > 1 ? "s" : ""} · {subStatus.usage.clippers} clippeur{subStatus.usage.clippers > 1 ? "s" : ""}
+                    </p>
+                  )}
                 </div>
               )}
               {(subStatus.trial_expired || subStatus.subscription_status === "expired" || subStatus.subscription_status === "past_due") && (
@@ -4065,47 +4112,62 @@ function SettingsPage() {
           )}
 
           {/* Plan cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {PLANS.map(plan => {
               const isActive = subStatus?.subscription_plan === plan.id && subStatus?.subscription_status === "active";
               return (
-                <div key={plan.id} className={`rounded-xl p-4 border space-y-3 ${
+                <div key={plan.id} className={`rounded-2xl p-5 border space-y-4 flex flex-col ${
                   plan.featured
                     ? "border-[#FF007F]/60 bg-[#FF007F]/5"
+                    : plan.custom
+                    ? "border-[#00E5FF]/40 bg-[#00E5FF]/5"
                     : "border-white/10 bg-white/3"
                 } ${isActive ? "ring-2 ring-[#39FF14]/50" : ""}`}>
                   {plan.featured && (
-                    <span className="text-[10px] font-semibold bg-[#FF007F] text-white px-2 py-0.5 rounded-full">Recommandé</span>
+                    <span className="self-start text-[10px] font-semibold bg-[#FF007F] text-white px-2 py-0.5 rounded-full">Recommandé</span>
+                  )}
+                  {plan.custom && (
+                    <span className="self-start text-[10px] font-semibold bg-[#00E5FF] text-black px-2 py-0.5 rounded-full">Sur mesure</span>
                   )}
                   <div>
                     <p className="text-white font-semibold text-sm">{plan.name}</p>
-                    <p className="text-white/80 font-bold text-xl">{plan.price}</p>
+                    <p className="text-white font-bold text-2xl mt-0.5">{plan.price}</p>
                   </div>
-                  <ul className="space-y-1">
+                  <ul className="space-y-1.5 flex-1">
                     {plan.features.map(f => (
-                      <li key={f} className="text-white/50 text-xs flex items-center gap-1.5">
-                        <span className="text-[#39FF14]">✓</span> {f}
+                      <li key={f} className="text-white/60 text-xs flex items-start gap-1.5 leading-snug">
+                        <span className="text-[#39FF14] flex-shrink-0">✓</span>
+                        <span>{f}</span>
                       </li>
                     ))}
                   </ul>
-                  <Button
-                    onClick={() => handleSubscribe(plan.id)}
-                    disabled={isActive || checkoutLoading === plan.id}
-                    className={`w-full text-xs py-2 ${
-                      isActive
-                        ? "bg-[#39FF14]/20 text-[#39FF14] cursor-default"
-                        : plan.featured
-                        ? "bg-[#FF007F] hover:bg-[#FF007F]/80 text-white"
-                        : "bg-white/10 hover:bg-white/20 text-white border border-white/10"
-                    }`}
-                  >
-                    {isActive ? "Plan actuel" : checkoutLoading === plan.id ? "Redirection..." : "Choisir ce plan"}
-                  </Button>
+                  {plan.custom ? (
+                    <Button
+                      onClick={() => window.location.href = "mailto:contact@theclipdealtrack.com?subject=Plan%20Enterprise"}
+                      className="w-full text-xs py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
+                    >
+                      Nous contacter
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => handleSubscribe(plan.id)}
+                      disabled={isActive || checkoutLoading === plan.id}
+                      className={`w-full text-xs py-2.5 ${
+                        isActive
+                          ? "bg-[#39FF14]/20 text-[#39FF14] cursor-default"
+                          : plan.featured
+                          ? "bg-[#FF007F] hover:bg-[#FF007F]/80 text-white"
+                          : "bg-white/10 hover:bg-white/20 text-white border border-white/10"
+                      }`}
+                    >
+                      {isActive ? "Plan actuel" : checkoutLoading === plan.id ? "Redirection..." : "Choisir ce plan"}
+                    </Button>
+                  )}
                 </div>
               );
             })}
           </div>
-          <p className="text-xs text-white/30">Paiement sécurisé par Stripe · HT · Résiliation possible à tout moment</p>
+          <p className="text-xs text-white/30">Paiement sécurisé par Stripe · HT · Résiliation possible à tout moment · Essai gratuit de 14 jours en plan Business</p>
         </CardContent>
       </Card>
 
