@@ -4900,16 +4900,16 @@ async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
 
 async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
     """
-    Fetch TikTok videos. Priority:
-    0. Apify clockworks/tiktok-scraper (most reliable from cloud — residential proxies)
-    1. TikWm API with key (reliable if key is valid)
-    2. TikTok Mobile API (requires numeric user_id)
-    3. RapidAPI tiktok-scraper7 (requires RapidAPI subscription)
-    4. Playwright (not available on Railway)
-    5. yt-dlp (often blocked from cloud)
+    Fetch TikTok videos. Apify est LE DERNIER RECOURS (coute des credits).
+    Priority:
+    1. ClipScraper VPS (économique, contrôlé)
+    2. TikWm API (reliable si clé valide)
+    3. TikTok Mobile API (requires numeric user_id)
+    4. Playwright (si dispo)
+    5. RapidAPI tiktok-scraper7
+    6. Apify (DERNIER recours seulement si tout le reste a echoue)
     """
     username = username.lstrip("@")
-    # Parse user_id: may be "numericId|secUid" format from updated TikWm verify
     numeric_id = user_id or ""
     sec_uid = ""
     if user_id and "|" in user_id:
@@ -4920,25 +4920,17 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         sec_uid = user_id
         numeric_id = ""
 
-    # Priority 0a: ClipScraper standalone (économique, contrôlé par nous)
+    # Priority 1: ClipScraper VPS standalone (économique, contrôlé par nous)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
         try:
             cs_videos = await _fetch_via_clipscraper("tiktok", username)
             if cs_videos:
                 logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username}")
                 return cs_videos
+            else:
+                logger.warning(f"ClipScraper TikTok returned 0 videos for @{username} - falling through")
         except Exception as e:
             logger.warning(f"ClipScraper TikTok failed for @{username}: {e}")
-
-    # Priority 0b: Apify (fallback — proxies résidentiels)
-    if APIFY_TOKEN:
-        try:
-            apify_videos = await _fetch_tiktok_videos_apify(username)
-            if apify_videos:
-                logger.info(f"Apify TikTok: {len(apify_videos)} videos for @{username}")
-                return apify_videos
-        except Exception as e:
-            logger.warning(f"Apify TikTok failed for @{username}: {e}")
 
     tikwm_videos = []
     # Primary: TikWm API — all strategies A-E (search is always available)
@@ -5070,43 +5062,48 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
             if combined:
                 return combined
-            raise
+            # Don't raise yet - try Apify as last resort below
+
+    # DERNIER RECOURS : Apify TikTok (coûte des credits, ne devrait quasi jamais etre appele)
+    if APIFY_TOKEN:
+        try:
+            logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
+            apify_videos = await _fetch_tiktok_videos_apify(username)
+            if apify_videos:
+                logger.warning(f"⚠️ Apify TikTok a renvoye {len(apify_videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
+                return apify_videos
+        except Exception as e:
+            logger.warning(f"Apify TikTok failed for @{username}: {e}")
+
     if combined:
         return combined
-    raise ValueError("yt-dlp non installé — scraping TikTok impossible")
+    raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
 
 async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
     """
     Fetch Instagram videos/reels.
-    Ordre de priorité (cloud Railway compatible) :
-    1. Feed privé Instagram /api/v1/feed/user/{id}/ — vraies vues Reels (nécessite session cookie)
-    2. RapidAPI instagram-scraper-api2 (fonctionne depuis datacenter, nécessite RAPIDAPI_KEY)
-    3. httpx web_profile_info + session (vues moins précises pour Reels)
-    4. instaloader avec session cookie
-    5. instaloader sans session (résidentiel seulement)
-    6. Playwright (dernière chance)
+    Ordre de priorité — Apify est LE DERNIER RECOURS (coûte cher) :
+    1. ClipScraper VPS (économique, prioritaire)
+    2. Feed privé Instagram (cookie session)
+    3. RapidAPI instagram-scraper-api2
+    4. httpx web_profile_info + session
+    5. instaloader avec/sans session
+    6. Apify EN DERNIER si tout le reste a echoue
     """
     username = username.lstrip("@")
 
-    # Priorité 0 : ClipScraper standalone (économique, contrôlé)
+    # Priorité 1 : ClipScraper VPS standalone (économique, contrôlé)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
         try:
             cs_videos = await _fetch_via_clipscraper("instagram", username)
             if cs_videos:
                 logger.info(f"ClipScraper Instagram: {len(cs_videos)} videos for @{username}")
                 return cs_videos
+            else:
+                logger.warning(f"ClipScraper Instagram returned 0 videos for @{username} - falling through to next strategy")
         except Exception as e:
             logger.warning(f"ClipScraper Instagram failed for @{username}: {e}")
-
-    # Priorité 1 : Apify Instagram Reel Scraper — fallback résidentiel
-    if APIFY_TOKEN:
-        try:
-            videos = await _fetch_instagram_videos_apify(username)
-            if videos:
-                return videos
-        except Exception as e:
-            logger.warning(f"Apify Instagram failed for @{username}: {e}")
 
     # Priorité 2 : Feed + Reels via API privée Instagram (cookie requis)
     if INSTAGRAM_SESSIONS:
@@ -5257,7 +5254,18 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
-    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — configurez RAPIDAPI_KEY ou INSTAGRAM_SESSION_ID")
+    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — coute des credits, ne devrait quasi jamais etre appele
+    if APIFY_TOKEN:
+        try:
+            logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
+            videos = await _fetch_instagram_videos_apify(username)
+            if videos:
+                logger.warning(f"⚠️ Apify Instagram a renvoye {len(videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
+                return videos
+        except Exception as e:
+            logger.warning(f"Apify Instagram failed for @{username}: {e}")
+
+    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — toutes les sources ont echoue (ClipScraper VPS, session, RapidAPI, instaloader, Playwright, Apify)")
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
