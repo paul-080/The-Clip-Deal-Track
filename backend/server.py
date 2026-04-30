@@ -1,3 +1,25 @@
+# SENTRY MONITORING : init avant tout autre import pour catcher les erreurs de demarrage
+import os as _os_early
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+    _SENTRY_DSN = _os_early.environ.get("SENTRY_DSN", "").strip()
+    if _SENTRY_DSN:
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            traces_sample_rate=0.1,  # 10% des requetes pour tracing perf
+            profiles_sample_rate=0.05,  # 5% profiling
+            send_default_pii=False,  # ne pas envoyer emails/IPs
+            environment=_os_early.environ.get("RAILWAY_ENVIRONMENT", "development"),
+            integrations=[FastApiIntegration(), StarletteIntegration()],
+        )
+        print("✅ Sentry monitoring initialized", flush=True)
+    else:
+        print("ℹ️ Sentry not configured (SENTRY_DSN not set) — errors will not be reported", flush=True)
+except Exception as _e:
+    print(f"⚠️ Sentry init failed: {_e}", flush=True)
+
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
@@ -199,12 +221,17 @@ def _get_gocardless_client():
         logger.error(f"GoCardless client init failed: {e}")
         return None
 
-# ─── Rate limiting (in-memory) ───────────────────────────────────────────────
+# ─── Rate limiting (in-memory pour rapidite, in-DB pour persistance) ─────────
+# IN-MEMORY : compte rapide sur l'instance courante (perdu au restart, mais
+#             suffisant pour absorber les pics ponctuels). Auto-cleanup OOM.
+# IN-DB     : pour les abus persistants qui survivent aux restarts (brute force,
+#             attaques continues). Utilise db.rate_limits avec index TTL auto.
 _rate_store: dict = defaultdict(list)
 _rate_cleanup_counter = 0
 
+
 def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
-    """Returns True if rate limit is exceeded for this key. Periodic cleanup prevents OOM."""
+    """In-memory rate limit (rapide, perdu au restart). Returns True si limite depassee."""
     global _rate_cleanup_counter
     now = time.time()
     calls = [t for t in _rate_store[key] if now - t < window_seconds]
@@ -213,11 +240,10 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
     elif key in _rate_store:
         del _rate_store[key]
 
-    # Periodic cleanup every 1000 calls to evict stale keys (prevent memory leak)
     _rate_cleanup_counter += 1
     if _rate_cleanup_counter >= 1000:
         _rate_cleanup_counter = 0
-        cutoff = now - 3600  # any entry older than 1h is stale (max window)
+        cutoff = now - 3600
         stale = [k for k, v in _rate_store.items() if not v or all(t < cutoff for t in v)]
         for k in stale:
             _rate_store.pop(k, None)
@@ -226,6 +252,35 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
         return True
     _rate_store[key].append(now)
     return False
+
+
+async def _check_rate_limit_persistent(key: str, max_calls: int, window_seconds: int) -> bool:
+    """Rate limit persistant en MongoDB avec TTL auto. Survit aux restarts.
+    A utiliser pour les endpoints critiques (login, register, password reset).
+    Plus lent que _check_rate_limit (1 query DB) mais robuste.
+    Returns True si limite depassee.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=window_seconds)
+        # Compte les hits dans la fenetre
+        count = await db.rate_limits.count_documents({
+            "key": key,
+            "timestamp": {"$gte": cutoff.isoformat()},
+        })
+        if count >= max_calls:
+            return True
+        # Insere le nouveau hit (TTL auto via index expireAt)
+        await db.rate_limits.insert_one({
+            "key": key,
+            "timestamp": now.isoformat(),
+            "expireAt": now + timedelta(seconds=window_seconds + 60),  # TTL = window + marge
+        })
+        return False
+    except Exception as e:
+        # En cas d'erreur DB, on ne bloque pas (fail-open) mais on log
+        logger.warning(f"Rate limit DB check failed for key={key}: {e}")
+        return False
 CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
 if CLICK_SALT == 'clipdeal-default-salt-change-in-prod':
     _DANGEROUS_DEFAULTS.append('CLICK_SALT')
@@ -877,8 +932,11 @@ async def _send_verification_email(to_email: str, code: str):
 async def email_register(req: EmailRegisterRequest, request: Request):
     """Register with email + password — sends a 6-digit verification code by email."""
     ip = (request.client.host if request.client else None) or "unknown"
+    # Double layer: in-memory pour pic court, DB pour abus persistant qui survit au restart
     if _check_rate_limit(f"register:{ip}", 8, 300):
         raise HTTPException(status_code=429, detail="Trop de tentatives d'inscription. Réessayez plus tard.")
+    if await _check_rate_limit_persistent(f"register:{ip}", 30, 3600):
+        raise HTTPException(status_code=429, detail="Trop de tentatives sur cette IP. Réessayez dans 1h.")
     if req.role not in ["clipper", "agency", "manager", "client"]:
         raise HTTPException(status_code=400, detail="Rôle invalide")
     pwd_error = _validate_password(req.password)
@@ -1318,6 +1376,9 @@ async def test_smtp():
 async def email_login(request: Request):
     """Login with email + password."""
     ip = (request.client.host if request.client else None) or "unknown"
+    # Double layer rate limit
+    if await _check_rate_limit_persistent(f"login:{ip}", 100, 3600):
+        raise HTTPException(status_code=429, detail="Trop de tentatives de connexion. Réessayez dans 1h.")
     if _check_rate_limit(f"login:{ip}", 15, 60):
         raise HTTPException(status_code=429, detail="Trop de tentatives de connexion. Réessayez dans une minute.")
     body = await request.json()
@@ -12701,17 +12762,30 @@ app.include_router(api_router)
 
 ALLOWED_ORIGINS = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 _origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
-if "http://localhost:3000" not in _origins:
-    _origins.append("http://localhost:3000")
-if "http://localhost:3001" not in _origins:
-    _origins.append("http://localhost:3001")
+
+# CORS strict en prod : pas de localhost
+if not _IS_PRODUCTION:
+    if "http://localhost:3000" not in _origins:
+        _origins.append("http://localhost:3000")
+    if "http://localhost:3001" not in _origins:
+        _origins.append("http://localhost:3001")
+else:
+    logger.info(f"CORS strict mode (production) : origines autorisees = {_origins}")
+
+# Methodes autorisees (au lieu de "*") pour CORS strict
+_ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+# Headers : on autorise les headers usuels + ceux qu'on utilise reellement
+_ALLOWED_HEADERS = [
+    "Content-Type", "Authorization", "X-Admin-Code", "Accept", "Origin",
+    "X-Requested-With", "Cookie", "Set-Cookie",
+]
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=_origins,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=_ALLOWED_METHODS,
+    allow_headers=_ALLOWED_HEADERS,
 )
 
 @app.on_event("startup")
@@ -12796,6 +12870,9 @@ async def startup_event():
         (db.scraping_history, [("source", 1), ("timestamp", -1)], {}),
         (db.scraping_history, [("is_apify", 1), ("timestamp", -1)], {}),
         (db.scraping_history, [("platform", 1), ("username", 1), ("timestamp", -1)], {}),
+        # rate_limits (TTL auto pour rate limit persistant, survit aux restarts)
+        (db.rate_limits, [("expireAt", 1)], {"expireAfterSeconds": 0, "name": "rate_limits_ttl"}),
+        (db.rate_limits, [("key", 1), ("timestamp", -1)], {}),
     ]
     for collection, keys, opts in indexes:
         try:
