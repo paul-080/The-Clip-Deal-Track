@@ -2105,14 +2105,18 @@ function CampaignDashboard({ campaigns }) {
             );
           })()}
 
-          {/* KPI row — synchronisé avec la période du graphique ci-dessous */}
+          {/* KPI row — synchronisé avec la période ET l'offset du graphique ci-dessous */}
           {(() => {
-            // Filtre les vidéos par période (jour de publication)
+            // Fenêtre identique à celle du graph (backend) : [end - days*offset - days, end - days*offset]
             const days = parseInt(viewsPeriod) || 30;
-            const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+            const now = Date.now();
+            const periodMs = days * 24 * 60 * 60 * 1000;
+            const end = new Date(now - periodMs * viewsOffset);
+            const start = new Date(end.getTime() - periodMs);
             const periodVideos = (allVideos || []).filter(v => {
               if (!v.published_at) return false;
-              return new Date(v.published_at) >= cutoff;
+              const pub = new Date(v.published_at);
+              return pub >= start && pub <= end;
             });
             const pViews = periodVideos.reduce((s, v) => s + (v.views || 0), 0);
             const pLikes = periodVideos.reduce((s, v) => s + (v.likes || 0), 0);
@@ -2121,7 +2125,8 @@ function CampaignDashboard({ campaigns }) {
             const pEngagement = pViews > 0 ? ((pLikes + pComments) / pViews * 100).toFixed(1) : "0.0";
             const pAvgViews = periodVideos.length > 0 ? Math.round(pViews / periodVideos.length) : 0;
             const periodLabels = { "1": "24h", "7": "7j", "30": "30j", "90": "90j", "365": "1 an" };
-            const lbl = periodLabels[viewsPeriod] || "30j";
+            const baseLbl = periodLabels[viewsPeriod] || "30j";
+            const lbl = viewsOffset > 0 ? `${baseLbl} · -${viewsOffset}` : baseLbl;
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
