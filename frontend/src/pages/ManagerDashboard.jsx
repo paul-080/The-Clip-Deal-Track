@@ -603,7 +603,7 @@ function CampaignDashboard({ campaigns }) {
         ...(trackAccountForm.user_id ? { user_id: trackAccountForm.user_id } : {}),
         ...(isUrl ? { account_url: trackAccountForm.username.trim() } : { username: trackAccountForm.username.trim() }),
       };
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-account`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-account`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",

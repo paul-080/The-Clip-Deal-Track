@@ -1391,7 +1391,7 @@ function CampaignDashboard({ campaigns }) {
   const handleTrackVideoFromList = async (video) => {
     setTrackingVideoUrl(video.url);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-video`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1429,7 +1429,7 @@ function CampaignDashboard({ campaigns }) {
     setAddingVideo(true);
     setTrackResult(null);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-video`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1543,7 +1543,7 @@ function CampaignDashboard({ campaigns }) {
         platform: trackAccountForm.platform,
         ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),
       };
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-video`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1591,7 +1591,7 @@ function CampaignDashboard({ campaigns }) {
         ...(trackAccountForm.user_id ? { user_id: trackAccountForm.user_id } : {}),  // omet user_id si vide
         ...(isUrl ? { account_url: trackAccountForm.username.trim() } : { username: trackAccountForm.username.trim() }),
       };
-      const res = await fetch(`${API}/campaigns/${campaignId}/track-account`, {
+      const res = await fetch(`${API}/campaigns/${campaignId}/add-account`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -2518,9 +2518,9 @@ function CampaignDashboard({ campaigns }) {
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition-all">
                   {accountsLoading ? "Chargement…" : "↻ Rafraîchir"}
                 </button>
-                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
+                <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setAccountVideos(null); setShowTrackAccountModal(true); }}
                   className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
-                  + Tracker un compte
+                  + Tracker un compte / vidéos
                 </button>
               </>
             )}
@@ -2551,13 +2551,9 @@ function CampaignDashboard({ campaigns }) {
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setShowTrackAccountModal(true); }}
+              <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setAccountVideos(null); setShowTrackAccountModal(true); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
-                + Tracker un compte
-              </button>
-              <button onClick={() => { setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok") }); setShowManualVideoModal(true); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f0c040]/10 hover:bg-[#f0c040]/20 border border-[#f0c040]/30 text-[#f0c040] text-xs font-medium transition-all">
-                + Tracker une vidéo
+                + Tracker un compte / vidéos
               </button>
             </div>
           </div>

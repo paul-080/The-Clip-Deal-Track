@@ -6797,6 +6797,7 @@ async def get_all_campaign_accounts(campaign_id: str, user: dict = Depends(get_c
 
 
 @api_router.post("/campaigns/{campaign_id}/track-account")
+@api_router.post("/campaigns/{campaign_id}/add-account")
 async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
     """
     Pour agence/manager : crée un compte social pour un clippeur de la campagne
