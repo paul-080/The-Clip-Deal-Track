@@ -242,6 +242,16 @@ function CampaignView({ campaigns }) {
     else { setSortField(field); setSortDir("desc"); }
   };
 
+  // Guard : campaign peut etre undefined si l'ID est invalide ou si campaigns n'est pas encore charge
+  if (!campaign) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <p className="text-white/60 text-base mb-2">Campagne introuvable</p>
+        <p className="text-white/30 text-sm">Cette campagne n'existe plus ou vous n'y avez pas accès.</p>
+      </div>
+    );
+  }
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="client-campaign-view">
 

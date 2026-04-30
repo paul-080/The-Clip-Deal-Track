@@ -171,6 +171,18 @@ GOCARDLESS_ENV = os.environ.get('GOCARDLESS_ENVIRONMENT', 'sandbox').strip()  # 
 GOCARDLESS_WEBHOOK_SECRET = os.environ.get('GOCARDLESS_WEBHOOK_SECRET', '').strip()
 ADMIN_SECRET_CODE = os.environ.get('ADMIN_SECRET_CODE', 'clipdeal-admin-2025')
 
+# SECURITY : detecte production (Railway/Render) et bloque les defaults dangereux
+_IS_PRODUCTION = bool(
+    os.environ.get('RAILWAY_ENVIRONMENT')
+    or os.environ.get('RENDER')
+    or os.environ.get('HEROKU_APP_NAME')
+    or (os.environ.get('FRONTEND_URL', '').startswith('https://') and 'localhost' not in os.environ.get('FRONTEND_URL', ''))
+)
+_DANGEROUS_DEFAULTS = []
+if ADMIN_SECRET_CODE == 'clipdeal-admin-2025':
+    _DANGEROUS_DEFAULTS.append('ADMIN_SECRET_CODE')
+# CLICK_SALT check est plus bas (defini ligne ~217)
+
 
 def _get_gocardless_client():
     """Returns a gocardless_pro Client or None if not configured."""
@@ -215,6 +227,15 @@ def _check_rate_limit(key: str, max_calls: int, window_seconds: int) -> bool:
     _rate_store[key].append(now)
     return False
 CLICK_SALT = os.environ.get('CLICK_SALT', 'clipdeal-default-salt-change-in-prod')
+if CLICK_SALT == 'clipdeal-default-salt-change-in-prod':
+    _DANGEROUS_DEFAULTS.append('CLICK_SALT')
+
+# SECURITY : si on est en production avec un default dangereux, on log un warning critique
+# (sans bloquer le boot pour permettre un hotfix Railway, mais visible dans les logs)
+if _IS_PRODUCTION and _DANGEROUS_DEFAULTS:
+    msg = f"🚨 SECURITY WARNING: Production env detected with default values for: {', '.join(_DANGEROUS_DEFAULTS)}. Configure these env vars on Railway IMMEDIATELY."
+    print(msg, flush=True)
+    # On log mais on ne crash pas (laisse le boot continuer pour permettre fix rapide)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
 # Email via Resend API (HTTP — works on Railway)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
@@ -1160,10 +1181,16 @@ async def _send_reset_email(to_email: str, reset_url: str):
 @api_router.post("/auth/forgot-password")
 async def forgot_password(request: Request):
     """Request a password-reset link. Always returns {sent: true} regardless of whether the email exists."""
+    ip = (request.client.host if request.client else None) or "unknown"
+    if _check_rate_limit(f"forgot-password:{ip}", 5, 600):  # 5 req / 10 min / IP
+        raise HTTPException(status_code=429, detail="Trop de tentatives. Réessayez dans 10 minutes.")
     body = await request.json()
     email_lc = (body.get("email") or "").lower().strip()
     if not email_lc:
         raise HTTPException(status_code=400, detail="Email manquant")
+    # Rate limit aussi par email (anti-spam ciblé)
+    if _check_rate_limit(f"forgot-password-email:{email_lc}", 3, 3600):  # 3 req / 1h / email
+        raise HTTPException(status_code=429, detail="Trop de demandes pour cet email. Réessayez dans 1h.")
 
     user = await db.users.find_one({"email": email_lc}, {"_id": 0, "user_id": 1})
     if user:
@@ -1188,6 +1215,9 @@ async def forgot_password(request: Request):
 @api_router.post("/auth/reset-password")
 async def reset_password(request: Request):
     """Consume a password-reset token and update the user's password."""
+    ip = (request.client.host if request.client else None) or "unknown"
+    if _check_rate_limit(f"reset-password:{ip}", 10, 600):  # 10 / 10min / IP (token brute force)
+        raise HTTPException(status_code=429, detail="Trop de tentatives. Réessayez dans 10 minutes.")
     body = await request.json()
     token = (body.get("token") or "").strip()
     new_password = body.get("new_password") or ""
@@ -1220,17 +1250,29 @@ async def reset_password(request: Request):
     return {"success": True, "message": "Mot de passe mis à jour"}
 
 
+def _check_admin_header(request: Request):
+    """Check X-Admin-Code inline (verify_admin_code defini plus bas dans le fichier)."""
+    code = request.headers.get("X-Admin-Code", "")
+    if not code or not ADMIN_SECRET_CODE or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
 @api_router.get("/auth/debug-env")
-async def debug_env():
-    """Debug: show all env var names containing RESEND, SMTP, or RAILWAY."""
+async def debug_env(request: Request):
+    """Debug: show env var names containing RESEND, SMTP, or RAILWAY. ADMIN ONLY."""
+    _check_admin_header(request)
     import os
     keys = {k: (v[:4] + "..." if v else "VIDE") for k, v in os.environ.items()
             if any(x in k.upper() for x in ["RESEND", "SMTP", "RAILWAY", "FRONTEND", "GOOGLE"])}
-    return {"env_keys": keys, "resend_api_key_at_runtime": os.environ.get("RESEND_API_KEY", "NOT_FOUND")}
+    # Ne PAS retourner la cle complete : juste un truncage
+    rk = os.environ.get("RESEND_API_KEY", "")
+    return {"env_keys": keys, "resend_api_key_truncated": (rk[:6] + "..." if rk else "NOT_FOUND")}
+
 
 @api_router.get("/auth/test-send-email")
-async def test_send_email(to: str = "paulangloy@gmail.com"):
-    """Actually send a test email via Resend and return raw response."""
+async def test_send_email(request: Request, to: str = "paulangloy@gmail.com"):
+    """Send a test email via Resend. ADMIN ONLY (anti-phishing)."""
+    _check_admin_header(request)
     if not RESEND_API_KEY:
         return {"status": "error", "error": "RESEND_API_KEY manquant"}
     async with httpx.AsyncClient(timeout=15) as client:
@@ -2154,10 +2196,17 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
                         detail=f"Limite atteinte : votre plan {plan_name} autorise {limits['clippers']} clippeurs au total sur toutes vos campagnes. Passez au plan supérieur."
                     )
 
-    await db.campaign_members.update_one(
-        {"member_id": member_id},
+    # Update atomique : ne change que si encore pending (anti-race double-accept)
+    upd_res = await db.campaign_members.update_one(
+        {"member_id": member_id, "status": {"$in": ["pending", "rejected"]}},
         {"$set": {"status": "active", "accepted_at": datetime.now(timezone.utc).isoformat()}}
     )
+    if upd_res.modified_count == 0:
+        # Member etait deja active ou supprime
+        existing = await db.campaign_members.find_one({"member_id": member_id}, {"_id": 0, "status": 1})
+        if existing and existing.get("status") == "active":
+            return {"message": "Candidat deja accepte"}
+        raise HTTPException(status_code=409, detail="Etat du candidat a change, recharge la page")
 
     # Auto-generate a click tracking link if this is a click-based campaign
     if campaign.get("payment_model") in ("clicks", "both"):
@@ -8957,7 +9006,8 @@ async def complete_gocardless_flow(body: dict, user: dict = Depends(get_current_
                         "subscription_plan": plan_id,
                         "gc_subscription_id": sub.id,
                         "subscription_started_at": datetime.now(timezone.utc).isoformat(),
-                    }}
+                    },
+                    "$unset": {"trial_started_at": ""}}  # cleanup trial ghost
                 )
 
         await db.gocardless_flows.update_one(
@@ -9608,7 +9658,8 @@ async def create_subscription_checkout(body: dict, user: dict = Depends(get_curr
                             "subscription_plan": plan_id,
                             "gc_subscription_id": sub.id,
                             "subscription_started_at": datetime.now(timezone.utc).isoformat(),
-                        }}
+                        },
+                        "$unset": {"trial_started_at": ""}}  # cleanup trial ghost
                     )
                     return {"url": f"{FRONTEND_URL}/agency/settings?sub=success&plan={plan_id}", "direct": True}
             except Exception as e:
@@ -9697,6 +9748,43 @@ async def update_profile(profile_data: dict, user: dict = Depends(get_current_us
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """WebSocket avec authentification : verifie que le session_token correspond bien au user_id.
+    Le client doit envoyer le cookie session_token (auto par le navigateur).
+    """
+    # Authentification : verification que le user_id correspond a la session
+    session_token = websocket.cookies.get("session_token", "")
+    if not session_token:
+        # Tente aussi via query param (pour les clients qui ne supportent pas cookies)
+        session_token = websocket.query_params.get("session", "")
+
+    if not session_token:
+        await websocket.close(code=4401, reason="Authentication required")
+        return
+
+    session = await db.user_sessions.find_one({"session_token": session_token}, {"_id": 0, "user_id": 1, "expires_at": 1})
+    if not session:
+        await websocket.close(code=4401, reason="Invalid session")
+        return
+
+    # Verifie que la session n'a pas expire
+    expires_at = session.get("expires_at")
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if isinstance(expires_at, str) else expires_at
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > exp_dt:
+                await websocket.close(code=4401, reason="Session expired")
+                return
+        except Exception:
+            pass
+
+    # CRITIQUE : verifier que le user_id de l'URL correspond bien a celui de la session
+    if session.get("user_id") != user_id:
+        await websocket.close(code=4403, reason="Forbidden : user_id mismatch")
+        logger.warning(f"WebSocket auth bypass attempt: session={session.get('user_id')} tried to subscribe as {user_id}")
+        return
+
     await manager.connect(websocket, user_id)
     try:
         while True:
@@ -9704,7 +9792,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             try:
                 message = json.loads(data)
             except (json.JSONDecodeError, ValueError):
-                continue  # ignore malformed frames, don't crash
+                continue
             if message.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
