@@ -188,6 +188,8 @@ def _get_instagram_session() -> str:
     cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
     _instagram_session_index += 1
     return cookie
+# SECURITY/COST : permet de desactiver completement Apify (jamais appele meme en dernier recours)
+APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
 GOCARDLESS_ACCESS_TOKEN = os.environ.get('GOCARDLESS_ACCESS_TOKEN', '').strip()
 GOCARDLESS_ENV = os.environ.get('GOCARDLESS_ENVIRONMENT', 'sandbox').strip()  # 'sandbox' | 'live'
 GOCARDLESS_WEBHOOK_SECRET = os.environ.get('GOCARDLESS_WEBHOOK_SECRET', '').strip()
@@ -3813,7 +3815,7 @@ async def _verify_tiktok(username: str) -> dict:
     """Verify TikTok account. Primary: Apify (residential proxies). Fallbacks: TikWm, Playwright, yt-dlp."""
     username = username.lstrip("@")
     # Primary: Apify — most reliable from cloud
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             return await _verify_tiktok_apify(username)
         except ValueError as e:
@@ -4477,7 +4479,7 @@ async def _verify_instagram(username: str) -> dict:
     """
     username = username.lstrip("@")
     # Priority 0: Apify — most reliable from cloud, residential proxies
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             return await _verify_instagram_apify(username)
         except ValueError as e:
@@ -5202,7 +5204,7 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             # Don't raise yet - try Apify as last resort below
 
     # DERNIER RECOURS : Apify TikTok (coûte des credits, ne devrait quasi jamais etre appele)
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
             apify_videos = await _fetch_tiktok_videos_apify(username)
@@ -5402,7 +5404,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
     # Priorité 7 (DERNIER RECOURS) : Apify Instagram — coute des credits, ne devrait quasi jamais etre appele
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
             videos = await _fetch_instagram_videos_apify(username)
@@ -5733,7 +5735,7 @@ async def _fetch_single_instagram_video(url: str) -> dict:
 
     # Strategy 4 (DERNIER RECOURS) : Apify Instagram Scraper
     # SEULEMENT si toutes les autres ont echoue. Coût ~$0.30/1000 = quasi rien sur 100 video/mois mais on evite quand meme.
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
         for actor_id in ("apify~instagram-scraper", "apify~instagram-post-scraper"):
             try:
@@ -10964,7 +10966,7 @@ async def admin_debug_instagram(username: str, request: Request, _: bool = Depen
     }
 
     # ── 0. Test Apify — démarrage uniquement (sans poll, évite timeout) ──
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             actor_id = "apify~instagram-reel-scraper"
             payload = {
@@ -11306,7 +11308,7 @@ async def admin_usage_monitor(request: Request, _: bool = Depends(verify_admin_c
 
     # === Apify (backup, devrait etre minimal) ===
     apify_status = {"name": "Apify (backup uniquement)", "cost_per_month_eur": 0, "free_credit_eur": 5}
-    if APIFY_TOKEN:
+    if APIFY_TOKEN and not APIFY_DISABLED:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
                 r = await c.get("https://api.apify.com/v2/users/me", params={"token": APIFY_TOKEN})
