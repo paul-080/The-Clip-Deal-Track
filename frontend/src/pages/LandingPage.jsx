@@ -659,6 +659,7 @@ export default function LandingPage() {
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support standard</li>
+                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
                 <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
                   Choisir ce plan
@@ -681,6 +682,7 @@ export default function LandingPage() {
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support prioritaire</li>
+                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
                 <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
                   Choisir ce plan
@@ -700,6 +702,7 @@ export default function LandingPage() {
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
                   <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support premium 24/7</li>
+                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
                 <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
                   Choisir ce plan
@@ -718,7 +721,8 @@ export default function LandingPage() {
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 1 campagne active</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 15 clippeurs</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Striking automatique</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Chat avec les clippeurs</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support standard</li>
               </ul>
@@ -737,7 +741,8 @@ export default function LandingPage() {
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 3 campagnes actives</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Striking automatique</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Analytics avancés</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Liens de tracking bio</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support prioritaire</li>
@@ -760,7 +765,8 @@ export default function LandingPage() {
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
                 <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Campagnes illimitées</li>
                 <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Jusqu'à 200 clippeurs</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Tracking 4×/jour (07:30, 12:00, 15:30, 22:00)</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Tracking vues 4×/jour (07:30, 12, 15:30, 22h)</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Striking automatique</li>
                 <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Analytics avancés</li>
                 <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Liens de tracking bio</li>
                 <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Support premium 24/7</li>
@@ -783,6 +789,7 @@ export default function LandingPage() {
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Clippeurs illimités</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Serveur dédié sur mesure</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Tracking personnalisé</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Striking automatique</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Intégrations sur mesure</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Account manager dédié</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> SLA garanti</li>

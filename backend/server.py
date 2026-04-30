@@ -5732,21 +5732,36 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
         rpm = campaign.get("rpm", 0)
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
 
-        # Filtrage selon plan agence : si tracking_per_day=1, ne tourne qu'à 7h Paris (07:30)
-        # Si plan click_only (tracking_per_day=0), on skip toujours
+        # Filtrage selon plan agence ET payment_model de la campagne :
+        # - Plan click-only (89/149/225) : aucun scraping de vues
+        # - Campagne CLICK-ONLY sur plan full : 1x/jour à 12h (pour stats vues)
+        # - Campagne VIEWS/BOTH sur plan Starter/Pro : 1x/jour à 7h30
+        # - Campagne VIEWS/BOTH sur plan Business+ : 4x/jour (07:30, 12, 15:30, 22)
         if scheduled_hour_paris is not None:
             agency = agency_map.get(campaign.get("agency_id"))
             if agency:
                 limits = _get_plan_limits(agency)
                 tracking_per_day = limits.get("tracking_per_day", 1)
-                # Plan click_only : pas de scraping de vues du tout
-                if tracking_per_day == 0:
+                plan_click_only = limits.get("click_only", False)
+                campaign_payment = campaign.get("payment_model", "views")
+
+                # 1. Plan click-only -> jamais de scraping de vues
+                if plan_click_only:
                     logger.info(f"Skip campaign {campaign_id} : agency plan click_only (no view tracking)")
                     continue
-                # Plan starter/pro : tracking 1x/jour à 7h Paris (07:30) seulement
-                if tracking_per_day == 1 and scheduled_hour_paris != 7:
-                    logger.info(f"Skip campaign {campaign_id} : agency plan tracking 1x/jour, current hour {scheduled_hour_paris} != 7")
-                    continue
+
+                # 2. Campagne CLICK-ONLY sur plan full -> 1x/jour a 12h (pour stats vues)
+                if campaign_payment == "clicks":
+                    if scheduled_hour_paris != 12:
+                        logger.info(f"Skip campaign {campaign_id} (clicks-only) : tracking 1x/jour a 12h, hour={scheduled_hour_paris}")
+                        continue
+                # 3. Campagne VIEWS/BOTH : applique le tracking_per_day du plan
+                else:
+                    # Plan Starter/Pro (tracking_per_day=1) : seulement a 7h30
+                    if tracking_per_day == 1 and scheduled_hour_paris != 7:
+                        logger.info(f"Skip campaign {campaign_id} : plan tracking 1x/jour a 7h30, hour={scheduled_hour_paris}")
+                        continue
+                    # Plan Business+ (tracking_per_day=4) : 07:30, 12, 15:30, 22 -> tous les horaires
 
         # Get all assignments for this campaign
         assignments = await db.campaign_social_accounts.find(
@@ -12643,8 +12658,24 @@ async def check_and_issue_strikes():
     now = datetime.now(timezone.utc)
     campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
 
+    # Pre-fetch agencies pour verifier le plan (strikes auto desactives sur plans click-only)
+    agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
+    agencies = await db.users.find(
+        {"user_id": {"$in": agency_ids}},
+        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1, "trial_started_at": 1}
+    ).to_list(len(agency_ids)) if agency_ids else []
+    agency_map = {a["user_id"]: a for a in agencies}
+
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
+
+        # Skip si l'agence est sur un plan click-only (pas de strikes auto sur ces plans)
+        agency = agency_map.get(campaign.get("agency_id"))
+        if agency:
+            limits = _get_plan_limits(agency)
+            if limits.get("click_only"):
+                continue  # Plans click-only n'ont pas de strikes auto
+
         strike_days = campaign.get("strike_days", 3)
         max_strikes = campaign.get("max_strikes", 3)
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")

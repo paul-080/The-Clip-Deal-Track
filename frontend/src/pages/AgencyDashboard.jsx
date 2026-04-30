@@ -3979,7 +3979,9 @@ function SettingsPage() {
       features: [
         "1 campagne active",
         "Jusqu'à 15 clippeurs",
-        "Tracking 1× / jour (8h Paris)",
+        "Tracking vues 1× / jour (8h Paris)",
+        "Tracking clics 1× / jour (12h)",
+        "Striking automatique",
         "Stats vues + clics complets",
         "Support standard"
       ]
@@ -3989,7 +3991,9 @@ function SettingsPage() {
       features: [
         "3 campagnes actives",
         "Jusqu'à 45 clippeurs (total)",
-        "Tracking 1× / jour (8h Paris)",
+        "Tracking vues 1× / jour (8h Paris)",
+        "Tracking clics 1× / jour (12h)",
+        "Striking automatique",
         "Stats vues + clics complets",
         "Analytics avancés",
         "Support prioritaire"
@@ -4000,7 +4004,9 @@ function SettingsPage() {
       features: [
         "Campagnes illimitées",
         "Jusqu'à 200 clippeurs (total)",
-        "Tracking 4× / jour (07:30, 12:00, 15:30, 22:00)",
+        "Tracking vues 4× / jour (07:30, 12:00, 15:30, 22:00)",
+        "Tracking clics 1× / jour si campagne au clic",
+        "Striking automatique",
         "Stats vues + clics complets",
         "Analytics avancés",
         "Support premium 24/7",
@@ -4013,7 +4019,8 @@ function SettingsPage() {
         "Campagnes illimitées",
         "Clippeurs illimités",
         "Serveur dédié sur mesure",
-        "Tracking personnalisé",
+        "Tracking personnalisé (intervalle libre)",
+        "Striking automatique",
         "Intégrations sur mesure",
         "Account manager dédié",
         "SLA garanti"
@@ -4030,7 +4037,8 @@ function SettingsPage() {
         "Jusqu'à 15 clippeurs",
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
-        "Support standard"
+        "Support standard",
+        "Pas de tracking vues ni striking auto"
       ]
     },
     {
@@ -4041,7 +4049,8 @@ function SettingsPage() {
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
         "Analytics clics avancés",
-        "Support prioritaire"
+        "Support prioritaire",
+        "Pas de tracking vues ni striking auto"
       ]
     },
     {
@@ -4052,7 +4061,8 @@ function SettingsPage() {
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
         "Analytics clics avancés",
-        "Support premium 24/7"
+        "Support premium 24/7",
+        "Pas de tracking vues ni striking auto"
       ]
     },
   ];
