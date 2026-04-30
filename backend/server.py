@@ -6662,24 +6662,37 @@ async def get_all_campaign_accounts(campaign_id: str, user: dict = Depends(get_c
     for uid in videos_by_user:
         videos_by_user[uid] = videos_by_user[uid][:6]
 
-    # 5. Regroupement par clipper
+    # 5. Regroupement par clipper (uid=None -> bucket special "agence")
     clippers = []
     by_user = {}
     for a in assignments:
-        uid = a["user_id"]
+        uid = a.get("user_id")  # peut etre None
         acc = accounts_map.get(a["account_id"])
         if not acc:
             continue
-        if uid not in by_user:
-            u = users_map.get(uid, {})
-            by_user[uid] = {
-                "user_id": uid,
-                "display_name": u.get("display_name") or u.get("name") or "Clipper",
-                "picture": u.get("picture"),
-                "accounts": [],
-                "recent_videos": videos_by_user.get(uid, []),
-            }
-        by_user[uid]["accounts"].append({
+        bucket_key = uid if uid else "__agency__"
+        if bucket_key not in by_user:
+            if uid:
+                u = users_map.get(uid, {})
+                by_user[bucket_key] = {
+                    "user_id": uid,
+                    "display_name": u.get("display_name") or u.get("name") or "Clipper",
+                    "picture": u.get("picture"),
+                    "is_agency_owned": False,
+                    "accounts": [],
+                    "recent_videos": videos_by_user.get(uid, []),
+                }
+            else:
+                # Comptes rattaches directement a l'agence (sans clippeur)
+                by_user[bucket_key] = {
+                    "user_id": None,
+                    "display_name": "💰 Agence (gains non attribués)",
+                    "picture": None,
+                    "is_agency_owned": True,
+                    "accounts": [],
+                    "recent_videos": videos_by_user.get(None, []),
+                }
+        by_user[bucket_key]["accounts"].append({
             "account_id": acc.get("account_id"),
             "platform": acc.get("platform"),
             "username": acc.get("username"),
@@ -6688,7 +6701,8 @@ async def get_all_campaign_accounts(campaign_id: str, user: dict = Depends(get_c
             "account_url": acc.get("account_url"),
         })
 
-    clippers = sorted(by_user.values(), key=lambda c: -len(c["accounts"]))
+    # Tri : agence en premier, puis clippeurs avec le plus de comptes
+    clippers = sorted(by_user.values(), key=lambda c: (not c.get("is_agency_owned"), -len(c["accounts"])))
     return {"clippers": clippers}
 
 
@@ -6713,24 +6727,26 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         if not m:
             raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
 
-    target_user_id = (body.get("user_id") or "").strip()
+    target_user_id = (body.get("user_id") or "").strip() or None  # None autorise = compte direct agence
     platform = (body.get("platform") or "").lower().strip()
     raw_username = (body.get("username") or "").strip()
     account_url = (body.get("account_url") or "").strip()
 
-    if not target_user_id or not platform:
-        raise HTTPException(status_code=400, detail="user_id et platform requis")
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform requis")
     if platform not in ("tiktok", "instagram", "youtube"):
         raise HTTPException(status_code=400, detail="platform invalide")
 
-    # Vérifie que le clippeur cible appartient bien à la campagne
-    member = await db.campaign_members.find_one({
-        "campaign_id": campaign_id,
-        "user_id": target_user_id,
-        "role": "clipper",
-    })
-    if not member:
-        raise HTTPException(status_code=400, detail="Ce clippeur n'est pas membre de la campagne")
+    # Si target_user_id fourni, verifie qu'il est bien membre de la campagne
+    if target_user_id:
+        member = await db.campaign_members.find_one({
+            "campaign_id": campaign_id,
+            "user_id": target_user_id,
+            "role": "clipper",
+        })
+        if not member:
+            raise HTTPException(status_code=400, detail="Ce clippeur n'est pas membre de la campagne")
+    # Sinon : compte rattache directement a l'agence, pas a un clippeur (gains restent agence)
 
     # Vérifie que la plateforme est autorisée par la campagne
     allowed = campaign.get("platforms") or []

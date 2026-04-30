@@ -1498,11 +1498,11 @@ function CampaignDashboard({ campaigns }) {
   };
 
   const handleTrackAccount = async () => {
-    if (!trackAccountForm.user_id || !trackAccountForm.platform || !trackAccountForm.username.trim()) {
-      toast.error("Sélectionne un clippeur, une plateforme et entre un @username ou une URL");
+    // user_id est OPTIONNEL : si vide, le compte est attribue a l'agence (gains restent agence)
+    if (!trackAccountForm.platform || !trackAccountForm.username.trim()) {
+      toast.error("Sélectionne une plateforme et entre un @username ou une URL");
       return;
     }
-    // Vérifie que la plateforme est autorisée par la campagne (defense en profondeur)
     const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : null;
     if (allowed && !allowed.includes(trackAccountForm.platform)) {
       toast.error(`Cette campagne n'accepte que : ${allowed.join(", ")}`);
@@ -1512,8 +1512,8 @@ function CampaignDashboard({ campaigns }) {
     try {
       const isUrl = trackAccountForm.username.trim().startsWith("http");
       const body = {
-        user_id: trackAccountForm.user_id,
         platform: trackAccountForm.platform,
+        ...(trackAccountForm.user_id ? { user_id: trackAccountForm.user_id } : {}),  // omet user_id si vide
         ...(isUrl ? { account_url: trackAccountForm.username.trim() } : { username: trackAccountForm.username.trim() }),
       };
       const res = await fetch(`${API}/campaigns/${campaignId}/track-account`, {
@@ -2484,20 +2484,22 @@ function CampaignDashboard({ campaigns }) {
                   <button onClick={() => setShowTrackAccountModal(false)} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
                 </div>
 
-                {/* Clippeur */}
+                {/* Clippeur (optionnel) */}
                 <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Clippeur *</label>
+                  <label className="text-xs text-white/50 block mb-1.5">Clippeur (optionnel)</label>
                   <select value={trackAccountForm.user_id}
                     onChange={e => setTrackAccountForm(f => ({ ...f, user_id: e.target.value }))}
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#00E5FF]/50">
-                    <option value="">— Sélectionner un clippeur —</option>
+                    <option value="">💰 Aucun — gains à l'agence</option>
                     {activeMembers.map(m => (
                       <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
                     ))}
                   </select>
-                  {activeMembers.length === 0 && (
-                    <p className="text-xs text-amber-400/70 mt-1">⚠️ Aucun clippeur actif dans cette campagne</p>
-                  )}
+                  <p className="text-[11px] text-white/40 mt-1.5">
+                    {trackAccountForm.user_id
+                      ? "Les gains de ce compte seront attribués à ce clippeur"
+                      : "Compte rattaché directement à l'agence — les gains restent à l'agence (pas attribués à un clippeur)"}
+                  </p>
                 </div>
 
                 {/* Plateforme */}
@@ -2700,8 +2702,12 @@ function CampaignDashboard({ campaigns }) {
                           <p className="text-white text-sm truncate leading-tight">
                             {video.title || `Vidéo ${video.platform}`}
                           </p>
-                          {clipperName && (
+                          {clipperName ? (
                             <p className="text-white/30 text-xs truncate mt-0.5">{clipperName}</p>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 mt-0.5 font-medium">
+                              💰 Gains agence
+                            </span>
                           )}
                         </div>
                       </div>
@@ -2770,19 +2776,29 @@ function CampaignDashboard({ campaigns }) {
                     {allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0)} compte{allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0) > 1 ? "s" : ""} au total
                   </p>
                   {allAccountsByClipper.map(clipper => (
-                    <div key={clipper.user_id} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                      {/* Header clipper */}
-                      <div className="flex items-center gap-3 mb-3 pb-3 border-b border-white/8">
-                        <div className="w-9 h-9 rounded-full overflow-hidden bg-[#00E5FF]/20 flex items-center justify-center flex-shrink-0">
+                    <div key={clipper.user_id || "__agency__"} className={`bg-[#121212] border rounded-xl p-4 ${clipper.is_agency_owned ? "border-[#f0c040]/40 bg-[#f0c040]/5" : "border-white/10"}`}>
+                      {/* Header clipper / agence */}
+                      <div className={`flex items-center gap-3 mb-3 pb-3 border-b ${clipper.is_agency_owned ? "border-[#f0c040]/20" : "border-white/8"}`}>
+                        <div className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 ${clipper.is_agency_owned ? "bg-[#f0c040]/20" : "bg-[#00E5FF]/20"}`}>
                           {clipper.picture
                             ? <img src={clipper.picture} alt="" className="w-full h-full object-cover" />
-                            : <span className="text-sm font-bold text-[#00E5FF]">{(clipper.display_name || "?")[0].toUpperCase()}</span>
+                            : clipper.is_agency_owned
+                              ? <span className="text-base">💰</span>
+                              : <span className="text-sm font-bold text-[#00E5FF]">{(clipper.display_name || "?")[0].toUpperCase()}</span>
                           }
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-white text-sm font-semibold truncate">{clipper.display_name}</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className={`text-sm font-semibold truncate ${clipper.is_agency_owned ? "text-[#f0c040]" : "text-white"}`}>{clipper.display_name}</p>
+                            {clipper.is_agency_owned && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#f0c040]/20 text-[#f0c040] border border-[#f0c040]/30 font-medium whitespace-nowrap">
+                                Gains agence
+                              </span>
+                            )}
+                          </div>
                           <p className="text-white/40 text-xs">
                             {clipper.accounts.length} compte{clipper.accounts.length > 1 ? "s" : ""} · {clipper.recent_videos.length} vidéo{clipper.recent_videos.length > 1 ? "s" : ""} récente{clipper.recent_videos.length > 1 ? "s" : ""}
+                            {clipper.is_agency_owned && " · gains non attribués à un clippeur"}
                           </p>
                         </div>
                       </div>
