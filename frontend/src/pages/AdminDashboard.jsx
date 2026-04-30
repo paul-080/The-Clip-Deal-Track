@@ -668,6 +668,193 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 
 // ─── ApiStatusTab ─────────────────────────────────────────────────────────────
 
+// ─── Scraping History (logs des appels par source — alerte si Apify) ──────
+function ScrapingHistoryTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState("all"); // all | apify_only | source-X
+  const [search, setSearch] = useState("");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: "200" });
+    if (filter === "apify_only") params.set("apify_only", "true");
+    else if (filter !== "all") params.set("source", filter);
+    adminFetch(`/admin/scraping-history?${params.toString()}`)
+      .then(setData)
+      .catch((e) => toast.error(e.message))
+      .finally(() => setLoading(false));
+  }, [filter]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (!data && loading) {
+    return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" /></div>;
+  }
+  if (!data) return <div className="text-white/40 p-8">Aucune donnée. <button onClick={refresh} className="text-[#00E5FF] underline">Réessayer</button></div>;
+
+  const SOURCE_COLORS = {
+    clipscraper: "text-[#39FF14]",
+    apify: "text-red-400",
+    tikwm: "text-[#00E5FF]",
+    tikwm_partial: "text-[#00E5FF]/70",
+    rapidapi: "text-amber-400",
+    instagram_private: "text-[#FF007F]",
+    instaloader: "text-purple-400",
+    playwright: "text-cyan-400",
+    ytdlp: "text-orange-400",
+    youtube_api: "text-red-300",
+    tiktok_mobile: "text-[#00E5FF]/80",
+  };
+
+  const SOURCE_LABEL = {
+    clipscraper: "ClipScraper VPS",
+    apify: "🚨 Apify",
+    tikwm: "TikWm",
+    tikwm_partial: "TikWm partial",
+    rapidapi: "RapidAPI",
+    instagram_private: "Insta Private",
+    instaloader: "Instaloader",
+    playwright: "Playwright",
+    ytdlp: "yt-dlp",
+    youtube_api: "YouTube API",
+    tiktok_mobile: "TikTok Mobile",
+  };
+
+  // Filter by search (username or platform)
+  const filteredHistory = (data.history || []).filter(h => {
+    if (!search) return true;
+    const s = search.toLowerCase();
+    return (h.username || "").toLowerCase().includes(s) || (h.platform || "").toLowerCase().includes(s);
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-white">Historique Scraping</h2>
+          <p className="text-sm text-white/50 mt-1">Toutes les tentatives de scraping triées par source. Apify est en rouge.</p>
+        </div>
+        <button onClick={refresh} disabled={loading}
+          className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition disabled:opacity-50 flex items-center gap-2">
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
+        </button>
+      </div>
+
+      {/* Alerte rouge si Apify utilisé */}
+      {data.apify_today_count > 0 && (
+        <div className="bg-red-500/15 border-2 border-red-500/50 rounded-xl p-4">
+          <div className="flex items-center gap-3 mb-2">
+            <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0" />
+            <p className="text-red-400 font-bold text-base">⚠️ APIFY UTILISÉ AUJOURD'HUI</p>
+          </div>
+          <p className="text-white/80 text-sm">
+            <span className="font-bold text-red-400 text-lg">{data.apify_today_count}</span> appels Apify aujourd'hui
+            · <span className="font-bold text-red-400 text-lg">{data.apify_month_count}</span> ce mois ({data.apify_month_videos} vidéos)
+          </p>
+          <p className="text-white/50 text-xs mt-2">
+            Apify est censé être le tout dernier recours. Si ce compteur monte vite, c'est que ClipScraper VPS et les autres sources échouent — vérifie la config CLIP_SCRAPER_URL/KEY sur Railway et l'état du VPS.
+          </p>
+        </div>
+      )}
+
+      {/* Stats par source sur 24h */}
+      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+        <p className="text-white font-medium mb-3 text-sm">Sources utilisées (dernières 24h)</p>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          {(data.stats_24h || []).map(s => {
+            const isApify = s._id?.startsWith("apify");
+            return (
+              <div key={s._id} className={`rounded-lg p-3 border ${isApify ? "bg-red-500/10 border-red-500/30" : "bg-white/5 border-white/10"}`}>
+                <p className={`text-xs font-medium mb-1 ${SOURCE_COLORS[s._id] || "text-white/60"}`}>
+                  {SOURCE_LABEL[s._id] || s._id}
+                </p>
+                <p className="text-white font-mono font-bold text-lg">{s.count}</p>
+                <p className="text-[10px] text-white/40">{s.successes} OK · {s.videos_total} vidéos</p>
+              </div>
+            );
+          })}
+          {(!data.stats_24h || data.stats_24h.length === 0) && (
+            <p className="text-white/30 text-sm col-span-full">Aucune activité de scraping dans les 24h</p>
+          )}
+        </div>
+      </div>
+
+      {/* Filtres + recherche */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
+          {[
+            { id: "all", label: "Toutes" },
+            { id: "apify_only", label: "🚨 Apify seulement" },
+            { id: "clipscraper", label: "ClipScraper" },
+            { id: "tikwm", label: "TikWm" },
+          ].map(f => (
+            <button key={f.id} onClick={() => setFilter(f.id)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${filter === f.id ? (f.id === "apify_only" ? "bg-red-500/30 text-red-300" : "bg-white/15 text-white") : "text-white/40 hover:text-white"}`}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher username ou plateforme..."
+          className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 flex-1 max-w-xs" />
+        <span className="text-white/40 text-xs">{filteredHistory.length} / {data.total} entrées</span>
+      </div>
+
+      {/* Table historique */}
+      <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
+                <th className="text-left py-3 px-4">Date</th>
+                <th className="text-left py-3 px-4">Source</th>
+                <th className="text-left py-3 px-4">Plateforme</th>
+                <th className="text-left py-3 px-4">Compte</th>
+                <th className="text-left py-3 px-4">Status</th>
+                <th className="text-left py-3 px-4">Vidéos</th>
+                <th className="text-left py-3 px-4">Erreur</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredHistory.map((h) => {
+                const isApify = h.is_apify;
+                const dt = new Date(h.timestamp);
+                return (
+                  <tr key={h.id} className={`border-b border-white/5 ${isApify ? "bg-red-500/8 hover:bg-red-500/12" : "hover:bg-white/3"} transition-colors`}>
+                    <td className="py-2.5 px-4 text-white/70 text-xs whitespace-nowrap">
+                      {dt.toLocaleDateString("fr-FR")} {dt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                    </td>
+                    <td className={`py-2.5 px-4 font-medium ${SOURCE_COLORS[h.source] || "text-white/60"} ${isApify ? "font-bold" : ""}`}>
+                      {SOURCE_LABEL[h.source] || h.source}
+                    </td>
+                    <td className="py-2.5 px-4 text-white/70 text-xs">
+                      {h.platform === "tiktok" ? "🎵" : h.platform === "instagram" ? "📸" : h.platform === "youtube" ? "▶️" : ""} {h.platform}
+                    </td>
+                    <td className="py-2.5 px-4 text-white text-xs">@{h.username}</td>
+                    <td className="py-2.5 px-4">
+                      {h.success
+                        ? <span className="text-[#39FF14] text-xs">✓ OK</span>
+                        : <span className="text-red-400 text-xs">✗ Échec</span>
+                      }
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-white/70 text-xs">{h.video_count || 0}</td>
+                    <td className="py-2.5 px-4 text-white/40 text-[11px] max-w-[300px] truncate" title={h.error}>
+                      {h.error || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filteredHistory.length === 0 && (
+                <tr><td colSpan={7} className="text-center py-8 text-white/30 text-sm">Aucune entrée</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Prospects (campagnes pre-remplies pour demarcher agences) ─────
 function ProspectsTab() {
   const [prospects, setProspects] = useState([]);
@@ -2547,6 +2734,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "preview-client", label: "Preview Client", icon: UserCircle, preview: true },
     { id: "api-status", label: "Connexions API", icon: Plug },
     { id: "usage-monitor", label: "Capacité & Coûts", icon: TrendingUp },
+    { id: "scraping-history", label: "Historique Scraping", icon: RefreshCw },
     { id: "prospects", label: "Prospects", icon: Building2 },
     { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
@@ -2688,6 +2876,7 @@ export default function AdminDashboard() {
     if (active === "campaigns") return <AdminCampaignsTab />;
     if (active === "api-status") return <ApiStatusTab />;
     if (active === "usage-monitor") return <UsageMonitorTab />;
+    if (active === "scraping-history") return <ScrapingHistoryTab />;
     if (active === "prospects") return <ProspectsTab />;
     if (active === "settings") return <SettingsTab />;
     if (active === "support") return <SupportTab />;

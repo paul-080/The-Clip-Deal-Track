@@ -107,6 +107,28 @@ async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int =
     return (r.json() or {}).get("videos", [])
 
 
+async def _log_scrape(source: str, platform: str, username: str, success: bool, count: int = 0, error: str = None):
+    """Log un evenement de scraping dans db.scraping_history pour traquer quelle source est utilisee.
+    Utile pour identifier les comptes qui forcent l'usage d'Apify (coute des credits).
+    Source attendu : 'clipscraper', 'apify', 'tikwm', 'tiktok_mobile', 'rapidapi', 'instagram_private',
+                     'instaloader', 'playwright', 'ytdlp', 'youtube_api'
+    """
+    try:
+        await db.scraping_history.insert_one({
+            "id": f"sh_{uuid.uuid4().hex[:12]}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": source,
+            "platform": platform,
+            "username": username,
+            "success": bool(success),
+            "video_count": int(count or 0),
+            "error": (error[:200] if error else None),
+            "is_apify": source.startswith("apify"),
+        })
+    except Exception:
+        pass  # ne jamais bloquer le scrape a cause du logging
+
+
 async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
     """Appelle le ClipScraper VPS pour fetch UNE vidéo via son URL (yt-dlp + proxy résidentiel).
     Bypasse les blocages Railway (Insta/TikTok). Retourne None si scraper non configuré ou échec."""
@@ -4926,11 +4948,16 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             cs_videos = await _fetch_via_clipscraper("tiktok", username)
             if cs_videos:
                 logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username}")
+                await _log_scrape("clipscraper", "tiktok", username, True, len(cs_videos))
                 return cs_videos
             else:
                 logger.warning(f"ClipScraper TikTok returned 0 videos for @{username} - falling through")
+                await _log_scrape("clipscraper", "tiktok", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"ClipScraper TikTok failed for @{username}: {e}")
+            await _log_scrape("clipscraper", "tiktok", username, False, 0, str(e))
+    else:
+        await _log_scrape("clipscraper", "tiktok", username, False, 0, "CLIP_SCRAPER_URL/KEY not configured")
 
     tikwm_videos = []
     # Primary: TikWm API — all strategies A-E (search is always available)
@@ -5071,11 +5098,16 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             apify_videos = await _fetch_tiktok_videos_apify(username)
             if apify_videos:
                 logger.warning(f"⚠️ Apify TikTok a renvoye {len(apify_videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
+                await _log_scrape("apify", "tiktok", username, True, len(apify_videos), "USED AS LAST RESORT")
                 return apify_videos
+            else:
+                await _log_scrape("apify", "tiktok", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"Apify TikTok failed for @{username}: {e}")
+            await _log_scrape("apify", "tiktok", username, False, 0, str(e))
 
     if combined:
+        await _log_scrape("tikwm_partial", "tiktok", username, True, len(combined))
         return combined
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
@@ -5099,11 +5131,16 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             cs_videos = await _fetch_via_clipscraper("instagram", username)
             if cs_videos:
                 logger.info(f"ClipScraper Instagram: {len(cs_videos)} videos for @{username}")
+                await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos))
                 return cs_videos
             else:
                 logger.warning(f"ClipScraper Instagram returned 0 videos for @{username} - falling through to next strategy")
+                await _log_scrape("clipscraper", "instagram", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"ClipScraper Instagram failed for @{username}: {e}")
+            await _log_scrape("clipscraper", "instagram", username, False, 0, str(e))
+    else:
+        await _log_scrape("clipscraper", "instagram", username, False, 0, "CLIP_SCRAPER_URL/KEY not configured")
 
     # Priorité 2 : Feed + Reels via API privée Instagram (cookie requis)
     if INSTAGRAM_SESSIONS:
@@ -5261,9 +5298,13 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             videos = await _fetch_instagram_videos_apify(username)
             if videos:
                 logger.warning(f"⚠️ Apify Instagram a renvoye {len(videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
+                await _log_scrape("apify", "instagram", username, True, len(videos), "USED AS LAST RESORT")
                 return videos
+            else:
+                await _log_scrape("apify", "instagram", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"Apify Instagram failed for @{username}: {e}")
+            await _log_scrape("apify", "instagram", username, False, 0, str(e))
 
     logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — toutes les sources ont echoue (ClipScraper VPS, session, RapidAPI, instaloader, Playwright, Apify)")
     return []
@@ -10391,6 +10432,65 @@ async def admin_ban_user(user_id: str, request: Request, _: bool = Depends(verif
     await db.user_sessions.delete_many({"user_id": user_id})
     return {"banned": user_id}
 
+@api_router.get("/admin/scraping-history")
+async def admin_get_scraping_history(
+    request: Request,
+    limit: int = 200,
+    source: Optional[str] = None,
+    apify_only: bool = False,
+    _: bool = Depends(verify_admin_code)
+):
+    """Admin : historique des appels de scraping pour traquer l'utilisation des sources."""
+    query = {}
+    if source:
+        query["source"] = source
+    if apify_only:
+        query["is_apify"] = True
+
+    history = await db.scraping_history.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+
+    # Stats agregees sur les 24 dernieres heures
+    last_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    pipeline = [
+        {"$match": {"timestamp": {"$gte": last_24h}}},
+        {"$group": {
+            "_id": "$source",
+            "count": {"$sum": 1},
+            "successes": {"$sum": {"$cond": ["$success", 1, 0]}},
+            "videos_total": {"$sum": "$video_count"},
+        }},
+        {"$sort": {"count": -1}}
+    ]
+    stats_24h = await db.scraping_history.aggregate(pipeline).to_list(50)
+
+    # Compteur Apify aujourd'hui
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    apify_today = await db.scraping_history.count_documents({
+        "is_apify": True,
+        "success": True,
+        "timestamp": {"$gte": today_start}
+    })
+
+    # Total apify ce mois
+    month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    apify_month_pipeline = [
+        {"$match": {"is_apify": True, "success": True, "timestamp": {"$gte": month_start}}},
+        {"$group": {"_id": None, "count": {"$sum": 1}, "videos": {"$sum": "$video_count"}}}
+    ]
+    apify_month_res = await db.scraping_history.aggregate(apify_month_pipeline).to_list(1)
+    apify_month_count = apify_month_res[0]["count"] if apify_month_res else 0
+    apify_month_videos = apify_month_res[0]["videos"] if apify_month_res else 0
+
+    return {
+        "history": history,
+        "stats_24h": stats_24h,
+        "apify_today_count": apify_today,
+        "apify_month_count": apify_month_count,
+        "apify_month_videos": apify_month_videos,
+        "total": await db.scraping_history.count_documents(query),
+    }
+
+
 @api_router.post("/admin/campaigns/{campaign_id}/force-scrape")
 async def admin_force_scrape_campaign(campaign_id: str, request: Request, _: bool = Depends(verify_admin_code)):
     """Admin : force le scraping immediat de TOUS les comptes d'une campagne.
@@ -12603,6 +12703,11 @@ async def startup_event():
         (db.click_links, [("short_code", 1)], {"unique": True, "sparse": True}),
         (db.click_events, [("link_id", 1), ("clicked_at", -1)], {}),
         (db.click_events, [("campaign_id", 1), ("clicked_at", -1)], {}),
+        # scraping_history (logs de chaque tentative pour traquer les usages Apify)
+        (db.scraping_history, [("timestamp", -1)], {}),
+        (db.scraping_history, [("source", 1), ("timestamp", -1)], {}),
+        (db.scraping_history, [("is_apify", 1), ("timestamp", -1)], {}),
+        (db.scraping_history, [("platform", 1), ("username", 1), ("timestamp", -1)], {}),
     ]
     for collection, keys, opts in indexes:
         try:
