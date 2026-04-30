@@ -5480,27 +5480,104 @@ def _parse_utc(s) -> "datetime | None":
         return None
 
 async def _fetch_single_tiktok_video(url: str) -> dict:
-    """Fetch stats for a single TikTok video URL via TikWm API."""
-    params = {"url": url, "count": 1}
-    if TIKWM_API_KEY:
-        params["key"] = TIKWM_API_KEY
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.get("https://www.tikwm.com/api/", params=params)
-        data = r.json()
-    if data.get("code") != 0:
-        raise ValueError(f"TikWm: {data.get('msg', 'Erreur inconnue')}")
-    vid = data.get("data", {})
-    create_time = vid.get("create_time")
-    return {
-        "platform_video_id": str(vid.get("id", f"tk_{uuid.uuid4().hex[:8]}")),
-        "url": url,
-        "title": (vid.get("title") or "")[:200] or None,
-        "thumbnail_url": vid.get("cover") or vid.get("origin_cover"),
-        "views": int(vid.get("play_count", 0)),
-        "likes": int(vid.get("digg_count", 0)),
-        "comments": int(vid.get("comment_count", 0)),
-        "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+    """Fetch stats for a single TikTok video URL avec cascade :
+    1. ClipScraper VPS (yt-dlp + proxy résidentiel) — le plus fiable
+    2. TikWm API
+    3. yt-dlp local
+    Retourne TOUJOURS un dict avec views > 0 si possible.
+    """
+    fallback = {
+        "platform_video_id": f"tk_{uuid.uuid4().hex[:8]}",
+        "url": url, "title": None, "thumbnail_url": None,
+        "views": 0, "likes": 0, "comments": 0, "published_at": None,
     }
+    # Extrait l'ID si possible
+    m = re.search(r'/video/(\d+)', url)
+    if m:
+        fallback["platform_video_id"] = m.group(1)
+
+    # Strategy 1 : ClipScraper VPS (proxy residentiel, le plus fiable pour vues)
+    try:
+        cs_result = await _fetch_video_stats_via_clipscraper(url)
+        if cs_result:
+            views_cs = int(cs_result.get("views") or 0)
+            if views_cs > 0:
+                logger.info(f"ClipScraper TikTok SUCCESS for {url[-30:]}: views={views_cs}")
+                return {
+                    "platform_video_id": cs_result.get("platform_video_id") or fallback["platform_video_id"],
+                    "url": url,
+                    "title": cs_result.get("title"),
+                    "thumbnail_url": cs_result.get("thumbnail_url"),
+                    "views": views_cs,
+                    "likes": int(cs_result.get("likes") or 0),
+                    "comments": int(cs_result.get("comments") or 0),
+                    "published_at": cs_result.get("published_at"),
+                }
+    except Exception as e:
+        logger.debug(f"ClipScraper TikTok failed: {e}")
+
+    # Strategy 2 : TikWm API
+    tikwm_data = None
+    try:
+        params = {"url": url, "count": 1}
+        if TIKWM_API_KEY:
+            params["key"] = TIKWM_API_KEY
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get("https://www.tikwm.com/api/", params=params)
+            data = r.json()
+        if data.get("code") == 0:
+            vid = data.get("data", {})
+            create_time = vid.get("create_time")
+            views_t = int(vid.get("play_count", 0))
+            tikwm_data = {
+                "platform_video_id": str(vid.get("id", fallback["platform_video_id"])),
+                "url": url,
+                "title": (vid.get("title") or "")[:200] or None,
+                "thumbnail_url": vid.get("cover") or vid.get("origin_cover"),
+                "views": views_t,
+                "likes": int(vid.get("digg_count", 0)),
+                "comments": int(vid.get("comment_count", 0)),
+                "published_at": datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat() if create_time else None,
+            }
+            if views_t > 0:
+                return tikwm_data
+            # Si TikWm donne views=0 mais likes>0, on continue vers yt-dlp pour avoir les vraies vues
+            logger.warning(f"TikWm returned views=0 (likes={tikwm_data['likes']}) for {url[-30:]} - trying yt-dlp")
+    except Exception as e:
+        logger.debug(f"TikWm failed: {e}")
+
+    # Strategy 3 : yt-dlp local (avec proxy backend si dispo)
+    if YT_DLP_AVAILABLE:
+        try:
+            loop = asyncio.get_event_loop()
+            def _ytdlp_extract():
+                opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
+                if BACKEND_PROXY_URL:
+                    opts["proxy"] = BACKEND_PROXY_URL
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
+            if info:
+                views_y = int(info.get("view_count") or info.get("play_count") or 0)
+                if views_y > 0:
+                    logger.info(f"yt-dlp TikTok SUCCESS for {url[-30:]}: views={views_y}")
+                    return {
+                        "platform_video_id": str(info.get("id") or fallback["platform_video_id"]),
+                        "url": url,
+                        "title": (info.get("title") or info.get("description") or "")[:200] or None,
+                        "thumbnail_url": info.get("thumbnail"),
+                        "views": views_y,
+                        "likes": int(info.get("like_count") or 0),
+                        "comments": int(info.get("comment_count") or 0),
+                        "published_at": datetime.fromtimestamp(info["timestamp"], tz=timezone.utc).isoformat() if info.get("timestamp") else None,
+                    }
+        except Exception as e:
+            logger.warning(f"yt-dlp TikTok failed for {url[-30:]}: {e}")
+
+    # Si TikWm avait des likes mais views=0, retourner quand meme ses donnees (mieux que rien)
+    if tikwm_data:
+        return tikwm_data
+    return fallback
 
 async def _fetch_single_youtube_video(url: str) -> dict:
     """Fetch stats for a single YouTube video URL via YouTube Data API. Never raises — always returns a valid dict."""
@@ -5584,6 +5661,7 @@ async def _fetch_single_instagram_video(url: str) -> dict:
         logger.warning(f"ClipScraper VPS returned 0 views/likes for {shortcode}")
 
     # Strategy 1: Instagram public web endpoint (avec proxy si configuré, sinon direct)
+    web_api_data = None  # garde le resultat partiel si views=0 mais likes>0
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 Instagram 295.0.0.32.119",
@@ -5606,16 +5684,21 @@ async def _fetch_single_instagram_video(url: str) -> dict:
                 items = data.get("items") or []
                 if items:
                     item = items[0]
-                    return {
+                    views_w = int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0)
+                    web_api_data = {
                         "platform_video_id": shortcode,
                         "url": url,
                         "title": (item.get("caption") or {}).get("text", "")[:200] or None,
                         "thumbnail_url": (item.get("image_versions2") or {}).get("candidates", [{}])[0].get("url"),
-                        "views": int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0),
+                        "views": views_w,
                         "likes": int(item.get("like_count") or 0),
                         "comments": int(item.get("comment_count") or 0),
                         "published_at": datetime.fromtimestamp(item.get("taken_at", 0), tz=timezone.utc).isoformat() if item.get("taken_at") else None,
                     }
+                    # Retourne SEULEMENT si on a des vues. Sinon continue vers yt-dlp pour avoir les vraies vues.
+                    if views_w > 0:
+                        return web_api_data
+                    logger.warning(f"Instagram web API: views=0 mais likes={web_api_data['likes']} pour {shortcode} - on essaye yt-dlp pour les vraies vues")
     except Exception as e:
         logger.debug(f"Instagram web API failed for {shortcode}: {e}")
 
@@ -5686,7 +5769,12 @@ async def _fetch_single_instagram_video(url: str) -> dict:
                 logger.warning(f"Apify backup {actor_id} failed for {shortcode}: {type(e).__name__}: {e}")
                 continue
 
+    # Si on n'a pas eu de vues mais on a des likes via web API, retourne ces donnees partielles
+    if web_api_data:
+        logger.warning(f"Instagram {shortcode} : retour partiel avec views=0 likes={web_api_data['likes']} (toutes les sources de vues ont echoue)")
+        return web_api_data
     return fallback
+
 
 async def fetch_single_video_by_url(url: str, platform: str) -> dict:
     """Dispatcher: fetch video stats from a URL by platform."""
@@ -7840,39 +7928,61 @@ async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_cur
 @api_router.post("/campaigns/{campaign_id}/import-link")
 @api_router.post("/campaigns/{campaign_id}/list-account-videos")
 async def list_account_videos(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
-    """Scrape un compte (username + platform) et retourne ses dernieres videos pour que l'agence selectionne."""
+    """Scrape un compte (username + platform) avec la cascade COMPLETE (ClipScraper -> TikWm -> ...)
+    et retourne ses dernieres videos pour que l'agence selectionne celles a tracker.
+    """
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
-    username = (body.get("username") or "").lstrip("@").strip()
+    raw_username = (body.get("username") or "").strip()
     platform = (body.get("platform") or "").lower().strip()
-    if not username or platform not in ("tiktok", "instagram", "youtube"):
-        raise HTTPException(status_code=400, detail="username + platform (tiktok/instagram/youtube) requis")
-    # Use ClipScraper VPS qui marche pour TikTok+Insta+YT
-    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
-        raise HTTPException(status_code=503, detail="Scraper non configure")
+
+    if platform not in ("tiktok", "instagram", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide (tiktok/instagram/youtube)")
+
+    # Nettoie le username (gere URL collee)
+    if _looks_like_url_or_dirty(raw_username):
+        username = extract_handle_from_url(raw_username, platform)
+    else:
+        username = raw_username
+    username = (username or "").lstrip("@").strip("/")
+    if not username:
+        raise HTTPException(status_code=400, detail="username requis (sans @)")
+
+    # Utilise la cascade complete via fetch_videos
+    # Pour youtube, on a besoin d'un channel_id : on essaie de le verifier d'abord
     try:
-        async with httpx.AsyncClient(timeout=120) as c:
-            r = await c.post(
-                f"{CLIP_SCRAPER_URL}/v1/{platform}/{username}",
-                params={"max_videos": 30},
-                headers={"X-API-Key": CLIP_SCRAPER_KEY},
-            )
-        if r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Scraper {platform} HTTP {r.status_code}: {r.text[:200]}")
-        data = r.json() or {}
-        videos = data.get("videos") or []
-        profile = data.get("profile") or {}
+        if platform == "youtube":
+            # YouTube : besoin du channel_id pour fetch_videos
+            yt_info = await _verify_youtube(username)
+            channel_id = yt_info.get("platform_channel_id")
+            if not channel_id:
+                raise HTTPException(status_code=404, detail=f"Compte YouTube @{username} introuvable")
+            account_doc = {"platform": "youtube", "username": username, "platform_channel_id": channel_id, "status": "verified"}
+        else:
+            # TikTok / Instagram : besoin du compte verifie pour avoir potentiellement le channel_id
+            account_doc = {"platform": platform, "username": username, "status": "verified"}
+
+        # Cascade complete
+        videos = await fetch_videos(platform, username, account_doc, since_days=180)
+
+        if not videos:
+            raise HTTPException(status_code=404, detail=f"Aucune vidéo trouvée pour @{username} sur {platform}. Le compte existe-t-il et est-il public ?")
+
+        # Limite a 30 videos pour l'UI
+        videos = videos[:30]
+
         return {
             "username": username,
             "platform": platform,
-            "profile": profile,
+            "profile": {"username": username, "platform": platform},
             "videos": videos,
             "count": len(videos),
         }
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Erreur scraping : {type(e).__name__}: {e}")
+        logger.warning(f"list_account_videos error for {platform}/@{username}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Erreur scraping : {str(e)[:200]}")
 
 
 @api_router.post("/campaigns/{campaign_id}/add-video")

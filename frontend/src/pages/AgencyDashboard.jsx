@@ -1084,6 +1084,8 @@ function CampaignDashboard({ campaigns }) {
   const [videosLoading, setVideosLoading] = useState(false);
   // Toggle "videos" / "accounts" dans l'onglet Vidéos & Comptes
   const [videosSubView, setVideosSubView] = useState("videos");
+  // Toggle "views" / "clicks" pour les campagnes payment_model="both"
+  const [overviewMode, setOverviewMode] = useState("views");
   const [allAccountsByClipper, setAllAccountsByClipper] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   // Modal "Tracker un compte"
@@ -1787,7 +1789,22 @@ function CampaignDashboard({ campaigns }) {
       </div>
 
       {/* ═══════════ OVERVIEW TAB ═══════════ */}
-      {activeTab === "overview" && campaign.payment_model === "clicks" ? (
+      {activeTab === "overview" && campaign.payment_model === "both" && (
+        <div className="flex justify-center">
+          <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+            <button onClick={() => setOverviewMode("views")}
+              className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${overviewMode === "views" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+              📊 Vues
+            </button>
+            <button onClick={() => setOverviewMode("clicks")}
+              className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${overviewMode === "clicks" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+              🔗 Clics
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "overview" && (campaign.payment_model === "clicks" || (campaign.payment_model === "both" && overviewMode === "clicks")) ? (
         /* ── CLICK CAMPAIGN OVERVIEW ── */
         <div className="space-y-5">
           {/* ── Barre fine : budget restant + budget généré ce mois (campagne clic) ── */}
