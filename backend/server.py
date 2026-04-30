@@ -2633,22 +2633,61 @@ async def issue_manual_strike(campaign_id: str, member_user_id: str, body: dict,
 
     new_strikes = member.get("strikes", 0) + 1
     update = {"strikes": new_strikes}
+    # IMPORTANT : on ne suspend PAS automatiquement quand max_strikes est atteint
+    # On crée une demande d'expulsion (pending) que l'agence valide depuis Candidatures
+    expulsion_created = False
+    now_iso = datetime.now(timezone.utc).isoformat()
     if new_strikes >= max_strikes:
-        update["status"] = "suspended"
+        expulsion_id = f"expel_{campaign_id}_{member_user_id}"
+        expulsion_doc = {
+            "expulsion_id": expulsion_id,
+            "campaign_id": campaign_id,
+            "user_id": member_user_id,
+            "reason": body.get("reason") or f"Max strikes atteint ({new_strikes}/{max_strikes}) - strike manuel",
+            "strikes_at_request": new_strikes,
+            "status": "pending",  # pending | approved | rejected
+            "created_at": now_iso,
+            "auto": False,
+        }
+        upsert_res = await db.expulsion_requests.update_one(
+            {"expulsion_id": expulsion_id, "status": "pending"},
+            {"$setOnInsert": expulsion_doc},
+            upsert=True
+        )
+        expulsion_created = upsert_res.upserted_id is not None
+        logger.info(f"Manual strike: expulsion_request créée pour {member_user_id} sur campaign {campaign_id}")
 
     await db.campaign_members.update_one(
         {"campaign_id": campaign_id, "user_id": member_user_id},
         {"$set": update}
     )
 
+    # Notifie le clipper du strike (mais PAS encore d'une suspension)
     await manager.send_to_user(member_user_id, {
         "type": "strike_issued",
         "campaign_id": campaign_id,
         "strikes": new_strikes,
-        "suspended": new_strikes >= max_strikes
+        "suspended": False,  # plus de suspension automatique
+        "expulsion_pending": new_strikes >= max_strikes,
     })
 
-    return {"message": "Strike issued", "strikes": new_strikes, "suspended": new_strikes >= max_strikes}
+    # Notifie l'agence/manager qu'une expulsion request est en attente
+    if expulsion_created:
+        campaign_creator_id = campaign.get("agency_id")
+        if campaign_creator_id:
+            await manager.send_to_user(campaign_creator_id, {
+                "type": "expulsion_pending",
+                "campaign_id": campaign_id,
+                "user_id": member_user_id,
+                "strikes": new_strikes,
+            })
+
+    return {
+        "message": "Strike émis",
+        "strikes": new_strikes,
+        "expulsion_pending": new_strikes >= max_strikes,
+        "expulsion_request_created": expulsion_created,
+    }
 
 @api_router.delete("/campaigns/{campaign_id}/members/{member_user_id}/strike")
 async def remove_manual_strike(campaign_id: str, member_user_id: str, user: dict = Depends(get_current_user)):
