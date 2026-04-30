@@ -1334,6 +1334,9 @@ async def google_login(login_req: GoogleLoginRequest):
         {"$or": [{"google_sub": google_sub}, {"email": email}]},
         {"_id": 0}
     )
+    now_iso_g = datetime.now(timezone.utc).isoformat()
+    is_agency_g = login_req.role == "agency"
+
     if existing:
         user_id = existing["user_id"]
         upd = {"name": name, "google_sub": google_sub, "email_verified": True}
@@ -1345,6 +1348,11 @@ async def google_login(login_req: GoogleLoginRequest):
         # Save app password if provided and not already set
         if login_req.password and len(login_req.password) >= 6 and not existing.get("password_hash"):
             upd["password_hash"] = _hash_password(login_req.password)
+        # Trial 14j auto pour les agences nouvellement creees/connectees via Google
+        # qui n'ont pas encore de subscription_status
+        if is_agency_g and not existing.get("subscription_status"):
+            upd["subscription_status"] = "trial"
+            upd["trial_started_at"] = now_iso_g
         await db.users.update_one({"user_id": user_id}, {"$set": upd})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -1357,11 +1365,15 @@ async def google_login(login_req: GoogleLoginRequest):
             "role": login_req.role,
             "display_name": login_req.display_name,
             "email_verified": True,  # Google already verified the email
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now_iso_g,
             "settings": {}
         }
         if login_req.password and len(login_req.password) >= 6:
             new_user["password_hash"] = _hash_password(login_req.password)
+        # Trial 14j auto pour les agences inscrites via Google
+        if is_agency_g:
+            new_user["subscription_status"] = "trial"
+            new_user["trial_started_at"] = now_iso_g
         await db.users.insert_one(new_user)
 
     session_token = uuid.uuid4().hex
@@ -9479,10 +9491,10 @@ PLAN_LIMITS = {
 
 def _get_user_effective_plan(user: dict) -> str:
     """Return the effective plan_id for a user.
-    - Trial active = plan_unlimited (Business par default pendant 14 jours)
-    - Trial expired = plan_small forced (must upgrade)
-    - Subscription active = subscription_plan
-    - No subscription = plan_unlimited (new account grace)
+    - active = subscription_plan paye
+    - trial actif (<14j) = plan_unlimited (Business)
+    - trial expire = plan_small (Starter limites)
+    - aucun status = plan_small (par defaut, n'a pas encore demarre le trial)
     """
     sub_status = user.get("subscription_status", "none")
     if sub_status == "active":
@@ -9493,9 +9505,9 @@ def _get_user_effective_plan(user: dict) -> str:
             trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
             if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
                 return "plan_unlimited"  # Trial = Business
-        return "plan_small"  # trial expired -> forced down to Starter (until they pay)
-    # No subscription state -> grace = Business plan
-    return "plan_unlimited"
+        return "plan_small"  # trial expired -> Starter limites
+    # Aucun status (utilisateur legacy ou bug) -> Starter limites par defaut
+    return "plan_small"
 
 
 def _get_plan_limits(user: dict) -> dict:
@@ -12228,7 +12240,7 @@ async def claim_agency(token: str, body: dict, request: Request):
     if existing:
         raise HTTPException(status_code=409, detail="Email deja utilise - connecte-toi puis recharge ce lien")
 
-    # Cree l'agence
+    # Cree l'agence avec trial 14j Business automatique
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
     await db.users.insert_one({
@@ -12241,6 +12253,8 @@ async def claim_agency(token: str, body: dict, request: Request):
         "agency_name": camp.get("agency_name") or display_name,
         "email_verified": True,  # claim direct = valide
         "created_at": now,
+        "subscription_status": "trial",
+        "trial_started_at": now,
     })
 
     # Reassigne la campagne a cette agence + retire le flag prospect
@@ -12273,8 +12287,12 @@ async def claim_agency_finalize(token: str, user: dict = Depends(get_current_use
     camp = await db.campaigns.find_one({"prospect_agency_token": token, "is_prospect": True}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Lien invalide ou deja utilise")
-    # Promouvoir le user en agency si pas deja
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"role": "agency"}})
+    # Promouvoir le user en agency si pas deja + active trial 14j Business si pas encore
+    update_set = {"role": "agency"}
+    if not user.get("subscription_status"):
+        update_set["subscription_status"] = "trial"
+        update_set["trial_started_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update_set})
     old_agency_id = camp.get("agency_id")
     await db.campaigns.update_one(
         {"campaign_id": camp["campaign_id"]},
