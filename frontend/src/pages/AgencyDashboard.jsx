@@ -1403,19 +1403,27 @@ function CampaignDashboard({ campaigns }) {
       });
       if (res.ok) {
         const data = await res.json();
-        const v = data.video || video;
-        const vws = v.views || video.views || 0;
-        toast.success(`✓ Vidéo trackée — ${vws.toLocaleString("fr-FR")} vues`);
+        const v = data.video || {};
+        const vws = v.views || 0;
+        const lks = v.likes || 0;
+        const status = data.scraping_status || "ok";
+        if (status === "ok") {
+          toast.success(`✓ Vidéo trackée — ${vws.toLocaleString("fr-FR")} vues officielles`);
+        } else if (status === "partial") {
+          toast.success(`✓ Vidéo trackée — ${lks.toLocaleString("fr-FR")} likes (vues non publiques)`, { duration: 6000 });
+        } else {
+          toast(data.message || "Vidéo enregistrée ⏳", { duration: 6000 });
+        }
         // Marque la vidéo comme déjà trackée dans la liste
         setScrapedVideos(prev => prev ? {
           ...prev,
-          videos: prev.videos.map(x => x.platform_video_id === video.platform_video_id ? { ...x, _tracked: true } : x)
+          videos: prev.videos.map(x => x.platform_video_id === video.platform_video_id ? { ...x, _tracked: true, views: vws, likes: lks } : x)
         } : prev);
         fetchAllVideos();
       } else {
-        let detail = "Erreur lors du tracking";
+        let detail = `Erreur tracking (HTTP ${res.status})`;
         try { detail = (await res.json()).detail || detail; } catch {}
-        toast.error(detail);
+        toast.error(detail, { duration: 6000 });
       }
     } catch (e) {
       toast.error(`Erreur: ${e?.message || "connexion impossible"}`);
@@ -1444,28 +1452,27 @@ function CampaignDashboard({ campaigns }) {
         const v = data.video || {};
         const vws = v.views || 0;
         const lks = v.likes || 0;
-        const cmts = v.comments || 0;
+        const status = data.scraping_status || "ok";
         setTrackResult({
           views: vws,
           title: v.title || "Sans titre",
           earnings: v.earnings || 0,
         });
-        if (vws === 0 && lks === 0) {
-          // Aucune stat trouvee
-          toast.success("Vidéo enregistrée ✓ — stats en attente. Sera mise à jour au prochain tracking (toutes les 6h).", { duration: 6000 });
-          // Retry automatique 30s plus tard pour récupérer les stats si elles arrivent
+        if (status === "ok") {
+          toast.success(`Vidéo trackée ✓ — ${vws.toLocaleString("fr-FR")} vues officielles`);
+        } else if (status === "partial") {
+          toast.success(`Vidéo trackée ✓ — ${lks.toLocaleString("fr-FR")} likes (vues non publiques)`, { duration: 6000 });
+        } else if (status === "retry_later") {
+          toast("⏳ Vidéo enregistrée — stats récupérées au prochain cycle (toutes les 6h)", { duration: 7000, icon: "⏳" });
           setTimeout(() => { fetchAllVideos(); }, 30000);
-        } else if (vws === 0 && lks > 0) {
-          // Insta masque les vues sur certains posts
-          toast.success(`Vidéo trackée ✓ — ${lks.toLocaleString("fr-FR")} likes (vues masquées par Instagram)`, { duration: 6000 });
         } else {
-          toast.success(`Vidéo trackée ✓ — ${vws.toLocaleString("fr-FR")} vues`);
+          toast.success(data.message || "Vidéo trackée ✓");
         }
         fetchAllVideos();
       } else {
-        let detail = "Erreur lors de l'ajout";
+        let detail = `Erreur (HTTP ${res.status})`;
         try { detail = (await res.json()).detail || detail; } catch {}
-        toast.error(detail);
+        toast.error(detail, { duration: 6000 });
       }
     } catch (e) {
       console.error("import-link error:", { name: e?.name, message: e?.message, url: manualVideoForm.url, platform: manualVideoForm.platform });
@@ -1550,18 +1557,37 @@ function CampaignDashboard({ campaigns }) {
         body: JSON.stringify(body),
       });
       if (res.ok) {
-        toast.success(`✓ Vidéo trackée — ${(video.views || 0).toLocaleString("fr-FR")} vues`);
+        const data = await res.json().catch(() => ({}));
+        const v = data.video || {};
+        // Utilise les stats VRAIMENT recuperees par le backend, pas celles affichees dans la liste (qui peuvent dater du scrape de compte)
+        const realViews = v.views || 0;
+        const realLikes = v.likes || 0;
+        const status = data.scraping_status || "ok";
+        if (status === "ok") {
+          toast.success(`✓ Vidéo trackée — ${realViews.toLocaleString("fr-FR")} vues officielles`);
+        } else if (status === "partial") {
+          toast.success(`✓ Vidéo trackée — ${realLikes.toLocaleString("fr-FR")} likes (vues non publiques)`, { duration: 6000 });
+        } else if (status === "retry_later") {
+          toast(`⏳ Vidéo enregistrée — stats en attente (récupérées au prochain cycle de tracking)`, { duration: 7000, icon: "⏳" });
+        } else {
+          toast.success(data.message || "Vidéo trackée");
+        }
         setAccountVideos(prev => prev ? {
           ...prev,
-          videos: prev.videos.map(v => v.platform_video_id === video.platform_video_id ? { ...v, _tracked: true } : v),
+          videos: prev.videos.map(vv => vv.platform_video_id === video.platform_video_id ? { ...vv, _tracked: true, views: realViews, likes: realLikes } : vv),
         } : prev);
         fetchAllVideos();
       } else {
         const e = await res.json().catch(() => ({}));
-        toast.error(e.detail || "Erreur tracking");
+        toast.error(e.detail || `Erreur tracking (HTTP ${res.status})`, { duration: 6000 });
       }
-    } catch {
-      toast.error("Erreur réseau");
+    } catch (err) {
+      const isBlock = err?.message?.includes("Failed to fetch") || err?.name === "TypeError";
+      if (isBlock) {
+        toast.error("Requête bloquée par AdBlock/extension. Désactive-le pour theclipdealtrack.com.", { duration: 8000 });
+      } else {
+        toast.error(`Erreur réseau: ${err?.message || "connexion impossible"}`);
+      }
     } finally {
       setTrackingVideoId(null);
     }

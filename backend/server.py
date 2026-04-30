@@ -5778,16 +5778,72 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     return fallback
 
 
+def _expected_video_id_from_url(url: str, platform: str) -> Optional[str]:
+    """Extrait l'ID video attendu depuis l'URL pour validation post-scraping."""
+    if not url:
+        return None
+    p = (platform or "").lower()
+    try:
+        if p == "tiktok":
+            m = re.search(r'/video/(\d+)', url)
+            return m.group(1) if m else None
+        if p == "youtube":
+            m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', url)
+            return m.group(1) if m else None
+        if p == "instagram":
+            m = re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+            return m.group(1) if m else None
+    except Exception:
+        return None
+    return None
+
+
+def _validate_video_stats(result: dict, url: str, platform: str) -> dict:
+    """SAFETY : valide que les stats retournees correspondent bien a la video demandee.
+    Si platform_video_id ne matche pas l'URL, on suspecte une confusion (ex : stats du compte).
+    Dans ce cas on garde l'URL/title mais on remet views/likes/comments a 0 (pas de fausse data).
+    """
+    if not isinstance(result, dict):
+        return result
+    expected = _expected_video_id_from_url(url, platform)
+    actual = str(result.get("platform_video_id") or "")
+    # Si on connait l'ID attendu et qu'il ne matche pas, c'est suspect
+    if expected and actual and expected != actual:
+        # Match partiel (ex shortcode IG case-insensitive) toleré
+        if expected.lower() != actual.lower():
+            logger.warning(
+                f"VIDEO ID MISMATCH for {url[-40:]}: expected={expected} got={actual} - "
+                f"resetting suspect stats to 0 (views={result.get('views')}, likes={result.get('likes')})"
+            )
+            result = {**result, "platform_video_id": expected, "views": 0, "likes": 0, "comments": 0}
+    # Sanity : sur TikTok/YouTube, likes > views est physiquement impossible (sauf bug TikWm rare)
+    # Sur Instagram c'est possible (vues masquees), donc on skip cette check.
+    if platform in ("tiktok", "youtube"):
+        v = int(result.get("views") or 0)
+        l = int(result.get("likes") or 0)
+        if v > 0 and l > v * 5:  # marge x5 pour absorber TikWm partial bugs
+            logger.warning(
+                f"SUSPICIOUS STATS for {url[-40:]}: likes={l} >> views={v} - "
+                f"likely account-level confusion, resetting to 0"
+            )
+            result = {**result, "views": 0, "likes": 0, "comments": 0}
+    return result
+
+
 async def fetch_single_video_by_url(url: str, platform: str) -> dict:
-    """Dispatcher: fetch video stats from a URL by platform."""
+    """Dispatcher: fetch video stats from a URL by platform.
+    Toujours validé : si l'ID retourné ne matche pas l'URL, on rejette les stats suspectes.
+    """
     platform = platform.lower()
     if platform == "tiktok":
-        return await _fetch_single_tiktok_video(url)
+        result = await _fetch_single_tiktok_video(url)
     elif platform == "youtube":
-        return await _fetch_single_youtube_video(url)
+        result = await _fetch_single_youtube_video(url)
     elif platform == "instagram":
-        return await _fetch_single_instagram_video(url)
-    raise ValueError(f"Plateforme non supportée: {platform}")
+        result = await _fetch_single_instagram_video(url)
+    else:
+        raise ValueError(f"Plateforme non supportée: {platform}")
+    return _validate_video_stats(result, url, platform)
 
 async def _scrape_one_account_into_campaign(
     account: dict,
@@ -8022,23 +8078,24 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
                    f"Modifie les plateformes dans l'onglet ⚙️ Paramètres pour ajouter {platform}."
         )
 
+    # SAFETY : valider que l'URL pointe bien vers une video specifique, pas un profil
+    expected_vid_id = _expected_video_id_from_url(url, platform)
+    if not expected_vid_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL invalide pour {platform}. Doit pointer vers une vidéo spécifique "
+                   f"(ex TikTok: /video/123..., Instagram: /reel/ABC..., YouTube: ?v=...)"
+        )
+
     # Fetch video stats — each platform function is self-contained with its own timeout and never raises
+    scraping_failed = False
     try:
         vid_info = await fetch_single_video_by_url(url, platform)
     except Exception as e:
         logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {type(e).__name__}: {e}")
-        vid_id = None
-        if platform == "tiktok":
-            m = re.search(r'/video/(\d+)', url)
-            vid_id = m.group(1) if m else None
-        elif platform == "youtube":
-            m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', url)
-            vid_id = m.group(1) if m else None
-        elif platform == "instagram":
-            m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-            vid_id = m.group(1) if m else None
+        scraping_failed = True
         vid_info = {
-            "platform_video_id": vid_id or f"{platform[:2]}_{uuid.uuid4().hex[:8]}",
+            "platform_video_id": expected_vid_id,
             "url": url, "title": None, "thumbnail_url": None,
             "views": 0, "likes": 0, "comments": 0, "published_at": None,
         }
@@ -8114,22 +8171,35 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
                 logger.warning(f"track_video upsert error: {e}")
                 raise HTTPException(status_code=500, detail=f"Erreur d'enregistrement en base: {e}")
 
-    views = vid_info["views"]
+    views = int(vid_info.get("views") or 0)
+    likes = int(vid_info.get("likes") or 0)
     if views > 0:
-        msg = f"Vidéo trackée avec succès — {views:,} vues"
+        msg = f"Vidéo trackée — {views:,} vues officielles récupérées"
+        scraping_status = "ok"
+    elif likes > 0:
+        msg = f"Vidéo trackée — {likes:,} likes officiels (vues non publiques pour cette vidéo)"
+        scraping_status = "partial"
     elif platform == "youtube" and not YOUTUBE_API_KEY:
-        msg = "Vidéo YouTube enregistrée (stats indisponibles — clé YOUTUBE_API_KEY manquante)"
-    elif platform == "instagram":
-        msg = "Vidéo Instagram enregistrée (vues non disponibles sans API privée)"
+        msg = "Vidéo enregistrée — clé YOUTUBE_API_KEY manquante côté serveur, stats indisponibles"
+        scraping_status = "config_missing"
+    elif scraping_failed:
+        msg = "Vidéo enregistrée mais le scraping a échoué — les stats seront récupérées au prochain tracking automatique (toutes les 6h)"
+        scraping_status = "retry_later"
     else:
-        msg = "Vidéo enregistrée — stats en cours de récupération"
+        msg = "Vidéo enregistrée — aucune stat publique trouvée. Réessai automatique au prochain cycle (toutes les 6h)"
+        scraping_status = "retry_later"
 
     return {
         "message": msg,
+        "scraping_status": scraping_status,
         "video": {
             "url": url,
             "title": vid_info.get("title"),
+            "thumbnail_url": vid_info.get("thumbnail_url"),
             "views": views,
+            "likes": likes,
+            "comments": int(vid_info.get("comments") or 0),
+            "platform_video_id": vid_info.get("platform_video_id"),
             "platform": platform,
             "target_count": len([u for u in target_users if u]),
         }

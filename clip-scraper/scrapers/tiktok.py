@@ -251,17 +251,27 @@ def _extract_videos_from_raw_html(username: str, html: str, max_videos: int) -> 
     if m:
         profile["verified"] = m.group(1) == "true"
 
+    # SAFETY : ne matche que les blocs qui ressemblent à un VRAI item video
+    # On exige que le bloc contienne TOUS les marqueurs spécifiques video : "playCount" + "createTime" + "desc" ou "video":{
+    # Ça évite de matcher l'objet user-stats du profil (qui contient followerCount + heartCount mais pas createTime/desc).
     videos = []
     seen = set()
+    # Cherche les blocs qui ont la structure d'un item video : "id":"<digits>" suivi de près par playCount + createTime
     for m in re.finditer(r'"(?:id|aweme_id|video_id|item_id)":"(\d{15,25})"', html):
         vid_id = m.group(1)
         if vid_id in seen:
             continue
-        start = max(0, m.start() - 500)
-        end = min(len(html), m.end() + 4000)
+        start = max(0, m.start() - 200)
+        end = min(len(html), m.end() + 3000)
         context = html[start:end]
+        # Validation stricte : c'est un video item SEULEMENT si on voit createTime ET playCount ET desc/video markers
+        if not re.search(r'"createTime":\d+', context):
+            continue  # account-level stats n'ont pas de createTime
         m2 = re.search(r'"playCount":(\d+)', context)
         if not m2:
+            continue
+        # Sanity : un video doit avoir un "desc" ou "video":{ ou "music":{ proche
+        if not re.search(r'"(?:desc|video|music|imagePost|cover)"\s*:', context):
             continue
         seen.add(vid_id)
         views = int(m2.group(1))
@@ -280,9 +290,9 @@ def _extract_videos_from_raw_html(username: str, html: str, max_videos: int) -> 
         m3 = re.search(r'"shareCount":(\d+)', context)
         if m3:
             shares = int(m3.group(1))
-        m3 = re.search(r'"desc":"([^"\\]+)"', context)
+        m3 = re.search(r'"desc":"([^"\\]*)"', context)
         if m3:
-            title = m3.group(1)[:200]
+            title = m3.group(1)[:200] or None
         m3 = re.search(r'"cover":"([^"]+)"', context)
         if m3:
             thumb = m3.group(1).replace("\\u002F", "/").replace("\\/", "/")
@@ -293,6 +303,10 @@ def _extract_videos_from_raw_html(username: str, html: str, max_videos: int) -> 
                 published = datetime.fromtimestamp(int(m3.group(1)), tz=tz.utc).isoformat()
             except Exception:
                 pass
+        # Sanity stat : likes ne devrait jamais être 100x supérieur aux views (signe de match account-level)
+        if likes > 0 and views > 0 and likes > views * 100:
+            log.warning(f"Skipping suspicious match for vid {vid_id}: views={views} likes={likes} (likely account heartCount)")
+            continue
         videos.append({
             "platform_video_id": vid_id,
             "url": f"https://www.tiktok.com/@{username}/video/{vid_id}",

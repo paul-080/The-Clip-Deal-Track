@@ -198,6 +198,16 @@ async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
     url = (payload.get("url") or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url required")
+    # Validate URL is a single-video URL, not a profile
+    import re as _re
+    is_video_url = bool(
+        _re.search(r'/video/\d+', url) or            # TikTok video
+        _re.search(r'/(?:p|reel|reels)/[A-Za-z0-9_-]+', url) or  # Instagram post/reel
+        _re.search(r'(?:v=|youtu\.be/|/shorts/|/embed/)', url) or  # YouTube
+        _re.search(r'/@[\w.-]+/video/\d+', url)      # TikTok with username
+    )
+    if not is_video_url:
+        raise HTTPException(status_code=400, detail="URL doit pointer vers une vidéo spécifique (pas un profil)")
     try:
         import yt_dlp
     except ImportError:
@@ -245,7 +255,8 @@ async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
             "published_at": published,
             "uploader": info.get("uploader") or info.get("channel"),
         }
-        await cache.aset(cache_key, result, ttl=600)  # 10min cache
+        # Cache court (60s) car les stats vidéo bougent vite et l'utilisateur perçoit le cache comme "fausses stats"
+        await cache.aset(cache_key, result, ttl=60)
         return {**result, "_cached": False}
     except HTTPException:
         raise
