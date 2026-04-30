@@ -741,7 +741,7 @@ export default function LandingPage() {
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 3 campagnes actives</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 1×/jour à 8h</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 2×/jour (07:30 + 15:30)</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Striking automatique</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Analytics avancés</li>
                 <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Liens de tracking bio</li>

@@ -5757,9 +5757,13 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
                         continue
                 # 3. Campagne VIEWS/BOTH : applique le tracking_per_day du plan
                 else:
-                    # Plan Starter/Pro (tracking_per_day=1) : seulement a 7h30
+                    # Plan Starter (tracking_per_day=1) : seulement a 7h30
                     if tracking_per_day == 1 and scheduled_hour_paris != 7:
                         logger.info(f"Skip campaign {campaign_id} : plan tracking 1x/jour a 7h30, hour={scheduled_hour_paris}")
+                        continue
+                    # Plan Pro (tracking_per_day=2) : 07:30 et 15:30 (matin + apres-midi)
+                    if tracking_per_day == 2 and scheduled_hour_paris not in (7, 15):
+                        logger.info(f"Skip campaign {campaign_id} : plan tracking 2x/jour (07:30 + 15:30), hour={scheduled_hour_paris}")
                         continue
                     # Plan Business+ (tracking_per_day=4) : 07:30, 12, 15:30, 22 -> tous les horaires
 
@@ -9443,7 +9447,7 @@ SUBSCRIPTION_PLANS = {
     "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
                        "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 1, "click_only": False},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1, "click_only": False},
+                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 2, "click_only": False},
     "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
                        "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 4, "click_only": False},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
@@ -9464,13 +9468,13 @@ SUBSCRIPTION_PLANS = {
 # Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
 PLAN_LIMITS = {
     "plan_small":           {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 1, "click_only": False},
-    "plan_medium":          {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1, "click_only": False},
+    "plan_medium":          {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 2, "click_only": False},
     "plan_unlimited":       {"campaigns": None, "clippers": 200,   "tracking_per_day": 4, "click_only": False},
     "plan_custom":          {"campaigns": None, "clippers": None,  "tracking_per_day": 4, "click_only": False},
     "plan_small_click":     {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 0, "click_only": True},
     "plan_medium_click":    {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 0, "click_only": True},
     "plan_unlimited_click": {"campaigns": None, "clippers": 200,   "tracking_per_day": 0, "click_only": True},
-    "plan_full":            {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 1, "click_only": False},
+    "plan_full":            {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 2, "click_only": False},
 }
 
 def _get_user_effective_plan(user: dict) -> str:

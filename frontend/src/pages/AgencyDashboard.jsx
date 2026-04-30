@@ -3991,7 +3991,7 @@ function SettingsPage() {
       features: [
         "3 campagnes actives",
         "Jusqu'à 45 clippeurs (total)",
-        "Tracking vues 1× / jour (8h Paris)",
+        "Tracking vues 2× / jour (07:30 + 15:30 Paris)",
         "Tracking clics 1× / jour (12h)",
         "Striking automatique",
         "Stats vues + clics complets",
