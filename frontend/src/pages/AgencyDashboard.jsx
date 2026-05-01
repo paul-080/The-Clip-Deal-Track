@@ -3497,16 +3497,19 @@ function CampaignDashboard({ campaigns }) {
               />
             </div>
 
-            {campaign.payment_model === "clicks" && (
+            {(campaign.payment_model === "clicks" || campaign.payment_model === "both") && (
               <>
                 <div className="space-y-1">
-                  <label className="text-xs text-white/50 font-medium">URL de destination</label>
+                  <label className="text-xs text-white/50 font-medium">URL de destination (modifiable à tout moment)</label>
                   <input
                     value={settingsForm.destination_url}
                     onChange={e => setSettingsForm(p => ({ ...p, destination_url: e.target.value }))}
-                    placeholder="https://..."
+                    placeholder="https://tiktok.com/@xxx ou https://instagram.com/xxx ou https://votresite.com"
                     className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
                   />
+                  <p className="text-[11px] text-white/40">
+                    💡 Le changement s'applique à TOUS les liens de tracking déjà générés (chaque lien short_code redirige vers cette URL).
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">

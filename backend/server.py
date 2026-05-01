@@ -11951,12 +11951,33 @@ _IN_APP_UA_SIGNATURES = [
 def _is_inapp_browser(ua: str) -> bool:
     return any(sig.lower() in ua.lower() for sig in _IN_APP_UA_SIGNATURES)
 
+def _normalize_destination_url(url: str) -> str:
+    """Force https:// si manquant, supprime espaces, valide format minimal."""
+    if not url:
+        return "https://theclipdealtrack.com"
+    url = url.strip()
+    if not url:
+        return "https://theclipdealtrack.com"
+    # Si pas de protocole, ajoute https://
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def _build_breakout_page(destination: str) -> str:
-    """HTML minimaliste : tente d'ouvrir dans le navigateur système, sinon retombe direct sur la destination.
-    Aucun bouton 'copier', aucune instruction utilisateur — silencieux.
+    """HTML : tente d'ouvrir dans navigateur système ou app native (TikTok/Insta).
+    Marche sur tout : in-app webview, browser mobile, desktop.
     """
+    destination = _normalize_destination_url(destination)
     dest_safe = destination.replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;")
     dest_no_proto = destination.replace("https://", "").replace("http://", "")
+    # Détecte la plateforme cible pour deep link app native
+    import re as _re
+    tiktok_match = _re.search(r'tiktok\.com/@?([\w.\-]+)', destination)
+    insta_match = _re.search(r'instagram\.com/([\w.\-]+)', destination)
+    youtube_match = _re.search(r'(?:youtube\.com/(?:watch\?v=|@)|youtu\.be/)([\w.\-]+)', destination)
+    tiktok_user = tiktok_match.group(1) if tiktok_match else ""
+    insta_user = insta_match.group(1) if insta_match else ""
     return f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -11971,44 +11992,71 @@ def _build_breakout_page(destination: str) -> str:
       border-top-color:#f0c040;border-radius:50%;animation:spin .8s linear infinite}}
     @keyframes spin{{to{{transform:rotate(360deg)}}}}
     p{{margin-top:16px;font-size:13px;color:rgba(255,255,255,.4)}}
+    a.fallback{{color:#f0c040;margin-top:24px;font-size:14px;text-decoration:none;border:1px solid rgba(240,192,64,.4);padding:10px 18px;border-radius:8px;display:none}}
   </style>
 </head>
 <body>
   <div class="spinner"></div>
   <p>Redirection…</p>
+  <a id="fb" class="fallback" href="{dest_safe}" target="_blank" rel="noopener">Cliquez ici si la page ne s'ouvre pas</a>
   <script>
     var dest = "{dest_safe}";
     var destNoProto = "{dest_no_proto}";
+    var ttUser = "{tiktok_user}";
+    var igUser = "{insta_user}";
     var ua = navigator.userAgent || '';
 
     var isIOS     = /iPhone|iPad|iPod/.test(ua);
     var isAndroid = /Android/.test(ua);
-    var isTikTok  = /TikTok|BytedanceWebview|musical_ly|aweme/i.test(ua);
-    var isInstagram = /Instagram/i.test(ua);
+    var isTikTokApp = /TikTok|BytedanceWebview|musical_ly|aweme/i.test(ua);
+    var isInstaApp  = /Instagram/i.test(ua);
     var isFacebook  = /FBAN|FBAV|FB_IAB|FB4A/i.test(ua);
     var isLine      = /Line\\//i.test(ua);
     var isSnap      = /Snapchat/i.test(ua);
-    var isInApp = isTikTok || isInstagram || isFacebook || isLine || isSnap ||
-                  (/Android/.test(ua) && !/Chrome/.test(ua) && /Version\\//.test(ua));
+    var isInApp = isTikTokApp || isInstaApp || isFacebook || isLine || isSnap;
 
-    if (!isInApp) {{
-      // Navigateur normal — redirection immédiate
-      window.location.replace(dest);
-    }} else if (isAndroid) {{
-      // Android : tente Intent URL (laisse le système ouvrir Chrome/Samsung/etc)
-      // S.browser_fallback_url = retombe sur la destination si l'intent échoue
+    function showFallback() {{
+      var fb = document.getElementById('fb');
+      if (fb) fb.style.display = 'inline-block';
+    }}
+
+    function tryDeepLink() {{
+      // Tente d'ouvrir l'app native si destination = TikTok ou Instagram
+      var deepLink = null;
+      if (ttUser && ttUser.length > 0) {{
+        // TikTok : snssdk schema (iOS) ou intent (Android géré séparément)
+        deepLink = isIOS ? ('snssdk1233://user/profile/' + encodeURIComponent(ttUser)) : null;
+      }} else if (igUser && igUser.length > 0) {{
+        deepLink = isIOS ? ('instagram://user?username=' + encodeURIComponent(igUser)) : null;
+      }}
+      if (deepLink && (isIOS || isAndroid)) {{
+        try {{ window.location.replace(deepLink); }} catch(e) {{}}
+        // Fallback web après 800ms si l'app n'a pas ouvert
+        setTimeout(function() {{ window.location.replace(dest); }}, 800);
+        return true;
+      }}
+      return false;
+    }}
+
+    // Ordre : navigateur normal -> direct ; mobile -> deep link puis web ; in-app -> intent ou direct
+    if (isAndroid && isInApp) {{
+      // In-app Android : tente intent pour ouvrir Chrome
       var intentUrl = 'intent://' + destNoProto +
         '#Intent;scheme=https;action=android.intent.action.VIEW;' +
         'S.browser_fallback_url=' + encodeURIComponent(dest) + ';end';
       try {{ window.location.replace(intentUrl); }} catch(e) {{}}
-      // Fallback ultime après 1.2s (si l'intent n'a rien fait, on ouvre la destination dans le webview)
       setTimeout(function() {{ window.location.replace(dest); }}, 1200);
-    }} else if (isIOS) {{
-      // iOS : impossible de forcer Safari depuis WebView. On retombe direct sur la destination.
-      // (Apple bloque ça par design)
-      window.location.replace(dest);
+      setTimeout(showFallback, 3500);
+    }} else if ((isIOS || isAndroid) && (ttUser || igUser)) {{
+      // Mobile + destination app sociale : tente deep link app native
+      if (!tryDeepLink()) {{
+        window.location.replace(dest);
+      }}
+      setTimeout(showFallback, 3500);
     }} else {{
+      // Desktop ou mobile vers URL non-app : redirection directe
       window.location.replace(dest);
+      setTimeout(showFallback, 2500);
     }}
   </script>
 </body>
@@ -12027,7 +12075,13 @@ async def track_click(short_code: str, request: Request):
         return RedirectResponse(url="https://theclipdealtrack.com", status_code=302)
 
     campaign = await db.campaigns.find_one({"campaign_id": link["campaign_id"]}, {"_id": 0})
-    destination = link.get("destination_url") or (campaign.get("destination_url") if campaign else None) or "https://theclipdealtrack.com"
+    # IMPORTANT : la campagne est SOURCE DE VERITE. Si l'agence modifie destination_url dans Parametres,
+    # ca s'applique IMMEDIATEMENT a tous les liens existants (sans avoir a regenerer).
+    destination = (
+        (campaign.get("destination_url") if campaign else None)
+        or link.get("destination_url")
+        or "https://theclipdealtrack.com"
+    )
     rate_per_click = (campaign.get("rate_per_click", 0)) if campaign else 0
     click_billing_mode = (campaign.get("click_billing_mode", "unique_24h")) if campaign else "unique_24h"
     unique_only = click_billing_mode != "all"
@@ -12394,6 +12448,20 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
 
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.campaigns.update_one({"campaign_id": campaign_id}, {"$set": updates})
+
+    # Si destination_url change, propage a tous les click_links existants
+    # (le redirect /track/{code} prend deja campaign.destination_url en priorite,
+    #  mais on synchronise les copies pour eviter incohérence dans les listings)
+    if "destination_url" in updates:
+        new_dest = updates["destination_url"] or ""
+        try:
+            res = await db.click_links.update_many(
+                {"campaign_id": campaign_id},
+                {"$set": {"destination_url": new_dest, "updated_at": datetime.now(timezone.utc).isoformat()}}
+            )
+            logger.info(f"destination_url propagated to {res.modified_count} click_links of campaign {campaign_id}")
+        except Exception as e:
+            logger.warning(f"Failed to propagate destination_url to click_links: {e}")
 
     # Backfill : re-scrape tous les comptes de la campagne sur la fenêtre adaptée
     if needs_backfill:
