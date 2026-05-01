@@ -514,9 +514,28 @@ async def _video_stats_via_instagram_html(url: str) -> Optional[dict]:
         log.info(f"IG HTML scrape network failed for {shortcode}: {type(e).__name__}: {e}")
         return None
 
-    if len(html) < 5000 or "ig is loading" in html.lower():
-        log.info(f"IG HTML scrape: page too small or loading-only for {shortcode} (size={len(html)})")
+    # Diagnostic : log la taille et un extrait du HTML pour voir ce qu'Insta a renvoyé
+    has_login = "loginForm" in html or "id=\"loginForm\"" in html or "Log in to Instagram" in html
+    has_error_page = "may be broken" in html or "Page Not Found" in html
+    log.info(f"IG HTML scrape: size={len(html)} login_page={has_login} error_page={has_error_page} for {shortcode}")
+    if len(html) < 3000:
+        log.info(f"IG HTML scrape: page too small for {shortcode}")
         return None
+    if has_error_page:
+        log.info(f"IG HTML scrape: error page (video deleted?) for {shortcode}")
+        return None
+    # Si page login : on peut quand meme tenter — l'embed peut marcher
+    if has_login:
+        # Tente l'URL embed publique qui ne demande pas login
+        try:
+            embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+            async with httpx.AsyncClient(timeout=20, headers=headers, proxies=proxies, follow_redirects=True) as c:
+                r2 = await c.get(embed_url)
+            if r2.status_code == 200 and len(r2.text) > 2000:
+                html = r2.text
+                log.info(f"IG HTML scrape: switched to embed URL, size={len(html)}")
+        except Exception as e:
+            log.debug(f"IG embed fallback failed: {e}")
 
     # Stratégie A : extraire les Open Graph + meta tags (souvent présents même sans cookie)
     og_views_m = _re.search(r'<meta[^>]+(?:name|property)="(?:og:title|og:description|description)"[^>]+content="([^"]+)"', html)
@@ -587,20 +606,60 @@ async def _video_stats_via_instagram_html(url: str) -> Optional[dict]:
             for v in obj:
                 _walk(v, depth + 1)
 
-    # Cherche tous les blocs JSON dans le HTML (script type="application/json", window._sharedData, etc.)
+    # Cherche tous les blocs JSON dans le HTML (multiple patterns, structure Insta change souvent)
     json_blocks = []
     for jm in _re.finditer(r'<script[^>]+type="application/json"[^>]*>(.+?)</script>', html, _re.DOTALL):
+        json_blocks.append(jm.group(1))
+    for jm in _re.finditer(r'<script[^>]+type="application/ld\+json"[^>]*>(.+?)</script>', html, _re.DOTALL):
         json_blocks.append(jm.group(1))
     for jm in _re.finditer(r'window\._sharedData\s*=\s*(\{.+?\});\s*</script>', html, _re.DOTALL):
         json_blocks.append(jm.group(1))
     for jm in _re.finditer(r'window\.__additionalDataLoaded\s*\([^,]+,\s*(\{.+?\})\)\s*;', html, _re.DOTALL):
         json_blocks.append(jm.group(1))
+    # Inline scripts qui contiennent du JSON brut (pattern récent Insta 2025)
+    for jm in _re.finditer(r'<script[^>]*>(\{[\s\S]+?\})</script>', html):
+        candidate = jm.group(1)
+        # On ne prend que ceux qui contiennent un mot-clé pertinent pour Insta
+        if any(kw in candidate for kw in ('"shortcode"', '"play_count"', '"video_view_count"', '"PolarisPostRoot"', '"PostPageDirectQuery"')):
+            json_blocks.append(candidate)
 
     log.info(f"IG HTML scrape: found {len(json_blocks)} JSON blocks for {shortcode}")
     for blk in json_blocks:
         try:
             obj = _json.loads(blk)
             _walk(obj)
+        except Exception:
+            continue
+
+    # Stratégie B-bis : JSON-LD (très fiable, Insta met les stats SEO ici)
+    # <script type="application/ld+json"> contient {"@type":"VideoObject","interactionStatistic":[{"interactionType":"WatchAction","userInteractionCount":92000}]}
+    for jm in _re.finditer(r'<script[^>]+type="application/ld\+json"[^>]*>(.+?)</script>', html, _re.DOTALL):
+        try:
+            ld = _json.loads(jm.group(1))
+            cands = ld if isinstance(ld, list) else [ld]
+            for c_ld in cands:
+                if not isinstance(c_ld, dict):
+                    continue
+                interaction = c_ld.get("interactionStatistic") or []
+                if isinstance(interaction, list):
+                    for s in interaction:
+                        t = s.get("interactionType") if isinstance(s, dict) else None
+                        t_str = (t.get("@type") if isinstance(t, dict) else str(t)) or ""
+                        v = s.get("userInteractionCount")
+                        if isinstance(v, (int, float)):
+                            if "Watch" in t_str and v > best_views:
+                                best_views = int(v)
+                                best_field = "ld+json:WatchAction"
+                            elif "Like" in t_str and v > best_likes:
+                                best_likes = int(v)
+                            elif "Comment" in t_str and v > best_comments:
+                                best_comments = int(v)
+                if not best_caption and c_ld.get("description"):
+                    best_caption = c_ld.get("description")
+                if not best_thumb and c_ld.get("thumbnailUrl"):
+                    best_thumb = c_ld.get("thumbnailUrl") if isinstance(c_ld.get("thumbnailUrl"), str) else (c_ld.get("thumbnailUrl") or [None])[0]
+                if not best_published and c_ld.get("uploadDate"):
+                    best_published = c_ld.get("uploadDate")
         except Exception:
             continue
 
