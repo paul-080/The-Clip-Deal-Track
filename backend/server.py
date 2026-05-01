@@ -10629,6 +10629,17 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
         except Exception as e:
             diag["apify_budget"] = {"error": f"{type(e).__name__}: {e}"}
 
+        # Delete old cascade log first pour garantir donnees fraiches
+        diag["_step"] = "clear_old_log"
+        try:
+            import re as _re_for_id
+            m_id = _re_for_id.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+            shortcode_id = m_id.group(1) if m_id else None
+            if shortcode_id:
+                await db.cascade_debug_log.delete_one({"_id": f"ig_{shortcode_id}"})
+        except Exception:
+            shortcode_id = None
+
         # Cascade complete UNIQUEMENT (1 seul appel Apify pour eviter rate limit)
         diag["_step"] = "full_cascade"
         try:
@@ -10642,17 +10653,14 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
             diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
             diag["apify_reel_scraper_result"] = f"error cascade: {e}"
 
-        # Recupere le cascade log stocke par _fetch_single_instagram_video
+        # Recupere le cascade log fraichement stocke
         diag["_step"] = "cascade_log"
         try:
-            import re as _re_for_id
-            m_id = _re_for_id.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-            shortcode_id = m_id.group(1) if m_id else None
             if shortcode_id:
                 cascade_doc = await db.cascade_debug_log.find_one({"_id": f"ig_{shortcode_id}"}, {"_id": 0})
-                diag["cascade_log"] = cascade_doc if cascade_doc else "no log found"
+                diag["cascade_log"] = cascade_doc if cascade_doc else "NO LOG STORED - cascade fonction n'a meme pas tente de stocker"
         except Exception as e:
-            diag["cascade_log"] = f"error: {e}"
+            diag["cascade_log"] = f"error reading log: {e}"
 
         diag["_step"] = "DONE"
         return diag
