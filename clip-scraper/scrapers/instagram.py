@@ -99,8 +99,16 @@ async def _scrape_via_web_api(username: str, max_videos: int, proxy: Optional[st
                 "url": f"https://www.instagram.com/p/{shortcode}/",
                 "title": _extract_caption(node)[:200] or None,
                 "thumbnail_url": node.get("thumbnail_src") or node.get("display_url"),
-                # IMPORTANT : play_count (nouveau, ce que Insta affiche publiquement) > video_view_count (ancien, plus bas)
-                "views": int(node.get("play_count") or node.get("video_play_count") or node.get("video_view_count") or 0),
+                # CASCADE 2026 : Insta a unifie Plays+Impressions en "Views" gonflé en avril 2025
+                "views": int(
+                    node.get("ig_play_count")
+                    or node.get("fb_play_count")
+                    or node.get("view_count")
+                    or node.get("play_count")
+                    or node.get("video_play_count")
+                    or node.get("video_view_count")
+                    or 0
+                ),
                 "likes": int((node.get("edge_liked_by") or {}).get("count")
                              or (node.get("edge_media_preview_like") or {}).get("count", 0)),
                 "comments": int((node.get("edge_media_to_comment") or {}).get("count", 0)),

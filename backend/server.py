@@ -5753,8 +5753,30 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                 items = data.get("items") or []
                 if items:
                     item = items[0]
-                    # play_count (nouveau, ce que Insta affiche : 92k) > video_view_count (ancien : 54k)
-                    views_w = int(item.get("play_count") or item.get("ig_play_count") or item.get("video_play_count") or item.get("video_view_count") or 0)
+                    # CASCADE 2026 : Insta a unifié Plays+Impressions en "Views" gonflé en avril 2025.
+                    # Cherche les champs susceptibles de contenir ce nouveau compteur :
+                    clips_meta = item.get("clips_metadata") or {}
+                    rise_info = clips_meta.get("reels_on_the_rise_info") or {}
+                    sound_info = clips_meta.get("original_sound_info") or {}
+                    views_w = int(
+                        item.get("ig_play_count")              # nouveau compteur unifié sur comptes business
+                        or item.get("fb_play_count")            # cross-post FB unifié
+                        or rise_info.get("view_count")          # certains Reels populaires
+                        or sound_info.get("play_count")         # via sound metadata
+                        or item.get("view_count")               # IGTV / certains Reels récents
+                        or item.get("play_count")               # ancien : Plays (1s+)
+                        or item.get("video_play_count")
+                        or item.get("video_view_count")         # très ancien : Views (3s+)
+                        or 0
+                    )
+                    # LOG : pour identifier le bon champ — vérifie dans logs Railway lequel des champs est présent
+                    logger.info(
+                        f"IG {shortcode} fields: ig_play={item.get('ig_play_count')} "
+                        f"fb_play={item.get('fb_play_count')} play={item.get('play_count')} "
+                        f"view={item.get('view_count')} vvc={item.get('video_view_count')} "
+                        f"rise_view={rise_info.get('view_count')} sound_play={sound_info.get('play_count')} "
+                        f"-> retenu={views_w}"
+                    )
                     web_api_data = {
                         "platform_video_id": shortcode,
                         "url": url,
@@ -5849,7 +5871,9 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     # SEULEMENT si toutes les autres ont echoue. Coût ~$0.30/1000 = quasi rien sur 100 video/mois mais on evite quand meme.
     if APIFY_TOKEN and not APIFY_DISABLED:
         logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
-        for actor_id in ("apify~instagram-scraper", "apify~instagram-post-scraper"):
+        # Liste d'actors testés dans l'ordre. Le mobile-api scraper renvoie souvent un compteur plus haut
+        # car il utilise l'API mobile officielle qui peut renvoyer le compteur "Views" unifié 2025.
+        for actor_id in ("apify~instagram-api-scraper", "apify~instagram-reel-scraper", "apify~instagram-scraper", "apify~instagram-post-scraper"):
             try:
                 async with httpx.AsyncClient(timeout=180) as c:
                     ar = await c.post(
@@ -5863,12 +5887,14 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                 if not items:
                     continue
                 item = items[0] if isinstance(items[0], dict) else {}
-                views_val = (item.get("videoViewCount") or item.get("videoPlayCount")
-                             or item.get("playCount") or item.get("viewsCount") or 0)
-                likes_val = item.get("likesCount") or 0
+                # Cascade champs Apify : views > playCount > video... (Apify a parfois "views" qui matche l'UI)
+                views_val = (item.get("views") or item.get("viewsCount")
+                             or item.get("playCount") or item.get("videoPlayCount")
+                             or item.get("videoViewCount") or 0)
+                likes_val = item.get("likesCount") or item.get("likes") or 0
                 if not views_val and not likes_val:
                     continue
-                logger.info(f"Apify {actor_id} BACKUP SUCCESS for {shortcode}: views={views_val} likes={likes_val}")
+                logger.info(f"Apify {actor_id} BACKUP SUCCESS for {shortcode}: views={views_val} likes={likes_val} all_fields_views={item.get('views')}/{item.get('viewsCount')}/{item.get('playCount')}/{item.get('videoViewCount')}")
                 return {
                     "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
                     "url": url,
