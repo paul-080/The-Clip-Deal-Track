@@ -5973,11 +5973,31 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     2. Web API media/info (gratuit fallback)
     3. yt-dlp local (gratuit fallback)
     """
+    # Import local pour eviter NameError si 're' shadow par autre chose dans le scope global
+    import re as _re_local
+    # Trace IMMEDIATE pour debugger si la fonction est meme appelee
     try:
-        m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-        shortcode = m.group(1) if m else None
+        await db.cascade_debug_log.replace_one(
+            {"_id": f"ig_ENTRY_{url[-30:]}"},
+            {"_id": f"ig_ENTRY_{url[-30:]}", "step": "function_called", "url": url, "ts": datetime.now(timezone.utc).isoformat()},
+            upsert=True
+        )
     except Exception:
+        pass
+
+    try:
+        m = _re_local.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+        shortcode = m.group(1) if m else None
+    except Exception as _e:
         shortcode = None
+        try:
+            await db.cascade_debug_log.replace_one(
+                {"_id": f"ig_RE_ERROR_{url[-30:]}"},
+                {"_id": f"ig_RE_ERROR_{url[-30:]}", "error": f"{type(_e).__name__}: {_e}", "ts": datetime.now(timezone.utc).isoformat()},
+                upsert=True
+            )
+        except Exception:
+            pass
     fallback = {
         "platform_video_id": shortcode or f"ig_{uuid.uuid4().hex[:8]}",
         "url": url,
