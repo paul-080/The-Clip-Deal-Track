@@ -6060,9 +6060,14 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                     if not items:
                         continue
                     item = items[0] if isinstance(items[0], dict) else {}
-                    views_val = (item.get("views") or item.get("viewsCount")
-                                 or item.get("playCount") or item.get("videoPlayCount")
-                                 or item.get("videoViewCount") or 0)
+                    # IMPORTANT : videoPlayCount EN PREMIER (compteur Insta moderne, possiblement le 92k UI unifie)
+                    # videoViewCount = ancien compteur (vues > 3s, ce que les autres APIs renvoient = 54k)
+                    views_val = (item.get("videoPlayCount")           # PRIORITE : compteur eleve
+                                 or item.get("playCount")
+                                 or item.get("views")
+                                 or item.get("viewsCount")
+                                 or item.get("videoViewCount")        # ancien, plus bas
+                                 or 0)
                     likes_val = item.get("likesCount") or item.get("likes") or 0
                     if not views_val and not likes_val:
                         continue
