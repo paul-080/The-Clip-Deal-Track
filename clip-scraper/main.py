@@ -280,6 +280,121 @@ async def _video_stats_via_tikwm(url: str) -> Optional[dict]:
         return None
 
 
+async def _video_stats_via_tiktok_html(url: str) -> Optional[dict]:
+    """TikTok fallback : parse direct la page HTML TikTok et cherche les stats de la vidéo cible.
+    Utilise le proxy si configuré (l'IP du VPS est souvent ban par TikTok)."""
+    import re as _re
+    import json as _json
+    m = _re.search(r'/video/(\d+)', url)
+    if not m:
+        return None
+    target_vid_id = m.group(1)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=25, headers=headers, proxies=proxies, follow_redirects=True) as c:
+            r = await c.get(url)
+        if r.status_code != 200:
+            log.info(f"TikTok HTML fallback HTTP {r.status_code} for {url[-40:]}")
+            return None
+        html = r.text
+        # Cherche le bloc UNIVERSAL_DATA puis ItemModule
+        sigi = None
+        m2 = _re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.+?)</script>', html, _re.DOTALL)
+        if m2:
+            try:
+                sigi = _json.loads(m2.group(1))
+            except Exception:
+                pass
+        if not sigi:
+            m2 = _re.search(r'<script id="SIGI_STATE"[^>]*>(.+?)</script>', html, _re.DOTALL)
+            if m2:
+                try:
+                    sigi = _json.loads(m2.group(1))
+                except Exception:
+                    pass
+        item = None
+        if sigi:
+            # Format moderne : __DEFAULT_SCOPE__.webapp.video-detail.itemInfo.itemStruct
+            try:
+                vd = (sigi.get("__DEFAULT_SCOPE__") or {}).get("webapp.video-detail", {})
+                item = (vd.get("itemInfo") or {}).get("itemStruct") or vd.get("itemStruct")
+            except Exception:
+                pass
+            if not item:
+                # Format ancien : ItemModule[vid_id]
+                im = sigi.get("ItemModule", {})
+                if isinstance(im, dict):
+                    item = im.get(target_vid_id) or (next(iter(im.values())) if im else None)
+        # Fallback regex si SIGI absent : cherche les stats DANS la page autour du vid_id
+        if not item:
+            # Match brut "playCount":N près de l'ID demandé
+            esc_id = _re.escape(target_vid_id)
+            ctx_match = _re.search(rf'"id":"{esc_id}"[\s\S]{{0,4000}}?"playCount":(\d+)', html)
+            if ctx_match:
+                # Extrait stats dans la fenêtre
+                window_start = ctx_match.start()
+                window = html[window_start:window_start + 5000]
+                views = int(ctx_match.group(1))
+                likes = int(_re.search(r'"diggCount":(\d+)', window).group(1)) if _re.search(r'"diggCount":(\d+)', window) else 0
+                comments = int(_re.search(r'"commentCount":(\d+)', window).group(1)) if _re.search(r'"commentCount":(\d+)', window) else 0
+                shares = int(_re.search(r'"shareCount":(\d+)', window).group(1)) if _re.search(r'"shareCount":(\d+)', window) else 0
+                title_m = _re.search(r'"desc":"([^"\\]*)"', window)
+                created_m = _re.search(r'"createTime":(\d+)', window)
+                cover_m = _re.search(r'"cover":"([^"]+)"', window)
+                from datetime import datetime as dt, timezone as tz
+                published = None
+                if created_m:
+                    try:
+                        published = dt.fromtimestamp(int(created_m.group(1)), tz=tz.utc).isoformat()
+                    except Exception:
+                        pass
+                return {
+                    "id": target_vid_id,
+                    "title": (title_m.group(1)[:200] if title_m else None),
+                    "thumbnail": (cover_m.group(1).replace("\\u002F", "/").replace("\\/", "/") if cover_m else None),
+                    "view_count": views,
+                    "like_count": likes,
+                    "comment_count": comments,
+                    "repost_count": shares,
+                    "_published_iso": published,
+                }
+            return None
+        # Item trouvé via SIGI : extrait stats
+        stats = item.get("stats") or item.get("statistics") or {}
+        from datetime import datetime as dt, timezone as tz
+        published = None
+        if item.get("createTime"):
+            try:
+                published = dt.fromtimestamp(int(item["createTime"]), tz=tz.utc).isoformat()
+            except Exception:
+                pass
+        return {
+            "id": str(item.get("id") or target_vid_id),
+            "title": (item.get("desc") or "")[:200] or None,
+            "thumbnail": (item.get("video") or {}).get("cover"),
+            "view_count": int(stats.get("playCount") or stats.get("play_count") or 0),
+            "like_count": int(stats.get("diggCount") or stats.get("digg_count") or 0),
+            "comment_count": int(stats.get("commentCount") or stats.get("comment_count") or 0),
+            "repost_count": int(stats.get("shareCount") or stats.get("share_count") or 0),
+            "uploader": (item.get("author") or {}).get("uniqueId") if isinstance(item.get("author"), dict) else item.get("author"),
+            "_published_iso": published,
+        }
+    except Exception as e:
+        log.info(f"TikTok HTML fallback failed for {url[-40:]}: {type(e).__name__}: {e}")
+        return None
+
+
 async def _video_stats_via_instagram_web(url: str) -> Optional[dict]:
     """Instagram fallback via web API media/info."""
     import re as _re
@@ -370,6 +485,13 @@ async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
         if tikwm and (tikwm.get("view_count") or tikwm.get("like_count")):
             info = tikwm
             source_used = "tikwm"
+
+    # Stratégie 2b : fallback HTTP direct sur la page TikTok (parse SIGI/regex) — utilise le proxy résidentiel
+    if (not info or (not info.get("view_count") and not info.get("like_count"))) and platform == "tiktok":
+        tk_html = await _video_stats_via_tiktok_html(url)
+        if tk_html and (tk_html.get("view_count") or tk_html.get("like_count")):
+            info = tk_html
+            source_used = "tiktok_html"
 
     # Stratégie 3 : fallback web API pour Instagram
     if (not info or (not info.get("view_count") and not info.get("like_count"))) and platform == "instagram":
