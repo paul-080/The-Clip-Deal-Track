@@ -6665,9 +6665,26 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
                     except Exception:
                         since_days = 7
                 else:
-                    # First tracking for this account — only look back 7 days max
-                    # (the assigned_at filter will drop pre-campaign videos anyway)
-                    since_days = 7
+                    # First tracking for this account : prend en compte tracking_start_date des campagnes
+                    # pour ne pas rater de videos si la campagne a une date de debut ancienne (ex 1 avril).
+                    # On cherche la campagne la plus ancienne associee a ce compte.
+                    since_days = 7  # default
+                    try:
+                        assignments = await db.campaign_social_accounts.find(
+                            {"account_id": account_id}, {"_id": 0, "campaign_id": 1}
+                        ).to_list(50)
+                        oldest_start = None
+                        for asg in assignments:
+                            cam = await db.campaigns.find_one({"campaign_id": asg.get("campaign_id")}, {"_id": 0, "tracking_start_date": 1})
+                            if cam:
+                                ts = _parse_utc(cam.get("tracking_start_date"))
+                                if ts and (oldest_start is None or ts < oldest_start):
+                                    oldest_start = ts
+                        if oldest_start:
+                            days_back = max(7, int((datetime.now(timezone.utc) - oldest_start).total_seconds() / 86400) + 2)
+                            since_days = min(days_back, 365)
+                    except Exception:
+                        pass
                 try:
                     videos = await fetch_videos(platform, username, account, since_days)
                 except Exception as fetch_err:
