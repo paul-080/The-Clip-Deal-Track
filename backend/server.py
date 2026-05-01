@@ -7632,13 +7632,14 @@ async def _background_scrape_account(account_id: str, user_id: str):
         scrape_error = None
         videos = []
         try:
-            # Timeout global 50s pour éviter le blocage sur Railway
+            # Timeout global 180s : Apify Reel Scraper peut prendre 30-90s pour cold start + scrape
+            # Avant: 50s -> trop court pour Apify, surtout sur le 1er appel apres deploy
             videos = await asyncio.wait_for(
                 fetch_videos(platform, username, account, since_days=3650),
-                timeout=50
+                timeout=180
             )
         except asyncio.TimeoutError:
-            scrape_error = f"Timeout: le scraping de {platform} a dépassé 50s. Essayez 'Ajouter vidéo' manuellement."
+            scrape_error = f"Timeout: le scraping de {platform} a dépassé 180s. Réessaie dans quelques minutes ou utilise 'Ajouter vidéo' manuellement."
             logger.warning(f"Scrape timeout for {platform}/@{username}")
         except Exception as e:
             scrape_error = str(e)
@@ -7895,8 +7896,9 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
                 stats_partial = True
         elif platform == "instagram":
             try:
+                # 120s pour Apify Reel Scraper (peut prendre 30-90s)
                 vid_data = await asyncio.wait_for(
-                    _fetch_single_instagram_video(video_url), timeout=10
+                    _fetch_single_instagram_video(video_url), timeout=120
                 )
             except Exception:
                 m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', video_url)
