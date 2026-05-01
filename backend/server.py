@@ -6010,49 +6010,65 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
         except Exception as e:
             logger.warning(f"_fetch_single_instagram_video yt-dlp failed for {url}: {type(e).__name__}: {e}")
 
-    # Strategy 4 (DERNIER RECOURS) : Apify Instagram Scraper
-    # NOTE 2026 : Apify renvoie EXACTEMENT le meme play_count (~54k) que l'API privee, donc payer pour
-    # le meme resultat n'a aucun interet. Apify desactive par defaut sauf si APIFY_FOR_INSTA_FALLBACK=true.
-    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
+    # Strategy 4 (FALLBACK PAYANT MAIS FIABLE) : Apify Instagram Scraper
+    # IMPORTANT : Apify renvoie le meme play_count (~54k) que l'API privee, MAIS il marche TOUJOURS
+    # meme si les cookies Insta sont invalides/expires. C'est notre filet de securite.
+    #
+    # ACTIVE PAR DEFAUT (peut etre desactive avec APIFY_FOR_INSTA_FALLBACK=false).
+    # Circuit breaker : limite a APIFY_INSTA_DAILY_BUDGET requetes/jour pour eviter abus.
+    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'true').strip().lower() in ('true', '1', 'yes'))
+    APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '500'))  # max requetes Apify Insta/jour
     if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED:
-        logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
-        # Liste d'actors testés dans l'ordre. Le mobile-api scraper renvoie souvent un compteur plus haut
-        # car il utilise l'API mobile officielle qui peut renvoyer le compteur "Views" unifié 2025.
-        for actor_id in ("apify~instagram-api-scraper", "apify~instagram-reel-scraper", "apify~instagram-scraper", "apify~instagram-post-scraper"):
-            try:
-                async with httpx.AsyncClient(timeout=180) as c:
-                    ar = await c.post(
-                        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                        params={"token": APIFY_TOKEN},
-                        json={"directUrls": [url], "resultsType": "details", "resultsLimit": 1, "addParentData": False},
-                    )
-                if ar.status_code != 200:
+        # Circuit breaker : check le compteur du jour
+        today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            today_count = await db.scraping_history.count_documents({
+                "source": "apify",
+                "platform": "instagram",
+                "timestamp": {"$gte": today_key}
+            })
+        except Exception:
+            today_count = 0
+        if today_count >= APIFY_INSTA_DAILY_BUDGET:
+            logger.warning(f"Apify Insta DAILY BUDGET REACHED ({today_count}/{APIFY_INSTA_DAILY_BUDGET}) — skip pour eviter abus")
+        else:
+            logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode} ({today_count+1}/{APIFY_INSTA_DAILY_BUDGET} today)")
+            # Liste d'actors testés dans l'ordre.
+            for actor_id in ("apify~instagram-api-scraper", "apify~instagram-reel-scraper", "apify~instagram-scraper", "apify~instagram-post-scraper"):
+                try:
+                    async with httpx.AsyncClient(timeout=180) as c:
+                        ar = await c.post(
+                            f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                            params={"token": APIFY_TOKEN},
+                            json={"directUrls": [url], "resultsType": "details", "resultsLimit": 1, "addParentData": False},
+                        )
+                    if ar.status_code != 200:
+                        continue
+                    items = ar.json() or []
+                    if not items:
+                        continue
+                    item = items[0] if isinstance(items[0], dict) else {}
+                    views_val = (item.get("views") or item.get("viewsCount")
+                                 or item.get("playCount") or item.get("videoPlayCount")
+                                 or item.get("videoViewCount") or 0)
+                    likes_val = item.get("likesCount") or item.get("likes") or 0
+                    if not views_val and not likes_val:
+                        continue
+                    logger.info(f"Apify {actor_id} BACKUP SUCCESS for {shortcode}: views={views_val} likes={likes_val}")
+                    await _log_scrape("apify", "instagram", shortcode, True, 1, "FALLBACK after free methods failed")
+                    return {
+                        "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
+                        "url": url,
+                        "title": (item.get("caption") or "")[:200] or None,
+                        "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
+                        "views": int(views_val),
+                        "likes": int(likes_val),
+                        "comments": int(item.get("commentsCount") or 0),
+                        "published_at": item.get("timestamp"),
+                    }
+                except Exception as e:
+                    logger.warning(f"Apify backup {actor_id} failed for {shortcode}: {type(e).__name__}: {e}")
                     continue
-                items = ar.json() or []
-                if not items:
-                    continue
-                item = items[0] if isinstance(items[0], dict) else {}
-                # Cascade champs Apify : views > playCount > video... (Apify a parfois "views" qui matche l'UI)
-                views_val = (item.get("views") or item.get("viewsCount")
-                             or item.get("playCount") or item.get("videoPlayCount")
-                             or item.get("videoViewCount") or 0)
-                likes_val = item.get("likesCount") or item.get("likes") or 0
-                if not views_val and not likes_val:
-                    continue
-                logger.info(f"Apify {actor_id} BACKUP SUCCESS for {shortcode}: views={views_val} likes={likes_val} all_fields_views={item.get('views')}/{item.get('viewsCount')}/{item.get('playCount')}/{item.get('videoViewCount')}")
-                return {
-                    "platform_video_id": item.get("shortCode") or item.get("id") or shortcode,
-                    "url": url,
-                    "title": (item.get("caption") or "")[:200] or None,
-                    "thumbnail_url": item.get("displayUrl") or item.get("thumbnailUrl"),
-                    "views": int(views_val),
-                    "likes": int(likes_val),
-                    "comments": int(item.get("commentsCount") or 0),
-                    "published_at": item.get("timestamp"),
-                }
-            except Exception as e:
-                logger.warning(f"Apify backup {actor_id} failed for {shortcode}: {type(e).__name__}: {e}")
-                continue
 
     # Si on n'a pas eu de vues mais on a des likes via web API, retourne ces donnees partielles
     if web_api_data:
