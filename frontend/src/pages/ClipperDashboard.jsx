@@ -14,13 +14,10 @@ const imgSrc = (url) => {
   return url;
 };
 
-// Nombre de vues exact avec suffixe lisible (1 600 vues, pas "2K")
+// PRECIS — pas d'arrondi (ex: 22 643 au lieu de "22.6K")
 const fmtViews = (n) => {
   if (!n || n === 0) return "0";
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 10000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return n.toLocaleString("fr-FR");
+  return Math.floor(Number(n)).toLocaleString("fr-FR");
 };
 import Sidebar from "../components/Sidebar";
 import { toast } from "sonner";

@@ -14,12 +14,10 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 
 const ACCENT_COLOR = "#FFB300";
 
+// PRECIS — pas d'arrondi (ex: 22 643 au lieu de "22.6K")
 const fmtViews = (n) => {
   if (!n || n === 0) return "0";
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 10000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return n.toLocaleString("fr-FR");
+  return Math.floor(Number(n)).toLocaleString("fr-FR");
 };
 
 const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF0000" };

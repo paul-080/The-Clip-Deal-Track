@@ -5342,7 +5342,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                     "url": f"https://www.instagram.com/p/{post.shortcode}/",
                     "title": (post.caption or "")[:150],
                     "thumbnail_url": post.url,
-                    "views": post.video_view_count or post._node.get("play_count") or post._node.get("view_count") or 0,
+                    "views": post._node.get("play_count") or post.video_view_count or post._node.get("view_count") or 0,
                     "likes": post.likes,
                     "comments": post.comments,
                     "published_at": post.date_utc.replace(tzinfo=timezone.utc).isoformat(),
@@ -5380,7 +5380,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                     "url": f"https://www.instagram.com/p/{post.shortcode}/",
                     "title": (post.caption or "")[:150],
                     "thumbnail_url": post.url,
-                    "views": post.video_view_count or post._node.get("play_count") or post._node.get("view_count") or 0,
+                    "views": post._node.get("play_count") or post.video_view_count or post._node.get("view_count") or 0,
                     "likes": post.likes,
                     "comments": post.comments,
                     "published_at": post.date_utc.replace(tzinfo=timezone.utc).isoformat(),
@@ -5791,7 +5791,9 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                 items = data.get("items") or []
                 if items:
                     item = items[0]
-                    views_w = int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0)
+                    # IMPORTANT : Insta a 2 compteurs depuis 2023 : play_count (nouveau, total replays inclus, ce que Insta affiche)
+                    # vs video_view_count (ancien, vues uniques, plus bas). On prend play_count EN PREMIER pour matcher Insta UI.
+                    views_w = int(item.get("play_count") or item.get("ig_play_count") or item.get("video_play_count") or item.get("video_view_count") or 0)
                     web_api_data = {
                         "platform_video_id": shortcode,
                         "url": url,

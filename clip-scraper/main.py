@@ -517,7 +517,8 @@ async def _video_stats_via_instagram_web(url: str) -> Optional[dict]:
             "id": shortcode,
             "title": ((item.get("caption") or {}).get("text") or "")[:200] or None,
             "thumbnail": ((item.get("image_versions2") or {}).get("candidates") or [{}])[0].get("url"),
-            "view_count": int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0),
+            # play_count = nouveau compteur Insta (total replays inclus, ce qu'affiche l'UI Insta) > video_view_count (ancien, plus bas)
+            "view_count": int(item.get("play_count") or item.get("ig_play_count") or item.get("video_play_count") or item.get("video_view_count") or 0),
             "like_count": int(item.get("like_count") or 0),
             "comment_count": int(item.get("comment_count") or 0),
             "duration": int(item.get("video_duration") or 0),

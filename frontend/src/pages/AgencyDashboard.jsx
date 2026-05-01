@@ -14,13 +14,10 @@ const imgSrc = (url) => {
   return url;
 };
 
-// Nombre de vues exact avec suffixe lisible
+// Nombre de vues PRECIS — pas d'arrondi, format français avec espaces (ex: 22 643, 1 234 567)
 const fmtViews = (n) => {
   if (!n || n === 0) return "0";
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 10000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return n.toLocaleString("fr-FR");
+  return Math.floor(Number(n)).toLocaleString("fr-FR");
 };
 import Sidebar from "../components/Sidebar";
 import ScrapeStatusPanel from "../components/ScrapeStatusPanel";

@@ -22,12 +22,10 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import ChatPanel from "../components/ChatPanel";
 import SupportPage from "../components/SupportPage";
 
+// PRECIS — pas d'arrondi (ex: 22 643 au lieu de "22.6K")
 const fmtViews = (n) => {
   if (!n || n === 0) return "0";
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 10000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return String(n);
+  return Math.floor(Number(n)).toLocaleString("fr-FR");
 };
 
 const ACCENT_COLOR = "#39FF14";
