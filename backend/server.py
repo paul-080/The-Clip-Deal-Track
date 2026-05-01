@@ -172,6 +172,91 @@ async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
         return None
 
 
+async def _fetch_instagram_via_business_discovery(shortcode: str, owner_username: str) -> Optional[dict]:
+    """LA VRAIE SOLUTION : Meta Business Discovery API.
+    Renvoie le view_count UNIFIE (IG + Facebook cross-post) = ce que l'app Insta affiche.
+    GRATUIT, officiel, marche pour tous les comptes business publics.
+
+    Necessite IG_BUSINESS_ACCOUNT_ID et IG_LONG_LIVED_TOKEN (UN compte business cote SaaS).
+    Limite : 200 calls/heure en Standard Access (largement suffisant)."""
+    if not IG_BUSINESS_ACCOUNT_ID or not IG_LONG_LIVED_TOKEN or not owner_username:
+        return None
+    fields = (
+        f"business_discovery.username({owner_username}){{"
+        f"media.limit(50){{id,shortcode,caption,thumbnail_url,media_url,"
+        f"like_count,comments_count,view_count,timestamp,media_type"
+        f"}}"
+        f"}}"
+    )
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{IG_BUSINESS_ACCOUNT_ID}"
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(url, params={"fields": fields, "access_token": IG_LONG_LIVED_TOKEN})
+        if r.status_code != 200:
+            err_data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_msg = (err_data.get("error") or {}).get("message", r.text[:200])
+            logger.warning(f"BusinessDiscovery HTTP {r.status_code} for @{owner_username}: {err_msg}")
+            return None
+        data = r.json()
+        bd = data.get("business_discovery") or {}
+        media_list = (bd.get("media") or {}).get("data") or []
+        for m in media_list:
+            if str(m.get("shortcode") or "").lower() == shortcode.lower():
+                views = m.get("view_count")  # COMPTEUR UNIFIE 2025 = IG+FB
+                from datetime import datetime as _dt
+                published = m.get("timestamp")
+                logger.info(f"BusinessDiscovery SUCCESS for {shortcode}: views={views} (UNIFIE IG+FB)")
+                return {
+                    "platform_video_id": shortcode,
+                    "url": f"https://www.instagram.com/p/{shortcode}/",
+                    "title": (m.get("caption") or "")[:200] or None,
+                    "thumbnail_url": m.get("thumbnail_url") or m.get("media_url"),
+                    "views": int(views or 0),
+                    "likes": int(m.get("like_count") or 0),
+                    "comments": int(m.get("comments_count") or 0),
+                    "published_at": published,
+                    "_source": "business_discovery_unified",
+                }
+        # Pas trouve dans les 50 derniers — peut etre trop ancienne
+        logger.info(f"BusinessDiscovery: {shortcode} not in last 50 media of @{owner_username}")
+        return None
+    except Exception as e:
+        logger.warning(f"BusinessDiscovery error for @{owner_username}/{shortcode}: {type(e).__name__}: {e}")
+        return None
+
+
+async def _extract_owner_username_from_url(url: str) -> Optional[str]:
+    """Extrait l'username Insta depuis une URL de post/reel via la page HTML publique.
+    Necessaire car les URLs /p/{shortcode} ne contiennent pas le @username."""
+    m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    # Tente d'extraire via la page embed publique (fonctionne sans cookie)
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
+        client_kwargs = {"timeout": 10, "headers": headers, "follow_redirects": True}
+        if BACKEND_PROXY_URL:
+            client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+        async with httpx.AsyncClient(**client_kwargs) as c:
+            r = await c.get(f"https://www.instagram.com/p/{shortcode}/embed/captioned/")
+        if r.status_code == 200:
+            # Pattern : <a class="[...]" href="/USERNAME/">
+            owner_m = re.search(r'href="/([\w._]+)/"[^>]*class="[^"]*Username', r.text)
+            if not owner_m:
+                owner_m = re.search(r'<span class="[^"]*UsernameText[^"]*"[^>]*>([\w._]+)</span>', r.text)
+            if not owner_m:
+                # Pattern OG
+                owner_m = re.search(r'instagram\.com/([\w._]+)/?"', r.text)
+            if owner_m:
+                username = owner_m.group(1)
+                if username and username not in ("p", "reel", "reels"):
+                    return username
+    except Exception as e:
+        logger.debug(f"Owner extraction failed for {shortcode}: {e}")
+    return None
+
+
 async def _fetch_instagram_html_stats_via_clipscraper(url: str) -> Optional[dict]:
     """NOUVEAU : appelle le VPS pour scraper la page HTML publique Insta via proxy résidentiel.
     Cette méthode parse TOUS les JSON injectés dans le HTML et trouve le compteur 'Views' UI maximum.
@@ -212,6 +297,11 @@ def _get_instagram_session() -> str:
     return cookie
 # SECURITY/COST : permet de desactiver completement Apify (jamais appele meme en dernier recours)
 APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
+# Instagram Business Discovery API (VRAIES vues unifiees IG+FB, gratuit)
+# Necessite UN compte Insta Business connecte cote SaaS, pas chez les clippeurs
+IG_BUSINESS_ACCOUNT_ID = os.environ.get('IG_BUSINESS_ACCOUNT_ID', '').strip()
+IG_LONG_LIVED_TOKEN = os.environ.get('IG_LONG_LIVED_TOKEN', '').strip()
+META_GRAPH_VERSION = os.environ.get('META_GRAPH_VERSION', 'v22.0').strip()
 GOCARDLESS_ACCESS_TOKEN = os.environ.get('GOCARDLESS_ACCESS_TOKEN', '').strip()
 GOCARDLESS_ENV = os.environ.get('GOCARDLESS_ENVIRONMENT', 'sandbox').strip()  # 'sandbox' | 'live'
 GOCARDLESS_WEBHOOK_SECRET = os.environ.get('GOCARDLESS_WEBHOOK_SECRET', '').strip()
@@ -5749,9 +5839,20 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     if not shortcode:
         return fallback
 
-    # STRATEGY 0 (LE PLUS FIABLE) : VPS scrape page HTML publique Insta via proxy résidentiel
-    # C'est la SEULE méthode gratuite qui peut récupérer le compteur 'Views' UI (92k au lieu de 54k)
-    # car on parse TOUS les JSON injectés dans la page (pas juste l'API privée qui est bridée).
+    # STRATEGY 0 (LA VRAIE SOLUTION) : Meta Business Discovery API officielle
+    # Renvoie le view_count UNIFIE = IG views + Facebook cross-post views (le vrai 92k UI Insta).
+    # GRATUIT, officiel, scalable. Necessite IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN sur Railway.
+    if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
+        # Owner_username : si pas fourni, on l'extrait
+        owner = (account_username or "").lstrip("@")
+        if not owner:
+            owner = await _extract_owner_username_from_url(url)
+        if owner:
+            bd_result = await _fetch_instagram_via_business_discovery(shortcode, owner)
+            if bd_result and (bd_result.get("views", 0) > 0 or bd_result.get("likes", 0) > 0):
+                return bd_result
+
+    # STRATEGY 1 : VPS scrape page HTML publique Insta via proxy résidentiel (fallback gratuit)
     html_result = await _fetch_instagram_html_stats_via_clipscraper(url)
     if html_result:
         views_h = int(html_result.get("views") or 0)
