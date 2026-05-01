@@ -1399,6 +1399,8 @@ function CampaignDashboard({ campaigns }) {
           url: video.url,
           platform: manualVideoForm.platform,
           target: manualVideoForm.target,
+          // si on a le username (depuis scrape) on l'envoie pour permettre VPS gratuit
+          ...(scrapeUsername ? { account_username: scrapeUsername.replace(/^@/, "") } : {}),
         }),
       });
       if (res.ok) {
@@ -1548,6 +1550,8 @@ function CampaignDashboard({ campaigns }) {
       const body = {
         url: video.url,
         platform: trackAccountForm.platform,
+        // username connu depuis le scrape de compte = le backend peut utiliser le VPS gratuit pour filtrer
+        account_username: trackAccountForm.username.trim().replace(/^@/, ""),
         ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),
       };
       const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {

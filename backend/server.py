@@ -5482,10 +5482,12 @@ def _parse_utc(s) -> "datetime | None":
         return None
 
 async def _fetch_single_tiktok_video(url: str) -> dict:
-    """Fetch stats for a single TikTok video URL avec cascade :
-    1. ClipScraper VPS (yt-dlp + proxy résidentiel) — le plus fiable
-    2. TikWm API
-    3. yt-dlp local
+    """Fetch stats for a single TikTok video URL avec cascade.
+    1. VPS scrape le COMPTE puis filtre par video_id (GRATUIT, marche)
+    2. ClipScraper VPS /v1/video-stats (yt-dlp + proxy)
+    3. TikWm API
+    4. yt-dlp local
+    5. Apify (dernier recours payant)
     Retourne TOUJOURS un dict avec views > 0 si possible.
     """
     fallback = {
@@ -5493,10 +5495,39 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
         "url": url, "title": None, "thumbnail_url": None,
         "views": 0, "likes": 0, "comments": 0, "published_at": None,
     }
-    # Extrait l'ID si possible
+    # Extrait l'ID et username depuis l'URL
     m = re.search(r'/video/(\d+)', url)
-    if m:
-        fallback["platform_video_id"] = m.group(1)
+    target_vid_id = m.group(1) if m else None
+    if target_vid_id:
+        fallback["platform_video_id"] = target_vid_id
+    um = re.search(r'tiktok\.com/@([\w.\-]+)/', url)
+    username = um.group(1) if um else None
+
+    # STRATEGY 0 (PRIORITAIRE GRATUITE) : scrape le COMPTE via VPS et filtre par video_id
+    # Le VPS marche pour les comptes (cristiano 673M ok), donc on l'utilise pour avoir les stats officielles
+    if username and CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY and target_vid_id:
+        try:
+            logger.info(f"_fetch_single_tiktok_video: VPS scrape account @{username} to find vid {target_vid_id}")
+            account_videos = await _fetch_via_clipscraper("tiktok", username, max_videos=35)
+            for v in (account_videos or []):
+                if str(v.get("platform_video_id") or "") == target_vid_id:
+                    views_v = int(v.get("views") or 0)
+                    likes_v = int(v.get("likes") or 0)
+                    if views_v > 0 or likes_v > 0:
+                        logger.info(f"VPS account-filter SUCCESS for @{username}/{target_vid_id}: views={views_v} likes={likes_v}")
+                        return {
+                            "platform_video_id": target_vid_id,
+                            "url": url,
+                            "title": v.get("title"),
+                            "thumbnail_url": v.get("thumbnail_url"),
+                            "views": views_v,
+                            "likes": likes_v,
+                            "comments": int(v.get("comments") or 0),
+                            "published_at": v.get("published_at"),
+                        }
+            logger.info(f"VPS account-filter : video {target_vid_id} not found in last 35 videos of @{username} (peut etre ancienne)")
+        except Exception as e:
+            logger.warning(f"VPS account scrape failed for @{username}: {type(e).__name__}: {e}")
 
     # Strategy 1 : ClipScraper VPS (proxy residentiel, le plus fiable pour vues)
     try:
@@ -5669,8 +5700,9 @@ async def _fetch_single_youtube_video(url: str) -> dict:
         logger.warning(f"_fetch_single_youtube_video error for {url}: {type(e).__name__}: {e}")
         return fallback
 
-async def _fetch_single_instagram_video(url: str) -> dict:
-    """Fetch real stats for a single Instagram video via web API + yt-dlp fallback. Never raises."""
+async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None) -> dict:
+    """Fetch real stats for a single Instagram video. Never raises.
+    Si account_username fourni : scrape le compte via VPS (gratuit) puis filtre par shortcode."""
     try:
         m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
         shortcode = m.group(1) if m else None
@@ -5688,6 +5720,31 @@ async def _fetch_single_instagram_video(url: str) -> dict:
     }
     if not shortcode:
         return fallback
+
+    # STRATEGY 0 (PRIORITAIRE GRATUITE) : si username connu, scrape le COMPTE via VPS et filtre par shortcode
+    if account_username and CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            logger.info(f"_fetch_single_instagram_video: VPS scrape @{account_username} to find {shortcode}")
+            account_videos = await _fetch_via_clipscraper("instagram", account_username, max_videos=35)
+            for v in (account_videos or []):
+                if str(v.get("platform_video_id") or "").lower() == shortcode.lower():
+                    views_v = int(v.get("views") or 0)
+                    likes_v = int(v.get("likes") or 0)
+                    if views_v > 0 or likes_v > 0:
+                        logger.info(f"VPS IG account-filter SUCCESS for @{account_username}/{shortcode}: views={views_v} likes={likes_v}")
+                        return {
+                            "platform_video_id": shortcode,
+                            "url": url,
+                            "title": v.get("title"),
+                            "thumbnail_url": v.get("thumbnail_url"),
+                            "views": views_v,
+                            "likes": likes_v,
+                            "comments": int(v.get("comments") or 0),
+                            "published_at": v.get("published_at"),
+                        }
+            logger.info(f"VPS IG account-filter : {shortcode} not found in last 35 posts of @{account_username}")
+        except Exception as e:
+            logger.warning(f"VPS IG account scrape failed for @{account_username}: {type(e).__name__}: {e}")
 
     # Strategy 1 (PRIORITAIRE - gratuit) : ClipScraper VPS (yt-dlp + proxy résidentiel webshare)
     # Bypasse les blocages Railway, gratuit illimite (proxy webshare deja paye 11€/mois fixe)
@@ -5878,17 +5935,19 @@ def _validate_video_stats(result: dict, url: str, platform: str) -> dict:
     return result
 
 
-async def fetch_single_video_by_url(url: str, platform: str) -> dict:
+async def fetch_single_video_by_url(url: str, platform: str, account_username: Optional[str] = None) -> dict:
     """Dispatcher: fetch video stats from a URL by platform.
     Toujours validé : si l'ID retourné ne matche pas l'URL, on rejette les stats suspectes.
+    account_username : si fourni (pour Instagram surtout), permet le scraping VPS gratuit du compte
+                       puis filtre par shortcode (sinon Insta n'a pas le username dans l'URL).
     """
     platform = platform.lower()
     if platform == "tiktok":
-        result = await _fetch_single_tiktok_video(url)
+        result = await _fetch_single_tiktok_video(url)  # username extrait auto de l'URL
     elif platform == "youtube":
         result = await _fetch_single_youtube_video(url)
     elif platform == "instagram":
-        result = await _fetch_single_instagram_video(url)
+        result = await _fetch_single_instagram_video(url, account_username=account_username)
     else:
         raise ValueError(f"Plateforme non supportée: {platform}")
     return _validate_video_stats(result, url, platform)
@@ -8135,10 +8194,14 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
                    f"(ex TikTok: /video/123..., Instagram: /reel/ABC..., YouTube: ?v=...)"
         )
 
+    # account_username optionnel : si l'utilisateur ajoute la video depuis le modal "Voir les videos d'un compte",
+    # on connait le username -> permet le VPS account-scrape gratuit pour Instagram (qui n'a pas le @ dans l'URL video)
+    account_username = (body.get("account_username") or body.get("username") or "").strip().lstrip("@") or None
+
     # Fetch video stats — each platform function is self-contained with its own timeout and never raises
     scraping_failed = False
     try:
-        vid_info = await fetch_single_video_by_url(url, platform)
+        vid_info = await fetch_single_video_by_url(url, platform, account_username=account_username)
     except Exception as e:
         logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {type(e).__name__}: {e}")
         scraping_failed = True
