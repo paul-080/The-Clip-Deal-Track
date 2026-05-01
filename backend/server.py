@@ -297,6 +297,32 @@ def _get_instagram_session() -> str:
     return cookie
 # SECURITY/COST : permet de desactiver completement Apify (jamais appele meme en dernier recours)
 APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
+# Budget circuit breaker : nb max d'appels Apify/jour par plateforme (anti-explosion budget)
+APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '50'))
+APIFY_TIKTOK_DAILY_BUDGET = int(os.environ.get('APIFY_TIKTOK_DAILY_BUDGET', '50'))
+
+
+async def _apify_budget_ok(platform: str) -> bool:
+    """Circuit breaker Apify : verifie si on est sous le quota du jour pour eviter abus.
+    Compte les calls Apify dans db.scraping_history depuis le debut du jour UTC.
+    Retourne True si OK, False si quota atteint."""
+    if APIFY_DISABLED or not APIFY_TOKEN:
+        return False
+    budget = APIFY_INSTA_DAILY_BUDGET if platform == "instagram" else APIFY_TIKTOK_DAILY_BUDGET
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+    try:
+        count = await db.scraping_history.count_documents({
+            "source": "apify",
+            "platform": platform,
+            "timestamp": {"$gte": today_iso}
+        })
+        if count >= budget:
+            logger.warning(f"Apify {platform} BUDGET REACHED: {count}/{budget} aujourd'hui — Apify skip pour eviter coût")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"Apify budget check failed: {e}")
+        return True  # fail-open : on laisse passer si la DB plante
 # Instagram Business Discovery API (VRAIES vues unifiees IG+FB, gratuit)
 # Necessite UN compte Insta Business connecte cote SaaS, pas chez les clippeurs
 IG_BUSINESS_ACCOUNT_ID = os.environ.get('IG_BUSINESS_ACCOUNT_ID', '').strip()
@@ -5315,8 +5341,8 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 return combined
             # Don't raise yet - try Apify as last resort below
 
-    # DERNIER RECOURS : Apify TikTok (coûte des credits, ne devrait quasi jamais etre appele)
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # DERNIER RECOURS : Apify TikTok (avec circuit breaker budget journalier)
+    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
             apify_videos = await _fetch_tiktok_videos_apify(username)
@@ -5515,8 +5541,8 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
-    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — coute des credits, ne devrait quasi jamais etre appele
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — avec circuit breaker budget journalier
+    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
             videos = await _fetch_instagram_videos_apify(username)
@@ -5721,8 +5747,8 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
 
     # Strategy 4 (DERNIER RECOURS) : Apify TikTok scraper pour video individuelle
     # Coute ~0.0003€/video = 0.30€/1000 videos. Justifie pour garantir le tracking individuel.
-    # SEULEMENT si toutes les sources gratuites ont echoue.
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # SEULEMENT si toutes les sources gratuites ont echoue + budget journalier OK
+    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         logger.info(f"_fetch_single_tiktok_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {url[-30:]}")
         for actor_id in ("clockworks~tiktok-scraper", "apify~tiktok-scraper"):
             try:
@@ -6014,25 +6040,11 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     # IMPORTANT : Apify renvoie le meme play_count (~54k) que l'API privee, MAIS il marche TOUJOURS
     # meme si les cookies Insta sont invalides/expires. C'est notre filet de securite.
     #
-    # ACTIVE PAR DEFAUT (peut etre desactive avec APIFY_FOR_INSTA_FALLBACK=false).
-    # Circuit breaker : limite a APIFY_INSTA_DAILY_BUDGET requetes/jour pour eviter abus.
+    # ACTIVE PAR DEFAUT avec circuit breaker (APIFY_INSTA_DAILY_BUDGET, defaut 50/jour).
     APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'true').strip().lower() in ('true', '1', 'yes'))
-    APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '500'))  # max requetes Apify Insta/jour
-    if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED:
-        # Circuit breaker : check le compteur du jour
-        today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        try:
-            today_count = await db.scraping_history.count_documents({
-                "source": "apify",
-                "platform": "instagram",
-                "timestamp": {"$gte": today_key}
-            })
-        except Exception:
-            today_count = 0
-        if today_count >= APIFY_INSTA_DAILY_BUDGET:
-            logger.warning(f"Apify Insta DAILY BUDGET REACHED ({today_count}/{APIFY_INSTA_DAILY_BUDGET}) — skip pour eviter abus")
-        else:
-            logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode} ({today_count+1}/{APIFY_INSTA_DAILY_BUDGET} today)")
+    if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED and await _apify_budget_ok("instagram"):
+        if True:
+            logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
             # Liste d'actors testés dans l'ordre.
             for actor_id in ("apify~instagram-api-scraper", "apify~instagram-reel-scraper", "apify~instagram-scraper", "apify~instagram-post-scraper"):
                 try:
