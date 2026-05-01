@@ -298,7 +298,9 @@ def _get_instagram_session() -> str:
 # SECURITY/COST : permet de desactiver completement Apify (jamais appele meme en dernier recours)
 APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
 # Budget circuit breaker : nb max d'appels Apify/jour par plateforme (anti-explosion budget)
-APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '50'))
+# Insta : 200/jour par defaut (videoPlayCount via Apify, ~$0.52/jour MAX = $15.60/mois MAX, dans budget Starter $29)
+# TikTok : 50/jour (VPS marche bien, Apify rare en backup)
+APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '200'))
 APIFY_TIKTOK_DAILY_BUDGET = int(os.environ.get('APIFY_TIKTOK_DAILY_BUDGET', '50'))
 
 
@@ -5838,14 +5840,59 @@ async def _fetch_single_youtube_video(url: str) -> dict:
         logger.warning(f"_fetch_single_youtube_video error for {url}: {type(e).__name__}: {e}")
         return fallback
 
+async def _fetch_instagram_via_apify_reel_scraper(url: str, shortcode: str) -> Optional[dict]:
+    """SOLUTION ULTIME : Apify instagram-reel-scraper qui retourne videoPlayCount (peut etre le 92k UI unifie).
+    Coute ~$0.0026/video. Avec Starter $29/mois et budget 1000/jour = $26 prepaid largement couvert.
+    Retourne None si APIFY_TOKEN manquant ou erreur."""
+    if not APIFY_TOKEN or APIFY_DISABLED:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=180) as c:
+            ar = await c.post(
+                "https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items",
+                params={"token": APIFY_TOKEN},
+                json={"directUrls": [url], "resultsLimit": 1, "addParentData": False},
+            )
+        if ar.status_code != 200:
+            logger.warning(f"Apify Reel Scraper HTTP {ar.status_code} for {shortcode}: {ar.text[:200]}")
+            return None
+        items = ar.json() or []
+        if not items:
+            return None
+        item = items[0] if isinstance(items[0], dict) else {}
+        # videoPlayCount = compteur eleve (potentiellement le 92k UI unifie)
+        # videoViewCount = ancien compteur (~54k)
+        play_count = int(item.get("videoPlayCount") or 0)
+        view_count = int(item.get("videoViewCount") or 0)
+        # Prendre le MAX des deux pour avoir le compteur le plus eleve
+        views_final = max(play_count, view_count)
+        likes_final = int(item.get("likesCount") or 0)
+        if views_final == 0 and likes_final == 0:
+            return None
+        logger.info(f"Apify Reel Scraper SUCCESS for {shortcode}: videoPlayCount={play_count} videoViewCount={view_count} -> using={views_final}")
+        await _log_scrape("apify", "instagram", shortcode, True, 1, "instagram-reel-scraper PRIORITY")
+        return {
+            "platform_video_id": item.get("shortCode") or shortcode,
+            "url": url,
+            "title": (item.get("caption") or "")[:200] or None,
+            "thumbnail_url": item.get("displayUrl"),
+            "views": views_final,
+            "likes": likes_final,
+            "comments": int(item.get("commentsCount") or 0),
+            "published_at": item.get("timestamp"),
+        }
+    except Exception as e:
+        logger.warning(f"Apify Reel Scraper failed for {shortcode}: {type(e).__name__}: {e}")
+        return None
+
+
 async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None) -> dict:
     """Fetch real stats for a single Instagram video. Never raises.
-    Cascade :
-    1. Web API media/{shortcode}/info/ (PRIORITE car renvoie play_count = vraies vues affichees par Insta UI)
-    2. ClipScraper VPS /v1/video-stats (yt-dlp)
-    3. VPS account-scrape + filtre par shortcode (si username connu)
-    4. yt-dlp local
-    5. Apify (dernier recours payant)
+    Cascade SIMPLIFIEE :
+    0. Apify Reel Scraper (PRIORITE = videoPlayCount, possiblement 92k UI)
+    1. VPS HTML scrape (gratuit fallback)
+    2. Web API media/info (gratuit fallback)
+    3. yt-dlp local (gratuit fallback)
     """
     try:
         m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
@@ -5865,11 +5912,17 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     if not shortcode:
         return fallback
 
-    # STRATEGY 0 (LA VRAIE SOLUTION) : Meta Business Discovery API officielle
-    # Renvoie le view_count UNIFIE = IG views + Facebook cross-post views (le vrai 92k UI Insta).
-    # GRATUIT, officiel, scalable. Necessite IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN sur Railway.
+    # STRATEGY 0 (PRIORITE ABSOLUE) : Apify Reel Scraper
+    # Coute $0.0026/video, retourne videoPlayCount + videoViewCount, on prend le MAX.
+    # Le client a abonnement Apify Starter $29/mois -> 11000 calls inclus.
+    # Circuit breaker via APIFY_INSTA_DAILY_BUDGET (default 50/jour pour eviter explosion).
+    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+        apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
+        if apify_result and (apify_result.get("views", 0) > 0 or apify_result.get("likes", 0) > 0):
+            return apify_result
+
+    # STRATEGY 0b (FALLBACK GRATUIT) : Meta Business Discovery API officielle (si configure)
     if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
-        # Owner_username : si pas fourni, on l'extrait
         owner = (account_username or "").lstrip("@")
         if not owner:
             owner = await _extract_owner_username_from_url(url)
