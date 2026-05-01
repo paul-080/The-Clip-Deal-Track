@@ -2362,14 +2362,18 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    # Check clipper limit for agency's plan (total UNIQUE clippeurs sur toutes campagnes)
+    # NOTE 2026 : check clippeurs SUPPRIME — la limite est maintenant sur les COMPTES trackes
+    # (tracked_accounts) verifiee au moment d'ajouter un compte a une campagne.
+    # On garde un check trivial sur 1 valeur tres haute pour eviter spam (10000 clippeurs max physique).
     agency_id = campaign.get("agency_id")
     if agency_id:
         agency_user = await db.users.find_one({"user_id": agency_id}, {"_id": 0})
         if agency_user:
             limits = _get_plan_limits(agency_user)
             plan_name = SUBSCRIPTION_PLANS.get(_get_user_effective_plan(agency_user), {}).get("name", "Starter")
-            if limits["clippers"] is not None:
+            # Hard cap technique 10k clippeurs (anti-abus, jamais atteint en pratique)
+            HARD_CAP_CLIPPERS = 10000
+            if False:  # ancien check par plan desactive
                 # Compte les clippeurs uniques sur TOUTES les campagnes de l'agence
                 pipeline = [
                     {"$match": {"agency_id": agency_id}},
@@ -2393,10 +2397,10 @@ async def accept_campaign_member(campaign_id: str, member_id: str, user: dict = 
                     "status": "active",
                     "campaign_id": {"$ne": campaign_id},
                 })
-                if not already_counted and current_clippers >= limits["clippers"]:
+                if not already_counted and current_clippers >= HARD_CAP_CLIPPERS:
                     raise HTTPException(
                         status_code=403,
-                        detail=f"Limite atteinte : votre plan {plan_name} autorise {limits['clippers']} clippeurs au total sur toutes vos campagnes. Passez au plan supérieur."
+                        detail=f"Limite technique atteinte ({HARD_CAP_CLIPPERS} clippeurs). Contactez le support."
                     )
 
     # Update atomique : ne change que si encore pending (anti-race double-accept)
@@ -10342,38 +10346,40 @@ async def start_trial(user: dict = Depends(get_current_user)):
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
 SUBSCRIPTION_PLANS = {
-    # ===== Plans VUES & CLICS (tracking complet : vues + clics) =====
+    # ===== Plans VUES UNIQUEMENT (tracking de vues, AUCUN tracking de clics) =====
     "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
-                       "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 1, "click_only": False},
+                       "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 2, "click_only": False},
+                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 2, "click_only": False, "view_only": True},
     "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
-                       "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 4, "click_only": False},
+                       "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 4, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
-                       "max_campaigns": None, "max_clippers": None, "tracking_per_day": None,
-                       "click_only": False, "is_custom": True},
-    # ===== Plans CLICS UNIQUEMENT (pas de tracking de vues, moins cher) =====
+                       "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": None,
+                       "click_only": False, "view_only": False, "is_custom": True},
+    # ===== Plans CLICS UNIQUEMENT (tracking de clics, AUCUN tracking de vues) =====
+    # Le clippeur enregistre son compte (visible dans "Mes comptes"+"Mes videos") mais aucune video n'est scrapee.
     "plan_small_click":     {"name": "Starter Clic",   "amount": 8900,   "label": "89€/mois",
-                             "max_campaigns": 1,    "max_clippers": 15,   "tracking_per_day": 0, "click_only": True},
+                             "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 0, "click_only": True, "view_only": False},
     "plan_medium_click":    {"name": "Pro Clic",       "amount": 14900,  "label": "149€/mois",
-                             "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 0, "click_only": True},
+                             "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 0, "click_only": True, "view_only": False},
     "plan_unlimited_click": {"name": "Business Clic",  "amount": 22500,  "label": "225€/mois",
-                             "max_campaigns": None, "max_clippers": 200,  "tracking_per_day": 0, "click_only": True},
-    # Legacy aliases
+                             "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 0, "click_only": True, "view_only": False},
+    # Legacy aliases (compat ancien code)
     "plan_full":      {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_clippers": 45,   "tracking_per_day": 1, "click_only": False},
+                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 1, "click_only": False, "view_only": True},
 }
 
 # Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
+# tracked_accounts = nombre max de comptes Insta/TikTok/YouTube ajoutes a une campagne (somme tous comptes).
 PLAN_LIMITS = {
-    "plan_small":           {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 1, "click_only": False},
-    "plan_medium":          {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 2, "click_only": False},
-    "plan_unlimited":       {"campaigns": None, "clippers": 200,   "tracking_per_day": 4, "click_only": False},
-    "plan_custom":          {"campaigns": None, "clippers": None,  "tracking_per_day": 4, "click_only": False},
-    "plan_small_click":     {"campaigns": 1,    "clippers": 15,    "tracking_per_day": 0, "click_only": True},
-    "plan_medium_click":    {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 0, "click_only": True},
-    "plan_unlimited_click": {"campaigns": None, "clippers": 200,   "tracking_per_day": 0, "click_only": True},
-    "plan_full":            {"campaigns": 3,    "clippers": 45,    "tracking_per_day": 2, "click_only": False},
+    "plan_small":           {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 1, "click_only": False, "view_only": True},
+    "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 2, "click_only": False, "view_only": True},
+    "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 4, "click_only": False, "view_only": True},
+    "plan_custom":          {"campaigns": None, "tracked_accounts": None,  "tracking_per_day": 4, "click_only": False, "view_only": False},
+    "plan_small_click":     {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 0, "click_only": True,  "view_only": False},
+    "plan_medium_click":    {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
+    "plan_unlimited_click": {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
+    "plan_full":            {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 2, "click_only": False, "view_only": True},
 }
 
 def _get_user_effective_plan(user: dict) -> str:
