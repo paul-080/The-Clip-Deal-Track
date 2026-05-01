@@ -5366,8 +5366,7 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
 
 async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_videos: int = 30) -> Optional[list]:
     """Apify instagram-reel-scraper sur un COMPTE entier — renvoie videoPlayCount par video.
-    Cout : $0.0026/reel × max_videos. Pour 30 reels = $0.078 par scrape de compte.
-    Avec circuit breaker, max appels controles."""
+    Format input verifie en prod : {"username": [profile_url]}, status 201."""
     if not APIFY_TOKEN or APIFY_DISABLED:
         return None
     profile_url = f"https://www.instagram.com/{username.lstrip('@')}/"
@@ -5376,14 +5375,10 @@ async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_vid
             ar = await c.post(
                 "https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items",
                 params={"token": APIFY_TOKEN},
-                json={
-                    "username": [username.lstrip('@')],  # supporte aussi liste de usernames
-                    "directUrls": [profile_url],
-                    "resultsLimit": max_videos,
-                    "addParentData": False,
-                },
+                json={"username": [profile_url], "resultsLimit": max_videos},
             )
-        if ar.status_code != 200:
+        # Apify renvoie 200 OU 201 sur run-sync
+        if ar.status_code not in (200, 201):
             logger.warning(f"Apify Reel Scraper account HTTP {ar.status_code} for @{username}: {ar.text[:200]}")
             return None
         items = ar.json() or []
@@ -5906,74 +5901,68 @@ async def _fetch_single_youtube_video(url: str) -> dict:
         return fallback
 
 async def _fetch_instagram_via_apify_reel_scraper(url: str, shortcode: str, debug_collector: Optional[dict] = None) -> Optional[dict]:
-    """Apify instagram-reel-scraper. Tente plusieurs formats input car la doc varie."""
+    """Apify instagram-reel-scraper.
+    FORMAT INPUT QUI MARCHE (teste en prod) : {"username": [URL_complete]}
+    Apify renvoie status 201 (pas 200) sur run-sync-get-dataset-items."""
     if not APIFY_TOKEN or APIFY_DISABLED:
         if debug_collector is not None:
             debug_collector["skip_reason"] = "APIFY_TOKEN missing or APIFY_DISABLED"
         return None
 
-    # On tente PLUSIEURS formats input pour cet actor
-    input_variants = [
-        {"username": [shortcode], "resultsLimit": 1},  # avec le shortcode comme username
-        {"directUrls": [url], "resultsLimit": 1},
-        {"username": [url], "resultsLimit": 1},
-        {"startUrls": [{"url": url}], "resultsLimit": 1},
-    ]
-
-    if debug_collector is not None:
-        debug_collector["attempts"] = []
-
-    for idx, payload in enumerate(input_variants):
-        attempt = {"variant": idx, "payload": payload}
-        try:
-            async with httpx.AsyncClient(timeout=180) as c:
-                ar = await c.post(
-                    "https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items",
-                    params={"token": APIFY_TOKEN},
-                    json=payload,
-                )
-            attempt["status_code"] = ar.status_code
-            attempt["body_preview"] = ar.text[:500]
-            if ar.status_code == 200:
-                try:
-                    items = ar.json() or []
-                except Exception:
-                    items = []
-                attempt["items_count"] = len(items)
-                if items:
-                    item = items[0] if isinstance(items[0], dict) else {}
-                    attempt["first_item_keys"] = list(item.keys())[:30]
-                    play_count = int(item.get("videoPlayCount") or 0)
-                    view_count = int(item.get("videoViewCount") or 0)
-                    views_final = max(play_count, view_count)
-                    likes_final = int(item.get("likesCount") or 0)
-                    attempt["videoPlayCount"] = play_count
-                    attempt["videoViewCount"] = view_count
-                    attempt["views_final"] = views_final
-                    attempt["likes"] = likes_final
-                    if views_final > 0 or likes_final > 0:
-                        if debug_collector is not None:
-                            debug_collector["attempts"].append(attempt)
-                            debug_collector["winning_variant"] = idx
-                        logger.info(f"Apify Reel Scraper SUCCESS for {shortcode} via variant {idx}: views={views_final}")
-                        await _log_scrape("apify", "instagram", shortcode, True, 1, f"reel-scraper variant {idx}")
-                        return {
-                            "platform_video_id": item.get("shortCode") or shortcode,
-                            "url": url,
-                            "title": (item.get("caption") or "")[:200] or None,
-                            "thumbnail_url": item.get("displayUrl"),
-                            "views": views_final,
-                            "likes": likes_final,
-                            "comments": int(item.get("commentsCount") or 0),
-                            "published_at": item.get("timestamp"),
-                        }
-        except Exception as e:
-            attempt["error"] = f"{type(e).__name__}: {e}"
+    payload = {"username": [url], "resultsLimit": 1}
+    try:
+        async with httpx.AsyncClient(timeout=180) as c:
+            ar = await c.post(
+                "https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items",
+                params={"token": APIFY_TOKEN},
+                json=payload,
+            )
         if debug_collector is not None:
-            debug_collector["attempts"].append(attempt)
-
-    logger.warning(f"Apify Reel Scraper ALL VARIANTS FAILED for {shortcode}")
-    return None
+            debug_collector["status_code"] = ar.status_code
+            debug_collector["body_preview"] = ar.text[:500]
+        # Apify renvoie 200 OU 201 (Created) sur run-sync
+        if ar.status_code not in (200, 201):
+            logger.warning(f"Apify Reel Scraper HTTP {ar.status_code} for {shortcode}: {ar.text[:200]}")
+            return None
+        try:
+            items = ar.json() or []
+        except Exception:
+            items = []
+        if not items:
+            return None
+        item = items[0] if isinstance(items[0], dict) else {}
+        # Si error dans l'item, c'est que la video n'existe pas
+        if item.get("error"):
+            logger.warning(f"Apify Reel Scraper item error for {shortcode}: {item.get('error')} - {item.get('errorDescription')}")
+            return None
+        play_count = int(item.get("videoPlayCount") or 0)
+        view_count = int(item.get("videoViewCount") or 0)
+        views_final = max(play_count, view_count)
+        likes_final = int(item.get("likesCount") or 0)
+        if debug_collector is not None:
+            debug_collector["item_keys"] = list(item.keys())[:30]
+            debug_collector["videoPlayCount"] = play_count
+            debug_collector["videoViewCount"] = view_count
+            debug_collector["views_final"] = views_final
+        if views_final == 0 and likes_final == 0:
+            return None
+        logger.info(f"Apify Reel Scraper SUCCESS for {shortcode}: videoPlayCount={play_count} videoViewCount={view_count} -> using={views_final}")
+        await _log_scrape("apify", "instagram", shortcode, True, 1, "instagram-reel-scraper PRIORITY")
+        return {
+            "platform_video_id": item.get("shortCode") or shortcode,
+            "url": url,
+            "title": (item.get("caption") or "")[:200] or None,
+            "thumbnail_url": item.get("displayUrl"),
+            "views": views_final,
+            "likes": likes_final,
+            "comments": int(item.get("commentsCount") or 0),
+            "published_at": item.get("timestamp"),
+        }
+    except Exception as e:
+        if debug_collector is not None:
+            debug_collector["error"] = f"{type(e).__name__}: {e}"
+        logger.warning(f"Apify Reel Scraper failed for {shortcode}: {type(e).__name__}: {e}")
+        return None
 
 
 async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None) -> dict:
