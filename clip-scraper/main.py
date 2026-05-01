@@ -191,9 +191,149 @@ async def youtube(username: str, x_api_key: Optional[str] = Header(None), max_vi
         raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")
 
 
+def _detect_platform_from_url(url: str) -> str:
+    import re as _re
+    if _re.search(r'tiktok\.com', url):
+        return "tiktok"
+    if _re.search(r'instagram\.com', url):
+        return "instagram"
+    if _re.search(r'(?:youtube\.com|youtu\.be)', url):
+        return "youtube"
+    return "unknown"
+
+
+async def _video_stats_via_ytdlp(url: str) -> Optional[dict]:
+    """Try yt-dlp with multiple UA strategies. Returns dict if success, None if all failed."""
+    try:
+        import yt_dlp
+    except ImportError:
+        return None
+    loop = asyncio.get_event_loop()
+    strategies = [
+        {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+         "Referer": "https://www.tiktok.com/", "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8"},
+        {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+         "Referer": "https://www.tiktok.com/", "Accept-Language": "en-US,en;q=0.9"},
+        {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+         "Accept-Language": "fr-FR,fr;q=0.9"},
+    ]
+    last_err = None
+    for headers in strategies:
+        opts = {"quiet": True, "skip_download": True, "no_warnings": True, "http_headers": headers}
+        if PROXY_URL:
+            opts["proxy"] = PROXY_URL
+        def _extract():
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception as e:
+                return {"_error": f"{type(e).__name__}: {e}"}
+        try:
+            info = await loop.run_in_executor(None, _extract)
+            if info and not info.get("_error") and (info.get("view_count") is not None or info.get("like_count") is not None or info.get("id")):
+                return info
+            if info and info.get("_error"):
+                last_err = info.get("_error")
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            continue
+    log.info(f"yt-dlp all strategies failed for {url[-40:]}: {last_err}")
+    return None
+
+
+async def _video_stats_via_tikwm(url: str) -> Optional[dict]:
+    """TikTok fallback via TikWm API. Returns dict if success, None otherwise."""
+    import re as _re
+    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+               "Origin": "https://www.tikwm.com", "Referer": "https://www.tikwm.com/"}
+    proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=20, headers=headers, proxies=proxies) as c:
+            r = await c.get("https://www.tikwm.com/api/", params={"url": url, "hd": 1})
+            data = r.json()
+        if data.get("code") != 0:
+            log.info(f"TikWm fallback code={data.get('code')} for {url[-40:]}")
+            return None
+        vid = data.get("data") or {}
+        from datetime import datetime as dt, timezone as tz
+        published = None
+        if vid.get("create_time"):
+            try:
+                published = dt.fromtimestamp(int(vid["create_time"]), tz=tz.utc).isoformat()
+            except Exception:
+                pass
+        return {
+            "id": str(vid.get("id") or vid.get("video_id") or vid.get("aweme_id") or ""),
+            "title": (vid.get("title") or "")[:200] or None,
+            "thumbnail": vid.get("cover") or vid.get("origin_cover"),
+            "view_count": int(vid.get("play_count") or 0),
+            "like_count": int(vid.get("digg_count") or 0),
+            "comment_count": int(vid.get("comment_count") or 0),
+            "repost_count": int(vid.get("share_count") or 0),
+            "duration": int(vid.get("duration") or 0),
+            "uploader": (vid.get("author") or {}).get("unique_id"),
+            "_published_iso": published,
+        }
+    except Exception as e:
+        log.info(f"TikWm fallback failed for {url[-40:]}: {type(e).__name__}: {e}")
+        return None
+
+
+async def _video_stats_via_instagram_web(url: str) -> Optional[dict]:
+    """Instagram fallback via web API media/info."""
+    import re as _re
+    m = _re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    INSTAGRAM_SESSION_ID = (os.environ.get("INSTAGRAM_SESSION_ID") or "").strip() or None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Instagram 295.0.0.32.119",
+        "X-IG-App-ID": "936619743392459",
+        "Accept": "*/*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Referer": "https://www.instagram.com/",
+    }
+    cookies = {"sessionid": INSTAGRAM_SESSION_ID} if INSTAGRAM_SESSION_ID else {}
+    proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15, headers=headers, cookies=cookies, proxies=proxies, follow_redirects=True) as c:
+            r = await c.get(f"https://www.instagram.com/api/v1/media/{shortcode}/info/")
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        items = data.get("items") or []
+        if not items:
+            return None
+        item = items[0]
+        from datetime import datetime as dt, timezone as tz
+        published = None
+        if item.get("taken_at"):
+            try:
+                published = dt.fromtimestamp(int(item["taken_at"]), tz=tz.utc).isoformat()
+            except Exception:
+                pass
+        return {
+            "id": shortcode,
+            "title": ((item.get("caption") or {}).get("text") or "")[:200] or None,
+            "thumbnail": ((item.get("image_versions2") or {}).get("candidates") or [{}])[0].get("url"),
+            "view_count": int(item.get("play_count") or item.get("video_view_count") or item.get("ig_play_count") or 0),
+            "like_count": int(item.get("like_count") or 0),
+            "comment_count": int(item.get("comment_count") or 0),
+            "duration": int(item.get("video_duration") or 0),
+            "uploader": (item.get("user") or {}).get("username"),
+            "_published_iso": published,
+        }
+    except Exception as e:
+        log.info(f"Instagram web fallback failed for {url[-40:]}: {type(e).__name__}: {e}")
+        return None
+
+
 @app.post("/v1/video-stats")
 async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
-    """Fetch stats for a single video URL via yt-dlp + proxy. Bypass blocages Railway."""
+    """Fetch stats for a single video URL avec cascade : yt-dlp(3 UAs) -> TikWm(TikTok) -> InstaWeb(IG)."""
     await check_auth(x_api_key)
     url = (payload.get("url") or "").strip()
     if not url:
@@ -202,67 +342,77 @@ async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
     import re as _re
     is_video_url = bool(
         _re.search(r'/video/\d+', url) or            # TikTok video
-        _re.search(r'/(?:p|reel|reels)/[A-Za-z0-9_-]+', url) or  # Instagram post/reel
+        _re.search(r'/(?:p|reel|reels|tv)/[A-Za-z0-9_-]+', url) or  # Instagram post/reel
         _re.search(r'(?:v=|youtu\.be/|/shorts/|/embed/)', url) or  # YouTube
         _re.search(r'/@[\w.-]+/video/\d+', url)      # TikTok with username
     )
     if not is_video_url:
         raise HTTPException(status_code=400, detail="URL doit pointer vers une vidéo spécifique (pas un profil)")
-    try:
-        import yt_dlp
-    except ImportError:
-        raise HTTPException(status_code=500, detail="yt-dlp not installed in scraper")
 
     cache_key = f"vstats:{url}"
     cached = await cache.aget(cache_key)
     if cached:
         return {**cached, "_cached": True}
 
-    loop = asyncio.get_event_loop()
-    def _extract():
-        opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
-        if PROXY_URL:
-            opts["proxy"] = PROXY_URL
+    platform = _detect_platform_from_url(url)
+    info: Optional[dict] = None
+    source_used = None
+    errors = []
+
+    # Stratégie 1 : yt-dlp avec rotation UA
+    info = await _video_stats_via_ytdlp(url)
+    if info:
+        source_used = "ytdlp"
+
+    # Stratégie 2 : fallback TikWm pour TikTok
+    if (not info or (not info.get("view_count") and not info.get("like_count"))) and platform == "tiktok":
+        tikwm = await _video_stats_via_tikwm(url)
+        if tikwm and (tikwm.get("view_count") or tikwm.get("like_count")):
+            info = tikwm
+            source_used = "tikwm"
+
+    # Stratégie 3 : fallback web API pour Instagram
+    if (not info or (not info.get("view_count") and not info.get("like_count"))) and platform == "instagram":
+        ig = await _video_stats_via_instagram_web(url)
+        if ig and (ig.get("view_count") or ig.get("like_count")):
+            info = ig
+            source_used = "instagram_web"
+
+    if not info:
+        raise HTTPException(status_code=502, detail=f"Toutes les sources ont échoué pour cette vidéo ({platform}). Vidéo privée/supprimée ou bloquée par anti-bot.")
+
+    # Format normalisé
+    from datetime import datetime as dt, timezone as tz
+    published = info.get("_published_iso")
+    if not published and info.get("timestamp"):
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception as e:
-            return {"_error": str(e)}
+            published = dt.fromtimestamp(int(info["timestamp"]), tz=tz.utc).isoformat()
+        except Exception:
+            pass
 
-    try:
-        info = await loop.run_in_executor(None, _extract)
-        if not info or info.get("_error"):
-            raise HTTPException(status_code=502, detail=f"yt-dlp failed: {info.get('_error') if info else 'no data'}")
+    views = int(info.get("view_count") or 0)
+    likes = int(info.get("like_count") or 0)
+    if views == 0 and likes == 0:
+        raise HTTPException(status_code=502, detail=f"Stats trouvées mais views=0 et likes=0 — possiblement compte privé ou vidéo supprimée")
 
-        from datetime import datetime as dt, timezone as tz
-        published = None
-        if info.get("timestamp"):
-            try:
-                published = dt.fromtimestamp(int(info["timestamp"]), tz=tz.utc).isoformat()
-            except Exception:
-                pass
-
-        result = {
-            "url": url,
-            "platform_video_id": str(info.get("id", "")),
-            "title": (info.get("title") or info.get("description") or "")[:200] or None,
-            "thumbnail_url": info.get("thumbnail"),
-            "views": int(info.get("view_count") or 0),
-            "likes": int(info.get("like_count") or 0),
-            "comments": int(info.get("comment_count") or 0),
-            "shares": int(info.get("repost_count") or 0),
-            "duration": int(info.get("duration") or 0),
-            "published_at": published,
-            "uploader": info.get("uploader") or info.get("channel"),
-        }
-        # Cache court (60s) car les stats vidéo bougent vite et l'utilisateur perçoit le cache comme "fausses stats"
-        await cache.aset(cache_key, result, ttl=60)
-        return {**result, "_cached": False}
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.warning(f"video-stats failed for {url}: {e}")
-        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
+    result = {
+        "url": url,
+        "platform_video_id": str(info.get("id", "")),
+        "title": (info.get("title") or "")[:200] or None,
+        "thumbnail_url": info.get("thumbnail"),
+        "views": views,
+        "likes": likes,
+        "comments": int(info.get("comment_count") or 0),
+        "shares": int(info.get("repost_count") or 0),
+        "duration": int(info.get("duration") or 0),
+        "published_at": published,
+        "uploader": info.get("uploader") or info.get("channel"),
+        "_source": source_used,
+    }
+    # Cache court (60s) car les stats vidéo bougent vite
+    await cache.aset(cache_key, result, ttl=60)
+    log.info(f"video-stats OK via {source_used} for {url[-40:]}: views={views} likes={likes}")
+    return {**result, "_cached": False}
 
 
 @app.get("/v1/usage")
