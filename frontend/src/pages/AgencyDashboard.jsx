@@ -4101,69 +4101,70 @@ function SettingsPage() {
     }
   };
 
-  // ===== Plans Vues & Clics (full tracking) =====
+  // ===== Plans VUES (tracking vues seulement, AUCUN tracking de clics) =====
   const PLANS_FULL = [
     {
       id: "plan_small", name: "Starter", price: "349€/mois",
       features: [
         "1 campagne active",
-        "Jusqu'à 15 clippeurs",
-        "Tracking vues 1× / jour (8h Paris)",
-        "Tracking clics 1× / jour (12h)",
+        "30 comptes trackés (TikTok/Insta/YouTube)",
+        "Tracking vues 1× / jour (08h Paris)",
         "Striking automatique",
-        "Stats vues + clics complets",
-        "Support standard"
+        "Stats vues complètes + RPM auto",
+        "Support standard",
+        "Pas de tracking clics inclus"
       ]
     },
     {
       id: "plan_medium", name: "Pro", price: "549€/mois", featured: true,
       features: [
         "3 campagnes actives",
-        "Jusqu'à 45 clippeurs (total)",
-        "Tracking vues 2× / jour (07:30 + 15:30 Paris)",
-        "Tracking clics 1× / jour (12h)",
+        "100 comptes trackés (TikTok/Insta/YouTube)",
+        "Tracking vues 2× / jour (07:30 + 15:30)",
         "Striking automatique",
-        "Stats vues + clics complets",
+        "Stats vues complètes + RPM auto",
         "Analytics avancés",
-        "Support prioritaire"
+        "Support prioritaire",
+        "Pas de tracking clics inclus"
       ]
     },
     {
       id: "plan_unlimited", name: "Business", price: "749€/mois",
       features: [
         "Campagnes illimitées",
-        "Jusqu'à 200 clippeurs (total)",
+        "400 comptes trackés (TikTok/Insta/YouTube)",
         "Tracking vues 4× / jour (07:30, 12:00, 15:30, 22:00)",
-        "Tracking clics 1× / jour si campagne au clic",
         "Striking automatique",
-        "Stats vues + clics complets",
+        "Stats vues complètes + RPM auto",
         "Analytics avancés",
         "Support premium 24/7",
-        "Accès API"
+        "Accès API",
+        "Pas de tracking clics inclus"
       ]
     },
     {
       id: "plan_custom", name: "Enterprise", price: "Sur devis", custom: true,
       features: [
         "Campagnes illimitées",
-        "Clippeurs illimités",
+        "Comptes trackés illimités",
         "Serveur dédié sur mesure",
         "Tracking personnalisé (intervalle libre)",
         "Striking automatique",
         "Intégrations sur mesure",
         "Account manager dédié",
-        "SLA garanti"
+        "SLA garanti",
+        "Vues + Clics combinés possibles"
       ]
     },
   ];
 
-  // ===== Plans Clics uniquement (sans tracking de vues, moins cher) =====
+  // ===== Plans CLICS (tracking clics seulement, AUCUN tracking de vues) =====
   const PLANS_CLICK = [
     {
       id: "plan_small_click", name: "Starter Clic", price: "89€/mois",
       features: [
         "1 campagne active (au clic)",
-        "Jusqu'à 15 clippeurs",
+        "30 comptes (liens trackés)",
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
         "Support standard",
@@ -4174,7 +4175,7 @@ function SettingsPage() {
       id: "plan_medium_click", name: "Pro Clic", price: "149€/mois", featured: true,
       features: [
         "3 campagnes actives (au clic)",
-        "Jusqu'à 45 clippeurs (total)",
+        "100 comptes (liens trackés)",
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
         "Analytics clics avancés",
@@ -4186,7 +4187,7 @@ function SettingsPage() {
       id: "plan_unlimited_click", name: "Business Clic", price: "225€/mois",
       features: [
         "Campagnes illimitées (au clic)",
-        "Jusqu'à 200 clippeurs (total)",
+        "400 comptes (liens trackés)",
         "Tracking clics en temps réel",
         "Liens bio personnalisés",
         "Analytics clics avancés",
