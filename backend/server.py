@@ -5576,6 +5576,54 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
         except Exception as e:
             logger.warning(f"yt-dlp TikTok failed for {url[-30:]}: {e}")
 
+    # Strategy 4 (DERNIER RECOURS) : Apify TikTok scraper pour video individuelle
+    # Coute ~0.0003€/video = 0.30€/1000 videos. Justifie pour garantir le tracking individuel.
+    # SEULEMENT si toutes les sources gratuites ont echoue.
+    if APIFY_TOKEN and not APIFY_DISABLED:
+        logger.info(f"_fetch_single_tiktok_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {url[-30:]}")
+        for actor_id in ("clockworks~tiktok-scraper", "apify~tiktok-scraper"):
+            try:
+                async with httpx.AsyncClient(timeout=180) as c:
+                    ar = await c.post(
+                        f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
+                        params={"token": APIFY_TOKEN},
+                        json={
+                            "postURLs": [url],
+                            "resultsPerPage": 1,
+                            "shouldDownloadVideos": False,
+                            "shouldDownloadCovers": False,
+                            "shouldDownloadSubtitles": False,
+                            "shouldDownloadSlideshowImages": False,
+                        },
+                    )
+                if ar.status_code != 200:
+                    continue
+                items = ar.json() or []
+                if not items:
+                    continue
+                item = items[0] if isinstance(items[0], dict) else {}
+                views_a = int(item.get("playCount") or item.get("viewCount") or 0)
+                likes_a = int(item.get("diggCount") or item.get("likeCount") or 0)
+                if views_a == 0 and likes_a == 0:
+                    continue
+                logger.info(f"Apify TikTok BACKUP SUCCESS for {url[-30:]}: views={views_a} likes={likes_a}")
+                await _log_scrape("apify", "tiktok", url[-30:], True, 1, "USED FOR SINGLE VIDEO")
+                vmeta = item.get("videoMeta") or {}
+                author = item.get("authorMeta") or item.get("author") or {}
+                return {
+                    "platform_video_id": str(item.get("id") or fallback["platform_video_id"]),
+                    "url": url,
+                    "title": (item.get("text") or "")[:200] or None,
+                    "thumbnail_url": vmeta.get("coverUrl") or item.get("covers", [None])[0] if isinstance(item.get("covers"), list) else None,
+                    "views": views_a,
+                    "likes": likes_a,
+                    "comments": int(item.get("commentCount") or 0),
+                    "published_at": item.get("createTimeISO") or item.get("createTime"),
+                }
+            except Exception as e:
+                logger.warning(f"Apify TikTok single video {actor_id} failed: {type(e).__name__}: {e}")
+                continue
+
     # Si TikWm avait des likes mais views=0, retourner quand meme ses donnees (mieux que rien)
     if tikwm_data:
         return tikwm_data
