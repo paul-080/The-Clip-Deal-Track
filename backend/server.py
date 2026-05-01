@@ -10513,6 +10513,77 @@ async def verify_admin_code(request: Request):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
 
+@api_router.get("/admin/diag-instagram")
+async def admin_diag_instagram(request: Request, url: str = "https://www.instagram.com/p/DVju4UNCle9/"):
+    """DIAGNOSTIC : test direct du scraping Insta + tous les checks de configuration.
+    Usage: GET /api/admin/diag-instagram?url=...&code=ADMIN_CODE (X-Admin-Code header ou query)"""
+    # Auth simple par query param ou header (pour faciliter le test depuis navigateur)
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide (param ?code= ou header X-Admin-Code)")
+
+    diag = {
+        "url_tested": url,
+        "config": {
+            "APIFY_TOKEN_configured": bool(APIFY_TOKEN),
+            "APIFY_TOKEN_prefix": (APIFY_TOKEN[:10] + "...") if APIFY_TOKEN else None,
+            "APIFY_DISABLED": APIFY_DISABLED,
+            "APIFY_INSTA_DAILY_BUDGET": APIFY_INSTA_DAILY_BUDGET,
+            "INSTAGRAM_SESSIONS_count": len(INSTAGRAM_SESSIONS),
+            "CLIP_SCRAPER_URL": CLIP_SCRAPER_URL or "(non configure)",
+            "CLIP_SCRAPER_KEY_configured": bool(CLIP_SCRAPER_KEY),
+            "IG_BUSINESS_ACCOUNT_ID_configured": bool(IG_BUSINESS_ACCOUNT_ID),
+            "IG_LONG_LIVED_TOKEN_configured": bool(IG_LONG_LIVED_TOKEN),
+        },
+    }
+
+    # Test 1 : budget Apify
+    try:
+        budget_ok = await _apify_budget_ok("instagram")
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+        today_count = await db.scraping_history.count_documents({
+            "source": "apify",
+            "platform": "instagram",
+            "timestamp": {"$gte": today_iso}
+        })
+        diag["apify_budget"] = {
+            "ok": budget_ok,
+            "used_today": today_count,
+            "max_per_day": APIFY_INSTA_DAILY_BUDGET,
+        }
+    except Exception as e:
+        diag["apify_budget"] = {"error": str(e)}
+
+    # Test 2 : Apify Reel Scraper direct
+    if APIFY_TOKEN and not APIFY_DISABLED:
+        m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+        shortcode = m.group(1) if m else None
+        if shortcode:
+            try:
+                logger.info(f"[DIAG] Testing Apify Reel Scraper for {shortcode}")
+                apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
+                diag["apify_reel_scraper_result"] = apify_result if apify_result else "echec ou aucune donnee"
+            except Exception as e:
+                diag["apify_reel_scraper_result"] = {"error": f"{type(e).__name__}: {e}"}
+        else:
+            diag["apify_reel_scraper_result"] = "URL invalide (pas de shortcode trouve)"
+    else:
+        diag["apify_reel_scraper_result"] = "SKIP - APIFY_TOKEN manquant ou APIFY_DISABLED=true"
+
+    # Test 3 : cascade complete _fetch_single_instagram_video
+    try:
+        full_result = await asyncio.wait_for(
+            _fetch_single_instagram_video(url), timeout=120
+        )
+        diag["full_cascade_result"] = full_result
+    except asyncio.TimeoutError:
+        diag["full_cascade_result"] = {"error": "TIMEOUT 120s"}
+    except Exception as e:
+        diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
+
+    return diag
+
+
 @api_router.get("/admin/verify")
 async def admin_verify(request: Request):
     """Verify admin code — returns 200 if valid, 403 if not."""
