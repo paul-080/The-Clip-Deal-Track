@@ -5992,21 +5992,48 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
         return fallback
 
     # STRATEGY 0 (PRIORITE ABSOLUE) : Apify Reel Scraper
+    # IMPORTANT : on stocke le diagnostic dans une global pour le diag endpoint
+    cascade_log = []
     if APIFY_TOKEN and not APIFY_DISABLED:
         budget_ok = await _apify_budget_ok("instagram")
-        logger.info(f"[IG cascade] {shortcode}: APIFY_TOKEN ok, budget_ok={budget_ok}")
+        cascade_log.append(f"APIFY_TOKEN ok, budget_ok={budget_ok}")
         if budget_ok:
-            apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
-            if apify_result:
-                v = apify_result.get("views", 0)
-                l = apify_result.get("likes", 0)
-                logger.info(f"[IG cascade] {shortcode}: Apify returned views={v} likes={l}")
-                if v > 0 or l > 0:
-                    return apify_result
-            else:
-                logger.warning(f"[IG cascade] {shortcode}: Apify returned None")
+            try:
+                apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
+                if apify_result:
+                    v = apify_result.get("views", 0)
+                    l = apify_result.get("likes", 0)
+                    cascade_log.append(f"Apify returned views={v} likes={l}")
+                    if v > 0 or l > 0:
+                        # Stocke le log pour debug
+                        try:
+                            await db.cascade_debug_log.replace_one(
+                                {"_id": f"ig_{shortcode}"},
+                                {"_id": f"ig_{shortcode}", "log": cascade_log, "result": apify_result, "ts": datetime.now(timezone.utc).isoformat()},
+                                upsert=True
+                            )
+                        except Exception:
+                            pass
+                        return apify_result
+                    else:
+                        cascade_log.append("Apify result has 0 views AND 0 likes, falling through")
+                else:
+                    cascade_log.append("Apify returned None")
+            except Exception as e:
+                cascade_log.append(f"Apify EXCEPTION: {type(e).__name__}: {e}")
+        else:
+            cascade_log.append("budget atteint, skip Apify")
     else:
-        logger.info(f"[IG cascade] {shortcode}: skip Apify (token={bool(APIFY_TOKEN)} disabled={APIFY_DISABLED})")
+        cascade_log.append(f"skip Apify (token={bool(APIFY_TOKEN)} disabled={APIFY_DISABLED})")
+    # Stocke le log pour debug
+    try:
+        await db.cascade_debug_log.replace_one(
+            {"_id": f"ig_{shortcode}"},
+            {"_id": f"ig_{shortcode}", "log": cascade_log, "ts": datetime.now(timezone.utc).isoformat()},
+            upsert=True
+        )
+    except Exception:
+        pass
 
     # STRATEGY 0b (FALLBACK GRATUIT) : Meta Business Discovery API officielle (si configure)
     if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
@@ -10614,6 +10641,18 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
         except Exception as e:
             diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
             diag["apify_reel_scraper_result"] = f"error cascade: {e}"
+
+        # Recupere le cascade log stocke par _fetch_single_instagram_video
+        diag["_step"] = "cascade_log"
+        try:
+            import re as _re_for_id
+            m_id = _re_for_id.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+            shortcode_id = m_id.group(1) if m_id else None
+            if shortcode_id:
+                cascade_doc = await db.cascade_debug_log.find_one({"_id": f"ig_{shortcode_id}"}, {"_id": 0})
+                diag["cascade_log"] = cascade_doc if cascade_doc else "no log found"
+        except Exception as e:
+            diag["cascade_log"] = f"error: {e}"
 
         diag["_step"] = "DONE"
         return diag
