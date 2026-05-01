@@ -280,105 +280,145 @@ async def _video_stats_via_tikwm(url: str) -> Optional[dict]:
         return None
 
 
+def _walk_dict_find(obj, target_id: str, max_depth: int = 8):
+    """Walk recursively dans un dict pour trouver le node qui matche {"id": target_id, ...}
+    avec stats playCount/diggCount. Retourne le node ou None."""
+    if max_depth <= 0:
+        return None
+    if isinstance(obj, dict):
+        if str(obj.get("id", "")) == target_id and (
+            obj.get("stats") or obj.get("statistics") or obj.get("playCount") is not None
+        ):
+            return obj
+        for v in obj.values():
+            r = _walk_dict_find(v, target_id, max_depth - 1)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _walk_dict_find(v, target_id, max_depth - 1)
+            if r:
+                return r
+    return None
+
+
 async def _video_stats_via_tiktok_html(url: str) -> Optional[dict]:
-    """TikTok fallback : parse direct la page HTML TikTok et cherche les stats de la vidéo cible.
-    Utilise le proxy si configuré (l'IP du VPS est souvent ban par TikTok)."""
+    """TikTok fallback ROBUSTE : parse direct la page HTML via proxy résidentiel.
+    Multi-stratégies de parsing : JSON-LD, SIGI, walk recursif, regex ancré."""
     import re as _re
     import json as _json
+    from datetime import datetime as dt, timezone as tz
+
     m = _re.search(r'/video/(\d+)', url)
     if not m:
         return None
     target_vid_id = m.group(1)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Upgrade-Insecure-Requests": "1",
-    }
+    # Tente plusieurs UA / headers
+    UA_LIST = [
+        ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", "fr-FR,fr;q=0.9,en;q=0.8"),
+        ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "en-US,en;q=0.9"),
+        ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", "en-US,en;q=0.9,fr;q=0.8"),
+    ]
     proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+    html = None
+    last_status = None
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=25, headers=headers, proxies=proxies, follow_redirects=True) as c:
-            r = await c.get(url)
-        if r.status_code != 200:
-            log.info(f"TikTok HTML fallback HTTP {r.status_code} for {url[-40:]}")
+        for ua, lang in UA_LIST:
+            headers = {
+                "User-Agent": ua,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": lang,
+                "Accept-Encoding": "gzip, deflate, br",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=25, headers=headers, proxies=proxies, follow_redirects=True) as c:
+                    r = await c.get(url)
+                last_status = r.status_code
+                if r.status_code == 200 and len(r.text) > 1000:
+                    html = r.text
+                    log.info(f"TikTok HTML fallback : got {len(html)} bytes via UA={ua[:30]}")
+                    break
+            except Exception as e:
+                log.info(f"TikTok HTML GET failed UA={ua[:30]}: {type(e).__name__}: {e}")
+                continue
+        if not html:
+            log.info(f"TikTok HTML fallback no html (last_status={last_status}) for {url[-40:]}")
             return None
-        html = r.text
-        # Cherche le bloc UNIVERSAL_DATA puis ItemModule
-        sigi = None
-        m2 = _re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.+?)</script>', html, _re.DOTALL)
+    except Exception as e:
+        log.info(f"TikTok HTML setup failed: {type(e).__name__}: {e}")
+        return None
+
+    item = None
+    # Stratégie 1 : JSON-LD (structured data) — TikTok inclut souvent des @type: "VideoObject"
+    for jm in _re.finditer(r'<script[^>]+type="application/ld\+json"[^>]*>(.+?)</script>', html, _re.DOTALL):
+        try:
+            ld = _json.loads(jm.group(1))
+            if isinstance(ld, list):
+                cands = ld
+            else:
+                cands = [ld]
+            for c in cands:
+                if isinstance(c, dict) and (c.get("@type") in ("VideoObject", "SocialMediaPosting")):
+                    interaction = c.get("interactionStatistic") or []
+                    stats = {}
+                    if isinstance(interaction, list):
+                        for s in interaction:
+                            t = (s.get("interactionType") or {})
+                            t_name = t.get("@type") if isinstance(t, dict) else str(t)
+                            if "Watch" in str(t_name):
+                                stats["views"] = int(s.get("userInteractionCount") or 0)
+                            elif "Like" in str(t_name):
+                                stats["likes"] = int(s.get("userInteractionCount") or 0)
+                            elif "Comment" in str(t_name):
+                                stats["comments"] = int(s.get("userInteractionCount") or 0)
+                            elif "Share" in str(t_name):
+                                stats["shares"] = int(s.get("userInteractionCount") or 0)
+                    if stats.get("views") or stats.get("likes"):
+                        log.info(f"TikTok HTML : JSON-LD parse OK views={stats.get('views')} likes={stats.get('likes')}")
+                        return {
+                            "id": target_vid_id,
+                            "title": (c.get("name") or c.get("description") or "")[:200] or None,
+                            "thumbnail": c.get("thumbnailUrl") if isinstance(c.get("thumbnailUrl"), str) else (c.get("thumbnailUrl") or [None])[0] if c.get("thumbnailUrl") else None,
+                            "view_count": int(stats.get("views") or 0),
+                            "like_count": int(stats.get("likes") or 0),
+                            "comment_count": int(stats.get("comments") or 0),
+                            "repost_count": int(stats.get("shares") or 0),
+                            "_published_iso": c.get("uploadDate"),
+                        }
+        except Exception:
+            continue
+
+    # Stratégie 2 : __UNIVERSAL_DATA_FOR_REHYDRATION__ ou SIGI_STATE
+    sigi = None
+    for sid in ("__UNIVERSAL_DATA_FOR_REHYDRATION__", "SIGI_STATE", "__NEXT_DATA__"):
+        m2 = _re.search(rf'<script[^>]+id="{sid}"[^>]*>(.+?)</script>', html, _re.DOTALL)
         if m2:
             try:
                 sigi = _json.loads(m2.group(1))
-            except Exception:
-                pass
-        if not sigi:
-            m2 = _re.search(r'<script id="SIGI_STATE"[^>]*>(.+?)</script>', html, _re.DOTALL)
-            if m2:
-                try:
-                    sigi = _json.loads(m2.group(1))
-                except Exception:
-                    pass
-        item = None
-        if sigi:
-            # Format moderne : __DEFAULT_SCOPE__.webapp.video-detail.itemInfo.itemStruct
-            try:
-                vd = (sigi.get("__DEFAULT_SCOPE__") or {}).get("webapp.video-detail", {})
-                item = (vd.get("itemInfo") or {}).get("itemStruct") or vd.get("itemStruct")
-            except Exception:
-                pass
-            if not item:
-                # Format ancien : ItemModule[vid_id]
-                im = sigi.get("ItemModule", {})
-                if isinstance(im, dict):
-                    item = im.get(target_vid_id) or (next(iter(im.values())) if im else None)
-        # Fallback regex si SIGI absent : cherche les stats DANS la page autour du vid_id
-        if not item:
-            # Match brut "playCount":N près de l'ID demandé
-            esc_id = _re.escape(target_vid_id)
-            ctx_match = _re.search(rf'"id":"{esc_id}"[\s\S]{{0,4000}}?"playCount":(\d+)', html)
-            if ctx_match:
-                # Extrait stats dans la fenêtre
-                window_start = ctx_match.start()
-                window = html[window_start:window_start + 5000]
-                views = int(ctx_match.group(1))
-                likes = int(_re.search(r'"diggCount":(\d+)', window).group(1)) if _re.search(r'"diggCount":(\d+)', window) else 0
-                comments = int(_re.search(r'"commentCount":(\d+)', window).group(1)) if _re.search(r'"commentCount":(\d+)', window) else 0
-                shares = int(_re.search(r'"shareCount":(\d+)', window).group(1)) if _re.search(r'"shareCount":(\d+)', window) else 0
-                title_m = _re.search(r'"desc":"([^"\\]*)"', window)
-                created_m = _re.search(r'"createTime":(\d+)', window)
-                cover_m = _re.search(r'"cover":"([^"]+)"', window)
-                from datetime import datetime as dt, timezone as tz
-                published = None
-                if created_m:
-                    try:
-                        published = dt.fromtimestamp(int(created_m.group(1)), tz=tz.utc).isoformat()
-                    except Exception:
-                        pass
-                return {
-                    "id": target_vid_id,
-                    "title": (title_m.group(1)[:200] if title_m else None),
-                    "thumbnail": (cover_m.group(1).replace("\\u002F", "/").replace("\\/", "/") if cover_m else None),
-                    "view_count": views,
-                    "like_count": likes,
-                    "comment_count": comments,
-                    "repost_count": shares,
-                    "_published_iso": published,
-                }
-            return None
-        # Item trouvé via SIGI : extrait stats
+                log.info(f"TikTok HTML : found {sid}, walking for vid_id={target_vid_id}")
+                break
+            except Exception as e:
+                log.info(f"TikTok HTML : {sid} JSON parse error: {e}")
+                continue
+    if sigi:
+        item = _walk_dict_find(sigi, target_vid_id)
+        if item:
+            log.info(f"TikTok HTML : walk_dict found item with stats")
+
+    if item:
         stats = item.get("stats") or item.get("statistics") or {}
-        from datetime import datetime as dt, timezone as tz
         published = None
         if item.get("createTime"):
             try:
                 published = dt.fromtimestamp(int(item["createTime"]), tz=tz.utc).isoformat()
             except Exception:
                 pass
+        author = item.get("author")
         return {
             "id": str(item.get("id") or target_vid_id),
             "title": (item.get("desc") or "")[:200] or None,
@@ -387,12 +427,55 @@ async def _video_stats_via_tiktok_html(url: str) -> Optional[dict]:
             "like_count": int(stats.get("diggCount") or stats.get("digg_count") or 0),
             "comment_count": int(stats.get("commentCount") or stats.get("comment_count") or 0),
             "repost_count": int(stats.get("shareCount") or stats.get("share_count") or 0),
-            "uploader": (item.get("author") or {}).get("uniqueId") if isinstance(item.get("author"), dict) else item.get("author"),
+            "uploader": (author.get("uniqueId") if isinstance(author, dict) else author),
             "_published_iso": published,
         }
-    except Exception as e:
-        log.info(f"TikTok HTML fallback failed for {url[-40:]}: {type(e).__name__}: {e}")
-        return None
+
+    # Stratégie 3 : regex ancré sur le vid_id — cherche la fenêtre qui contient l'ID + playCount
+    esc_id = _re.escape(target_vid_id)
+    # On cherche dans les 8000 chars APRÈS le vid_id ou les 8000 AVANT
+    for direction in ("after", "before"):
+        if direction == "after":
+            pat = rf'"id":"{esc_id}"([\s\S]{{0,8000}})'
+        else:
+            pat = rf'([\s\S]{{0,8000}})"id":"{esc_id}"'
+        m3 = _re.search(pat, html)
+        if not m3:
+            continue
+        window = m3.group(1)
+        play_m = _re.search(r'"playCount":(\d+)', window)
+        if not play_m:
+            continue
+        views = int(play_m.group(1))
+        likes_m = _re.search(r'"diggCount":(\d+)', window)
+        comm_m = _re.search(r'"commentCount":(\d+)', window)
+        share_m = _re.search(r'"shareCount":(\d+)', window)
+        title_m = _re.search(r'"desc":"([^"\\]*)"', window)
+        cover_m = _re.search(r'"cover":"([^"]+)"', window)
+        created_m = _re.search(r'"createTime":(\d+)', window)
+        published = None
+        if created_m:
+            try:
+                published = dt.fromtimestamp(int(created_m.group(1)), tz=tz.utc).isoformat()
+            except Exception:
+                pass
+        log.info(f"TikTok HTML : regex {direction} matched, views={views}")
+        return {
+            "id": target_vid_id,
+            "title": (title_m.group(1)[:200] if title_m else None),
+            "thumbnail": (cover_m.group(1).replace("\\u002F", "/").replace("\\/", "/") if cover_m else None),
+            "view_count": views,
+            "like_count": int(likes_m.group(1)) if likes_m else 0,
+            "comment_count": int(comm_m.group(1)) if comm_m else 0,
+            "repost_count": int(share_m.group(1)) if share_m else 0,
+            "_published_iso": published,
+        }
+
+    # Diagnostic : la page contient-elle au moins playCount quelque part ?
+    has_play = bool(_re.search(r'"playCount":\d+', html))
+    has_id = target_vid_id in html
+    log.warning(f"TikTok HTML : ALL strategies failed for vid={target_vid_id}. has_playCount={has_play} has_vid_id_in_html={has_id} html_size={len(html)}")
+    return None
 
 
 async def _video_stats_via_instagram_web(url: str) -> Optional[dict]:
