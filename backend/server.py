@@ -10515,73 +10515,106 @@ async def verify_admin_code(request: Request):
 
 @api_router.get("/admin/diag-instagram")
 async def admin_diag_instagram(request: Request, url: str = "https://www.instagram.com/p/DVju4UNCle9/"):
-    """DIAGNOSTIC : test direct du scraping Insta + tous les checks de configuration.
-    Usage: GET /api/admin/diag-instagram?url=...&code=ADMIN_CODE (X-Admin-Code header ou query)"""
-    # Auth simple par query param ou header (pour faciliter le test depuis navigateur)
+    """DIAGNOSTIC : test direct du scraping Insta + tous les checks de configuration."""
+    # Auth simple
     code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
-        raise HTTPException(status_code=403, detail="Code admin invalide (param ?code= ou header X-Admin-Code)")
+        raise HTTPException(status_code=403, detail="Code admin invalide")
 
-    diag = {
-        "url_tested": url,
-        "config": {
-            "APIFY_TOKEN_configured": bool(APIFY_TOKEN),
-            "APIFY_TOKEN_prefix": (APIFY_TOKEN[:10] + "...") if APIFY_TOKEN else None,
-            "APIFY_DISABLED": APIFY_DISABLED,
-            "APIFY_INSTA_DAILY_BUDGET": APIFY_INSTA_DAILY_BUDGET,
-            "INSTAGRAM_SESSIONS_count": len(INSTAGRAM_SESSIONS),
-            "CLIP_SCRAPER_URL": CLIP_SCRAPER_URL or "(non configure)",
-            "CLIP_SCRAPER_KEY_configured": bool(CLIP_SCRAPER_KEY),
-            "IG_BUSINESS_ACCOUNT_ID_configured": bool(IG_BUSINESS_ACCOUNT_ID),
-            "IG_LONG_LIVED_TOKEN_configured": bool(IG_LONG_LIVED_TOKEN),
-        },
-    }
-
-    # Test 1 : budget Apify
+    diag = {"url_tested": url, "_step": "init"}
     try:
-        budget_ok = await _apify_budget_ok("instagram")
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
-        today_count = await db.scraping_history.count_documents({
-            "source": "apify",
-            "platform": "instagram",
-            "timestamp": {"$gte": today_iso}
-        })
-        diag["apify_budget"] = {
-            "ok": budget_ok,
-            "used_today": today_count,
-            "max_per_day": APIFY_INSTA_DAILY_BUDGET,
+        diag["_step"] = "config"
+        try:
+            apify_token_global = APIFY_TOKEN
+        except NameError:
+            apify_token_global = ""
+        try:
+            apify_disabled_global = APIFY_DISABLED
+        except NameError:
+            apify_disabled_global = None
+        try:
+            apify_budget_global = APIFY_INSTA_DAILY_BUDGET
+        except NameError:
+            apify_budget_global = "NOT_DEFINED"
+        try:
+            ig_sessions_count = len(INSTAGRAM_SESSIONS)
+        except NameError:
+            ig_sessions_count = "NOT_DEFINED"
+        try:
+            ig_biz = bool(IG_BUSINESS_ACCOUNT_ID)
+        except NameError:
+            ig_biz = "NOT_DEFINED"
+        try:
+            ig_token = bool(IG_LONG_LIVED_TOKEN)
+        except NameError:
+            ig_token = "NOT_DEFINED"
+        try:
+            cs_url = CLIP_SCRAPER_URL or "(vide)"
+        except NameError:
+            cs_url = "NOT_DEFINED"
+        try:
+            cs_key = bool(CLIP_SCRAPER_KEY)
+        except NameError:
+            cs_key = "NOT_DEFINED"
+        diag["config"] = {
+            "APIFY_TOKEN_configured": bool(apify_token_global),
+            "APIFY_TOKEN_prefix": (apify_token_global[:10] + "...") if apify_token_global else None,
+            "APIFY_DISABLED": apify_disabled_global,
+            "APIFY_INSTA_DAILY_BUDGET": apify_budget_global,
+            "INSTAGRAM_SESSIONS_count": ig_sessions_count,
+            "CLIP_SCRAPER_URL": cs_url,
+            "CLIP_SCRAPER_KEY_configured": cs_key,
+            "IG_BUSINESS_ACCOUNT_ID_configured": ig_biz,
+            "IG_LONG_LIVED_TOKEN_configured": ig_token,
         }
-    except Exception as e:
-        diag["apify_budget"] = {"error": str(e)}
 
-    # Test 2 : Apify Reel Scraper direct
-    if APIFY_TOKEN and not APIFY_DISABLED:
-        m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-        shortcode = m.group(1) if m else None
-        if shortcode:
-            try:
-                logger.info(f"[DIAG] Testing Apify Reel Scraper for {shortcode}")
-                apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
-                diag["apify_reel_scraper_result"] = apify_result if apify_result else "echec ou aucune donnee"
-            except Exception as e:
-                diag["apify_reel_scraper_result"] = {"error": f"{type(e).__name__}: {e}"}
+        # Budget
+        diag["_step"] = "budget"
+        try:
+            budget_ok = await _apify_budget_ok("instagram")
+            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+            today_count = await db.scraping_history.count_documents({
+                "source": "apify", "platform": "instagram", "timestamp": {"$gte": today_iso}
+            })
+            diag["apify_budget"] = {"ok": budget_ok, "used_today": today_count, "max_per_day": apify_budget_global}
+        except Exception as e:
+            diag["apify_budget"] = {"error": f"{type(e).__name__}: {e}"}
+
+        # Apify Reel Scraper direct
+        diag["_step"] = "apify_reel_scraper"
+        if apify_token_global and not apify_disabled_global:
+            m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+            shortcode = m.group(1) if m else None
+            if shortcode:
+                try:
+                    apify_result = await asyncio.wait_for(
+                        _fetch_instagram_via_apify_reel_scraper(url, shortcode), timeout=120
+                    )
+                    diag["apify_reel_scraper_result"] = apify_result if apify_result else "ECHEC ou aucune donnee"
+                except asyncio.TimeoutError:
+                    diag["apify_reel_scraper_result"] = "TIMEOUT 120s"
+                except Exception as e:
+                    diag["apify_reel_scraper_result"] = {"error": f"{type(e).__name__}: {e}"}
+            else:
+                diag["apify_reel_scraper_result"] = "URL invalide (pas de shortcode)"
         else:
-            diag["apify_reel_scraper_result"] = "URL invalide (pas de shortcode trouve)"
-    else:
-        diag["apify_reel_scraper_result"] = "SKIP - APIFY_TOKEN manquant ou APIFY_DISABLED=true"
+            diag["apify_reel_scraper_result"] = "SKIP - APIFY_TOKEN manquant ou APIFY_DISABLED=true"
 
-    # Test 3 : cascade complete _fetch_single_instagram_video
-    try:
-        full_result = await asyncio.wait_for(
-            _fetch_single_instagram_video(url), timeout=120
-        )
-        diag["full_cascade_result"] = full_result
-    except asyncio.TimeoutError:
-        diag["full_cascade_result"] = {"error": "TIMEOUT 120s"}
+        # Cascade complete
+        diag["_step"] = "full_cascade"
+        try:
+            full_result = await asyncio.wait_for(_fetch_single_instagram_video(url), timeout=150)
+            diag["full_cascade_result"] = full_result
+        except asyncio.TimeoutError:
+            diag["full_cascade_result"] = {"error": "TIMEOUT 150s"}
+        except Exception as e:
+            diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
+
+        diag["_step"] = "DONE"
+        return diag
     except Exception as e:
-        diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
-
-    return diag
+        diag["_FATAL_ERROR"] = f"{type(e).__name__}: {e} (at step={diag.get('_step')})"
+        return diag
 
 
 @api_router.get("/admin/verify")
