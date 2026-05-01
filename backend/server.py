@@ -5992,13 +5992,21 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
         return fallback
 
     # STRATEGY 0 (PRIORITE ABSOLUE) : Apify Reel Scraper
-    # Coute $0.0026/video, retourne videoPlayCount + videoViewCount, on prend le MAX.
-    # Le client a abonnement Apify Starter $29/mois -> 11000 calls inclus.
-    # Circuit breaker via APIFY_INSTA_DAILY_BUDGET (default 50/jour pour eviter explosion).
-    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
-        apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
-        if apify_result and (apify_result.get("views", 0) > 0 or apify_result.get("likes", 0) > 0):
-            return apify_result
+    if APIFY_TOKEN and not APIFY_DISABLED:
+        budget_ok = await _apify_budget_ok("instagram")
+        logger.info(f"[IG cascade] {shortcode}: APIFY_TOKEN ok, budget_ok={budget_ok}")
+        if budget_ok:
+            apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
+            if apify_result:
+                v = apify_result.get("views", 0)
+                l = apify_result.get("likes", 0)
+                logger.info(f"[IG cascade] {shortcode}: Apify returned views={v} likes={l}")
+                if v > 0 or l > 0:
+                    return apify_result
+            else:
+                logger.warning(f"[IG cascade] {shortcode}: Apify returned None")
+    else:
+        logger.info(f"[IG cascade] {shortcode}: skip Apify (token={bool(APIFY_TOKEN)} disabled={APIFY_DISABLED})")
 
     # STRATEGY 0b (FALLBACK GRATUIT) : Meta Business Discovery API officielle (si configure)
     if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
@@ -10594,40 +10602,18 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
         except Exception as e:
             diag["apify_budget"] = {"error": f"{type(e).__name__}: {e}"}
 
-        # Apify Reel Scraper direct avec debug detaille
-        diag["_step"] = "apify_reel_scraper"
-        if apify_token_global and not apify_disabled_global:
-            import re as _re_local
-            m = _re_local.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
-            shortcode = m.group(1) if m else None
-            if shortcode:
-                debug_apify = {}
-                try:
-                    apify_result = await asyncio.wait_for(
-                        _fetch_instagram_via_apify_reel_scraper(url, shortcode, debug_collector=debug_apify), timeout=180
-                    )
-                    diag["apify_reel_scraper_result"] = apify_result if apify_result else "ECHEC - voir apify_debug"
-                    diag["apify_debug"] = debug_apify
-                except asyncio.TimeoutError:
-                    diag["apify_reel_scraper_result"] = "TIMEOUT 180s"
-                    diag["apify_debug"] = debug_apify
-                except Exception as e:
-                    diag["apify_reel_scraper_result"] = {"error": f"{type(e).__name__}: {e}"}
-                    diag["apify_debug"] = debug_apify
-            else:
-                diag["apify_reel_scraper_result"] = "URL invalide (pas de shortcode)"
-        else:
-            diag["apify_reel_scraper_result"] = "SKIP - APIFY_TOKEN manquant ou APIFY_DISABLED=true"
-
-        # Cascade complete
+        # Cascade complete UNIQUEMENT (1 seul appel Apify pour eviter rate limit)
         diag["_step"] = "full_cascade"
         try:
-            full_result = await asyncio.wait_for(_fetch_single_instagram_video(url), timeout=150)
+            full_result = await asyncio.wait_for(_fetch_single_instagram_video(url), timeout=200)
             diag["full_cascade_result"] = full_result
+            diag["apify_reel_scraper_result"] = "SKIPPED (test direct removed - voir full_cascade)"
         except asyncio.TimeoutError:
-            diag["full_cascade_result"] = {"error": "TIMEOUT 150s"}
+            diag["full_cascade_result"] = {"error": "TIMEOUT 200s"}
+            diag["apify_reel_scraper_result"] = "TIMEOUT cascade"
         except Exception as e:
             diag["full_cascade_result"] = {"error": f"{type(e).__name__}: {e}"}
+            diag["apify_reel_scraper_result"] = f"error cascade: {e}"
 
         diag["_step"] = "DONE"
         return diag
