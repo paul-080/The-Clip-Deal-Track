@@ -5364,18 +5364,83 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
 
+async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_videos: int = 30) -> Optional[list]:
+    """Apify instagram-reel-scraper sur un COMPTE entier — renvoie videoPlayCount par video.
+    Cout : $0.0026/reel × max_videos. Pour 30 reels = $0.078 par scrape de compte.
+    Avec circuit breaker, max appels controles."""
+    if not APIFY_TOKEN or APIFY_DISABLED:
+        return None
+    profile_url = f"https://www.instagram.com/{username.lstrip('@')}/"
+    try:
+        async with httpx.AsyncClient(timeout=300) as c:
+            ar = await c.post(
+                "https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items",
+                params={"token": APIFY_TOKEN},
+                json={
+                    "username": [username.lstrip('@')],  # supporte aussi liste de usernames
+                    "directUrls": [profile_url],
+                    "resultsLimit": max_videos,
+                    "addParentData": False,
+                },
+            )
+        if ar.status_code != 200:
+            logger.warning(f"Apify Reel Scraper account HTTP {ar.status_code} for @{username}: {ar.text[:200]}")
+            return None
+        items = ar.json() or []
+        if not items:
+            return None
+        # Convertir en format standard du backend
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            shortcode = item.get("shortCode") or item.get("id")
+            if not shortcode:
+                continue
+            play_count = int(item.get("videoPlayCount") or 0)
+            view_count = int(item.get("videoViewCount") or 0)
+            views_final = max(play_count, view_count)
+            result.append({
+                "platform_video_id": shortcode,
+                "url": item.get("url") or f"https://www.instagram.com/p/{shortcode}/",
+                "title": (item.get("caption") or "")[:200] or None,
+                "thumbnail_url": item.get("displayUrl"),
+                "views": views_final,
+                "likes": int(item.get("likesCount") or 0),
+                "comments": int(item.get("commentsCount") or 0),
+                "published_at": item.get("timestamp"),
+            })
+        logger.info(f"Apify Reel Scraper @{username}: {len(result)} reels (using videoPlayCount priority)")
+        await _log_scrape("apify", "instagram", username, True, len(result), "instagram-reel-scraper PRIORITY ACCOUNT")
+        return result
+    except Exception as e:
+        logger.warning(f"Apify Reel Scraper account failed for @{username}: {type(e).__name__}: {e}")
+        return None
+
+
 async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
     """
     Fetch Instagram videos/reels.
-    Ordre de priorité — Apify est LE DERNIER RECOURS (coûte cher) :
-    1. ClipScraper VPS (économique, prioritaire)
-    2. Feed privé Instagram (cookie session)
-    3. RapidAPI instagram-scraper-api2
-    4. httpx web_profile_info + session
-    5. instaloader avec/sans session
-    6. Apify EN DERNIER si tout le reste a echoue
+    NOUVELLE strategie : Apify Reel Scraper EN PRIORITE pour avoir videoPlayCount (= 92k UI potentiel)
+    Sources gratuites en fallback si Apify atteint le budget journalier.
+
+    1. (NEW) Apify Reel Scraper (videoPlayCount, $0.078/scrape compte 30 reels)
+    2. ClipScraper VPS (gratuit fallback)
+    3. Feed privé Instagram (cookie session)
+    4. RapidAPI instagram-scraper-api2
+    5. instaloader / Playwright
     """
     username = username.lstrip("@")
+
+    # Priorité 0 (PAYANT MAIS PRECIS) : Apify Reel Scraper sur le compte
+    # Avec circuit breaker pour eviter explosion budget
+    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+        try:
+            apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=30)
+            if apify_videos:
+                return apify_videos
+        except Exception as e:
+            logger.warning(f"Apify Reel Scraper priority failed for @{username}: {e}")
 
     # Priorité 1 : ClipScraper VPS standalone (économique, contrôlé)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
