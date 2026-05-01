@@ -171,6 +171,28 @@ async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
         logger.debug(f"ClipScraper video-stats error for {url}: {type(e).__name__}: {e}")
         return None
 
+
+async def _fetch_instagram_html_stats_via_clipscraper(url: str) -> Optional[dict]:
+    """NOUVEAU : appelle le VPS pour scraper la page HTML publique Insta via proxy résidentiel.
+    Cette méthode parse TOUS les JSON injectés dans le HTML et trouve le compteur 'Views' UI maximum.
+    C'est la SEULE façon gratuite d'avoir les vues que Insta affiche publiquement (le 92k au lieu de 54k)."""
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/instagram-html-stats",
+                json={"url": url},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+        if r.status_code != 200:
+            logger.debug(f"VPS instagram-html-stats HTTP {r.status_code} for {url}: {r.text[:150]}")
+            return None
+        return r.json() or None
+    except Exception as e:
+        logger.debug(f"VPS instagram-html-stats error for {url}: {type(e).__name__}: {e}")
+        return None
+
 # Instagram session cookie rotation
 # Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
 # Also supports single: INSTAGRAM_SESSION_ID=cookie (legacy)
@@ -5726,6 +5748,26 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     }
     if not shortcode:
         return fallback
+
+    # STRATEGY 0 (LE PLUS FIABLE) : VPS scrape page HTML publique Insta via proxy résidentiel
+    # C'est la SEULE méthode gratuite qui peut récupérer le compteur 'Views' UI (92k au lieu de 54k)
+    # car on parse TOUS les JSON injectés dans la page (pas juste l'API privée qui est bridée).
+    html_result = await _fetch_instagram_html_stats_via_clipscraper(url)
+    if html_result:
+        views_h = int(html_result.get("views") or 0)
+        likes_h = int(html_result.get("likes") or 0)
+        if views_h > 0 or likes_h > 0:
+            logger.info(f"VPS HTML Insta SUCCESS for {shortcode}: views={views_h} likes={likes_h} (field={html_result.get('_field_used')})")
+            return {
+                "platform_video_id": html_result.get("platform_video_id") or shortcode,
+                "url": url,
+                "title": html_result.get("title"),
+                "thumbnail_url": html_result.get("thumbnail_url"),
+                "views": views_h,
+                "likes": likes_h,
+                "comments": int(html_result.get("comments") or 0),
+                "published_at": html_result.get("published_at"),
+            }
 
     # STRATEGY 1 (PRIORITAIRE) : Instagram web API media/{shortcode}/info/
     # CRITIQUE : c'est la SEULE API qui renvoie play_count (le compteur que Insta UI affiche, ex 92k)

@@ -478,6 +478,194 @@ async def _video_stats_via_tiktok_html(url: str) -> Optional[dict]:
     return None
 
 
+async def _video_stats_via_instagram_html(url: str) -> Optional[dict]:
+    """Scrape la page HTML publique Insta via proxy résidentiel.
+    Parse TOUS les JSON injectés dans le HTML pour trouver le compteur 'Views' UI (le vrai 92k).
+    Cette méthode contourne l'API privée qui ne renvoie que play_count (54k)."""
+    import re as _re
+    import json as _json
+    m = _re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    INSTAGRAM_SESSION_ID = (os.environ.get("INSTAGRAM_SESSION_ID") or "").strip() or None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    cookies = {"sessionid": INSTAGRAM_SESSION_ID} if INSTAGRAM_SESSION_ID else {}
+    proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+    canonical_url = f"https://www.instagram.com/reel/{shortcode}/"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=25, headers=headers, cookies=cookies, proxies=proxies, follow_redirects=True) as c:
+            r = await c.get(canonical_url)
+        if r.status_code != 200:
+            log.info(f"IG HTML scrape HTTP {r.status_code} for {shortcode}")
+            return None
+        html = r.text
+    except Exception as e:
+        log.info(f"IG HTML scrape network failed for {shortcode}: {type(e).__name__}: {e}")
+        return None
+
+    if len(html) < 5000 or "ig is loading" in html.lower():
+        log.info(f"IG HTML scrape: page too small or loading-only for {shortcode} (size={len(html)})")
+        return None
+
+    # Stratégie A : extraire les Open Graph + meta tags (souvent présents même sans cookie)
+    og_views_m = _re.search(r'<meta[^>]+(?:name|property)="(?:og:title|og:description|description)"[^>]+content="([^"]+)"', html)
+    og_text = og_views_m.group(1) if og_views_m else ""
+    # Insta og:description ressemble à : "X likes, Y comments - username on Date: \"caption\""
+    # mais peut aussi inclure "X views" pour les Reels
+    likes_meta = _re.search(r'([\d,\.\sKMkm]+)\s*(?:likes?|J\'aime)', og_text, _re.IGNORECASE)
+    views_meta = _re.search(r'([\d,\.\sKMkm]+)\s*(?:views?|vues|plays?|reproductions?|reproducciones?)', og_text, _re.IGNORECASE)
+
+    # Stratégie B : parse TOUS les <script type="application/json"> (Insta y injecte les données)
+    best_views = 0
+    best_likes = 0
+    best_comments = 0
+    best_published = None
+    best_caption = None
+    best_thumb = None
+    best_field = None
+    candidate_fields = ("ig_play_count", "fb_play_count", "play_count", "video_play_count",
+                        "view_count", "video_view_count", "metadata.original_play_count")
+
+    def _walk(obj, depth=0):
+        nonlocal best_views, best_likes, best_comments, best_published, best_caption, best_thumb, best_field
+        if depth > 12:
+            return
+        if isinstance(obj, dict):
+            # Si on trouve un objet qui matche le shortcode, on extrait
+            if str(obj.get("code") or obj.get("shortcode") or "") == shortcode or str(obj.get("id") or "")[:20] == shortcode:
+                for f in candidate_fields:
+                    v = obj.get(f)
+                    if isinstance(v, (int, float)) and v > best_views:
+                        best_views = int(v)
+                        best_field = f
+                lc = obj.get("like_count") or (obj.get("edge_liked_by") or {}).get("count") or (obj.get("edge_media_preview_like") or {}).get("count")
+                if isinstance(lc, (int, float)) and lc > best_likes:
+                    best_likes = int(lc)
+                cc = obj.get("comment_count") or (obj.get("edge_media_to_comment") or {}).get("count")
+                if isinstance(cc, (int, float)) and cc > best_comments:
+                    best_comments = int(cc)
+                if not best_caption:
+                    cap = obj.get("caption")
+                    if isinstance(cap, dict):
+                        best_caption = cap.get("text")
+                    elif isinstance(cap, str):
+                        best_caption = cap
+                if not best_thumb:
+                    iv = obj.get("image_versions2") or {}
+                    if isinstance(iv, dict):
+                        cand = iv.get("candidates")
+                        if isinstance(cand, list) and cand:
+                            best_thumb = cand[0].get("url")
+                    if not best_thumb:
+                        best_thumb = obj.get("display_url") or obj.get("thumbnail_src")
+                if not best_published and obj.get("taken_at"):
+                    try:
+                        from datetime import datetime as dt, timezone as tz
+                        best_published = dt.fromtimestamp(int(obj["taken_at"]), tz=tz.utc).isoformat()
+                    except Exception:
+                        pass
+            # Quelque soit le shortcode on cherche aussi au cas où le JSON ne contient pas notre shortcode mais a quand même les stats
+            for f in candidate_fields:
+                v = obj.get(f)
+                if isinstance(v, (int, float)) and v > best_views and v < 10_000_000_000:  # sanity
+                    # Vérifie qu'on est dans un contexte qui semble être notre vidéo
+                    pass  # désactivé pour pas matcher des stats d'autres vidéos
+            for v in obj.values():
+                _walk(v, depth + 1)
+        elif isinstance(obj, list):
+            for v in obj:
+                _walk(v, depth + 1)
+
+    # Cherche tous les blocs JSON dans le HTML (script type="application/json", window._sharedData, etc.)
+    json_blocks = []
+    for jm in _re.finditer(r'<script[^>]+type="application/json"[^>]*>(.+?)</script>', html, _re.DOTALL):
+        json_blocks.append(jm.group(1))
+    for jm in _re.finditer(r'window\._sharedData\s*=\s*(\{.+?\});\s*</script>', html, _re.DOTALL):
+        json_blocks.append(jm.group(1))
+    for jm in _re.finditer(r'window\.__additionalDataLoaded\s*\([^,]+,\s*(\{.+?\})\)\s*;', html, _re.DOTALL):
+        json_blocks.append(jm.group(1))
+
+    log.info(f"IG HTML scrape: found {len(json_blocks)} JSON blocks for {shortcode}")
+    for blk in json_blocks:
+        try:
+            obj = _json.loads(blk)
+            _walk(obj)
+        except Exception:
+            continue
+
+    # Stratégie C (regex pure) : cherche tous les "play_count":N et "ig_play_count":N proches du shortcode
+    # On cherche le shortcode dans le HTML puis on regarde les stats à proximité
+    if shortcode in html and best_views == 0:
+        idx = html.find(shortcode)
+        # Fenêtre 8000 chars autour
+        window = html[max(0, idx - 1000):idx + 8000]
+        for f in candidate_fields:
+            for vm in _re.finditer(rf'"{f}"\s*:\s*(\d+)', window):
+                val = int(vm.group(1))
+                if val > best_views and val < 10_000_000_000:
+                    best_views = val
+                    best_field = f + " (regex)"
+
+    if best_views == 0 and best_likes == 0:
+        log.info(f"IG HTML scrape: no stats found for {shortcode} (json_blocks={len(json_blocks)})")
+        return None
+
+    log.info(f"IG HTML scrape SUCCESS for {shortcode}: views={best_views} (field={best_field}) likes={best_likes}")
+    return {
+        "id": shortcode,
+        "title": (best_caption or "")[:200] or None,
+        "thumbnail": best_thumb,
+        "view_count": best_views,
+        "like_count": best_likes,
+        "comment_count": best_comments,
+        "_published_iso": best_published,
+        "_field_used": best_field,
+    }
+
+
+@app.post("/v1/instagram-html-stats")
+async def instagram_html_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
+    """Endpoint dédié : scrape la page HTML publique Insta via proxy résidentiel.
+    Parse tous les JSON injectés pour trouver le compteur 'Views' UI maximum.
+    Plus précis que l'API privée qui ne renvoie que play_count (vues > 1s)."""
+    await check_auth(x_api_key)
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    cache_key = f"ightml:{url}"
+    cached = await cache.aget(cache_key)
+    if cached:
+        return {**cached, "_cached": True}
+    result = await _video_stats_via_instagram_html(url)
+    if not result:
+        raise HTTPException(status_code=502, detail="HTML scrape returned no stats")
+    # Format compatible avec /v1/video-stats
+    out = {
+        "url": url,
+        "platform_video_id": result.get("id"),
+        "title": result.get("title"),
+        "thumbnail_url": result.get("thumbnail"),
+        "views": result.get("view_count", 0),
+        "likes": result.get("like_count", 0),
+        "comments": result.get("comment_count", 0),
+        "published_at": result.get("_published_iso"),
+        "_field_used": result.get("_field_used"),
+    }
+    await cache.aset(cache_key, out, ttl=60)
+    return {**out, "_cached": False}
+
+
 async def _video_stats_via_instagram_web(url: str) -> Optional[dict]:
     """Instagram fallback via web API media/info."""
     import re as _re
@@ -577,7 +765,17 @@ async def video_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
             info = tk_html
             source_used = "tiktok_html"
 
-    # Stratégie 3 : fallback web API pour Instagram
+    # Stratégie 3 : Instagram — page HTML publique via proxy résidentiel (le PLUS précis pour Reels)
+    if platform == "instagram":
+        ig_html = await _video_stats_via_instagram_html(url)
+        if ig_html and (ig_html.get("view_count") or ig_html.get("like_count")):
+            # Si la version HTML donne plus de vues que ce qu'on a, on prend
+            current_views = (info.get("view_count", 0) if info else 0)
+            if ig_html.get("view_count", 0) > current_views:
+                info = ig_html
+                source_used = "instagram_html"
+
+    # Stratégie 4 : fallback web API pour Instagram
     if (not info or (not info.get("view_count") and not info.get("like_count"))) and platform == "instagram":
         ig = await _video_stats_via_instagram_web(url)
         if ig and (ig.get("view_count") or ig.get("like_count")):
