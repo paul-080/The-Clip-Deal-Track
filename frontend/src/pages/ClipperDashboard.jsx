@@ -1149,8 +1149,11 @@ function AllVideosPage() {
                     {v.platform}
                   </span>
                   {/* Views overlay */}
-                  <span className="absolute bottom-1.5 right-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/70 text-white">
-                    👁 {fmt(v.views)}
+                  <span
+                    className="absolute bottom-1.5 right-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/70 text-white"
+                    title={v.platform === "instagram" ? "Vues Insta officielles (Meta API > 1s lecture). L'app Insta peut afficher un total IG+Facebook plus élevé." : ""}
+                  >
+                    👁 {fmt(v.views)}{v.platform === "instagram" && <span className="opacity-50 ml-0.5">ⓘ</span>}
                   </span>
                 </div>
                 {/* Info */}
@@ -1721,7 +1724,9 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                             )}
                             <div className="p-1.5">
                               <div className="flex items-center gap-1 text-[10px] text-white/40">
-                                <span>👁 {fmt(v.views)}</span>
+                                <span title={v.platform === "instagram" ? "Vues Insta officielles (Meta API > 1s lecture)" : ""}>
+                                  👁 {fmt(v.views)}{v.platform === "instagram" && <span className="opacity-60">ⓘ</span>}
+                                </span>
                                 {v.earnings > 0 && <span className="text-[#39FF14]">€{v.earnings.toFixed(2)}</span>}
                               </div>
                             </div>

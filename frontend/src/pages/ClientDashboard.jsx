@@ -448,8 +448,10 @@ function CampaignView({ campaigns }) {
                     </div>
                     {/* Stats */}
                     <div className="flex-shrink-0 flex gap-5 items-center">
-                      <div className="text-center">
-                        <p className="font-mono font-bold text-white text-sm">{fmt(video.views || 0)}</p>
+                      <div className="text-center" title={video.platform === "instagram" ? "Vues Insta officielles (Meta API > 1s lecture). L'app Insta peut afficher un total IG+Facebook plus élevé." : ""}>
+                        <p className="font-mono font-bold text-white text-sm">
+                          {fmt(video.views || 0)}{video.platform === "instagram" && <span className="opacity-50 text-[10px] ml-0.5">ⓘ</span>}
+                        </p>
                         <p className="text-[10px] text-white/30">vues</p>
                       </div>
                       <div className="text-center">

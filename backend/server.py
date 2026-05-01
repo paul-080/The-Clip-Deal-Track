@@ -5910,8 +5910,10 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
             logger.warning(f"_fetch_single_instagram_video yt-dlp failed for {url}: {type(e).__name__}: {e}")
 
     # Strategy 4 (DERNIER RECOURS) : Apify Instagram Scraper
-    # SEULEMENT si toutes les autres ont echoue. Coût ~$0.30/1000 = quasi rien sur 100 video/mois mais on evite quand meme.
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # NOTE 2026 : Apify renvoie EXACTEMENT le meme play_count (~54k) que l'API privee, donc payer pour
+    # le meme resultat n'a aucun interet. Apify desactive par defaut sauf si APIFY_FOR_INSTA_FALLBACK=true.
+    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
+    if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED:
         logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
         # Liste d'actors testés dans l'ordre. Le mobile-api scraper renvoie souvent un compteur plus haut
         # car il utilise l'API mobile officielle qui peut renvoyer le compteur "Views" unifié 2025.

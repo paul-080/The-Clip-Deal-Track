@@ -2892,7 +2892,15 @@ function CampaignDashboard({ campaigns }) {
                       </div>
 
                       {/* Views */}
-                      <div className="text-white font-mono text-sm">{fmt(video.views || 0)}</div>
+                      <div className="text-white font-mono text-sm flex items-center gap-1">
+                        {fmt(video.views || 0)}
+                        {video.platform === "instagram" && (
+                          <span
+                            className="text-[10px] text-white/30 cursor-help"
+                            title="Vues Instagram officielles (méthode Meta API : vues > 1s de lecture). L'app Insta peut afficher un nombre plus élevé qui inclut les vues Facebook cross-post — ce nombre n'est pas accessible via les APIs publiques."
+                          >ⓘ</span>
+                        )}
+                      </div>
 
                       {/* Likes */}
                       <div className="flex items-center gap-1 text-white/60 text-sm">

@@ -1134,7 +1134,9 @@ function CampaignDashboard({ campaigns }) {
                       </div>
                     </div>
                     {/* Stats */}
-                    <span className="font-mono text-white text-xs pr-6">{fmt(v.views || 0)}</span>
+                    <span className="font-mono text-white text-xs pr-6" title={v.platform === "instagram" ? "Vues Insta officielles (Meta API > 1s lecture). L'app peut afficher un total IG+Facebook plus élevé." : ""}>
+                      {fmt(v.views || 0)}{v.platform === "instagram" && <span className="opacity-50 ml-0.5">ⓘ</span>}
+                    </span>
                     <span className="font-mono text-[#FF007F] text-xs pr-6">{fmt(v.likes || 0)}</span>
                     <span className="font-mono text-xs pr-4" style={{ color: ACCENT }}>€{(v.earnings || 0).toFixed(2)}</span>
                     {/* Actions */}
