@@ -5702,7 +5702,13 @@ async def _fetch_single_youtube_video(url: str) -> dict:
 
 async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None) -> dict:
     """Fetch real stats for a single Instagram video. Never raises.
-    Si account_username fourni : scrape le compte via VPS (gratuit) puis filtre par shortcode."""
+    Cascade :
+    1. Web API media/{shortcode}/info/ (PRIORITE car renvoie play_count = vraies vues affichees par Insta UI)
+    2. ClipScraper VPS /v1/video-stats (yt-dlp)
+    3. VPS account-scrape + filtre par shortcode (si username connu)
+    4. yt-dlp local
+    5. Apify (dernier recours payant)
+    """
     try:
         m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
         shortcode = m.group(1) if m else None
@@ -5721,54 +5727,10 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     if not shortcode:
         return fallback
 
-    # STRATEGY 0 (PRIORITAIRE GRATUITE) : si username connu, scrape le COMPTE via VPS et filtre par shortcode
-    if account_username and CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
-        try:
-            logger.info(f"_fetch_single_instagram_video: VPS scrape @{account_username} to find {shortcode}")
-            account_videos = await _fetch_via_clipscraper("instagram", account_username, max_videos=35)
-            for v in (account_videos or []):
-                if str(v.get("platform_video_id") or "").lower() == shortcode.lower():
-                    views_v = int(v.get("views") or 0)
-                    likes_v = int(v.get("likes") or 0)
-                    if views_v > 0 or likes_v > 0:
-                        logger.info(f"VPS IG account-filter SUCCESS for @{account_username}/{shortcode}: views={views_v} likes={likes_v}")
-                        return {
-                            "platform_video_id": shortcode,
-                            "url": url,
-                            "title": v.get("title"),
-                            "thumbnail_url": v.get("thumbnail_url"),
-                            "views": views_v,
-                            "likes": likes_v,
-                            "comments": int(v.get("comments") or 0),
-                            "published_at": v.get("published_at"),
-                        }
-            logger.info(f"VPS IG account-filter : {shortcode} not found in last 35 posts of @{account_username}")
-        except Exception as e:
-            logger.warning(f"VPS IG account scrape failed for @{account_username}: {type(e).__name__}: {e}")
-
-    # Strategy 1 (PRIORITAIRE - gratuit) : ClipScraper VPS (yt-dlp + proxy résidentiel webshare)
-    # Bypasse les blocages Railway, gratuit illimite (proxy webshare deja paye 11€/mois fixe)
-    logger.info(f"_fetch_single_instagram_video: trying ClipScraper VPS for {shortcode}")
-    cs_result = await _fetch_video_stats_via_clipscraper(url)
-    if cs_result:
-        views_cs = int(cs_result.get("views") or 0)
-        likes_cs = int(cs_result.get("likes") or 0)
-        if views_cs > 0 or likes_cs > 0:
-            logger.info(f"ClipScraper VPS SUCCESS for {shortcode}: views={views_cs} likes={likes_cs}")
-            return {
-                "platform_video_id": cs_result.get("platform_video_id") or shortcode,
-                "url": url,
-                "title": cs_result.get("title"),
-                "thumbnail_url": cs_result.get("thumbnail_url"),
-                "views": views_cs,
-                "likes": likes_cs,
-                "comments": int(cs_result.get("comments") or 0),
-                "published_at": cs_result.get("published_at"),
-            }
-        logger.warning(f"ClipScraper VPS returned 0 views/likes for {shortcode}")
-
-    # Strategy 1: Instagram public web endpoint (avec proxy si configuré, sinon direct)
-    web_api_data = None  # garde le resultat partiel si views=0 mais likes>0
+    # STRATEGY 1 (PRIORITAIRE) : Instagram web API media/{shortcode}/info/
+    # CRITIQUE : c'est la SEULE API qui renvoie play_count (le compteur que Insta UI affiche, ex 92k)
+    # Les autres APIs (web_profile_info utilisée par VPS account-scrape) renvoient SEULEMENT video_view_count (54k, ancien)
+    web_api_data = None
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 Instagram 295.0.0.32.119",
@@ -5791,8 +5753,7 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                 items = data.get("items") or []
                 if items:
                     item = items[0]
-                    # IMPORTANT : Insta a 2 compteurs depuis 2023 : play_count (nouveau, total replays inclus, ce que Insta affiche)
-                    # vs video_view_count (ancien, vues uniques, plus bas). On prend play_count EN PREMIER pour matcher Insta UI.
+                    # play_count (nouveau, ce que Insta affiche : 92k) > video_view_count (ancien : 54k)
                     views_w = int(item.get("play_count") or item.get("ig_play_count") or item.get("video_play_count") or item.get("video_view_count") or 0)
                     web_api_data = {
                         "platform_video_id": shortcode,
@@ -5804,12 +5765,56 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                         "comments": int(item.get("comment_count") or 0),
                         "published_at": datetime.fromtimestamp(item.get("taken_at", 0), tz=timezone.utc).isoformat() if item.get("taken_at") else None,
                     }
-                    # Retourne SEULEMENT si on a des vues. Sinon continue vers yt-dlp pour avoir les vraies vues.
                     if views_w > 0:
+                        logger.info(f"Insta web API media/info SUCCESS for {shortcode}: views={views_w} (play_count officiel)")
                         return web_api_data
-                    logger.warning(f"Instagram web API: views=0 mais likes={web_api_data['likes']} pour {shortcode} - on essaye yt-dlp pour les vraies vues")
+                    logger.info(f"Insta web API media/info: views=0 mais likes={web_api_data['likes']} pour {shortcode}")
     except Exception as e:
-        logger.debug(f"Instagram web API failed for {shortcode}: {e}")
+        logger.debug(f"Insta web API media/info failed for {shortcode}: {type(e).__name__}: {e}")
+
+    # STRATEGY 2 : VPS account-scrape + filtre par shortcode (si username connu)
+    # ATTENTION : retourne video_view_count (plus bas), donc utilise APRES web API
+    if account_username and CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            logger.info(f"_fetch_single_instagram_video: VPS scrape @{account_username} to find {shortcode} (fallback)")
+            account_videos = await _fetch_via_clipscraper("instagram", account_username, max_videos=35)
+            for v in (account_videos or []):
+                if str(v.get("platform_video_id") or "").lower() == shortcode.lower():
+                    views_v = int(v.get("views") or 0)
+                    likes_v = int(v.get("likes") or 0)
+                    if views_v > 0 or likes_v > 0:
+                        logger.info(f"VPS IG account-filter (fallback) for @{account_username}/{shortcode}: views={views_v} likes={likes_v}")
+                        return {
+                            "platform_video_id": shortcode,
+                            "url": url,
+                            "title": v.get("title"),
+                            "thumbnail_url": v.get("thumbnail_url"),
+                            "views": views_v,
+                            "likes": likes_v,
+                            "comments": int(v.get("comments") or 0),
+                            "published_at": v.get("published_at"),
+                        }
+        except Exception as e:
+            logger.warning(f"VPS IG account scrape failed for @{account_username}: {type(e).__name__}: {e}")
+
+    # STRATEGY 3 : ClipScraper VPS /v1/video-stats (yt-dlp + proxy résidentiel)
+    logger.info(f"_fetch_single_instagram_video: trying ClipScraper VPS /v1/video-stats for {shortcode}")
+    cs_result = await _fetch_video_stats_via_clipscraper(url)
+    if cs_result:
+        views_cs = int(cs_result.get("views") or 0)
+        likes_cs = int(cs_result.get("likes") or 0)
+        if views_cs > 0 or likes_cs > 0:
+            logger.info(f"ClipScraper VPS video-stats SUCCESS for {shortcode}: views={views_cs} likes={likes_cs}")
+            return {
+                "platform_video_id": cs_result.get("platform_video_id") or shortcode,
+                "url": url,
+                "title": cs_result.get("title"),
+                "thumbnail_url": cs_result.get("thumbnail_url"),
+                "views": views_cs,
+                "likes": likes_cs,
+                "comments": int(cs_result.get("comments") or 0),
+                "published_at": cs_result.get("published_at"),
+            }
 
     # Strategy 3: yt-dlp local Railway (avec proxy backend si configuré, sinon direct)
     if YT_DLP_AVAILABLE:
