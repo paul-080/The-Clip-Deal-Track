@@ -10583,7 +10583,8 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
         # Apify Reel Scraper direct
         diag["_step"] = "apify_reel_scraper"
         if apify_token_global and not apify_disabled_global:
-            m = re.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
+            import re as _re_local
+            m = _re_local.search(r'/(?:p|reel|reels)/([A-Za-z0-9_-]+)', url)
             shortcode = m.group(1) if m else None
             if shortcode:
                 try:
