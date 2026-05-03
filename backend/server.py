@@ -11498,6 +11498,115 @@ async def admin_ban_user(user_id: str, request: Request, _: bool = Depends(verif
     await db.user_sessions.delete_many({"user_id": user_id})
     return {"banned": user_id}
 
+
+@api_router.get("/admin/check-user")
+async def admin_check_user(request: Request, email: Optional[str] = None, user_id: Optional[str] = None):
+    """DIAGNOSTIC : retourne l'etat subscription d'un utilisateur (par email ou user_id).
+    Utilise query-param ?code=... (compatible browser) en plus du header X-Admin-Code."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    if not email and not user_id:
+        raise HTTPException(status_code=400, detail="email ou user_id requis")
+    query = {"user_id": user_id} if user_id else {"email": email.lower()}
+    user = await db.users.find_one(query, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    # Calcul subscription state
+    sub_status = user.get("subscription_status", "none")
+    trial_started_at = user.get("trial_started_at")
+    trial_days_left = None
+    trial_expired = False
+    if trial_started_at:
+        try:
+            trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
+            trial_end = trial_start + timedelta(days=14)
+            now = datetime.now(timezone.utc)
+            trial_days_left = round((trial_end - now).total_seconds() / 86400, 2)
+            trial_expired = now >= trial_end
+        except Exception:
+            pass
+
+    effective_plan = _get_user_effective_plan(user)
+    is_blocked = _is_agency_blocked(user)
+    limits = _get_plan_limits(user)
+
+    return {
+        "user_id": user.get("user_id"),
+        "email": user.get("email"),
+        "role": user.get("role"),
+        "subscription_status": sub_status,
+        "subscription_plan": user.get("subscription_plan"),
+        "trial_started_at": trial_started_at,
+        "trial_days_left": trial_days_left,
+        "trial_expired": trial_expired,
+        "effective_plan": effective_plan,
+        "is_blocked": is_blocked,
+        "limits": limits,
+        "diagnostic": (
+            "BLOQUE : trial expire ou abo annule. Aucune action d'ecriture autorisee (add-account renvoie 402)."
+            if is_blocked else
+            f"OK : plan effectif = {effective_plan}, limites = {limits}"
+        ),
+    }
+
+
+@api_router.post("/admin/set-user-subscription")
+async def admin_set_user_subscription(request: Request, body: dict):
+    """DIAGNOSTIC/FIX : force le statut subscription d'un user (par email ou user_id).
+    body = { email | user_id, subscription_status, subscription_plan?, extend_trial_days? }
+    Utilise query-param ?code=... (compatible browser/curl simple)."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    email = (body.get("email") or "").strip().lower() or None
+    user_id = (body.get("user_id") or "").strip() or None
+    if not email and not user_id:
+        raise HTTPException(status_code=400, detail="email ou user_id requis")
+
+    query = {"user_id": user_id} if user_id else {"email": email}
+    user = await db.users.find_one(query, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    set_fields = {}
+    new_status = body.get("subscription_status")
+    if new_status in ("active", "trial", "expired", "cancelled", "none"):
+        set_fields["subscription_status"] = new_status
+    new_plan = body.get("subscription_plan")
+    if new_plan and new_plan in SUBSCRIPTION_PLANS:
+        set_fields["subscription_plan"] = new_plan
+    extend_days = body.get("extend_trial_days")
+    if extend_days is not None:
+        try:
+            extend_days = int(extend_days)
+            # Reset trial_started_at to (now - 14 + extend_days) so "extend_days" remain
+            new_start = datetime.now(timezone.utc) - timedelta(days=14 - extend_days)
+            set_fields["trial_started_at"] = new_start.isoformat()
+            set_fields["subscription_status"] = "trial"
+        except Exception:
+            raise HTTPException(status_code=400, detail="extend_trial_days doit etre un entier")
+
+    if not set_fields:
+        raise HTTPException(status_code=400, detail="Rien a modifier (subscription_status, subscription_plan ou extend_trial_days requis)")
+
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": set_fields})
+    updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
+    return {
+        "ok": True,
+        "user_id": updated.get("user_id"),
+        "email": updated.get("email"),
+        "applied": set_fields,
+        "new_subscription_status": updated.get("subscription_status"),
+        "new_subscription_plan": updated.get("subscription_plan"),
+        "new_trial_started_at": updated.get("trial_started_at"),
+        "new_effective_plan": _get_user_effective_plan(updated),
+        "new_is_blocked": _is_agency_blocked(updated),
+    }
+
+
 @api_router.get("/admin/scraping-history")
 async def admin_get_scraping_history(
     request: Request,
