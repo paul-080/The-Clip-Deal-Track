@@ -11638,15 +11638,21 @@ async def admin_simulate_add_account(
         except HTTPException as he:
             diag["subscription_check"] = f"FAIL HTTP {he.status_code}: {he.detail}"
 
-        # 3. Trouve une campagne
+        # 3. Trouve une campagne (TOUTES, peu importe status)
         diag["_step"] = "find_campaign"
-        camp = await db.campaigns.find_one(
-            {"agency_id": user["user_id"], "status": {"$ne": "deleted"}},
-            {"_id": 0}
-        )
-        if not camp:
-            diag["campaign"] = "NO ACTIVE CAMPAIGN - cree d'abord une campagne"
+        all_camps = await db.campaigns.find(
+            {"agency_id": user["user_id"]},
+            {"_id": 0, "campaign_id": 1, "name": 1, "status": 1, "platforms": 1, "created_at": 1, "tracking_start_date": 1}
+        ).to_list(20)
+        diag["all_campaigns_count"] = len(all_camps)
+        diag["all_campaigns"] = all_camps
+        # Filtre les actives
+        active_camps = [c for c in all_camps if c.get("status") not in ("deleted",)]
+        diag["active_campaigns_count"] = len(active_camps)
+        if not active_camps:
+            diag["campaign"] = "NO ACTIVE CAMPAIGN"
             return diag
+        camp = active_camps[0]
         diag["campaign_id"] = camp.get("campaign_id")
         diag["campaign_name"] = camp.get("name")
         diag["campaign_platforms"] = camp.get("platforms")
