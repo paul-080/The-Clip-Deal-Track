@@ -11607,6 +11607,96 @@ async def admin_set_user_subscription(request: Request, body: dict):
     }
 
 
+@api_router.get("/admin/simulate-add-account")
+async def admin_simulate_add_account(
+    request: Request,
+    email: str,
+    platform: str = "tiktok",
+    username: str = "cristiano",
+):
+    """DIAG : simule l'ajout d'un compte pour un utilisateur agency, retourne l'erreur exacte
+    si le call /campaigns/{id}/add-account plante. Auth via ?code=..."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    diag = {"email": email, "_step": "find_user"}
+    try:
+        # 1. Trouve l'user
+        user = await db.users.find_one({"email": email}, {"_id": 0})
+        if not user:
+            return {"error": "user not found", "email": email}
+        diag["user_id"] = user.get("user_id")
+        diag["role"] = user.get("role")
+        diag["subscription_status"] = user.get("subscription_status")
+
+        # 2. Verifie blocage
+        diag["_step"] = "check_subscription"
+        try:
+            _check_agency_subscription(user)
+            diag["subscription_check"] = "PASS"
+        except HTTPException as he:
+            diag["subscription_check"] = f"FAIL HTTP {he.status_code}: {he.detail}"
+
+        # 3. Trouve une campagne
+        diag["_step"] = "find_campaign"
+        camp = await db.campaigns.find_one(
+            {"agency_id": user["user_id"], "status": {"$ne": "deleted"}},
+            {"_id": 0}
+        )
+        if not camp:
+            diag["campaign"] = "NO ACTIVE CAMPAIGN - cree d'abord une campagne"
+            return diag
+        diag["campaign_id"] = camp.get("campaign_id")
+        diag["campaign_name"] = camp.get("name")
+        diag["campaign_platforms"] = camp.get("platforms")
+
+        # 4. Verifie limite tracked_accounts
+        diag["_step"] = "check_tracked_accounts"
+        limits_a = _get_plan_limits(user)
+        diag["plan_limits"] = limits_a
+        if limits_a.get("tracked_accounts") is not None:
+            agency_camps = await db.campaigns.find({"agency_id": user["user_id"], "status": {"$ne": "deleted"}}, {"_id": 0, "campaign_id": 1}).to_list(500)
+            current_count = await db.campaign_social_accounts.count_documents({
+                "campaign_id": {"$in": [c["campaign_id"] for c in agency_camps]}
+            }) if agency_camps else 0
+            diag["current_tracked_accounts"] = current_count
+            diag["max_tracked_accounts"] = limits_a["tracked_accounts"]
+            if current_count >= limits_a["tracked_accounts"]:
+                diag["tracked_accounts_check"] = "FAIL - LIMIT REACHED"
+                return diag
+            diag["tracked_accounts_check"] = "PASS"
+
+        # 5. Verifie plateforme campagne
+        diag["_step"] = "check_platform"
+        allowed = camp.get("platforms") or []
+        if allowed and platform not in allowed:
+            diag["platform_check"] = f"FAIL - campaign accepts only {allowed}, not {platform}"
+            return diag
+        diag["platform_check"] = "PASS"
+
+        # 6. Test fetch_videos pour voir si le scraping marche pour cet username
+        diag["_step"] = "test_fetch_videos"
+        try:
+            account_doc = {"platform": platform, "username": username, "status": "verified"}
+            videos = await asyncio.wait_for(
+                fetch_videos(platform, username, account_doc, since_days=30),
+                timeout=120
+            )
+            diag["fetch_videos"] = {"count": len(videos or []), "first_video_views": (videos[0].get("views") if videos else None)}
+        except asyncio.TimeoutError:
+            diag["fetch_videos"] = "TIMEOUT 120s"
+        except Exception as e:
+            diag["fetch_videos"] = {"error": f"{type(e).__name__}: {e}"}
+
+        diag["_step"] = "DONE"
+        diag["overall"] = "ALL CHECKS PASSED - le code add-account devrait marcher pour cet user"
+        return diag
+    except Exception as e:
+        diag["_FATAL"] = f"{type(e).__name__}: {e} (at step={diag.get('_step')})"
+        return diag
+
+
 @api_router.get("/admin/scraping-history")
 async def admin_get_scraping_history(
     request: Request,
