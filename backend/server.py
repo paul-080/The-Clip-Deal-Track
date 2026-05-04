@@ -11835,6 +11835,117 @@ async def admin_simulate_add_account(
         return diag
 
 
+@api_router.get("/admin/apify-usage")
+async def admin_apify_usage(request: Request, days: int = 30):
+    """DASHBOARD : suivi consommation Apify sur les N derniers jours.
+    Montre : nb calls, estimation cout, marge restante sur prepaid Starter $29."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    now = datetime.now(timezone.utc)
+    today_iso = now.strftime("%Y-%m-%dT00:00:00+00:00")
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cutoff = (now - timedelta(days=days)).isoformat()
+
+    try:
+        # Total mois en cours
+        month_calls = await db.scraping_history.count_documents({
+            "source": "apify",
+            "timestamp": {"$gte": month_start}
+        })
+        # Aujourd'hui
+        today_calls = await db.scraping_history.count_documents({
+            "source": "apify",
+            "timestamp": {"$gte": today_iso}
+        })
+        # Par plateforme ce mois
+        insta_month = await db.scraping_history.count_documents({
+            "source": "apify", "platform": "instagram",
+            "timestamp": {"$gte": month_start}
+        })
+        tiktok_month = await db.scraping_history.count_documents({
+            "source": "apify", "platform": "tiktok",
+            "timestamp": {"$gte": month_start}
+        })
+        # Tendance par jour sur N jours
+        pipeline = [
+            {"$match": {"source": "apify", "timestamp": {"$gte": cutoff}}},
+            {"$project": {
+                "day": {"$substr": ["$timestamp", 0, 10]},
+                "platform": 1,
+            }},
+            {"$group": {
+                "_id": {"day": "$day", "platform": "$platform"},
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"_id.day": 1}}
+        ]
+        daily_raw = await db.scraping_history.aggregate(pipeline).to_list(1000)
+        # Reorganiser : {day: {insta, tiktok, total}}
+        daily = {}
+        for d in daily_raw:
+            day = d["_id"]["day"]
+            plat = d["_id"]["platform"]
+            cnt = d["count"]
+            if day not in daily:
+                daily[day] = {"day": day, "instagram": 0, "tiktok": 0, "total": 0}
+            daily[day][plat if plat in ("instagram", "tiktok") else "total"] = cnt
+            daily[day]["total"] += cnt
+
+        # Cout estime : Reel Scraper Insta = $0.0026/call, TikTok = $0.0003/call
+        cost_insta = insta_month * 0.0026
+        cost_tiktok = tiktok_month * 0.0003
+        total_cost = cost_insta + cost_tiktok
+
+        # Plan actuel : Starter $29 -> $29 inclus
+        plan_budget = 29.0
+        usage_pct = (total_cost / plan_budget) * 100 if plan_budget else 0
+
+        # Status (vert/orange/rouge)
+        if usage_pct < 50:
+            status = "GREEN"
+            recommendation = f"Conso saine ({usage_pct:.1f}% du plan $29). Tu es OK."
+        elif usage_pct < 80:
+            status = "ORANGE"
+            recommendation = f"Conso à surveiller ({usage_pct:.1f}% du plan). Contrôle les comptes qui forcent Apify."
+        else:
+            status = "RED"
+            recommendation = f"Conso élevée ({usage_pct:.1f}% du plan). Risque de dépassement. Réduis APIFY_INSTA_DAILY_BUDGET ou passe Scale $199."
+
+        # Limites configurees
+        return {
+            "month_to_date": {
+                "month_start": month_start[:10],
+                "total_calls": month_calls,
+                "instagram_calls": insta_month,
+                "tiktok_calls": tiktok_month,
+                "estimated_cost_usd": round(total_cost, 2),
+                "plan_budget_usd": plan_budget,
+                "usage_percentage": round(usage_pct, 1),
+                "remaining_usd": round(max(0, plan_budget - total_cost), 2),
+            },
+            "today": {
+                "total_calls": today_calls,
+                "limits": {
+                    "instagram_max_per_day": APIFY_INSTA_DAILY_BUDGET,
+                    "tiktok_max_per_day": APIFY_TIKTOK_DAILY_BUDGET,
+                },
+            },
+            "status": status,
+            "recommendation": recommendation,
+            "daily_trend": sorted(daily.values(), key=lambda x: x["day"]),
+            "config": {
+                "APIFY_INSTA_DAILY_BUDGET": APIFY_INSTA_DAILY_BUDGET,
+                "APIFY_TIKTOK_DAILY_BUDGET": APIFY_TIKTOK_DAILY_BUDGET,
+                "APIFY_DISABLED": APIFY_DISABLED,
+                "plan": "Starter $29/mois (29$ prepaid inclus)",
+            },
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @api_router.post("/admin/create-test-campaign")
 async def admin_create_test_campaign(request: Request, email: str):
     """DIAG : crée une campagne test pour un user agency, retourne l'erreur exacte si ça plante."""
