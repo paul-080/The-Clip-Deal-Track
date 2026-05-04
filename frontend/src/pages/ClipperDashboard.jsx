@@ -968,16 +968,38 @@ function DiscoverCampaigns({ onJoin }) {
 
                 {/* Budget bar */}
                 <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-white/40">
-                    <span>Budget</span>
-                    <span>{Math.round(((c.budget_used || 0) / (c.budget || c.budget_total || 1)) * 100)}%</span>
-                  </div>
-                  <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, Math.round(((c.budget_used || 0) / (c.budget || c.budget_total || 1)) * 100))}%` }}
-                    />
-                  </div>
+                  {c.budget_unlimited ? (
+                    <div className="flex justify-between text-xs">
+                      <span className="text-white/40">Budget</span>
+                      <span className="text-[#39FF14] font-semibold">∞ Illimité</span>
+                    </div>
+                  ) : (() => {
+                    const total = Number(c.budget || c.budget_total || 0);
+                    const used = Number(c.budget_used || 0);
+                    if (!total || total <= 0) {
+                      return (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-white/40">Budget</span>
+                          <span className="text-white/40 italic">Non défini</span>
+                        </div>
+                      );
+                    }
+                    const pct = Math.min(100, Math.max(0, Math.round((used / total) * 100)));
+                    return (
+                      <>
+                        <div className="flex justify-between text-xs text-white/40">
+                          <span>Budget limité</span>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-blue-500 rounded-full transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 {/* Clippers + spots */}

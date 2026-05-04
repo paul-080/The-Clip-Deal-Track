@@ -7015,20 +7015,37 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
 
 
 def _expected_video_id_from_url(url: str, platform: str) -> Optional[str]:
-    """Extrait l'ID video attendu depuis l'URL pour validation post-scraping."""
+    """Extrait l'ID video attendu depuis l'URL pour validation post-scraping.
+    Tolere les URLs share/igsh/utm_source et les variantes /share/reel/, /share/p/, /tv/.
+    """
     if not url:
         return None
     p = (platform or "").lower()
     try:
         if p == "tiktok":
             m = re.search(r'/video/(\d+)', url)
+            if m:
+                return m.group(1)
+            # Format alternatif : /v/123, /t/...
+            m = re.search(r'/v/(\d+)', url)
             return m.group(1) if m else None
         if p == "youtube":
             m = re.search(r'(?:v=|vi=|youtu\.be/|/shorts/|/embed/|/v/|/live/)([a-zA-Z0-9_-]{11})', url)
             return m.group(1) if m else None
         if p == "instagram":
-            m = re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
-            return m.group(1) if m else None
+            # Patterns standard : /p/, /reel/, /reels/, /tv/, /igtv/
+            # Patterns share : /share/p/, /share/reel/, /share/reels/, /share/{token}
+            m = re.search(r'/(?:p|reel|reels|tv|igtv)/([A-Za-z0-9_-]+)', url)
+            if m:
+                return m.group(1)
+            # Share links : /share/reel/{token}/ ou /share/p/{token}/ ou /share/{token}/
+            m = re.search(r'/share/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)', url)
+            if m:
+                return m.group(1)
+            m = re.search(r'/share/([A-Za-z0-9_-]+)/?$', url.split('?')[0])
+            if m and len(m.group(1)) >= 5:
+                return m.group(1)
+            return None
     except Exception:
         return None
     return None
@@ -9580,6 +9597,21 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
 
     # SAFETY : valider que l'URL pointe bien vers une video specifique, pas un profil
     expected_vid_id = _expected_video_id_from_url(url, platform)
+    # Si l'URL ne matche pas mais qu'on a un platform_video_id explicite (modal voir-videos),
+    # on reconstruit une URL canonique pour Instagram et on continue
+    body_pvid = (body.get("platform_video_id") or "").strip()
+    if not expected_vid_id and body_pvid and platform == "instagram":
+        url = f"https://www.instagram.com/p/{body_pvid}/"
+        expected_vid_id = body_pvid
+        logger.info(f"add-video : URL reconstruite depuis platform_video_id={body_pvid}")
+    if not expected_vid_id and body_pvid and platform == "tiktok" and body_pvid.isdigit():
+        # Pour TikTok il faut aussi le username dans l'URL — essaye de l'extraire de l'URL d'origine
+        m_uname = re.search(r'@([\w.-]+)/', url) if url else None
+        uname_for_url = m_uname.group(1) if m_uname else (body.get("account_username") or "").strip().lstrip("@")
+        if uname_for_url:
+            url = f"https://www.tiktok.com/@{uname_for_url}/video/{body_pvid}"
+            expected_vid_id = body_pvid
+            logger.info(f"add-video : URL TikTok reconstruite depuis platform_video_id={body_pvid}")
     if not expected_vid_id:
         raise HTTPException(
             status_code=400,
@@ -12977,6 +13009,143 @@ async def admin_apify_usage(request: Request, days: int = 30):
                 "ORANGE": "Apify utilisé pour TikTok (devrait être VPS gratuit) OU conso 50-80%",
                 "RED": "Apify utilisé pour YouTube (bug critique) OU surconsommation > 80% du budget",
             },
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+@api_router.get("/admin/api-capacity")
+async def admin_api_capacity(request: Request, _: bool = Depends(verify_admin_code)):
+    """DASHBOARD : pourcentage d'utilisation mensuelle des APIs gratuites TikTok / Instagram / YouTube.
+    Permet de savoir quand upgrader proxy webshare ou quota YouTube avant saturation.
+
+    Capacites theoriques (avec proxy webshare 5 IPs + cle YouTube standard) :
+    - TikTok via VPS clipscraper       : ~10000 scrapes/jour = ~300k/mois
+    - Instagram via Mobile Clips API   : ~3000 scrapes/jour = ~90k/mois
+    - YouTube via Data API v3 (quota)  : ~3300 scrapes/jour = ~100k/mois (10k units/jour, 3 units/call)
+
+    Ces capacites sont des estimations conservatrices. Au-dela de 70% c'est l'alerte
+    pour upgrader (plus d'IPs proxy, plan API YouTube, etc).
+    """
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_iso = now.strftime("%Y-%m-%dT00:00:00+00:00")
+
+    # Capacites theoriques mensuelles (calls reussis maximum confortable)
+    CAPACITY = {
+        "tiktok": {"month": 300_000, "day": 10_000},
+        "instagram": {"month": 90_000, "day": 3_000},
+        "youtube": {"month": 100_000, "day": 3_300},
+    }
+
+    try:
+        result_per_platform = {}
+        for plat, cap in CAPACITY.items():
+            # Compte mois en cours TOUS scrapes (succes uniquement) sur cette plateforme
+            month_count = await db.scraping_history.count_documents({
+                "platform": plat,
+                "success": True,
+                "timestamp": {"$gte": month_start},
+            })
+            today_count = await db.scraping_history.count_documents({
+                "platform": plat,
+                "success": True,
+                "timestamp": {"$gte": today_iso},
+            })
+            month_pct = round((month_count / cap["month"]) * 100, 1) if cap["month"] else 0
+            day_pct = round((today_count / cap["day"]) * 100, 1) if cap["day"] else 0
+
+            # Status colore
+            if month_pct >= 80 or day_pct >= 80:
+                status = "RED"
+                advice = f"⚠️ {plat.title()} sature : {month_pct}% du mois consomme. Upgrade urgent (proxy supplementaire ou plan API)."
+            elif month_pct >= 50 or day_pct >= 50:
+                status = "ORANGE"
+                advice = f"⚠️ {plat.title()} a {month_pct}% — surveille la croissance, prevoir upgrade dans 30j si tendance continue."
+            else:
+                status = "GREEN"
+                advice = f"✅ {plat.title()} a {month_pct}% — capacite saine, encore {round(cap['month'] - month_count):,} appels possibles ce mois."
+
+            # Estimation jours restants au rythme actuel
+            daily_avg = month_count / max(now.day, 1)
+            days_until_full = round((cap["month"] - month_count) / daily_avg) if daily_avg > 0 else None
+
+            result_per_platform[plat] = {
+                "month_calls": month_count,
+                "month_capacity": cap["month"],
+                "month_usage_pct": month_pct,
+                "today_calls": today_count,
+                "day_capacity": cap["day"],
+                "day_usage_pct": day_pct,
+                "remaining_month": max(0, cap["month"] - month_count),
+                "daily_avg": round(daily_avg),
+                "days_until_full": days_until_full,
+                "status": status,
+                "advice": advice,
+            }
+
+        # Estimation capacite agences (basee sur usage moyen actuel par campagne)
+        total_active_campaigns = await db.campaigns.count_documents({"status": "active"})
+        total_accounts = await db.social_accounts.count_documents({})
+
+        # Si on a deja des campagnes actives, on extrapole
+        accounts_per_agency_avg = max(1, total_accounts / max(1, await db.users.count_documents({"role": "agency"})))
+
+        # Calls/mois par compte tracke (moyenne 4 scrapes/jour × 30 jours = 120 calls/mois)
+        calls_per_account_month = 120
+
+        # Capacite restante en nombre d'agences additionnelles
+        agencies_estimates = {}
+        for plat, cap in CAPACITY.items():
+            remaining = cap["month"] - result_per_platform[plat]["month_calls"]
+            if accounts_per_agency_avg > 0:
+                additional_agencies = int(remaining / (accounts_per_agency_avg * calls_per_account_month))
+            else:
+                additional_agencies = int(remaining / (30 * calls_per_account_month))  # default 30 comptes
+            agencies_estimates[plat] = max(0, additional_agencies)
+
+        # Verdict global : la plateforme la plus saturee determine la limite
+        worst_plat = max(result_per_platform.keys(), key=lambda p: result_per_platform[p]["month_usage_pct"])
+        worst_pct = result_per_platform[worst_plat]["month_usage_pct"]
+
+        # Estimation comptes additionnels possibles (limite par la plateforme la plus saturee)
+        additional_accounts_capacity = min(
+            int((CAPACITY[p]["month"] - result_per_platform[p]["month_calls"]) / calls_per_account_month)
+            for p in CAPACITY
+        )
+        additional_accounts_capacity = max(0, additional_accounts_capacity)
+
+        # Plans tarifaires Paul
+        PLANS = {
+            "small": 30,    # 30 comptes
+            "medium": 100,  # 100 comptes
+            "large": 400,   # 400 comptes
+        }
+        max_agencies_per_plan = {
+            plan_name: max(0, int(additional_accounts_capacity / accounts))
+            for plan_name, accounts in PLANS.items()
+        }
+
+        return {
+            "month_start": month_start[:10],
+            "platforms": result_per_platform,
+            "global": {
+                "active_campaigns": total_active_campaigns,
+                "total_tracked_accounts": total_accounts,
+                "avg_accounts_per_agency": round(accounts_per_agency_avg, 1),
+                "calls_per_account_month_estimate": calls_per_account_month,
+                "additional_accounts_capacity": additional_accounts_capacity,
+                "additional_agencies_estimate": agencies_estimates,
+                "max_new_agencies_per_plan": max_agencies_per_plan,
+                "bottleneck_platform": worst_plat,
+                "bottleneck_usage_pct": worst_pct,
+            },
+            "recommendation": (
+                f"Tu peux encore accueillir environ {additional_accounts_capacity:,} comptes trackes supplementaires "
+                f"(soit {max_agencies_per_plan['small']} agences plan_small / {max_agencies_per_plan['medium']} plan_medium / "
+                f"{max_agencies_per_plan['large']} plan_large) avant saturation. "
+                f"Goulot actuel : {worst_plat} a {worst_pct}%."
+            ),
         }
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}

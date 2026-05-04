@@ -1547,6 +1547,8 @@ function CampaignDashboard({ campaigns }) {
       const body = {
         url: video.url,
         platform: trackAccountForm.platform,
+        // platform_video_id permet au backend de reconstruire une URL canonique si video.url est cassee/profil
+        platform_video_id: video.platform_video_id || "",
         // username connu depuis le scrape de compte = le backend peut utiliser le VPS gratuit pour filtrer
         account_username: trackAccountForm.username.trim().replace(/^@/, ""),
         ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),

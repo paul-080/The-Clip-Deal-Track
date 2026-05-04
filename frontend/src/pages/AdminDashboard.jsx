@@ -1527,6 +1527,128 @@ function ProspectsTab() {
 
 
 // ─── Capacite & Couts ─────────────────────────────────────────────
+function ApiCapacitySection() {
+  const [cap, setCap] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    adminFetch("/admin/api-capacity")
+      .then(setCap)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  if (loading && !cap) {
+    return <div className="bg-[#121212] border border-white/10 rounded-xl p-5 text-white/40 text-sm">Chargement capacités APIs...</div>;
+  }
+  if (!cap || cap.error) {
+    return (
+      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+        <p className="text-white/60 text-sm">Capacités API : {cap?.error || "indisponible"}</p>
+        <button onClick={refresh} className="mt-2 text-[#00E5FF] text-xs underline">Reessayer</button>
+      </div>
+    );
+  }
+
+  const PLATFORM_LABELS = {
+    tiktok: { label: "TikTok", icon: "🎵", color: "#00E5FF" },
+    instagram: { label: "Instagram", icon: "📸", color: "#FF007F" },
+    youtube: { label: "YouTube", icon: "▶️", color: "#FF4444" },
+  };
+  const statusBg = (s) => s === "RED" ? "bg-red-500/15 border-red-500/40" : s === "ORANGE" ? "bg-amber-500/15 border-amber-500/40" : "bg-green-500/15 border-green-500/40";
+  const statusFg = (s) => s === "RED" ? "text-red-400" : s === "ORANGE" ? "text-amber-400" : "text-green-400";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-white font-semibold text-base">📊 Capacite mensuelle scraping (gratuit)</p>
+          <p className="text-xs text-white/50 mt-1">Pourcentage du quota mensuel utilise par plateforme. Permet de savoir quand upgrader le proxy ou les quotas API.</p>
+        </div>
+        <button onClick={refresh} disabled={loading} className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs">
+          {loading ? "..." : "↻"}
+        </button>
+      </div>
+
+      {cap.recommendation && (
+        <div className="p-3 rounded-lg bg-[#00E5FF]/8 border border-[#00E5FF]/25 text-[#00E5FF] text-sm font-medium">
+          💡 {cap.recommendation}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {Object.entries(cap.platforms || {}).map(([plat, p]) => {
+          const meta = PLATFORM_LABELS[plat] || { label: plat, icon: "", color: "#fff" };
+          return (
+            <div key={plat} className={`rounded-xl border p-4 ${statusBg(p.status)}`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">{meta.icon}</span>
+                  <span className="text-white font-semibold">{meta.label}</span>
+                </div>
+                <span className={`text-2xl font-mono font-bold ${statusFg(p.status)}`}>{p.month_usage_pct}%</span>
+              </div>
+              <div className="h-2 bg-white/5 rounded-full overflow-hidden mb-3">
+                <div className="h-full transition-all" style={{ width: `${Math.min(100, p.month_usage_pct)}%`, background: meta.color }} />
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between text-white/50">
+                  <span>Mois en cours</span>
+                  <span className="text-white font-mono">{(p.month_calls || 0).toLocaleString("fr-FR")} / {(p.month_capacity || 0).toLocaleString("fr-FR")}</span>
+                </div>
+                <div className="flex justify-between text-white/50">
+                  <span>Aujourd'hui</span>
+                  <span className="text-white font-mono">{(p.today_calls || 0).toLocaleString("fr-FR")} / {(p.day_capacity || 0).toLocaleString("fr-FR")} ({p.day_usage_pct}%)</span>
+                </div>
+                <div className="flex justify-between text-white/50">
+                  <span>Reste ce mois</span>
+                  <span className="text-white font-mono">{(p.remaining_month || 0).toLocaleString("fr-FR")}</span>
+                </div>
+                {p.days_until_full !== null && p.days_until_full !== undefined && (
+                  <div className="flex justify-between text-white/50">
+                    <span>Saturation prevue</span>
+                    <span className={p.days_until_full < 30 ? "text-amber-400 font-mono" : "text-white/70 font-mono"}>
+                      {p.days_until_full > 0 ? `dans ${p.days_until_full}j` : "depassee"}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <p className={`text-[11px] mt-2 ${statusFg(p.status)}`}>{p.advice}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      {cap.global && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-white/10">
+          <div className="bg-white/3 rounded-lg p-3">
+            <p className="text-[10px] text-white/40 uppercase">Goulot</p>
+            <p className="text-white font-mono font-bold mt-1">{cap.global.bottleneck_platform}</p>
+            <p className="text-xs text-amber-400">{cap.global.bottleneck_usage_pct}% utilise</p>
+          </div>
+          <div className="bg-white/3 rounded-lg p-3">
+            <p className="text-[10px] text-white/40 uppercase">Comptes possibles en plus</p>
+            <p className="text-white font-mono font-bold mt-1">{(cap.global.additional_accounts_capacity || 0).toLocaleString("fr-FR")}</p>
+            <p className="text-xs text-white/50">avant saturation</p>
+          </div>
+          <div className="bg-white/3 rounded-lg p-3">
+            <p className="text-[10px] text-white/40 uppercase">Plan small (30 cpt)</p>
+            <p className="text-white font-mono font-bold mt-1">+{cap.global.max_new_agencies_per_plan?.small || 0}</p>
+            <p className="text-xs text-white/50">agences possibles</p>
+          </div>
+          <div className="bg-white/3 rounded-lg p-3">
+            <p className="text-[10px] text-white/40 uppercase">Plan medium / large</p>
+            <p className="text-white font-mono font-bold mt-1">+{cap.global.max_new_agencies_per_plan?.medium || 0} / +{cap.global.max_new_agencies_per_plan?.large || 0}</p>
+            <p className="text-xs text-white/50">agences possibles</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UsageMonitorTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1564,6 +1686,9 @@ function UsageMonitorTab() {
           {loading ? "..." : "Actualiser"}
         </button>
       </div>
+
+      {/* NEW : Capacite mensuelle scraping (TT/IG/YT en %) */}
+      <ApiCapacitySection />
 
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
