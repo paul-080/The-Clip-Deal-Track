@@ -392,61 +392,99 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     ]
     variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
     # Le code essaie chaque doc_id en boucle dans la methode curl_cffi ci-dessous
-    # Headers MIME PARFAITEMENT Chrome 131 (Client Hints + tous les Sec-CH-UA modernes)
+    # Headers EXACTS qui marchent depuis IP datacenter (test live mai 2026)
+    # Source : ahmedrangel/instagram-media-scraper + Scrapfly
+    # Les 3 headers KEY : X-FB-LSD, X-ASBD-ID, Sec-Fetch-Site
+    UA_POOL = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    ]
+    import random as _rnd
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "User-Agent": _rnd.choice(UA_POOL),
         "Content-Type": "application/x-www-form-urlencoded",
         "X-IG-App-ID": "936619743392459",
         "X-FB-LSD": "AVqbxe3J_YA",
         "X-ASBD-ID": "129477",
-        "X-Requested-With": "XMLHttpRequest",
         "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-CH-UA": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        "Sec-CH-UA-Mobile": "?0",
-        "Sec-CH-UA-Platform": '"Windows"',
-        "Sec-CH-UA-Full-Version-List": '"Google Chrome";v="131.0.6778.86", "Chromium";v="131.0.6778.86", "Not_A Brand";v="24.0.0.0"',
-        "Sec-CH-UA-Platform-Version": '"15.0.0"',
-        "Sec-CH-UA-Arch": '"x86"',
-        "Sec-CH-UA-Bitness": '"64"',
-        "Sec-CH-UA-Model": '""',
-        "Sec-CH-Prefers-Color-Scheme": "dark",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
         "Origin": "https://www.instagram.com",
         "Referer": f"https://www.instagram.com/p/{shortcode}/",
-        "Priority": "u=1, i",
-        "DNT": "1",
     }
+    # Cookies optionnels (sessionid si dispo, mais NON OBLIGATOIRE selon tests)
     cookies = {}
     sess = _get_instagram_session()
     if sess:
         cookies["sessionid"] = sess
-        # Ajout de cookies supplémentaires pour ressembler à un vrai navigateur
-        cookies["mid"] = "Z" + sess[:8] if len(sess) > 8 else "ZF1234"
-        cookies["ig_did"] = "12345678-1234-1234-1234-123456789ABC"
-        cookies["csrftoken"] = "missing"  # sera ignoré si vrai csrftoken absent
-        cookies["dpr"] = "2"
-        cookies["wd"] = "1920x1080"
 
     data = None
     last_status = None
-    # Methode 1 : curl_cffi (chrome131/124/120) x 3 doc_ids = 9 combinaisons max
-    try:
-        from curl_cffi import requests as _curl_requests
-        loop = asyncio.get_event_loop()
-        for doc_id in DOC_IDS_LIST:
-            body_str = f"variables={_quote_local(variables)}&doc_id={doc_id}&lsd=AVqbxe3J_YA"
-            for chrome_ver in ("chrome131", "chrome124", "chrome120"):
-                def _do_curl_post(version=chrome_ver, body=body_str):
+    # Methode 1 : httpx avec data DICT form-encoded (pas content=string !)
+    # CONFIRME live mai 2026 : marche depuis IP datacenter SANS proxy/cookie
+    # Source : ahmedrangel/instagram-media-scraper + Scrapfly
+    for doc_id in DOC_IDS_LIST:
+        form_data = {
+            "variables": _json_local.dumps({"shortcode": shortcode}),
+            "doc_id": doc_id,
+            "lsd": "AVqbxe3J_YA",
+        }
+        for attempt_idx in range(2):  # retry x 2 par doc_id
+            try:
+                client_kwargs = {"timeout": 15, "http2": True}
+                if BACKEND_PROXY_URL:
+                    client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+                async with httpx.AsyncClient(**client_kwargs) as c:
+                    r = await c.post(
+                        "https://www.instagram.com/api/graphql",
+                        headers=headers,
+                        cookies=cookies if cookies else None,
+                        data=form_data,  # IMPORTANT : data DICT, pas content string
+                    )
+                last_status = r.status_code
+                if r.status_code == 200:
+                    parsed = r.json()
+                    if parsed.get("errors"):
+                        err_msg = (parsed["errors"][0] or {}).get("message", "")
+                        if "Rate limit" in err_msg and attempt_idx == 0:
+                            await asyncio.sleep(5)
+                            continue
+                    media = (parsed.get("data") or {}).get("xdt_shortcode_media")
+                    if media:
+                        data = parsed
+                        logger.info(f"GraphQL httpx SUCCESS for {shortcode} via doc_id={doc_id}")
+                        break
+                elif r.status_code in (429, 503) and attempt_idx == 0:
+                    # Rate limit -> backoff
+                    await asyncio.sleep(2 ** attempt_idx + 1)
+                    continue
+            except Exception as e:
+                logger.debug(f"GraphQL httpx exception doc_id={doc_id}: {type(e).__name__}: {e}")
+                if attempt_idx == 0:
+                    await asyncio.sleep(1)
+                    continue
+        if data:
+            break
+
+    # Methode 2 : curl_cffi en fallback (TLS Chrome) si httpx echoue
+    if data is None:
+        try:
+            from curl_cffi import requests as _curl_requests
+            loop = asyncio.get_event_loop()
+            for doc_id in DOC_IDS_LIST:
+                form_data = {
+                    "variables": _json_local.dumps({"shortcode": shortcode}),
+                    "doc_id": doc_id,
+                    "lsd": "AVqbxe3J_YA",
+                }
+                def _do_curl_post(fd=form_data):
                     kw = {
                         "headers": headers,
                         "cookies": cookies,
-                        "data": body,
-                        "timeout": 30,
-                        "impersonate": version,
+                        "data": fd,
+                        "timeout": 20,
+                        "impersonate": "chrome131",
                     }
                     if BACKEND_PROXY_URL:
                         kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
@@ -456,22 +494,19 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
                     except Exception as e:
                         return None, f"curl_cffi error: {type(e).__name__}: {e}"
                 status_code, text = await loop.run_in_executor(_thread_pool, _do_curl_post)
-                last_status = status_code
                 if status_code == 200:
                     try:
                         parsed = _json_local.loads(text)
                         if parsed.get("data", {}).get("xdt_shortcode_media"):
                             data = parsed
-                            logger.info(f"GraphQL curl_cffi SUCCESS for {shortcode} via {chrome_ver}+doc_id={doc_id}")
+                            logger.info(f"GraphQL curl_cffi (fallback) SUCCESS for {shortcode} via doc_id={doc_id}")
                             break
                     except Exception:
                         pass
-            if data:
-                break
-    except ImportError:
-        logger.warning("curl_cffi not installed (pip install curl_cffi), fallback httpx")
-    except Exception as e:
-        logger.debug(f"GraphQL curl_cffi exception for {shortcode}: {type(e).__name__}: {e}")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"GraphQL curl_cffi fallback exception: {e}")
 
     # Methode 2 (fallback) : httpx classique avec User-Agent Chrome
     if data is None:
