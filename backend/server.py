@@ -4944,6 +4944,10 @@ def _parse_instagram_videos(data: dict) -> list:
 
 async def _verify_instagram_apify(username: str) -> dict:
     """Verify Instagram account via Apify — uses residential proxies, cloud-safe."""
+    # KILL SWITCH global Apify Insta
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+        logger.info(f"[APIFY KILL SWITCH] _verify_instagram_apify desactive pour @{username}")
+        raise ValueError("Apify Insta desactive (kill switch APIFY_INSTA_FORCE_OFF)")
     if not APIFY_TOKEN:
         raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
@@ -13232,7 +13236,9 @@ async def admin_debug_instagram(username: str, request: Request, _: bool = Depen
     }
 
     # ── 0. Test Apify — démarrage uniquement (sans poll, évite timeout) ──
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # KILL SWITCH : skip si Apify Insta desactive
+    apify_kill = os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')
+    if APIFY_TOKEN and not APIFY_DISABLED and not apify_kill:
         try:
             actor_id = "apify~instagram-reel-scraper"
             payload = {
