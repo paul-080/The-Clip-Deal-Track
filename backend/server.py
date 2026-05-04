@@ -8057,15 +8057,25 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
     })
     if existing:
         account_id = existing["account_id"]
-        # Verifie qu'il n'est pas deja assigne a une autre campagne
-        other = await db.campaign_social_accounts.find_one({
+        # Verifie qu'il n'est pas deja assigne a une autre campagne ACTIVE
+        other_assignments = await db.campaign_social_accounts.find({
             "account_id": account_id,
             "campaign_id": {"$ne": campaign_id},
-        })
-        if other:
-            other_camp = await db.campaigns.find_one({"campaign_id": other["campaign_id"]}, {"_id": 0, "name": 1})
-            other_name = other_camp.get("name", "?") if other_camp else "?"
-            raise HTTPException(status_code=409, detail=f"⚠️ Ce compte est déjà tracké dans la campagne « {other_name} ». Un compte ne peut être tracké que dans UNE seule campagne à la fois.")
+        }).to_list(20)
+        # Filtre les orphelins (campagnes supprimees) et nettoie au passage
+        other_active = None
+        for csa in other_assignments:
+            other_camp_id = csa.get("campaign_id")
+            other_camp = await db.campaigns.find_one({"campaign_id": other_camp_id}, {"_id": 0, "name": 1, "status": 1})
+            if not other_camp or other_camp.get("status") == "deleted":
+                # Orphelin : on supprime
+                await db.campaign_social_accounts.delete_one({"campaign_id": other_camp_id, "account_id": account_id})
+                logger.info(f"Cleaned orphan assignment account={account_id} campaign={other_camp_id}")
+                continue
+            other_active = (other_camp_id, other_camp.get("name", "?"))
+            break
+        if other_active:
+            raise HTTPException(status_code=409, detail=f"⚠️ Ce compte est déjà tracké dans la campagne « {other_active[1]} ». Un compte ne peut être tracké que dans UNE seule campagne à la fois.")
         # Verifie qu'il n'est pas deja assigne a CETTE campagne
         already = await db.campaign_social_accounts.find_one({
             "account_id": account_id, "campaign_id": campaign_id,
@@ -14518,12 +14528,22 @@ async def delete_campaign(campaign_id: str, user: dict = Depends(get_current_use
             detail=f"{unpaid_count} clippeur(s) n'ont pas encore été payé(s). Confirmez tous les paiements avant de supprimer la campagne."
         )
 
-    # All conditions met — delete campaign and related data
+    # All conditions met — delete campaign and ALL related data
     await db.campaigns.delete_one({"campaign_id": campaign_id})
     await db.campaign_members.delete_many({"campaign_id": campaign_id})
     await db.messages.delete_many({"campaign_id": campaign_id})
     await db.tracked_videos.delete_many({"campaign_id": campaign_id})
     await db.posts.delete_many({"campaign_id": campaign_id})
+    # IMPORTANT : aussi supprimer les assignations de comptes (sinon orphelins
+    # qui empechent d'ajouter ces comptes a une autre campagne)
+    await db.campaign_social_accounts.delete_many({"campaign_id": campaign_id})
+    # Et les liens click si campagne au clic
+    await db.click_links.delete_many({"campaign_id": campaign_id})
+    # Et l'historique de scraping
+    try:
+        await db.cascade_debug_log.delete_many({"_id": {"$regex": f"^.*{campaign_id}"}})
+    except Exception:
+        pass
 
     return {"message": "Campagne supprimée avec succès"}
 
