@@ -7491,6 +7491,50 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         raise HTTPException(status_code=400, detail="Username ou URL invalide")
 
     # Si compte deja existant pour ce clippeur, le reuse plutot que doublon
+    # ANTI-FRAUDE NIVEAU 1 : verifie si CE compte (platform+username, peu importe user_id) existe DEJA
+    # Si oui chez un AUTRE clippeur -> POTENTIEL FRAUDE (2 clippeurs revendiquent le meme compte)
+    fraud_existing_other = await db.social_accounts.find_one({
+        "platform": platform,
+        "username": username,
+        "user_id": {"$ne": target_user_id},  # autre user (ou agence)
+    })
+    if fraud_existing_other:
+        # Cree alerte fraude
+        try:
+            other_user = await db.users.find_one({"user_id": fraud_existing_other.get("user_id")}, {"_id": 0, "email": 1, "display_name": 1, "name": 1}) if fraud_existing_other.get("user_id") else None
+            current_user = await db.users.find_one({"user_id": target_user_id}, {"_id": 0, "email": 1, "display_name": 1, "name": 1}) if target_user_id else None
+            await db.fraud_alerts.insert_one({
+                "alert_id": f"fraud_{uuid.uuid4().hex[:12]}",
+                "type": "duplicate_account_cross_user",
+                "severity": "high",
+                "platform": platform,
+                "username": username,
+                "campaign_id": campaign_id,
+                "campaign_name": campaign.get("name") if campaign else None,
+                "agency_id": campaign.get("agency_id") if campaign else None,
+                "existing_account_id": fraud_existing_other.get("account_id"),
+                "existing_user_id": fraud_existing_other.get("user_id"),
+                "existing_user_email": (other_user or {}).get("email") if other_user else "agency",
+                "existing_user_name": (other_user or {}).get("display_name") or (other_user or {}).get("name") if other_user else None,
+                "attempted_user_id": target_user_id,
+                "attempted_user_email": (current_user or {}).get("email") if current_user else "agency",
+                "attempted_user_name": (current_user or {}).get("display_name") or (current_user or {}).get("name") if current_user else None,
+                "added_by": user["user_id"],
+                "added_by_role": role,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+                "details": f"Le compte @{username} ({platform}) est déjà revendiqué par un autre utilisateur",
+            })
+        except Exception as e:
+            logger.warning(f"Failed to create fraud alert: {e}")
+        # Bloque l'ajout
+        existing_label = (other_user or {}).get("display_name") or (other_user or {}).get("name") or (other_user or {}).get("email") or "un autre utilisateur"
+        raise HTTPException(
+            status_code=409,
+            detail=f"⚠️ Ce compte @{username} ({platform}) est déjà revendiqué par {existing_label}. Une alerte fraude a été créée pour vérification."
+        )
+
+    # ANTI-FRAUDE NIVEAU 2 : verifie si CE compte exact (meme user_id) existe -> reuse
     existing = await db.social_accounts.find_one({
         "user_id": target_user_id,
         "platform": platform,
@@ -7506,13 +7550,13 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         if other:
             other_camp = await db.campaigns.find_one({"campaign_id": other["campaign_id"]}, {"_id": 0, "name": 1})
             other_name = other_camp.get("name", "?") if other_camp else "?"
-            raise HTTPException(status_code=409, detail=f"Ce compte est déjà utilisé dans « {other_name} »")
+            raise HTTPException(status_code=409, detail=f"⚠️ Ce compte est déjà tracké dans la campagne « {other_name} ». Un compte ne peut être tracké que dans UNE seule campagne à la fois.")
         # Verifie qu'il n'est pas deja assigne a CETTE campagne
         already = await db.campaign_social_accounts.find_one({
             "account_id": account_id, "campaign_id": campaign_id,
         })
         if already:
-            return {"account": existing, "already_assigned": True}
+            raise HTTPException(status_code=409, detail=f"✓ Ce compte @{username} est déjà tracké dans cette campagne.")
     else:
         account_id = f"acc_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
@@ -11842,6 +11886,128 @@ async def admin_simulate_add_account(
     except Exception as e:
         diag["_FATAL"] = f"{type(e).__name__}: {e} (at step={diag.get('_step')})"
         return diag
+
+
+@api_router.get("/admin/fraud-alerts")
+async def admin_get_fraud_alerts(request: Request, status: str = "pending", limit: int = 100):
+    """Liste les alertes de fraude detectees."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    query = {}
+    if status and status != "all":
+        query["status"] = status
+    alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+
+    # Detection live de patterns suspects en plus des alertes stockees
+    live_alerts = []
+
+    # 1. Comptes avec plus de 1000 vues mais 0 likes (potentiel fake views)
+    try:
+        suspicious_videos = await db.tracked_videos.find(
+            {"views": {"$gte": 1000}, "likes": {"$lte": 5}},
+            {"_id": 0, "video_id": 1, "url": 1, "views": 1, "likes": 1, "user_id": 1, "campaign_id": 1, "platform": 1}
+        ).limit(50).to_list(50)
+        for v in suspicious_videos:
+            ratio = v["likes"] / v["views"] if v["views"] > 0 else 0
+            if ratio < 0.001:  # moins de 0.1% likes/views = ultra suspect
+                live_alerts.append({
+                    "type": "fake_views_pattern",
+                    "severity": "medium",
+                    "video_url": v.get("url"),
+                    "views": v["views"],
+                    "likes": v["likes"],
+                    "ratio": f"{ratio*100:.3f}%",
+                    "campaign_id": v.get("campaign_id"),
+                    "user_id": v.get("user_id"),
+                    "details": f"Vidéo avec {v['views']} vues et seulement {v['likes']} likes (ratio {ratio*100:.3f}% — potentielles fake views)",
+                })
+    except Exception as e:
+        logger.warning(f"Live fraud detection 1 failed: {e}")
+
+    # 2. Comptes ajoutes pour 2+ campagnes simultanement (devrait etre bloque par anti-fraude niveau 2)
+    try:
+        pipeline = [
+            {"$group": {"_id": "$account_id", "count": {"$sum": 1}, "campaigns": {"$push": "$campaign_id"}}},
+            {"$match": {"count": {"$gte": 2}}},
+            {"$limit": 50}
+        ]
+        multi_camp_accounts = await db.campaign_social_accounts.aggregate(pipeline).to_list(50)
+        for mca in multi_camp_accounts:
+            acc = await db.social_accounts.find_one({"account_id": mca["_id"]}, {"_id": 0, "username": 1, "platform": 1, "user_id": 1})
+            if acc:
+                live_alerts.append({
+                    "type": "account_multi_campaigns",
+                    "severity": "high",
+                    "account_id": mca["_id"],
+                    "username": acc.get("username"),
+                    "platform": acc.get("platform"),
+                    "campaigns_count": mca["count"],
+                    "campaign_ids": mca["campaigns"],
+                    "details": f"Compte @{acc.get('username')} ({acc.get('platform')}) tracké dans {mca['count']} campagnes simultanément",
+                })
+    except Exception as e:
+        logger.warning(f"Live fraud detection 2 failed: {e}")
+
+    # 3. Clics depuis IP unique avec volume anormal (potentiel bot)
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        cutoff_24h = (_dt.now(timezone.utc) - _td(hours=24)).isoformat()
+        pipeline_clicks = [
+            {"$match": {"clicked_at": {"$gte": cutoff_24h}}},
+            {"$group": {"_id": "$ip_hash", "count": {"$sum": 1}, "links": {"$addToSet": "$link_id"}}},
+            {"$match": {"count": {"$gte": 50}}},  # 50+ clics depuis 1 IP en 24h
+            {"$sort": {"count": -1}},
+            {"$limit": 20}
+        ]
+        bot_ips = await db.click_events.aggregate(pipeline_clicks).to_list(20)
+        for bip in bot_ips:
+            live_alerts.append({
+                "type": "click_bot_pattern",
+                "severity": "medium",
+                "ip_hash_prefix": bip["_id"][:12] + "...",
+                "clicks_24h": bip["count"],
+                "links_targeted": len(bip.get("links", [])),
+                "details": f"IP avec {bip['count']} clics en 24h sur {len(bip.get('links', []))} lien(s) — potentiel bot",
+            })
+    except Exception as e:
+        logger.warning(f"Live fraud detection 3 failed: {e}")
+
+    # 4. Augmentation soudaine de vues (boost suspect)
+    # Skip pour MVP, ajout futur si necessaire
+
+    return {
+        "stored_alerts": alerts,
+        "stored_alerts_count": len(alerts),
+        "live_detected_alerts": live_alerts,
+        "live_alerts_count": len(live_alerts),
+        "total": len(alerts) + len(live_alerts),
+        "status_filter": status,
+    }
+
+
+@api_router.post("/admin/fraud-alerts/{alert_id}/resolve")
+async def admin_resolve_fraud_alert(alert_id: str, request: Request, body: dict = None):
+    """Resoud une alerte de fraude (false_positive ou confirmed)."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    decision = body.get("decision", "false_positive")  # ou "confirmed"
+    note = body.get("note", "")
+    res = await db.fraud_alerts.update_one(
+        {"alert_id": alert_id},
+        {"$set": {
+            "status": "resolved",
+            "decision": decision,
+            "resolved_note": note,
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+    if res.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Alerte introuvable")
+    return {"message": "Alerte résolue", "decision": decision}
 
 
 @api_router.get("/admin/apify-usage")
