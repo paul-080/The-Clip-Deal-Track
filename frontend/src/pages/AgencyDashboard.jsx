@@ -1093,6 +1093,10 @@ function CampaignDashboard({ campaigns }) {
   const [accountVideos, setAccountVideos] = useState(null); // null | { videos: [], count, ... }
   const [scrapingForPreview, setScrapingForPreview] = useState(false);
   const [trackingVideoId, setTrackingVideoId] = useState(null);
+  // Multi-selection : ids des videos cochees pour bulk-add
+  const [selectedVideoIds, setSelectedVideoIds] = useState(() => new Set());
+  const [bulkTracking, setBulkTracking] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   const [sortField, setSortField] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [filterPlatform, setFilterPlatform] = useState("all");
@@ -1516,6 +1520,7 @@ function CampaignDashboard({ campaigns }) {
     }
     setScrapingForPreview(true);
     setAccountVideos(null);
+    setSelectedVideoIds(new Set());
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/list-account-videos`, {
         method: "POST",
@@ -1540,6 +1545,98 @@ function CampaignDashboard({ campaigns }) {
     }
   };
 
+  // Toggle selection d'une video dans le modal "Voir les videos"
+  const handleToggleVideoSelection = (videoId) => {
+    if (!videoId) return;
+    setSelectedVideoIds(prev => {
+      const next = new Set(prev);
+      if (next.has(videoId)) next.delete(videoId);
+      else next.add(videoId);
+      return next;
+    });
+  };
+
+  const handleSelectAllVideos = () => {
+    if (!accountVideos?.videos) return;
+    const all = (accountVideos.videos || [])
+      .filter(v => !v._tracked && v.platform_video_id)
+      .map(v => v.platform_video_id);
+    setSelectedVideoIds(new Set(all));
+  };
+
+  const handleDeselectAllVideos = () => {
+    setSelectedVideoIds(new Set());
+  };
+
+  // BULK : ajoute toutes les videos selectionnees a la campagne en une seule action
+  const handleBulkAddSelectedVideos = async () => {
+    if (bulkTracking) return;
+    if (!accountVideos?.videos || selectedVideoIds.size === 0) return;
+    const toAdd = (accountVideos.videos || []).filter(v => selectedVideoIds.has(v.platform_video_id) && !v._tracked);
+    if (toAdd.length === 0) {
+      toast.error("Aucune vidéo sélectionnée");
+      return;
+    }
+    setBulkTracking(true);
+    setBulkProgress({ done: 0, total: toAdd.length });
+    let okCount = 0;
+    let errCount = 0;
+    for (let i = 0; i < toAdd.length; i++) {
+      const video = toAdd[i];
+      try {
+        const body = {
+          url: video.url,
+          platform: trackAccountForm.platform,
+          platform_video_id: video.platform_video_id || "",
+          account_username: trackAccountForm.username.trim().replace(/^@/, ""),
+          ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),
+        };
+        const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const v = data.video || {};
+          okCount += 1;
+          setAccountVideos(prev => prev ? {
+            ...prev,
+            videos: prev.videos.map(vv => vv.platform_video_id === video.platform_video_id
+              ? { ...vv, _tracked: true, views: v.views || vv.views, likes: v.likes || vv.likes }
+              : vv),
+          } : prev);
+        } else {
+          errCount += 1;
+        }
+      } catch {
+        errCount += 1;
+      }
+      setBulkProgress({ done: i + 1, total: toAdd.length });
+    }
+    setBulkTracking(false);
+    setSelectedVideoIds(new Set());
+
+    if (okCount > 0 && errCount === 0) {
+      toast.success(`✓ ${okCount} vidéo${okCount > 1 ? "s" : ""} ajoutée${okCount > 1 ? "s" : ""} à la campagne`);
+    } else if (okCount > 0 && errCount > 0) {
+      toast.success(`✓ ${okCount} ajoutée${okCount > 1 ? "s" : ""}, ${errCount} en échec`, { duration: 6000 });
+    } else {
+      toast.error(`Échec : aucune vidéo ajoutée (${errCount} erreurs)`, { duration: 6000 });
+    }
+
+    // Refresh la liste de videos de la campagne et ferme le modal apres succes
+    fetchAllVideos();
+    if (okCount > 0 && errCount === 0) {
+      setTimeout(() => {
+        setShowTrackAccountModal(false);
+        setAccountVideos(null);
+      }, 1200);
+    }
+  };
+
+  // Conserve l'ancien comportement single-click pour compatibilite (utilise ailleurs si besoin)
   const handleTrackVideoFromAccountPreview = async (video) => {
     if (trackingVideoId) return;
     setTrackingVideoId(video.platform_video_id);
@@ -1547,9 +1644,7 @@ function CampaignDashboard({ campaigns }) {
       const body = {
         url: video.url,
         platform: trackAccountForm.platform,
-        // platform_video_id permet au backend de reconstruire une URL canonique si video.url est cassee/profil
         platform_video_id: video.platform_video_id || "",
-        // username connu depuis le scrape de compte = le backend peut utiliser le VPS gratuit pour filtrer
         account_username: trackAccountForm.username.trim().replace(/^@/, ""),
         ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),
       };
@@ -1562,7 +1657,6 @@ function CampaignDashboard({ campaigns }) {
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
         const v = data.video || {};
-        // Utilise les stats VRAIMENT recuperees par le backend, pas celles affichees dans la liste (qui peuvent dater du scrape de compte)
         const realViews = v.views || 0;
         const realLikes = v.likes || 0;
         const status = data.scraping_status || "ok";
@@ -3007,7 +3101,7 @@ function CampaignDashboard({ campaigns }) {
                     <h3 className="text-white font-semibold text-lg">Tracker un compte</h3>
                     <p className="text-white/40 text-xs mt-0.5">Ajoute le compte au tracking auto, ou scrape pour sélectionner manuellement les vidéos.</p>
                   </div>
-                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); setSelectedVideoIds(new Set()); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
                 </div>
 
                 {/* Clippeur (optionnel) */}
@@ -3075,26 +3169,49 @@ function CampaignDashboard({ campaigns }) {
                   💡 <strong>Voir les vidéos</strong> : scrape le compte et te laisse sélectionner manuellement chaque vidéo · <strong>Ajouter + tracking auto</strong> : ajoute le compte et lance le scraping périodique automatique
                 </p>
 
-                {/* Liste des videos scrapees pour selection */}
+                {/* Liste des videos scrapees — selection multiple par checkbox */}
                 {accountVideos && (accountVideos.videos || []).length > 0 && (
                   <div className="space-y-2 border-t border-white/10 pt-3">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
                       <p className="text-xs text-white/60 font-medium">{accountVideos.count} vidéos trouvées</p>
-                      <p className="text-[10px] text-white/40">Clique pour tracker</p>
+                      <div className="flex items-center gap-2 text-[10px]">
+                        <button type="button" onClick={handleSelectAllVideos}
+                          disabled={bulkTracking}
+                          className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 disabled:opacity-50">
+                          Tout sélectionner
+                        </button>
+                        <button type="button" onClick={handleDeselectAllVideos}
+                          disabled={bulkTracking || selectedVideoIds.size === 0}
+                          className="px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-white/70 disabled:opacity-50">
+                          Tout décocher
+                        </button>
+                        <span className="text-white/40">
+                          {selectedVideoIds.size > 0 ? `${selectedVideoIds.size} sélectionnée${selectedVideoIds.size > 1 ? "s" : ""}` : "Coche pour tracker"}
+                        </span>
+                      </div>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[400px] overflow-y-auto pr-1">
                       {accountVideos.videos.map((v) => {
-                        const isTracking = trackingVideoId === v.platform_video_id;
                         const isTracked = v._tracked;
+                        const vid = v.platform_video_id;
+                        const isSelected = vid && selectedVideoIds.has(vid);
                         return (
-                          <button key={v.platform_video_id || v.url}
-                            onClick={() => !isTracked && !isTracking && handleTrackVideoFromAccountPreview(v)}
-                            disabled={isTracking || isTracked}
+                          <button key={vid || v.url} type="button"
+                            onClick={() => !isTracked && !bulkTracking && handleToggleVideoSelection(vid)}
+                            disabled={isTracked || bulkTracking || !vid}
                             className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-all ${
                               isTracked ? "bg-[#39FF14]/10 border-[#39FF14]/30 cursor-default" :
-                              isTracking ? "bg-white/5 border-white/20 opacity-60 cursor-wait" :
+                              isSelected ? "bg-[#00E5FF]/10 border-[#00E5FF]/50 ring-1 ring-[#00E5FF]/40" :
                               "bg-white/3 border-white/10 hover:border-[#00E5FF]/40 hover:bg-white/8"
+                            } ${bulkTracking ? "opacity-60 cursor-wait" : ""}`}>
+                            {/* Checkbox visuelle */}
+                            <div className={`w-5 h-5 flex-shrink-0 rounded border-2 flex items-center justify-center ${
+                              isTracked ? "bg-[#39FF14] border-[#39FF14]" :
+                              isSelected ? "bg-[#00E5FF] border-[#00E5FF]" :
+                              "border-white/30 bg-transparent"
                             }`}>
+                              {(isTracked || isSelected) && <span className="text-[#0a0a0a] text-xs font-bold">✓</span>}
+                            </div>
                             {v.thumbnail_url ? (
                               <img src={v.thumbnail_url} alt="" className="w-12 h-12 rounded flex-shrink-0 object-cover" onError={e => e.target.style.display = "none"} />
                             ) : (
@@ -3108,9 +3225,11 @@ function CampaignDashboard({ campaigns }) {
                                 👁 {(v.views || 0).toLocaleString("fr-FR")} · ❤️ {(v.likes || 0).toLocaleString("fr-FR")}
                               </p>
                             </div>
-                            <span className="text-[10px] flex-shrink-0 font-medium">
-                              {isTracked ? "✓ Tracké" : isTracking ? "..." : "+ Track"}
-                            </span>
+                            {isTracked && (
+                              <span className="text-[10px] flex-shrink-0 font-medium text-[#39FF14]">
+                                ✓ Tracké
+                              </span>
+                            )}
                           </button>
                         );
                       })}
@@ -3124,11 +3243,26 @@ function CampaignDashboard({ campaigns }) {
                   </div>
                 )}
 
-                <div className="flex justify-end pt-2 border-t border-white/10">
-                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }}
-                    className="px-5 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
+                {/* Footer : bouton Rajouter a la campagne + Fermer */}
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/10">
+                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); setSelectedVideoIds(new Set()); }}
+                    disabled={bulkTracking}
+                    className="px-5 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all disabled:opacity-50">
                     Fermer
                   </button>
+                  {accountVideos && (accountVideos.videos || []).length > 0 && (
+                    <button onClick={handleBulkAddSelectedVideos}
+                      disabled={bulkTracking || selectedVideoIds.size === 0}
+                      className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                        selectedVideoIds.size === 0 || bulkTracking
+                          ? "bg-white/10 text-white/30 cursor-not-allowed"
+                          : "bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-[#0a0a0a]"
+                      }`}>
+                      {bulkTracking
+                        ? `⏳ Ajout... ${bulkProgress.done}/${bulkProgress.total}`
+                        : `+ Rajouter ${selectedVideoIds.size > 0 ? `(${selectedVideoIds.size}) ` : ""}à la campagne`}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
