@@ -7696,7 +7696,139 @@ async def remove_account_from_campaign(campaign_id: str, account_id: str, user: 
     result = await db.campaign_social_accounts.delete_one(query)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Assignment not found")
+    # Supprime aussi les videos trackees de ce compte sur cette campagne
+    try:
+        acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0, "username": 1, "platform": 1})
+        if acc:
+            # Match par account_id si stocke, sinon username+platform
+            await db.tracked_videos.delete_many({
+                "campaign_id": campaign_id,
+                "$or": [
+                    {"account_id": account_id},
+                    {"$and": [{"platform": acc.get("platform")}, {"url": {"$regex": acc.get("username", ""), "$options": "i"}}]}
+                ]
+            })
+    except Exception as e:
+        logger.warning(f"cleanup tracked_videos after remove account: {e}")
     return {"message": "Account removed from campaign"}
+
+
+@api_router.patch("/campaigns/{campaign_id}/social-accounts/{account_id}/reassign")
+async def reassign_account_in_campaign(
+    campaign_id: str, account_id: str, body: dict, user: dict = Depends(get_current_user)
+):
+    """Agency/Manager : change l'attribution d'un compte a un autre clippeur (ou retire l'attribution).
+    body: {"user_id": "user_xxx"} pour assigner, ou {"user_id": null} pour detacher (compte agence)."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    new_user_id = body.get("user_id")  # peut etre None ou string
+    if new_user_id == "":
+        new_user_id = None
+
+    # Verifie que l'assignation existe
+    csa = await db.campaign_social_accounts.find_one({"campaign_id": campaign_id, "account_id": account_id})
+    if not csa:
+        raise HTTPException(status_code=404, detail="Compte non assigne a cette campagne")
+
+    # Si on attribue a un user_id, verifie qu'il est membre actif clippeur de la campagne
+    if new_user_id:
+        member = await db.campaign_members.find_one({
+            "campaign_id": campaign_id, "user_id": new_user_id, "role": "clipper", "status": "active"
+        })
+        if not member:
+            raise HTTPException(status_code=400, detail="Ce clippeur n'est pas membre actif de la campagne")
+
+    # Met a jour l'attribution
+    await db.campaign_social_accounts.update_one(
+        {"campaign_id": campaign_id, "account_id": account_id},
+        {"$set": {"user_id": new_user_id, "reassigned_at": datetime.now(timezone.utc).isoformat(), "reassigned_by": user["user_id"]}}
+    )
+    # Met aussi a jour le user_id sur le compte lui-meme (si agency, on detache du clipper)
+    await db.social_accounts.update_one(
+        {"account_id": account_id},
+        {"$set": {"user_id": new_user_id}}
+    )
+    # Met a jour les videos trackees existantes (recalcul earnings selon nouveau user)
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "rpm": 1})
+    rpm = (campaign or {}).get("rpm", 0) or 0
+    await db.tracked_videos.update_many(
+        {"campaign_id": campaign_id, "account_id": account_id},
+        {"$set": {"user_id": new_user_id}}
+    )
+    # Recalcule earnings sur les videos
+    if rpm > 0:
+        async for v in db.tracked_videos.find({"campaign_id": campaign_id, "account_id": account_id}):
+            views = int(v.get("views", 0))
+            new_earnings = round((views / 1000) * rpm, 2) if new_user_id else 0
+            await db.tracked_videos.update_one({"video_id": v["video_id"]}, {"$set": {"earnings": new_earnings}})
+    return {
+        "message": "Compte réattribué",
+        "new_user_id": new_user_id,
+        "is_agency_account": new_user_id is None,
+    }
+
+
+@api_router.delete("/campaigns/{campaign_id}/tracked-videos/{video_id}")
+async def delete_tracked_video(campaign_id: str, video_id: str, user: dict = Depends(get_current_user)):
+    """Agency/Manager supprime une vidéo du tracking de la campagne."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    result = await db.tracked_videos.delete_one({"video_id": video_id, "campaign_id": campaign_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable dans cette campagne")
+    return {"message": "Vidéo supprimée du tracking"}
+
+
+@api_router.patch("/campaigns/{campaign_id}/tracked-videos/{video_id}/reassign")
+async def reassign_tracked_video(
+    campaign_id: str, video_id: str, body: dict, user: dict = Depends(get_current_user)
+):
+    """Agency/Manager change l'attribution d'une vidéo a un autre clippeur (ou retire)."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    new_user_id = body.get("user_id")
+    if new_user_id == "":
+        new_user_id = None
+
+    video = await db.tracked_videos.find_one({"video_id": video_id, "campaign_id": campaign_id}, {"_id": 0})
+    if not video:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable")
+
+    if new_user_id:
+        member = await db.campaign_members.find_one({
+            "campaign_id": campaign_id, "user_id": new_user_id, "role": "clipper", "status": "active"
+        })
+        if not member:
+            raise HTTPException(status_code=400, detail="Clippeur non membre actif de cette campagne")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "rpm": 1})
+    rpm = (campaign or {}).get("rpm", 0) or 0
+    new_earnings = round((int(video.get("views", 0)) / 1000) * rpm, 2) if new_user_id and rpm > 0 else 0
+    await db.tracked_videos.update_one(
+        {"video_id": video_id},
+        {"$set": {"user_id": new_user_id, "earnings": new_earnings, "reassigned_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Vidéo réattribuée", "new_user_id": new_user_id, "earnings": new_earnings}
+
+
+@api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}/refresh-historic")
+async def refresh_account_historic(
+    campaign_id: str, account_id: str, user: dict = Depends(get_current_user)
+):
+    """Force un re-scrape complet du compte depuis tracking_start_date (ou creation campagne)."""
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    account = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+    if not account:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    # Lance le scrape en background
+    tracking_start = _parse_utc(campaign.get("tracking_start_date")) or _parse_utc(campaign.get("created_at"))
+    cutoff = tracking_start or datetime.now(timezone.utc)
+    asyncio.create_task(_scrape_one_account_into_campaign(account, campaign, cutoff, since_days=365, wait_verification=False))
+    return {"message": "Refresh historique lancé en arrière-plan", "tracking_start": cutoff.isoformat()}
 
 @api_router.delete("/campaigns/{campaign_id}/members/{member_user_id}")
 async def kick_member_from_campaign(campaign_id: str, member_user_id: str, user: dict = Depends(get_current_user)):

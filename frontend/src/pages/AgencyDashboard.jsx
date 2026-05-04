@@ -2585,141 +2585,6 @@ function CampaignDashboard({ campaigns }) {
             </div>
           </div>
 
-          {/* Modal "Tracker un compte" — scrape compte + selection videos OU ajout direct */}
-          {showTrackAccountModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-              <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 w-full max-w-2xl space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
-                <div className="flex items-center justify-between mb-2 sticky top-0 bg-[#1a1a1a] -mx-6 px-6 -mt-6 pt-6 pb-3 z-10">
-                  <div>
-                    <h3 className="text-white font-semibold text-lg">Tracker un compte</h3>
-                    <p className="text-white/40 text-xs mt-0.5">Ajoute le compte au tracking auto, ou scrape pour sélectionner manuellement les vidéos.</p>
-                  </div>
-                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
-                </div>
-
-                {/* Clippeur (optionnel) */}
-                <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Clippeur (optionnel)</label>
-                  <select value={trackAccountForm.user_id}
-                    onChange={e => setTrackAccountForm(f => ({ ...f, user_id: e.target.value }))}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#00E5FF]/50">
-                    <option value="">💰 Aucun — gains à l'agence</option>
-                    {activeMembers.map(m => (
-                      <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
-                    ))}
-                  </select>
-                  <p className="text-[11px] text-white/40 mt-1.5">
-                    {trackAccountForm.user_id
-                      ? "Les gains de ce compte seront attribués à ce clippeur"
-                      : "Compte rattaché directement à l'agence — les gains restent à l'agence"}
-                  </p>
-                </div>
-
-                {/* Plateforme */}
-                <div>
-                  <label className="text-xs text-white/50 block mb-1.5">Plateforme *</label>
-                  <div className="flex gap-2">
-                    {(() => {
-                      const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : ["tiktok","instagram","youtube"];
-                      const ALL = [["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]];
-                      return ALL.filter(([p]) => allowed.includes(p)).map(([p, icon]) => (
-                        <button key={p} onClick={() => { setTrackAccountForm(f => ({ ...f, platform: p })); setAccountVideos(null); }}
-                          className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${trackAccountForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
-                          {icon} {p}
-                        </button>
-                      ));
-                    })()}
-                  </div>
-                </div>
-
-                {/* Username ou URL */}
-                <div>
-                  <label className="text-xs text-white/50 block mb-1.5">@username ou URL du profil *</label>
-                  <input type="text" value={trackAccountForm.username}
-                    onChange={e => { setTrackAccountForm(f => ({ ...f, username: e.target.value })); setAccountVideos(null); }}
-                    placeholder="@username  ou  https://www.tiktok.com/@..."
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50" />
-                </div>
-
-                {/* 2 modes : voir les videos avant OU ajouter direct */}
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={handleScrapeAccountForPreview}
-                    disabled={scrapingForPreview || trackingAccount || !trackAccountForm.username.trim()}
-                    className="py-2.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-white/80 text-sm font-medium border border-white/10 transition-all flex items-center justify-center gap-2">
-                    {scrapingForPreview ? (
-                      <><div className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" /> Scraping…</>
-                    ) : (
-                      <>🔍 Voir les vidéos</>
-                    )}
-                  </button>
-                  <button onClick={handleTrackAccount}
-                    disabled={trackingAccount || scrapingForPreview || !trackAccountForm.username.trim()}
-                    className="py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black text-sm font-bold transition-all">
-                    {trackingAccount ? "Ajout…" : "✓ Ajouter + tracking auto"}
-                  </button>
-                </div>
-                <p className="text-[10px] text-white/30 -mt-2">
-                  💡 <strong>Voir les vidéos</strong> : scrape le compte et te laisse sélectionner manuellement chaque vidéo · <strong>Ajouter + tracking auto</strong> : ajoute le compte et lance le scraping périodique automatique
-                </p>
-
-                {/* Liste des videos scrapees pour selection */}
-                {accountVideos && (accountVideos.videos || []).length > 0 && (
-                  <div className="space-y-2 border-t border-white/10 pt-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-white/60 font-medium">{accountVideos.count} vidéos trouvées</p>
-                      <p className="text-[10px] text-white/40">Clique pour tracker</p>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[400px] overflow-y-auto pr-1">
-                      {accountVideos.videos.map((v) => {
-                        const isTracking = trackingVideoId === v.platform_video_id;
-                        const isTracked = v._tracked;
-                        return (
-                          <button key={v.platform_video_id || v.url}
-                            onClick={() => !isTracked && !isTracking && handleTrackVideoFromAccountPreview(v)}
-                            disabled={isTracking || isTracked}
-                            className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-all ${
-                              isTracked ? "bg-[#39FF14]/10 border-[#39FF14]/30 cursor-default" :
-                              isTracking ? "bg-white/5 border-white/20 opacity-60 cursor-wait" :
-                              "bg-white/3 border-white/10 hover:border-[#00E5FF]/40 hover:bg-white/8"
-                            }`}>
-                            {v.thumbnail_url ? (
-                              <img src={v.thumbnail_url} alt="" className="w-12 h-12 rounded flex-shrink-0 object-cover" onError={e => e.target.style.display = "none"} />
-                            ) : (
-                              <div className="w-12 h-12 rounded flex-shrink-0 bg-white/10 flex items-center justify-center text-base">
-                                {trackAccountForm.platform === "tiktok" ? "🎵" : trackAccountForm.platform === "instagram" ? "📸" : "▶️"}
-                              </div>
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="text-white text-xs truncate">{v.title || "Sans titre"}</p>
-                              <p className="text-[10px] text-white/40 mt-0.5">
-                                👁 {(v.views || 0).toLocaleString("fr-FR")} · ❤️ {(v.likes || 0).toLocaleString("fr-FR")}
-                              </p>
-                            </div>
-                            <span className="text-[10px] flex-shrink-0 font-medium">
-                              {isTracked ? "✓ Tracké" : isTracking ? "..." : "+ Track"}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {accountVideos && (accountVideos.videos || []).length === 0 && (
-                  <div className="text-center py-6 border-t border-white/10">
-                    <p className="text-white/40 text-sm">Aucune vidéo trouvée pour ce compte</p>
-                  </div>
-                )}
-
-                <div className="flex justify-end pt-2 border-t border-white/10">
-                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }}
-                    className="px-5 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
-                    Fermer
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Modal ajout vidéo manuelle */}
           {showManualVideoModal && (
@@ -3052,6 +2917,141 @@ function CampaignDashboard({ campaigns }) {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+          {/* Modal "Tracker un compte" — scrape compte + selection videos OU ajout direct */}
+          {showTrackAccountModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+              <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 w-full max-w-2xl space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between mb-2 sticky top-0 bg-[#1a1a1a] -mx-6 px-6 -mt-6 pt-6 pb-3 z-10">
+                  <div>
+                    <h3 className="text-white font-semibold text-lg">Tracker un compte</h3>
+                    <p className="text-white/40 text-xs mt-0.5">Ajoute le compte au tracking auto, ou scrape pour sélectionner manuellement les vidéos.</p>
+                  </div>
+                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
+                </div>
+
+                {/* Clippeur (optionnel) */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Clippeur (optionnel)</label>
+                  <select value={trackAccountForm.user_id}
+                    onChange={e => setTrackAccountForm(f => ({ ...f, user_id: e.target.value }))}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-[#00E5FF]/50">
+                    <option value="">💰 Aucun — gains à l'agence</option>
+                    {activeMembers.map(m => (
+                      <option key={m.user_id} value={m.user_id}>{m.user_info?.display_name || m.user_info?.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-white/40 mt-1.5">
+                    {trackAccountForm.user_id
+                      ? "Les gains de ce compte seront attribués à ce clippeur"
+                      : "Compte rattaché directement à l'agence — les gains restent à l'agence"}
+                  </p>
+                </div>
+
+                {/* Plateforme */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">Plateforme *</label>
+                  <div className="flex gap-2">
+                    {(() => {
+                      const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : ["tiktok","instagram","youtube"];
+                      const ALL = [["tiktok","🎵"], ["instagram","📸"], ["youtube","▶️"]];
+                      return ALL.filter(([p]) => allowed.includes(p)).map(([p, icon]) => (
+                        <button key={p} onClick={() => { setTrackAccountForm(f => ({ ...f, platform: p })); setAccountVideos(null); }}
+                          className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all border ${trackAccountForm.platform === p ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"}`}>
+                          {icon} {p}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </div>
+
+                {/* Username ou URL */}
+                <div>
+                  <label className="text-xs text-white/50 block mb-1.5">@username ou URL du profil *</label>
+                  <input type="text" value={trackAccountForm.username}
+                    onChange={e => { setTrackAccountForm(f => ({ ...f, username: e.target.value })); setAccountVideos(null); }}
+                    placeholder="@username  ou  https://www.tiktok.com/@..."
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50" />
+                </div>
+
+                {/* 2 modes : voir les videos avant OU ajouter direct */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={handleScrapeAccountForPreview}
+                    disabled={scrapingForPreview || trackingAccount || !trackAccountForm.username.trim()}
+                    className="py-2.5 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-white/80 text-sm font-medium border border-white/10 transition-all flex items-center justify-center gap-2">
+                    {scrapingForPreview ? (
+                      <><div className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" /> Scraping…</>
+                    ) : (
+                      <>🔍 Voir les vidéos</>
+                    )}
+                  </button>
+                  <button onClick={handleTrackAccount}
+                    disabled={trackingAccount || scrapingForPreview || !trackAccountForm.username.trim()}
+                    className="py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black text-sm font-bold transition-all">
+                    {trackingAccount ? "Ajout…" : "✓ Ajouter + tracking auto"}
+                  </button>
+                </div>
+                <p className="text-[10px] text-white/30 -mt-2">
+                  💡 <strong>Voir les vidéos</strong> : scrape le compte et te laisse sélectionner manuellement chaque vidéo · <strong>Ajouter + tracking auto</strong> : ajoute le compte et lance le scraping périodique automatique
+                </p>
+
+                {/* Liste des videos scrapees pour selection */}
+                {accountVideos && (accountVideos.videos || []).length > 0 && (
+                  <div className="space-y-2 border-t border-white/10 pt-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-white/60 font-medium">{accountVideos.count} vidéos trouvées</p>
+                      <p className="text-[10px] text-white/40">Clique pour tracker</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[400px] overflow-y-auto pr-1">
+                      {accountVideos.videos.map((v) => {
+                        const isTracking = trackingVideoId === v.platform_video_id;
+                        const isTracked = v._tracked;
+                        return (
+                          <button key={v.platform_video_id || v.url}
+                            onClick={() => !isTracked && !isTracking && handleTrackVideoFromAccountPreview(v)}
+                            disabled={isTracking || isTracked}
+                            className={`flex items-center gap-2 p-2 rounded-lg border text-left transition-all ${
+                              isTracked ? "bg-[#39FF14]/10 border-[#39FF14]/30 cursor-default" :
+                              isTracking ? "bg-white/5 border-white/20 opacity-60 cursor-wait" :
+                              "bg-white/3 border-white/10 hover:border-[#00E5FF]/40 hover:bg-white/8"
+                            }`}>
+                            {v.thumbnail_url ? (
+                              <img src={v.thumbnail_url} alt="" className="w-12 h-12 rounded flex-shrink-0 object-cover" onError={e => e.target.style.display = "none"} />
+                            ) : (
+                              <div className="w-12 h-12 rounded flex-shrink-0 bg-white/10 flex items-center justify-center text-base">
+                                {trackAccountForm.platform === "tiktok" ? "🎵" : trackAccountForm.platform === "instagram" ? "📸" : "▶️"}
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-white text-xs truncate">{v.title || "Sans titre"}</p>
+                              <p className="text-[10px] text-white/40 mt-0.5">
+                                👁 {(v.views || 0).toLocaleString("fr-FR")} · ❤️ {(v.likes || 0).toLocaleString("fr-FR")}
+                              </p>
+                            </div>
+                            <span className="text-[10px] flex-shrink-0 font-medium">
+                              {isTracked ? "✓ Tracké" : isTracking ? "..." : "+ Track"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {accountVideos && (accountVideos.videos || []).length === 0 && (
+                  <div className="text-center py-6 border-t border-white/10">
+                    <p className="text-white/40 text-sm">Aucune vidéo trouvée pour ce compte</p>
+                  </div>
+                )}
+
+                <div className="flex justify-end pt-2 border-t border-white/10">
+                  <button onClick={() => { setShowTrackAccountModal(false); setAccountVideos(null); }}
+                    className="px-5 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
+                    Fermer
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
