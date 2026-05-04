@@ -1141,6 +1141,10 @@ function CampaignDashboard({ campaigns }) {
   const [periodSel, setPeriodSel] = useState("30d");
   const [periodOffset, setPeriodOffset] = useState(0);
   const [periodLoading, setPeriodLoading] = useState(false);
+  // Gains mensuels par campagne (split par clipper)
+  const [monthlyEarnings, setMonthlyEarnings] = useState(null);
+  const [monthlyEarningsLoading, setMonthlyEarningsLoading] = useState(false);
+  const [expandedMonth, setExpandedMonth] = useState(null);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -1185,9 +1189,21 @@ function CampaignDashboard({ campaigns }) {
     finally { setPeriodLoading(false); }
   };
 
+  const fetchMonthlyEarnings = async () => {
+    setMonthlyEarningsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/monthly-earnings`, { credentials: "include" });
+      if (res.ok) setMonthlyEarnings(await res.json());
+    } catch {}
+    finally { setMonthlyEarningsLoading(false); }
+  };
+
   // Auto-fetch period stats when entering overview tab
   useEffect(() => {
-    if (campaignId && activeTab === "overview") fetchPeriodStats(periodSel, periodOffset);
+    if (campaignId && activeTab === "overview") {
+      fetchPeriodStats(periodSel, periodOffset);
+      fetchMonthlyEarnings();
+    }
     // eslint-disable-next-line
   }, [campaignId, activeTab, periodSel, periodOffset]);
 
@@ -2416,6 +2432,118 @@ function CampaignDashboard({ campaigns }) {
               </div>
             );
           })()}
+
+          {/* ── PANEL : Gains generes mois par mois (split par clipper) ─── */}
+          {monthlyEarnings && (monthlyEarnings.months || []).length > 0 && (
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="text-white font-semibold text-base flex items-center gap-2">
+                    💸 Gains générés par mois
+                  </p>
+                  <p className="text-xs text-white/40 mt-1">
+                    Distribution des vues depuis la date de publication. Clique un mois pour voir le détail par clippeur.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 text-xs">
+                  <div className="text-right">
+                    <p className="text-white/40">Total généré</p>
+                    <p className="text-[#f0c040] font-mono font-bold text-lg">€{(monthlyEarnings.totals?.all_time_earnings || 0).toFixed(2)}</p>
+                  </div>
+                  <div className="text-right border-l border-white/10 pl-3">
+                    <p className="text-white/40">Dû aux clippeurs</p>
+                    <p className="text-[#39FF14] font-mono font-bold text-lg">€{(monthlyEarnings.totals?.clippers_earnings_owed || 0).toFixed(2)}</p>
+                  </div>
+                  <div className="text-right border-l border-white/10 pl-3">
+                    <p className="text-white/40">Vidéos agence</p>
+                    <p className="text-[#00E5FF] font-mono font-bold text-lg">€{(monthlyEarnings.totals?.agency_videos_earnings || 0).toFixed(2)}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {monthlyEarnings.months.map((m) => {
+                  const isOpen = expandedMonth === m.month;
+                  const monthLabel = (() => {
+                    const [y, mo] = m.month.split("-");
+                    const d = new Date(parseInt(y), parseInt(mo) - 1, 1);
+                    return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+                  })();
+                  const hasClippers = (m.by_clipper || []).length > 0;
+                  const hasAgency = (m.agency_only?.earnings || 0) > 0;
+                  return (
+                    <div key={m.month} className="bg-white/3 border border-white/10 rounded-lg overflow-hidden">
+                      <button
+                        onClick={() => setExpandedMonth(isOpen ? null : m.month)}
+                        className="w-full flex items-center justify-between gap-3 p-3 hover:bg-white/5 transition-all text-left"
+                      >
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <span className="text-white/50 text-lg">{isOpen ? "▾" : "▸"}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white font-semibold capitalize">{monthLabel}</p>
+                            <p className="text-xs text-white/40">
+                              {(m.total_views || 0).toLocaleString("fr-FR")} vues estimées · {m.videos_count || 0} vidéos publiées
+                              {m.method === "snapshot" && <span className="ml-2 text-[#39FF14]">✓ donnée réelle</span>}
+                              {m.method === "linear" && <span className="ml-2 text-white/30">~ estimation</span>}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[#f0c040] font-mono font-bold text-lg">€{(m.total_earnings || 0).toFixed(2)}</p>
+                          <p className="text-[10px] text-white/40">généré</p>
+                        </div>
+                      </button>
+
+                      {isOpen && (
+                        <div className="px-3 pb-3 space-y-2 border-t border-white/10 pt-2">
+                          {hasClippers && (
+                            <div className="space-y-1">
+                              <p className="text-[11px] text-white/50 font-semibold uppercase">Dû aux clippeurs</p>
+                              {(m.by_clipper || []).map(c => (
+                                <div key={c.user_id} className="flex items-center justify-between gap-2 px-2 py-1.5 rounded bg-[#39FF14]/5 border border-[#39FF14]/15">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-white text-sm truncate">👤 {c.name}</p>
+                                    <p className="text-[10px] text-white/40">{(c.views || 0).toLocaleString("fr-FR")} vues</p>
+                                  </div>
+                                  <p className="text-[#39FF14] font-mono font-bold text-sm">€{(c.earnings || 0).toFixed(2)}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {hasAgency && (
+                            <div className="space-y-1 pt-1">
+                              <p className="text-[11px] text-white/50 font-semibold uppercase">Vidéos sans clippeur (agence)</p>
+                              <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded bg-[#00E5FF]/5 border border-[#00E5FF]/15">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-white text-sm">🏢 Agence directe</p>
+                                  <p className="text-[10px] text-white/40">{(m.agency_only?.views || 0).toLocaleString("fr-FR")} vues</p>
+                                </div>
+                                <p className="text-[#00E5FF] font-mono font-bold text-sm">€{(m.agency_only?.earnings || 0).toFixed(2)}</p>
+                              </div>
+                            </div>
+                          )}
+                          {!hasClippers && !hasAgency && (
+                            <p className="text-xs text-white/40 italic px-2 py-1">Pas de gains généré ce mois.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-[10px] text-white/30 italic">
+                ℹ️ Les mois marqués <span className="text-[#39FF14]">✓ donnée réelle</span> utilisent les snapshots quotidiens.
+                Les mois <span className="text-white/30">~ estimation</span> sont calculés par distribution linéaire des vues actuelles depuis la date de publication —
+                précision améliorée chaque jour à mesure que les snapshots sont enregistrés.
+              </p>
+            </div>
+          )}
+          {monthlyEarningsLoading && !monthlyEarnings && (
+            <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+              <p className="text-white/40 text-sm text-center">Calcul des gains mensuels...</p>
+            </div>
+          )}
 
           {/* Views timeline chart */}
           <div className="bg-[#121212] border border-white/10 rounded-xl p-5">

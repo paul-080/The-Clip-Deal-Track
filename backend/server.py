@@ -9085,6 +9085,220 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
     }
 
 
+@api_router.get("/campaigns/{campaign_id}/monthly-earnings")
+async def get_campaign_monthly_earnings(
+    campaign_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Calcule les gains generes mois par mois pour une campagne.
+    Utilise les snapshots quotidiens si disponibles (precis), sinon distribution
+    lineaire des vues actuelles depuis published_at jusqu'a maintenant (estime).
+
+    Renvoie pour chaque mois :
+    - total_earnings   : montant genere ce mois (rpm * vues / 1000)
+    - total_views      : vues estimees ce mois
+    - by_clipper       : split par clipper attitre (avec montant du)
+    - agency_only      : vues/gains des videos sans clipper attitre (agence)
+    - method           : "snapshot" (precis) ou "linear" (estime)
+    """
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if user.get("role") not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    if campaign.get("agency_id") != user.get("user_id") and user.get("role") != "manager":
+        raise HTTPException(status_code=403, detail="Non autorise")
+
+    rpm = float(campaign.get("rpm") or 0)
+    rate_per_click = float(campaign.get("rate_per_click") or 0)
+
+    videos = await db.tracked_videos.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(20000)
+
+    # Pre-fetch user info pour le split par clipper
+    user_ids = list({v.get("user_id") for v in videos if v.get("user_id")})
+    user_map: dict = {}
+    if user_ids:
+        users_docs = await db.users.find(
+            {"user_id": {"$in": user_ids}},
+            {"_id": 0, "user_id": 1, "first_name": 1, "last_name": 1, "email": 1}
+        ).to_list(len(user_ids))
+        for u in users_docs:
+            full = f"{u.get('first_name', '') or ''} {u.get('last_name', '') or ''}".strip()
+            user_map[u["user_id"]] = full or u.get("email") or "Inconnu"
+
+    now = datetime.now(timezone.utc)
+    months: dict = {}  # "YYYY-MM" -> { total_views, total_earnings, by_clipper{}, agency_only{} }
+
+    def _ensure_month(mk: str):
+        if mk not in months:
+            months[mk] = {
+                "month": mk,
+                "total_views": 0.0,
+                "total_earnings": 0.0,
+                "by_clipper": {},
+                "agency_only": {"views": 0.0, "earnings": 0.0},
+                "videos_count": 0,
+            }
+        return months[mk]
+
+    # Distribution lineaire des vues entre published_at et maintenant
+    # (approximation : suppose que la croissance des vues est constante,
+    #  ce qui sur-estime les premiers jours et sous-estime la decroissance long terme,
+    #  mais c'est la meilleure approximation sans historique fin)
+    for v in videos:
+        pub_at = _parse_utc(v.get("published_at"))
+        if not pub_at:
+            continue
+        if pub_at > now:
+            continue
+        views_total = int(v.get("views") or 0)
+        if views_total <= 0:
+            continue
+        total_seconds = (now - pub_at).total_seconds()
+        if total_seconds <= 0:
+            continue
+        views_per_sec = views_total / total_seconds
+
+        uid = v.get("user_id")
+
+        # On itere sur les segments de mois entre pub_at et now
+        cursor = pub_at
+        first_month = True
+        while cursor < now:
+            # Debut du mois suivant
+            if cursor.month == 12:
+                next_month_start = cursor.replace(year=cursor.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                next_month_start = cursor.replace(month=cursor.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            segment_end = min(next_month_start, now)
+            seg_seconds = (segment_end - cursor).total_seconds()
+            if seg_seconds <= 0:
+                break
+            segment_views = views_per_sec * seg_seconds
+            segment_earnings = (segment_views / 1000.0) * rpm
+
+            mk = cursor.strftime("%Y-%m")
+            mdata = _ensure_month(mk)
+            mdata["total_views"] += segment_views
+            mdata["total_earnings"] += segment_earnings
+            if first_month:
+                mdata["videos_count"] += 1
+                first_month = False
+
+            if uid:
+                if uid not in mdata["by_clipper"]:
+                    mdata["by_clipper"][uid] = {
+                        "user_id": uid,
+                        "name": user_map.get(uid, "Inconnu"),
+                        "views": 0.0,
+                        "earnings": 0.0,
+                    }
+                mdata["by_clipper"][uid]["views"] += segment_views
+                mdata["by_clipper"][uid]["earnings"] += segment_earnings
+            else:
+                mdata["agency_only"]["views"] += segment_views
+                mdata["agency_only"]["earnings"] += segment_earnings
+
+            cursor = next_month_start
+
+    # AFFINAGE : si on a des views_snapshots quotidiens pour ce mois,
+    # on utilise la difference entre debut et fin du mois pour avoir la valeur reelle
+    # (ecrase l'estimation lineaire avec la vraie valeur)
+    try:
+        snapshots = await db.views_snapshots.find(
+            {"campaign_id": campaign_id},
+            {"_id": 0, "date": 1, "total_views": 1}
+        ).to_list(2000)
+        if snapshots:
+            # Index par date
+            snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots}
+            sorted_dates = sorted(snap_by_date.keys())
+            # Pour chaque mois present : trouve premier snapshot >= debut mois et dernier <= fin mois
+            for mk in list(months.keys()):
+                year, month = mk.split("-")
+                year_i = int(year)
+                month_i = int(month)
+                month_start = datetime(year_i, month_i, 1, tzinfo=timezone.utc)
+                if month_i == 12:
+                    month_end = datetime(year_i + 1, 1, 1, tzinfo=timezone.utc)
+                else:
+                    month_end = datetime(year_i, month_i + 1, 1, tzinfo=timezone.utc)
+
+                start_str = month_start.strftime("%Y-%m-%d")
+                end_str = month_end.strftime("%Y-%m-%d")
+
+                # Premier snapshot >= debut du mois
+                first_snap = None
+                last_snap = None
+                for d in sorted_dates:
+                    if d >= start_str and d < end_str:
+                        if first_snap is None:
+                            first_snap = (d, snap_by_date[d])
+                        last_snap = (d, snap_by_date[d])
+
+                if first_snap and last_snap and last_snap[0] != first_snap[0]:
+                    # Snapshot avant le mois pour le delta debut
+                    pre_snap_views = 0
+                    for d in sorted_dates:
+                        if d < start_str:
+                            pre_snap_views = snap_by_date[d]
+                        else:
+                            break
+                    real_views_month = max(0, last_snap[1] - pre_snap_views)
+                    if real_views_month > 0:
+                        months[mk]["total_views"] = float(real_views_month)
+                        months[mk]["total_earnings"] = (real_views_month / 1000.0) * rpm
+                        months[mk]["method"] = "snapshot"
+                    else:
+                        months[mk]["method"] = "linear"
+                else:
+                    months[mk]["method"] = "linear"
+    except Exception as e:
+        logger.debug(f"monthly-earnings snapshot enrich failed for {campaign_id}: {e}")
+
+    # Conversion finale
+    sorted_months = sorted(months.values(), key=lambda m: m["month"], reverse=True)
+    for m in sorted_months:
+        m["total_views"] = round(m["total_views"])
+        m["total_earnings"] = round(m["total_earnings"], 2)
+        m["agency_only"]["views"] = round(m["agency_only"]["views"])
+        m["agency_only"]["earnings"] = round(m["agency_only"]["earnings"], 2)
+        # by_clipper en list triee par earnings desc
+        clippers_list = []
+        for uid, d in m["by_clipper"].items():
+            clippers_list.append({
+                "user_id": uid,
+                "name": d["name"],
+                "views": round(d["views"]),
+                "earnings": round(d["earnings"], 2),
+            })
+        m["by_clipper"] = sorted(clippers_list, key=lambda c: -c["earnings"])
+        if "method" not in m:
+            m["method"] = "linear"
+
+    total_all = sum(m["total_earnings"] for m in sorted_months)
+    total_agency = sum(m["agency_only"]["earnings"] for m in sorted_months)
+    total_clippers = total_all - total_agency
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "rpm": rpm,
+        "currency": "EUR",
+        "months": sorted_months,
+        "totals": {
+            "all_time_earnings": round(total_all, 2),
+            "agency_videos_earnings": round(total_agency, 2),
+            "clippers_earnings_owed": round(total_clippers, 2),
+        },
+        "note": (
+            "Les gains des mois ou aucun snapshot quotidien n'existait sont estimes "
+            "par distribution lineaire des vues actuelles depuis la date de publication. "
+            "Les mois avec snapshots utilisent les valeurs reelles."
+        ),
+    }
+
+
 @api_router.get("/campaigns/{campaign_id}/period-stats")
 async def get_campaign_period_stats(
     campaign_id: str,

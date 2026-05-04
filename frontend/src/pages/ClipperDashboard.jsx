@@ -969,18 +969,16 @@ function DiscoverCampaigns({ onJoin }) {
                 {/* Budget bar */}
                 <div className="space-y-1">
                   {c.budget_unlimited ? (
-                    <div className="flex justify-between text-xs">
-                      <span className="text-white/40">Budget</span>
-                      <span className="text-[#39FF14] font-semibold">∞ Illimité</span>
+                    <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-[#39FF14]/10 border border-[#39FF14]/25">
+                      <span className="text-[#39FF14] text-xs font-semibold">♾️ Budget illimité</span>
                     </div>
                   ) : (() => {
                     const total = Number(c.budget || c.budget_total || 0);
                     const used = Number(c.budget_used || 0);
                     if (!total || total <= 0) {
                       return (
-                        <div className="flex justify-between text-xs">
-                          <span className="text-white/40">Budget</span>
-                          <span className="text-white/40 italic">Non défini</span>
+                        <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-white/5 border border-white/10">
+                          <span className="text-white/40 text-xs italic">Budget non défini</span>
                         </div>
                       );
                     }
