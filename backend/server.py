@@ -5840,15 +5840,45 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     # since_days = 365 -> max_videos = 200 (cap)
     dynamic_max = max(50, min(int(since_days * 2), 200))
 
-    # Priorité 0 (PAYANT MAIS PRECIS) : Apify Reel Scraper sur le compte
-    # Avec circuit breaker pour eviter explosion budget
-    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+    # PRIORITY 0 (NEW GRATUIT) : VPS pour liste shortcodes + GraphQL pour vraies vues
+    # On scrape le compte via VPS (gratuit, donne shortcodes + likes), puis pour chaque
+    # video on enrichit via GraphQL direct (proxy webshare) qui retourne video_play_count UI
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY and BACKEND_PROXY_URL:
+        try:
+            cs_videos = await _fetch_via_clipscraper("instagram", username, max_videos=dynamic_max)
+            if cs_videos:
+                logger.info(f"GraphQL enrich for {len(cs_videos)} videos of @{username}")
+                # Enrichit chaque video via GraphQL direct pour avoir le video_play_count UI (92k)
+                enriched = []
+                for v in cs_videos[:dynamic_max]:
+                    shortcode_v = v.get("platform_video_id")
+                    if not shortcode_v:
+                        enriched.append(v)
+                        continue
+                    try:
+                        url_v = f"https://www.instagram.com/p/{shortcode_v}/"
+                        gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=20)
+                        if gd and int(gd.get("views") or 0) > 0:
+                            v["views"] = int(gd.get("views"))
+                            v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
+                            v["comments"] = int(gd.get("comments") or v.get("comments") or 0)
+                    except Exception as e:
+                        logger.debug(f"GraphQL enrich failed for {shortcode_v}: {e}")
+                    enriched.append(v)
+                await _log_scrape("vps_graphql", "instagram", username, True, len(enriched), "enriched via GraphQL")
+                return enriched
+        except Exception as e:
+            logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
+
+    # PRIORITY 0b (FALLBACK PAYANT) : Apify Reel Scraper si tout le reste echoue
+    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
+    if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
                 return apify_videos
         except Exception as e:
-            logger.warning(f"Apify Reel Scraper priority failed for @{username}: {e}")
+            logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
 
     # Priorité 1 : ClipScraper VPS standalone (économique, contrôlé)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
