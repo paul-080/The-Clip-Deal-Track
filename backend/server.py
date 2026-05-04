@@ -6737,7 +6737,9 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     # meme si les cookies Insta sont invalides/expires. C'est notre filet de securite.
     #
     # ACTIVE PAR DEFAUT avec circuit breaker (APIFY_INSTA_DAILY_BUDGET, defaut 50/jour).
-    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'true').strip().lower() in ('true', '1', 'yes'))
+    # APIFY_FOR_INSTA_FALLBACK : DEBRANCHE par defaut (Paul a configure proxy webshare = 100% gratuit)
+    # Reactivable via variable Railway si besoin urgent
+    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
     if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED and await _apify_budget_ok("instagram"):
         if True:
             logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
@@ -9357,9 +9359,8 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     # on connait le username -> permet le VPS account-scrape gratuit pour Instagram (qui n'a pas le @ dans l'URL video)
     account_username = (body.get("account_username") or body.get("username") or "").strip().lstrip("@") or None
 
-    # SOLUTION 2 AMELIOREE : pour /add-video manuel, on FORCE Apify (vraies vues 92k initial)
-    # Les updates periodiques (run_video_tracking) utiliseront le mode gratuit
-    prefer_apify_for_add = (platform == "instagram")
+    # APIFY DEBRANCHE pour Insta (Paul a configure proxy webshare = scraping gratuit suffit)
+    prefer_apify_for_add = False
 
     # Fetch video stats — each platform function is self-contained with its own timeout and never raises
     scraping_failed = False
