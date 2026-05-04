@@ -5204,12 +5204,15 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         sec_uid = user_id
         numeric_id = ""
 
+    # Calcule max_videos dynamique selon since_days (couvre comptes qui postent souvent)
+    dynamic_max_tt = max(50, min(int(since_days * 2), 200))
+
     # Priority 1: ClipScraper VPS standalone (économique, contrôlé par nous)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
         try:
-            cs_videos = await _fetch_via_clipscraper("tiktok", username)
+            cs_videos = await _fetch_via_clipscraper("tiktok", username, max_videos=dynamic_max_tt)
             if cs_videos:
-                logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username}")
+                logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username} (max_videos={dynamic_max_tt})")
                 await _log_scrape("clipscraper", "tiktok", username, True, len(cs_videos))
                 return cs_videos
             else:
@@ -5437,11 +5440,17 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     """
     username = username.lstrip("@")
 
+    # Calcule max_videos dynamiquement selon since_days (couvre les comptes qui postent souvent)
+    # since_days = 30 -> max_videos = 60 (2 par jour estime)
+    # since_days = 100 -> max_videos = 200 (cap)
+    # since_days = 365 -> max_videos = 200 (cap)
+    dynamic_max = max(50, min(int(since_days * 2), 200))
+
     # Priorité 0 (PAYANT MAIS PRECIS) : Apify Reel Scraper sur le compte
     # Avec circuit breaker pour eviter explosion budget
     if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
-            apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=30)
+            apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
                 return apify_videos
         except Exception as e:
@@ -5450,7 +5459,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     # Priorité 1 : ClipScraper VPS standalone (économique, contrôlé)
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
         try:
-            cs_videos = await _fetch_via_clipscraper("instagram", username)
+            cs_videos = await _fetch_via_clipscraper("instagram", username, max_videos=dynamic_max)
             if cs_videos:
                 logger.info(f"ClipScraper Instagram: {len(cs_videos)} videos for @{username}")
                 await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos))
