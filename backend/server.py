@@ -11440,6 +11440,10 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
             cs_key = bool(CLIP_SCRAPER_KEY)
         except NameError:
             cs_key = "NOT_DEFINED"
+        try:
+            proxy_global = BACKEND_PROXY_URL
+        except NameError:
+            proxy_global = None
         diag["config"] = {
             "APIFY_TOKEN_configured": bool(apify_token_global),
             "APIFY_TOKEN_prefix": (apify_token_global[:10] + "...") if apify_token_global else None,
@@ -11450,6 +11454,8 @@ async def admin_diag_instagram(request: Request, url: str = "https://www.instagr
             "CLIP_SCRAPER_KEY_configured": cs_key,
             "IG_BUSINESS_ACCOUNT_ID_configured": ig_biz,
             "IG_LONG_LIVED_TOKEN_configured": ig_token,
+            "BACKEND_PROXY_URL_configured": bool(proxy_global),
+            "BACKEND_PROXY_URL_prefix": (proxy_global[:25] + "...") if proxy_global else None,
         }
 
         # Budget
