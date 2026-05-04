@@ -257,11 +257,122 @@ async def _extract_owner_username_from_url(url: str) -> Optional[str]:
     return None
 
 
+async def _fetch_tiktok_via_curl_cffi(url: str) -> Optional[dict]:
+    """REVERSE-ENGINEERED Apify TikTok : scrape la page TikTok directement avec curl_cffi
+    qui mime Chrome parfaitement (TLS fingerprint + headers + HTTP/2).
+    Parse SIGI_STATE / __UNIVERSAL_DATA pour extraire stats officielles."""
+    import re as _re
+    import json as _json
+    m = _re.search(r'/video/(\d+)', url)
+    if not m:
+        return None
+    target_vid_id = m.group(1)
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        from curl_cffi import requests as _curl_requests
+        loop = asyncio.get_event_loop()
+        def _do_get():
+            kw = {
+                "headers": headers,
+                "timeout": 25,
+                "impersonate": "chrome131",
+                "allow_redirects": True,
+            }
+            if BACKEND_PROXY_URL:
+                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+            try:
+                r = _curl_requests.get(url, **kw)
+                return r.status_code, r.text
+            except Exception as e:
+                return None, f"curl error: {type(e).__name__}: {e}"
+        status_code, html = await loop.run_in_executor(_thread_pool, _do_get)
+        if status_code != 200 or not html or len(html) < 5000:
+            logger.debug(f"TikTok curl_cffi HTTP {status_code} for {target_vid_id}: html_size={len(html or '')}")
+            return None
+    except ImportError:
+        return None
+    except Exception as e:
+        logger.debug(f"TikTok curl_cffi exception for {target_vid_id}: {type(e).__name__}: {e}")
+        return None
+
+    # Parse JSON injectes dans la page
+    sigi = None
+    for sid in ("__UNIVERSAL_DATA_FOR_REHYDRATION__", "SIGI_STATE", "__NEXT_DATA__"):
+        m2 = _re.search(rf'<script[^>]+id="{sid}"[^>]*>(.+?)</script>', html, _re.DOTALL)
+        if m2:
+            try:
+                sigi = _json.loads(m2.group(1))
+                break
+            except Exception:
+                continue
+    if not sigi:
+        logger.debug(f"TikTok curl_cffi: no SIGI/UNIVERSAL_DATA found for {target_vid_id}")
+        return None
+
+    # Walk pour trouver l'item video
+    def _walk(obj, depth=0):
+        if depth > 10:
+            return None
+        if isinstance(obj, dict):
+            if str(obj.get("id", "")) == target_vid_id and (obj.get("stats") or obj.get("statistics")):
+                return obj
+            for v in obj.values():
+                r = _walk(v, depth + 1)
+                if r:
+                    return r
+        elif isinstance(obj, list):
+            for v in obj:
+                r = _walk(v, depth + 1)
+                if r:
+                    return r
+        return None
+    item = _walk(sigi)
+    if not item:
+        logger.debug(f"TikTok curl_cffi: no item found in JSON for {target_vid_id}")
+        return None
+
+    stats = item.get("stats") or item.get("statistics") or {}
+    views = int(stats.get("playCount") or stats.get("play_count") or 0)
+    likes = int(stats.get("diggCount") or stats.get("digg_count") or 0)
+    comments = int(stats.get("commentCount") or stats.get("comment_count") or 0)
+    shares = int(stats.get("shareCount") or stats.get("share_count") or 0)
+    if views == 0 and likes == 0:
+        return None
+    published = None
+    create_time = item.get("createTime") or item.get("create_time")
+    if create_time:
+        try:
+            published = datetime.fromtimestamp(int(create_time), tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    logger.info(f"TikTok curl_cffi SUCCESS for {target_vid_id}: views={views} likes={likes}")
+    return {
+        "platform_video_id": target_vid_id,
+        "url": url,
+        "title": (item.get("desc") or "")[:200] or None,
+        "thumbnail_url": (item.get("video") or {}).get("cover"),
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "shares": shares,
+        "published_at": published,
+        "_source": "tiktok_curl_cffi",
+    }
+
+
 async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
-    """METHODE GRATUITE DIRECTE depuis Railway (sans dependre du VPS).
-    Reproduit la technique Apify : GraphQL Insta avec doc_id Reels.
-    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount.
-    Si BACKEND_PROXY_URL configure -> utilise proxy residentiel."""
+    """REVERSE-ENGINEERED Apify : GraphQL Insta avec curl_cffi qui MIME PARFAITEMENT Chrome.
+    Bypass la detection TLS fingerprint d'Insta (ce que fait Apify en interne).
+    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount."""
     import re as _re_local
     import json as _json_local
     from urllib.parse import quote as _quote_local
@@ -273,7 +384,6 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
     body_str = f"variables={_quote_local(variables)}&doc_id={DOC_ID}&lsd=AVqbxe3J_YA"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "X-IG-App-ID": "936619743392459",
         "X-FB-LSD": "AVqbxe3J_YA",
         "X-ASBD-ID": "129477",
@@ -288,19 +398,57 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     sess = _get_instagram_session()
     if sess:
         cookies["sessionid"] = sess
-    client_kwargs = {"timeout": 30, "headers": headers, "cookies": cookies, "http2": True}
-    if BACKEND_PROXY_URL:
-        client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+
+    data = None
+    # Methode 1 : curl_cffi (mime Chrome parfaitement, bypass TLS fingerprinting d'Insta)
     try:
-        async with httpx.AsyncClient(**client_kwargs) as c:
-            r = await c.post("https://www.instagram.com/api/graphql", content=body_str)
-        if r.status_code != 200:
-            logger.debug(f"GraphQL direct HTTP {r.status_code} for {shortcode}: {r.text[:150]}")
-            return None
-        data = r.json()
+        from curl_cffi import requests as _curl_requests
+        loop = asyncio.get_event_loop()
+        def _do_curl_post():
+            kw = {
+                "headers": headers,
+                "cookies": cookies,
+                "data": body_str,
+                "timeout": 30,
+                "impersonate": "chrome131",  # mime Chrome 131 (TLS + JA3 + headers)
+            }
+            if BACKEND_PROXY_URL:
+                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+            try:
+                r = _curl_requests.post("https://www.instagram.com/api/graphql", **kw)
+                return r.status_code, r.text
+            except Exception as e:
+                return None, f"curl_cffi error: {type(e).__name__}: {e}"
+        status_code, text = await loop.run_in_executor(_thread_pool, _do_curl_post)
+        if status_code == 200:
+            try:
+                data = _json_local.loads(text)
+                logger.info(f"GraphQL curl_cffi SUCCESS for {shortcode}")
+            except Exception as e:
+                logger.debug(f"GraphQL curl_cffi JSON parse error for {shortcode}: {e}")
+        else:
+            logger.debug(f"GraphQL curl_cffi HTTP {status_code} for {shortcode}: {str(text)[:200]}")
+    except ImportError:
+        logger.warning("curl_cffi not installed, fallback httpx")
     except Exception as e:
-        logger.debug(f"GraphQL direct exception for {shortcode}: {type(e).__name__}: {e}")
-        return None
+        logger.debug(f"GraphQL curl_cffi exception for {shortcode}: {type(e).__name__}: {e}")
+
+    # Methode 2 (fallback) : httpx classique avec User-Agent Chrome
+    if data is None:
+        try:
+            ua_headers = {**headers, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
+            client_kwargs = {"timeout": 30, "headers": ua_headers, "cookies": cookies, "http2": True}
+            if BACKEND_PROXY_URL:
+                client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+            async with httpx.AsyncClient(**client_kwargs) as c:
+                r = await c.post("https://www.instagram.com/api/graphql", content=body_str)
+            if r.status_code != 200:
+                logger.debug(f"GraphQL httpx HTTP {r.status_code} for {shortcode}: {r.text[:150]}")
+                return None
+            data = r.json()
+        except Exception as e:
+            logger.debug(f"GraphQL httpx exception for {shortcode}: {type(e).__name__}: {e}")
+            return None
     media = (data.get("data") or {}).get("xdt_shortcode_media")
     if not media:
         return None
@@ -5812,6 +5960,14 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
         "url": url, "title": None, "thumbnail_url": None,
         "views": 0, "likes": 0, "comments": 0, "published_at": None,
     }
+    # STRATEGY -1 (NEW GRATUIT) : curl_cffi (mime Chrome) sur la page TikTok directement
+    try:
+        tk_curl = await _fetch_tiktok_via_curl_cffi(url)
+        if tk_curl and (tk_curl.get("views", 0) > 0 or tk_curl.get("likes", 0) > 0):
+            return tk_curl
+    except Exception as e:
+        logger.debug(f"curl_cffi TikTok early fail: {e}")
+
     # Extrait l'ID et username depuis l'URL
     m = re.search(r'/video/(\d+)', url)
     target_vid_id = m.group(1) if m else None

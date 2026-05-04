@@ -6,6 +6,7 @@ mongomock-motor==0.0.21
 python-dotenv==1.2.1
 pydantic[email]==2.12.5
 httpx[http2]==0.28.1
+curl_cffi==0.7.4
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 google-auth==2.40.0
