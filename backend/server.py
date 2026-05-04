@@ -12546,6 +12546,85 @@ async def admin_resolve_fraud_alert(alert_id: str, request: Request, body: dict 
     return {"message": "Alerte résolue", "decision": decision}
 
 
+@api_router.get("/admin/test-proxy")
+async def admin_test_proxy(request: Request):
+    """Teste le proxy résidentiel configuré (BACKEND_PROXY_URL) en faisant des appels reels.
+    Detecte si le proxy marche ET si Insta accepte les requetes via ce proxy."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    result = {
+        "BACKEND_PROXY_URL_configured": bool(BACKEND_PROXY_URL),
+        "BACKEND_PROXY_URL_prefix": (BACKEND_PROXY_URL[:30] + "...") if BACKEND_PROXY_URL else None,
+    }
+
+    if not BACKEND_PROXY_URL:
+        result["error"] = "BACKEND_PROXY_URL non configure"
+        return result
+
+    # Test 1 : appel à un service de test IP (httpbin.org/ip ou ipinfo.io)
+    try:
+        client_kwargs = {"timeout": 15, "proxies": {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}}
+        async with httpx.AsyncClient(**client_kwargs) as c:
+            r = await c.get("https://api.ipify.org?format=json")
+        if r.status_code == 200:
+            ip_data = r.json()
+            result["test_ipify"] = {
+                "status": "OK",
+                "ip_seen_by_internet": ip_data.get("ip"),
+                "is_railway_ip": False,  # si on voit Railway IP -> proxy ne marche pas
+            }
+        else:
+            result["test_ipify"] = {"status": f"HTTP {r.status_code}"}
+    except Exception as e:
+        result["test_ipify"] = {"status": f"FAIL: {type(e).__name__}: {e}"}
+
+    # Test 2 : appel direct Insta GraphQL via proxy
+    try:
+        import json as _json_local
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-IG-App-ID": "936619743392459",
+            "X-FB-LSD": "AVqbxe3J_YA",
+            "X-ASBD-ID": "129477",
+            "Sec-Fetch-Site": "same-origin",
+            "Origin": "https://www.instagram.com",
+            "Referer": "https://www.instagram.com/p/DVju4UNCle9/",
+        }
+        form_data = {
+            "variables": _json_local.dumps({"shortcode": "DVju4UNCle9"}),
+            "doc_id": "10015901848480474",
+            "lsd": "AVqbxe3J_YA",
+        }
+        async with httpx.AsyncClient(timeout=20, http2=True, proxies={"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}) as c:
+            r = await c.post("https://www.instagram.com/api/graphql", headers=headers, data=form_data)
+        result["test_insta_graphql"] = {
+            "status_code": r.status_code,
+            "response_preview": r.text[:300] if r.text else "no body",
+        }
+        if r.status_code == 200:
+            try:
+                parsed = r.json()
+                media = (parsed.get("data") or {}).get("xdt_shortcode_media")
+                if media:
+                    result["test_insta_graphql"]["video_play_count"] = media.get("video_play_count")
+                    result["test_insta_graphql"]["GraphQL_WORKS"] = True
+                else:
+                    result["test_insta_graphql"]["GraphQL_WORKS"] = False
+                    result["test_insta_graphql"]["reason"] = "no xdt_shortcode_media in response"
+            except Exception as e:
+                result["test_insta_graphql"]["GraphQL_WORKS"] = False
+                result["test_insta_graphql"]["reason"] = f"JSON parse error: {e}"
+        else:
+            result["test_insta_graphql"]["GraphQL_WORKS"] = False
+    except Exception as e:
+        result["test_insta_graphql"] = {"error": f"{type(e).__name__}: {e}", "GraphQL_WORKS": False}
+
+    return result
+
+
 @api_router.get("/admin/apify-usage")
 async def admin_apify_usage(request: Request, days: int = 30):
     """DASHBOARD : suivi consommation Apify sur les N derniers jours.
