@@ -1739,21 +1739,79 @@ function CampaignDashboard({ campaigns }) {
   };
 
   const handleDeleteVideo = async (videoId) => {
-    if (!window.confirm("Supprimer cette vidéo ?")) return;
+    if (!window.confirm("Supprimer cette vidéo du tracking ?")) return;
     setDeletingVideo(videoId);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/videos/${videoId}`, { method: "DELETE", credentials: "include" });
+      // Tente nouveau endpoint d'abord, fallback ancien
+      let res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos/${videoId}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${API}/campaigns/${campaignId}/videos/${videoId}`, { method: "DELETE", credentials: "include" });
+      }
       if (res.ok) { toast.success("Vidéo supprimée"); fetchAllVideos(); }
-      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+      else { const e = await res.json().catch(() => ({})); toast.error(e.detail || "Erreur"); }
     } catch { toast.error("Erreur réseau"); }
     setDeletingVideo(null);
   };
 
   const handleRemoveSocialAccount = async (accountId) => {
-    if (!window.confirm("Retirer ce compte de la campagne ?")) return;
+    if (!window.confirm("Retirer ce compte de la campagne ? Toutes les vidéos trackées de ce compte seront aussi supprimées.")) return;
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}`, { method: "DELETE", credentials: "include" });
-      if (res.ok) { toast.success("Compte retiré"); fetchCampaign(); }
+      if (res.ok) { toast.success("Compte retiré"); fetchCampaign(); fetchAllAccounts(); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+  };
+
+  const handleReassignAccount = async (accountId, currentUserId) => {
+    // Affiche un select via prompt simple
+    const members = activeMembers || [];
+    const options = ["", ...members.map(m => m.user_id)];
+    const labels = ["(Compte agence — gains agence)", ...members.map(m => m.user_info?.display_name || m.user_info?.name || m.user_id)];
+    const promptText = "Réattribuer ce compte à :\n" + options.map((o, i) => `${i}: ${labels[i]}${o === currentUserId ? " (actuel)" : ""}`).join("\n") + "\n\nNuméro :";
+    const choice = window.prompt(promptText, "0");
+    if (choice === null) return;
+    const idx = parseInt(choice, 10);
+    if (isNaN(idx) || idx < 0 || idx >= options.length) { toast.error("Choix invalide"); return; }
+    const newUserId = options[idx] || null;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}/reassign`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ user_id: newUserId }),
+      });
+      if (res.ok) { toast.success("Compte réattribué"); fetchAllAccounts(); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+  };
+
+  const handleReassignVideo = async (videoId, currentUserId) => {
+    const members = activeMembers || [];
+    const options = ["", ...members.map(m => m.user_id)];
+    const labels = ["(Vidéo agence — gains agence)", ...members.map(m => m.user_info?.display_name || m.user_info?.name || m.user_id)];
+    const promptText = "Réattribuer cette vidéo à :\n" + options.map((o, i) => `${i}: ${labels[i]}${o === currentUserId ? " (actuel)" : ""}`).join("\n") + "\n\nNuméro :";
+    const choice = window.prompt(promptText, "0");
+    if (choice === null) return;
+    const idx = parseInt(choice, 10);
+    if (isNaN(idx) || idx < 0 || idx >= options.length) { toast.error("Choix invalide"); return; }
+    const newUserId = options[idx] || null;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos/${videoId}/reassign`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ user_id: newUserId }),
+      });
+      if (res.ok) { toast.success("Vidéo réattribuée"); fetchAllVideos(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+  };
+
+  const handleRefreshHistoric = async (accountId) => {
+    if (!window.confirm("Forcer un re-scrape complet de ce compte depuis le début de la campagne ? (peut prendre 1-2 minutes)")) return;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}/refresh-historic`, { method: "POST", credentials: "include" });
+      if (res.ok) { toast.success("Refresh historique lancé — actualisation dans 1-2 min", { duration: 6000 }); }
       else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
     } catch { toast.error("Erreur réseau"); }
   };
@@ -2790,13 +2848,18 @@ function CampaignDashboard({ campaigns }) {
                           ? new Date(video.published_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" })
                           : "—"}
                       </div>
-                      {/* Delete */}
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                      {/* Actions : réassigner + supprimer */}
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+                        <button
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReassignVideo(video.video_id, video.user_id); }}
+                          className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E5FF] transition-colors"
+                          title="Réattribuer cette vidéo"
+                        >👤</button>
                         <button
                           onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteVideo(video.video_id); }}
                           disabled={deletingVideo === video.video_id}
                           className="p-1 rounded hover:bg-red-500/20 text-red-400/50 hover:text-red-400 transition-colors disabled:opacity-30"
-                          title="Supprimer la vidéo"
+                          title="Supprimer la vidéo du tracking"
                         >🗑</button>
                       </div>
                     </a>
@@ -2865,20 +2928,34 @@ function CampaignDashboard({ campaigns }) {
                           );
                           const color = PLAT_COLOR[acc.platform] || "#fff";
                           return (
-                            <a key={acc.account_id} href={link} target="_blank" rel="noopener noreferrer"
+                            <div key={acc.account_id}
                               className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/8 transition-all group">
-                              <span className="text-base">{PLAT_ICON[acc.platform]}</span>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-white text-xs font-medium truncate">@{acc.username}</p>
-                                {acc.follower_count != null && (
-                                  <p className="text-white/30 text-[10px]">{fmt(acc.follower_count)} abonnés</p>
+                              <a href={link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 flex-1 min-w-0">
+                                <span className="text-base">{PLAT_ICON[acc.platform]}</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-white text-xs font-medium truncate">@{acc.username}</p>
+                                  {acc.follower_count != null && (
+                                    <p className="text-white/30 text-[10px]">{fmt(acc.follower_count)} abonnés</p>
+                                  )}
+                                </div>
+                                <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
+                                {acc.status !== "verified" && (
+                                  <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
                                 )}
+                              </a>
+                              {/* Actions : réassigner / refresh historique / supprimer */}
+                              <div className="flex items-center gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity">
+                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReassignAccount(acc.account_id, clipper.user_id); }}
+                                  title="Réattribuer ce compte à un autre clippeur"
+                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E5FF] text-xs">👤</button>
+                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRefreshHistoric(acc.account_id); }}
+                                  title="Refresh historique depuis début campagne"
+                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#39FF14] text-xs">↻</button>
+                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveSocialAccount(acc.account_id); }}
+                                  title="Retirer ce compte de la campagne"
+                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-red-400 text-xs">🗑</button>
                               </div>
-                              <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
-                              {acc.status !== "verified" && (
-                                <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
-                              )}
-                            </a>
+                            </div>
                           );
                         })}
                       </div>
