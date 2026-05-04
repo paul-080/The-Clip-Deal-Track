@@ -257,11 +257,86 @@ async def _extract_owner_username_from_url(url: str) -> Optional[str]:
     return None
 
 
-async def _fetch_instagram_graphql_via_clipscraper(url: str) -> Optional[dict]:
-    """NOUVELLE METHODE GRATUITE : appelle le VPS endpoint /v1/instagram-graphql-stats
-    qui reproduit la technique Apify (GraphQL Insta avec doc_id Reels).
+async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
+    """METHODE GRATUITE DIRECTE depuis Railway (sans dependre du VPS).
+    Reproduit la technique Apify : GraphQL Insta avec doc_id Reels.
     Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount.
-    Coût : 0€ (vs Apify $0.0026/video)."""
+    Si BACKEND_PROXY_URL configure -> utilise proxy residentiel."""
+    import re as _re_local
+    import json as _json_local
+    from urllib.parse import quote as _quote_local
+    m = _re_local.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    DOC_ID = os.environ.get("IG_GRAPHQL_DOC_ID", "10015901848480474")
+    variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
+    body_str = f"variables={_quote_local(variables)}&doc_id={DOC_ID}&lsd=AVqbxe3J_YA"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "X-IG-App-ID": "936619743392459",
+        "X-FB-LSD": "AVqbxe3J_YA",
+        "X-ASBD-ID": "129477",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.instagram.com",
+        "Referer": "https://www.instagram.com/",
+    }
+    cookies = {}
+    sess = _get_instagram_session()
+    if sess:
+        cookies["sessionid"] = sess
+    client_kwargs = {"timeout": 30, "headers": headers, "cookies": cookies, "http2": True}
+    if BACKEND_PROXY_URL:
+        client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as c:
+            r = await c.post("https://www.instagram.com/api/graphql", content=body_str)
+        if r.status_code != 200:
+            logger.debug(f"GraphQL direct HTTP {r.status_code} for {shortcode}: {r.text[:150]}")
+            return None
+        data = r.json()
+    except Exception as e:
+        logger.debug(f"GraphQL direct exception for {shortcode}: {type(e).__name__}: {e}")
+        return None
+    media = (data.get("data") or {}).get("xdt_shortcode_media")
+    if not media:
+        return None
+    play_count = int(media.get("video_play_count") or media.get("video_view_count") or 0)
+    likes = int((media.get("edge_media_preview_like") or {}).get("count")
+                or (media.get("edge_liked_by") or {}).get("count") or 0)
+    comments = int((media.get("edge_media_to_parent_comment") or {}).get("count") or 0)
+    title = ""
+    cap_edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
+    if cap_edges:
+        title = (cap_edges[0].get("node") or {}).get("text", "")
+    published = None
+    taken_at = media.get("taken_at_timestamp")
+    if taken_at:
+        try:
+            published = datetime.fromtimestamp(int(taken_at), tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    if play_count == 0 and likes == 0:
+        return None
+    logger.info(f"GraphQL direct SUCCESS for {shortcode}: video_play_count={play_count} likes={likes}")
+    return {
+        "platform_video_id": shortcode,
+        "url": url,
+        "title": title[:200] or None,
+        "thumbnail_url": media.get("display_url") or media.get("thumbnail_src"),
+        "views": play_count,
+        "likes": likes,
+        "comments": comments,
+        "published_at": published,
+        "_source": "graphql_direct",
+    }
+
+
+async def _fetch_instagram_graphql_via_clipscraper(url: str) -> Optional[dict]:
+    """Fallback : appelle le VPS endpoint /v1/instagram-graphql-stats si Railway direct echoue."""
     if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
         return None
     try:
@@ -6056,8 +6131,27 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     # IMPORTANT : on stocke le diagnostic dans une global pour le diag endpoint
     cascade_log = []
 
-    # STRATEGY -1 (GRATUIT, PRIORITE ULTRA) : VPS GraphQL Insta (reverse-engineered Apify)
-    # Renvoie video_play_count exactement comme Apify mais GRATUIT (proxy residentiel deja paye)
+    # STRATEGY -2 (GRATUIT, ULTRA PRIORITE) : GraphQL Insta DIRECT depuis Railway (sans VPS)
+    # Marche meme sans VPS configure. Si BACKEND_PROXY_URL configure -> proxy residentiel.
+    try:
+        gd = await _fetch_instagram_graphql_direct(url)
+        if gd and (int(gd.get("views") or 0) > 0 or int(gd.get("likes") or 0) > 0):
+            cascade_log.append(f"GraphQL DIRECT Railway success views={gd.get('views')}")
+            try:
+                await db.cascade_debug_log.replace_one(
+                    {"_id": f"ig_{shortcode}"},
+                    {"_id": f"ig_{shortcode}", "log": cascade_log, "result": gd, "ts": datetime.now(timezone.utc).isoformat()},
+                    upsert=True
+                )
+            except Exception:
+                pass
+            return gd
+        else:
+            cascade_log.append("GraphQL DIRECT Railway returned no stats")
+    except Exception as e:
+        cascade_log.append(f"GraphQL DIRECT exception: {type(e).__name__}: {e}")
+
+    # STRATEGY -1 (GRATUIT) : VPS GraphQL Insta (si VPS a la nouvelle version)
     try:
         graphql_result = await _fetch_instagram_graphql_via_clipscraper(url)
         if graphql_result:
