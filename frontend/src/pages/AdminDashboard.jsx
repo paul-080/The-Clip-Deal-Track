@@ -855,6 +855,158 @@ function ScrapingHistoryTab() {
   );
 }
 
+// ─── Alertes Fraude (compte revendiqué par 2 users, fake views, bot clicks) ─────
+function FraudAlertsTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("pending");
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    adminFetch(`/admin/fraud-alerts?status=${statusFilter}`)
+      .then(r => r.json())
+      .then(setData)
+      .catch(() => toast.error("Erreur chargement alertes"))
+      .finally(() => setLoading(false));
+  }, [statusFilter]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const resolve = async (alertId, decision) => {
+    if (!window.confirm(`Marquer cette alerte comme "${decision}" ?`)) return;
+    try {
+      const res = await adminFetch(`/admin/fraud-alerts/${alertId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, note: "" }),
+      });
+      if (res.ok) { toast.success("Alerte résolue"); refresh(); }
+      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
+    } catch { toast.error("Erreur réseau"); }
+  };
+
+  const sevColor = (sev) => sev === "high" ? "text-red-400" : sev === "medium" ? "text-amber-400" : "text-white/60";
+  const sevBg = (sev) => sev === "high" ? "bg-red-500/10 border-red-500/30" : sev === "medium" ? "bg-amber-500/10 border-amber-500/30" : "bg-white/5 border-white/10";
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+          <AlertTriangle className="w-6 h-6 text-red-400" /> Alertes Fraude
+        </h2>
+        <p className="text-sm text-white/50 mt-1">Détection automatique : comptes revendiqués par plusieurs utilisateurs, fake views, bot clicks.</p>
+      </div>
+
+      <div className="flex gap-2">
+        {["pending", "resolved", "all"].map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${statusFilter === s ? "bg-red-500/20 text-red-400 border border-red-500/30" : "bg-white/5 text-white/50"}`}>
+            {s === "pending" ? "En attente" : s === "resolved" ? "Résolues" : "Toutes"}
+          </button>
+        ))}
+        <button onClick={refresh} disabled={loading}
+          className="ml-auto px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs">
+          {loading ? "Chargement..." : "↻ Rafraîchir"}
+        </button>
+      </div>
+
+      {loading && <div className="text-center py-12 text-white/40">Chargement...</div>}
+
+      {data && (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
+              <p className="text-white/40 text-xs">Stockées</p>
+              <p className="text-2xl font-bold text-white">{data.stored_alerts_count}</p>
+            </div>
+            <div className="bg-[#1a1a1a] border border-amber-500/20 rounded-xl p-4">
+              <p className="text-amber-400/80 text-xs">Détectées (live)</p>
+              <p className="text-2xl font-bold text-amber-400">{data.live_alerts_count}</p>
+            </div>
+            <div className="bg-[#1a1a1a] border border-red-500/20 rounded-xl p-4">
+              <p className="text-red-400/80 text-xs">Total</p>
+              <p className="text-2xl font-bold text-red-400">{data.total}</p>
+            </div>
+          </div>
+
+          {/* Stockées */}
+          {data.stored_alerts?.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-white/70 mb-2">Alertes stockées ({data.stored_alerts.length})</h3>
+              <div className="space-y-2">
+                {data.stored_alerts.map(a => (
+                  <div key={a.alert_id} className={`rounded-xl p-4 border ${sevBg(a.severity)}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className={`text-xs font-bold uppercase ${sevColor(a.severity)}`}>{a.severity}</span>
+                          <span className="text-white/40 text-xs">{a.type}</span>
+                          {a.platform && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/60">{a.platform}</span>}
+                        </div>
+                        <p className="text-white text-sm">{a.details}</p>
+                        <div className="text-white/40 text-xs mt-1.5 space-y-0.5">
+                          {a.username && <p>📱 @{a.username}</p>}
+                          {a.existing_user_email && <p>👤 Existant: <span className="text-white/60">{a.existing_user_name || a.existing_user_email}</span></p>}
+                          {a.attempted_user_email && <p>🆕 Tentative: <span className="text-white/60">{a.attempted_user_name || a.attempted_user_email}</span></p>}
+                          {a.campaign_name && <p>📂 Campagne: <span className="text-white/60">{a.campaign_name}</span></p>}
+                          <p className="text-white/30">{new Date(a.created_at).toLocaleString("fr-FR")}</p>
+                        </div>
+                      </div>
+                      {a.status === "pending" && (
+                        <div className="flex flex-col gap-1 flex-shrink-0">
+                          <button onClick={() => resolve(a.alert_id, "confirmed")}
+                            className="px-2.5 py-1 rounded text-[10px] bg-red-500/20 hover:bg-red-500/30 text-red-300 font-medium">
+                            🚫 Confirmer fraude
+                          </button>
+                          <button onClick={() => resolve(a.alert_id, "false_positive")}
+                            className="px-2.5 py-1 rounded text-[10px] bg-white/5 hover:bg-white/10 text-white/60">
+                            ✓ Faux positif
+                          </button>
+                        </div>
+                      )}
+                      {a.status === "resolved" && (
+                        <span className={`px-2 py-1 rounded text-[10px] ${a.decision === "confirmed" ? "bg-red-500/20 text-red-400" : "bg-white/10 text-white/50"}`}>
+                          {a.decision === "confirmed" ? "Fraude" : "Faux positif"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Live detected */}
+          {data.live_detected_alerts?.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-white/70 mb-2">Détection live ({data.live_detected_alerts.length})</h3>
+              <div className="space-y-2">
+                {data.live_detected_alerts.map((a, i) => (
+                  <div key={i} className={`rounded-xl p-3 border ${sevBg(a.severity)}`}>
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className={`text-xs font-bold uppercase ${sevColor(a.severity)}`}>{a.severity}</span>
+                      <span className="text-white/40 text-xs">{a.type}</span>
+                    </div>
+                    <p className="text-white text-sm">{a.details}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {data.total === 0 && (
+            <div className="text-center py-16 bg-[#1a1a1a] border border-white/10 rounded-xl">
+              <CheckCircle2 className="w-12 h-12 text-[#39FF14]/50 mx-auto mb-3" />
+              <p className="text-white/60">Aucune alerte de fraude</p>
+              <p className="text-white/30 text-sm mt-1">Le système surveille automatiquement les patterns suspects.</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Prospects (campagnes pre-remplies pour demarcher agences) ─────
 function ProspectsTab() {
   const [prospects, setProspects] = useState([]);
@@ -2735,6 +2887,7 @@ function AdminSidebar({ active, setActive, onLogout }) {
     { id: "api-status", label: "Connexions API", icon: Plug },
     { id: "usage-monitor", label: "Capacité & Coûts", icon: TrendingUp },
     { id: "scraping-history", label: "Historique Scraping", icon: RefreshCw },
+    { id: "fraud-alerts", label: "🚨 Alertes Fraude", icon: AlertTriangle },
     { id: "prospects", label: "Prospects", icon: Building2 },
     { id: "support", label: "Support Chat", icon: MessageCircle },
     { id: "settings", label: "Paramètres", icon: Settings },
@@ -2877,6 +3030,7 @@ export default function AdminDashboard() {
     if (active === "api-status") return <ApiStatusTab />;
     if (active === "usage-monitor") return <UsageMonitorTab />;
     if (active === "scraping-history") return <ScrapingHistoryTab />;
+    if (active === "fraud-alerts") return <FraudAlertsTab />;
     if (active === "prospects") return <ProspectsTab />;
     if (active === "settings") return <SettingsTab />;
     if (active === "support") return <SupportTab />;
