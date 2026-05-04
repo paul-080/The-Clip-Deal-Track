@@ -749,11 +749,15 @@ function DiscoverCampaigns({ onJoin }) {
                   </div>
                 </div>
 
-                {/* Budget bar */}
-                {pct !== null && (
+                {/* Budget bar / badge */}
+                {c.budget_unlimited ? (
+                  <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-[#39FF14]/10 border border-[#39FF14]/25">
+                    <span className="text-[#39FF14] text-xs font-semibold">♾️ Budget illimité</span>
+                  </div>
+                ) : pct !== null ? (
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <p className="text-[10px] text-white/30">Budget consommé</p>
+                      <p className="text-[10px] text-white/30">Budget limité</p>
                       <p className="text-[10px] font-mono text-white/40">{pct}%</p>
                     </div>
                     <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
@@ -761,11 +765,10 @@ function DiscoverCampaigns({ onJoin }) {
                         style={{ width: `${pct}%`, background: pct >= 90 ? "#ef4444" : pct >= 70 ? "#f59e0b" : "#22c55e" }} />
                     </div>
                   </div>
-                )}
-                {c.budget_unlimited && (
-                  <p className="text-[10px] text-[#FFB300]/60 flex items-center gap-1">
-                    <Zap className="w-2.5 h-2.5" /> Budget illimité
-                  </p>
+                ) : (
+                  <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-white/5 border border-white/10">
+                    <span className="text-white/40 text-xs italic">Budget non défini</span>
+                  </div>
                 )}
 
                 {/* CTA */}

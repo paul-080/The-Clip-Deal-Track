@@ -444,8 +444,10 @@ function DiscoverCampaigns({ onJoin }) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((campaign) => {
-            const budgetPct = campaign.budget > 0
-              ? Math.min(100, ((campaign.budget_used || 0) / campaign.budget) * 100)
+            const budgetTotalRaw = Number(campaign.budget || campaign.budget_total || 0);
+            const budgetUsedRaw = Number(campaign.budget_used || 0);
+            const budgetPct = budgetTotalRaw > 0
+              ? Math.min(100, Math.max(0, Math.round((budgetUsedRaw / budgetTotalRaw) * 100)))
               : 0;
             return (
               <motion.div
@@ -477,12 +479,16 @@ function DiscoverCampaigns({ onJoin }) {
                       ))}
                     </div>
 
-                    {/* Budget bar */}
-                    {campaign.budget > 0 && (
+                    {/* Budget bar / badge */}
+                    {campaign.budget_unlimited ? (
+                      <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-[#39FF14]/10 border border-[#39FF14]/25">
+                        <span className="text-[#39FF14] text-xs font-semibold">♾️ Budget illimité</span>
+                      </div>
+                    ) : budgetTotalRaw > 0 ? (
                       <div className="space-y-1">
                         <div className="flex justify-between text-[10px] text-white/30">
-                          <span>Budget</span>
-                          <span>€{(campaign.budget_used || 0).toFixed(0)} / €{campaign.budget.toFixed(0)}</span>
+                          <span>Budget limité</span>
+                          <span>€{budgetUsedRaw.toFixed(0)} / €{budgetTotalRaw.toFixed(0)} · {budgetPct}%</span>
                         </div>
                         <div className="h-1.5 bg-white/8 rounded-full overflow-hidden">
                           <div
@@ -490,6 +496,10 @@ function DiscoverCampaigns({ onJoin }) {
                             style={{ width: `${budgetPct}%` }}
                           />
                         </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-white/5 border border-white/10">
+                        <span className="text-white/40 text-xs italic">Budget non défini</span>
                       </div>
                     )}
 
