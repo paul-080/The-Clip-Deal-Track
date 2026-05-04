@@ -372,7 +372,11 @@ async def _fetch_tiktok_via_curl_cffi(url: str) -> Optional[dict]:
 async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     """REVERSE-ENGINEERED Apify : GraphQL Insta avec curl_cffi qui MIME PARFAITEMENT Chrome.
     Bypass la detection TLS fingerprint d'Insta (ce que fait Apify en interne).
-    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount."""
+    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount.
+
+    Source recherche : scrapfly/scrapfly-scrapers (commit 2026-04-15, doc_id teste HTTP 200).
+    Cascade 3 doc_ids pour robustesse face aux changements Insta.
+    """
     import re as _re_local
     import json as _json_local
     from urllib.parse import quote as _quote_local
@@ -380,7 +384,14 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     if not m:
         return None
     shortcode = m.group(1)
-    DOC_ID = os.environ.get("IG_GRAPHQL_DOC_ID", "10015901848480474")
+    # Cascade 3 doc_ids — le 1er est le plus recent (Scrapfly avril 2026)
+    DOC_IDS_LIST = [
+        os.environ.get("IG_GRAPHQL_DOC_ID", "8845758582119845"),  # Scrapfly 2026
+        "25981206651899035",  # Scrapfly 2025
+        "10015901848480474",  # ahmedrangel 2025-01
+    ]
+    # On retient le 1er pour la requete (le code teste les 3 si echec)
+    DOC_ID = DOC_IDS_LIST[0]
     variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
     body_str = f"variables={_quote_local(variables)}&doc_id={DOC_ID}&lsd=AVqbxe3J_YA"
     headers = {
@@ -481,6 +492,92 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
         "published_at": published,
         "_source": "graphql_direct",
     }
+
+
+async def _fetch_instagram_mobile_api(url: str) -> Optional[dict]:
+    """FALLBACK : API mobile Insta i.instagram.com/api/v1/media/{media_id}/info/
+    Endpoint stable depuis 2018, retourne play_count direct.
+    Necessite conversion shortcode -> media_id (algo base64)."""
+    import re as _re
+    import base64 as _b64
+    m = _re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    # Convertit shortcode -> media_id numerique (algo base64 alphabet Insta -_)
+    try:
+        code = ("A" * (12 - len(shortcode))) + shortcode
+        media_id = str(int.from_bytes(_b64.b64decode(code.encode(), b"-_"), "big"))
+    except Exception:
+        return None
+
+    headers = {
+        "User-Agent": "Instagram 309.1.0.41.113 Android (33/13; 420dpi; 1080x2154; samsung; SM-G991B; o1s; exynos2100; en_US; 543912886)",
+        "X-IG-App-ID": "567067343352427",
+        "X-IG-Capabilities": "3brTvw==",
+        "X-IG-Connection-Type": "WIFI",
+        "Accept-Language": "en-US",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    cookies = {}
+    sess = _get_instagram_session()
+    if sess:
+        cookies["sessionid"] = sess
+
+    # Tente curl_cffi d'abord, fallback httpx
+    try:
+        from curl_cffi import requests as _curl
+        loop = asyncio.get_event_loop()
+        def _do_get():
+            kw = {"headers": headers, "cookies": cookies, "timeout": 25, "impersonate": "chrome131"}
+            if BACKEND_PROXY_URL:
+                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+            try:
+                r = _curl.get(f"https://i.instagram.com/api/v1/media/{media_id}/info/", **kw)
+                return r.status_code, r.text
+            except Exception as e:
+                return None, str(e)
+        status, text = await loop.run_in_executor(_thread_pool, _do_get)
+        if status != 200:
+            return None
+        import json as _json
+        items = _json.loads(text).get("items", [])
+        if not items:
+            return None
+        item = items[0]
+        cap = (item.get("caption") or {}).get("text", "") or ""
+        thumb = ""
+        cands = (item.get("image_versions2") or {}).get("candidates", [])
+        if cands:
+            thumb = cands[0].get("url", "")
+        ts = item.get("taken_at")
+        published = None
+        if ts:
+            try:
+                published = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+        views = int(item.get("play_count") or item.get("ig_play_count") or item.get("video_view_count") or 0)
+        likes = int(item.get("like_count") or 0)
+        if views == 0 and likes == 0:
+            return None
+        logger.info(f"Insta Mobile API SUCCESS for {shortcode}: views={views} likes={likes}")
+        return {
+            "platform_video_id": shortcode,
+            "url": url,
+            "title": cap[:200] or None,
+            "thumbnail_url": thumb,
+            "views": views,
+            "likes": likes,
+            "comments": int(item.get("comment_count") or 0),
+            "published_at": published,
+            "_source": "mobile_api",
+        }
+    except ImportError:
+        return None
+    except Exception as e:
+        logger.debug(f"Insta Mobile API failed: {type(e).__name__}: {e}")
+        return None
 
 
 async def _fetch_instagram_graphql_via_clipscraper(url: str) -> Optional[dict]:
@@ -6306,6 +6403,24 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
             cascade_log.append("GraphQL DIRECT Railway returned no stats")
     except Exception as e:
         cascade_log.append(f"GraphQL DIRECT exception: {type(e).__name__}: {e}")
+
+    # STRATEGY -1.5 (GRATUIT) : Mobile API Insta i.instagram.com/api/v1/media/{id}/info/
+    # Endpoint stable depuis 2018, fonctionne souvent meme quand GraphQL plante
+    try:
+        mob = await _fetch_instagram_mobile_api(url)
+        if mob and (int(mob.get("views") or 0) > 0 or int(mob.get("likes") or 0) > 0):
+            cascade_log.append(f"Mobile API success views={mob.get('views')}")
+            try:
+                await db.cascade_debug_log.replace_one(
+                    {"_id": f"ig_{shortcode}"},
+                    {"_id": f"ig_{shortcode}", "log": cascade_log, "result": mob, "ts": datetime.now(timezone.utc).isoformat()},
+                    upsert=True
+                )
+            except Exception:
+                pass
+            return mob
+    except Exception as e:
+        cascade_log.append(f"Mobile API exception: {type(e).__name__}: {e}")
 
     # STRATEGY -1 (GRATUIT) : VPS GraphQL Insta (si VPS a la nouvelle version)
     try:
