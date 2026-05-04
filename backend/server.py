@@ -432,7 +432,8 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
         }
         for attempt_idx in range(2):  # retry x 2 par doc_id
             try:
-                client_kwargs = {"timeout": 15, "http2": True}
+                # Note : pas de http2=True car package h2 pas toujours installe sur Railway
+                client_kwargs = {"timeout": 15}
                 if BACKEND_PROXY_URL:
                     client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
                 async with httpx.AsyncClient(**client_kwargs) as c:
@@ -512,7 +513,7 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     if data is None:
         try:
             ua_headers = {**headers, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
-            client_kwargs = {"timeout": 30, "headers": ua_headers, "cookies": cookies, "http2": True}
+            client_kwargs = {"timeout": 30, "headers": ua_headers, "cookies": cookies}
             if BACKEND_PROXY_URL:
                 client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
             async with httpx.AsyncClient(**client_kwargs) as c:
@@ -12598,7 +12599,7 @@ async def admin_test_proxy(request: Request):
             "doc_id": "10015901848480474",
             "lsd": "AVqbxe3J_YA",
         }
-        async with httpx.AsyncClient(timeout=20, http2=True, proxies={"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}) as c:
+        async with httpx.AsyncClient(timeout=20, proxies={"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}) as c:
             r = await c.post("https://www.instagram.com/api/graphql", headers=headers, data=form_data)
         result["test_insta_graphql"] = {
             "status_code": r.status_code,
