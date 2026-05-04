@@ -5783,9 +5783,9 @@ _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').stri
 
 
 async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
-    """REVERSE ENGINEERED Apify Account Scraper : recupere les Reels d'un compte via GraphQL.
-    Utilise PolarisProfilePostsTabContentQueryQuery (doc_id different).
-    Renvoie liste de videos avec video_play_count gratuit via proxy webshare."""
+    """REVERSE ENGINEERED Apify Account Scraper : recupere les Reels d'un compte via Mobile Clips API.
+    Pagine via max_id pour aller chercher les videos plus anciennes (essentiel pour backfill).
+    Renvoie liste de videos avec play_count gratuit via proxy webshare."""
     import re as _re_g
     import json as _json_g
     from urllib.parse import quote as _quote_g
@@ -5812,38 +5812,94 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         return None
 
     # 2. Fetch Reels via API mobile clips (utilise par l'app Insta officielle)
-    # Endpoint : i.instagram.com/api/v1/clips/user/?target_user_id=X&page_size=N
+    # Endpoint : i.instagram.com/api/v1/clips/user/
+    # PAGINATION via max_id (cursor) pour aller chercher les videos plus anciennes
     headers_clips = {
         "User-Agent": "Instagram 269.0.0.18.75 Android (33/13; 420dpi; 1080x2154; samsung; SM-G991B; o1s; exynos2100; en_US; 543912886)",
         "X-IG-App-ID": "567067343352427",
         "X-IG-Capabilities": "3brTvw==",
         "X-IG-Connection-Type": "WIFI",
         "Accept-Language": "en-US",
+        "Content-Type": "application/x-www-form-urlencoded",
     }
-    body = f"target_user_id={user_id}&page_size={max_videos}&include_feed_video=true"
+    PAGE_SIZE = 12  # L'API renvoie ~12 reels max par page, peu importe page_size demande
+    MAX_PAGES = max(1, (max_videos + PAGE_SIZE - 1) // PAGE_SIZE)  # nombre de pages necessaires
+    MAX_PAGES = min(MAX_PAGES, 30)  # cap securitaire : 30 pages = 360 reels
+
+    all_items: list = []
+    max_id_cursor: Optional[str] = None
+    seen_shortcodes: set = set()
 
     try:
         async with httpx.AsyncClient(timeout=20, headers=headers_clips, proxies=proxies_kw) as c:
-            r = await c.post(
-                "https://i.instagram.com/api/v1/clips/user/",
-                content=body,
-                headers={**headers_clips, "Content-Type": "application/x-www-form-urlencoded"},
-            )
-        if r.status_code != 200:
-            logger.warning(f"Insta clips/user/ HTTP {r.status_code} for @{username}")
-            return None
-        data = r.json()
-        items = (data.get("items") or [])
+            for page_idx in range(MAX_PAGES):
+                # Construit le body avec max_id pour la pagination (sauf 1ere page)
+                body_parts = [f"target_user_id={user_id}", f"page_size={PAGE_SIZE}", "include_feed_video=true"]
+                if max_id_cursor:
+                    body_parts.append(f"max_id={_quote_g(str(max_id_cursor), safe='')}")
+                body = "&".join(body_parts)
+
+                try:
+                    r = await c.post(
+                        "https://i.instagram.com/api/v1/clips/user/",
+                        content=body,
+                    )
+                except Exception as e:
+                    logger.warning(f"Insta clips/user/ page {page_idx+1} request failed for @{username}: {e}")
+                    break
+
+                if r.status_code != 200:
+                    logger.warning(f"Insta clips/user/ HTTP {r.status_code} for @{username} page {page_idx+1}")
+                    if page_idx == 0:
+                        return None
+                    break
+
+                try:
+                    data = r.json()
+                except Exception:
+                    logger.warning(f"Insta clips/user/ JSON parse failed for @{username} page {page_idx+1}")
+                    break
+
+                items = (data.get("items") or [])
+                if not items:
+                    break
+
+                # De-duplique au cas ou l'API renvoie le meme reel sur 2 pages
+                page_added = 0
+                for it in items:
+                    media = it.get("media") if isinstance(it, dict) else None
+                    media = media or it
+                    if not isinstance(media, dict):
+                        continue
+                    sc = media.get("code") or media.get("shortcode")
+                    if not sc or sc in seen_shortcodes:
+                        continue
+                    seen_shortcodes.add(sc)
+                    all_items.append(media)
+                    page_added += 1
+
+                # Cursor pour la page suivante
+                paging = data.get("paging_info") or {}
+                more_available = paging.get("more_available", False)
+                next_cursor = paging.get("max_id")
+
+                if len(all_items) >= max_videos:
+                    break
+                if not more_available or not next_cursor:
+                    break
+                if page_added == 0:
+                    break  # securite anti-boucle infinie
+                max_id_cursor = next_cursor
+                # Petit delai pour ne pas spammer l'API
+                await asyncio.sleep(0.4)
+
+        # Conversion au format standard
         result = []
-        for it in items[:max_videos]:
-            media = it.get("media") if isinstance(it, dict) else None
-            media = media or it
-            if not isinstance(media, dict):
-                continue
+        from datetime import datetime as _dt, timezone as _tz
+        for media in all_items[:max_videos]:
             shortcode = media.get("code") or media.get("shortcode")
             if not shortcode:
                 continue
-            from datetime import datetime as _dt, timezone as _tz
             ts = media.get("taken_at")
             published = None
             if ts:
@@ -5869,7 +5925,7 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
                 "published_at": published,
             })
         if result:
-            logger.info(f"Insta clips/user/ SUCCESS for @{username}: {len(result)} reels")
+            logger.info(f"Insta clips/user/ SUCCESS for @{username}: {len(result)} reels (paginated {page_idx+1} pages, target={max_videos})")
         return result
     except Exception as e:
         logger.warning(f"Insta clips/user/ failed for @{username}: {e}")
@@ -5943,10 +5999,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     username = username.lstrip("@")
 
     # Calcule max_videos dynamiquement selon since_days (couvre les comptes qui postent souvent)
-    # since_days = 30 -> max_videos = 60 (2 par jour estime)
-    # since_days = 100 -> max_videos = 200 (cap)
-    # since_days = 365 -> max_videos = 200 (cap)
-    dynamic_max = max(50, min(int(since_days * 2), 200))
+    # since_days = 30 -> max_videos = 90 (3 par jour estime)
+    # since_days = 100 -> max_videos = 300
+    # since_days = 365 -> max_videos = 360 (cap)
+    # cap eleve pour permettre backfill profond quand tracking_start_date est reculee
+    dynamic_max = max(50, min(int(since_days * 3), 360))
 
     # PRIORITY -1 (NEW GRATUIT) : Scraping de COMPTE direct via Mobile Clips API + GraphQL enrichissement
     if BACKEND_PROXY_URL:
@@ -14559,8 +14616,9 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
                 if not cam:
                     return
                 days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
-                since_days = min(days_back, 365)
-                logger.info(f"Backfill campaign {cid} : tracking_start_date reculée, scrape sur {since_days} jours")
+                # Cap a 730 jours (2 ans) — au-dela les videos sont rarement disponibles via Mobile Clips API
+                since_days = min(days_back, 730)
+                logger.info(f"Backfill campaign {cid} : tracking_start_date reculée, scrape sur {since_days} jours (cutoff={cutoff.isoformat()})")
 
                 assignments = await db.campaign_social_accounts.find(
                     {"campaign_id": cid}, {"_id": 0}
