@@ -390,8 +390,9 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
         "25981206651899035",  # Scrapfly 2025
         "10015901848480474",  # ahmedrangel 2025-01
     ]
-    variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
-    # Le code essaie chaque doc_id en boucle dans la methode curl_cffi ci-dessous
+    # IMPORTANT : juste {"shortcode": X} comme dans test-proxy qui MARCHE (92935 vues)
+    # Pas de fetch_tagged_user_count: null qui peut faire planter Insta
+    variables = _json_local.dumps({"shortcode": shortcode})
     # Headers EXACTS qui marchent depuis IP datacenter (test live mai 2026)
     # Source : ahmedrangel/instagram-media-scraper + Scrapfly
     # Les 3 headers KEY : X-FB-LSD, X-ASBD-ID, Sec-Fetch-Site
@@ -6737,9 +6738,9 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     # meme si les cookies Insta sont invalides/expires. C'est notre filet de securite.
     #
     # ACTIVE PAR DEFAUT avec circuit breaker (APIFY_INSTA_DAILY_BUDGET, defaut 50/jour).
-    # APIFY_FOR_INSTA_FALLBACK : DEBRANCHE par defaut (Paul a configure proxy webshare = 100% gratuit)
-    # Reactivable via variable Railway si besoin urgent
-    APIFY_INSTA_ALLOWED = (os.environ.get('APIFY_FOR_INSTA_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
+    # APIFY DEBRANCHE FORCE pour Insta (Paul a configure proxy webshare).
+    # Hardcode False pour ignorer toute variable env Railway qui pourrait le reactiver.
+    APIFY_INSTA_ALLOWED = False  # FORCED OFF -- proxy webshare suffit
     if APIFY_TOKEN and not APIFY_DISABLED and APIFY_INSTA_ALLOWED and await _apify_budget_ok("instagram"):
         if True:
             logger.info(f"_fetch_single_instagram_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {shortcode}")
