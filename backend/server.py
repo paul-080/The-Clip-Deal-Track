@@ -5777,6 +5777,101 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
 
 _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
 
+
+async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
+    """REVERSE ENGINEERED Apify Account Scraper : recupere les Reels d'un compte via GraphQL.
+    Utilise PolarisProfilePostsTabContentQueryQuery (doc_id different).
+    Renvoie liste de videos avec video_play_count gratuit via proxy webshare."""
+    import re as _re_g
+    import json as _json_g
+    from urllib.parse import quote as _quote_g
+
+    # 1. D'abord, recupere user_id depuis username (via web_profile_info ou cache)
+    headers_uinfo = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
+        "X-IG-App-ID": "936619743392459",
+        "Accept": "application/json",
+    }
+    proxies_kw = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL} if BACKEND_PROXY_URL else None
+
+    user_id = None
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=headers_uinfo, proxies=proxies_kw) as c:
+            r = await c.get(f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username.lstrip('@')}")
+        if r.status_code == 200:
+            user = (r.json().get("data") or {}).get("user") or {}
+            user_id = user.get("id") or user.get("pk")
+    except Exception as e:
+        logger.debug(f"web_profile_info failed for @{username}: {e}")
+
+    if not user_id:
+        return None
+
+    # 2. Fetch Reels via API mobile clips (utilise par l'app Insta officielle)
+    # Endpoint : i.instagram.com/api/v1/clips/user/?target_user_id=X&page_size=N
+    headers_clips = {
+        "User-Agent": "Instagram 269.0.0.18.75 Android (33/13; 420dpi; 1080x2154; samsung; SM-G991B; o1s; exynos2100; en_US; 543912886)",
+        "X-IG-App-ID": "567067343352427",
+        "X-IG-Capabilities": "3brTvw==",
+        "X-IG-Connection-Type": "WIFI",
+        "Accept-Language": "en-US",
+    }
+    body = f"target_user_id={user_id}&page_size={max_videos}&include_feed_video=true"
+
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=headers_clips, proxies=proxies_kw) as c:
+            r = await c.post(
+                "https://i.instagram.com/api/v1/clips/user/",
+                content=body,
+                headers={**headers_clips, "Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if r.status_code != 200:
+            logger.warning(f"Insta clips/user/ HTTP {r.status_code} for @{username}")
+            return None
+        data = r.json()
+        items = (data.get("items") or [])
+        result = []
+        for it in items[:max_videos]:
+            media = it.get("media") if isinstance(it, dict) else None
+            media = media or it
+            if not isinstance(media, dict):
+                continue
+            shortcode = media.get("code") or media.get("shortcode")
+            if not shortcode:
+                continue
+            from datetime import datetime as _dt, timezone as _tz
+            ts = media.get("taken_at")
+            published = None
+            if ts:
+                try:
+                    published = _dt.fromtimestamp(int(ts), tz=_tz.utc).isoformat()
+                except Exception:
+                    pass
+            cap = (media.get("caption") or {}).get("text", "") or ""
+            thumb = ""
+            cands = (media.get("image_versions2") or {}).get("candidates", [])
+            if cands:
+                thumb = cands[0].get("url", "")
+            views = int(media.get("play_count") or media.get("ig_play_count")
+                       or media.get("video_view_count") or 0)
+            result.append({
+                "platform_video_id": shortcode,
+                "url": f"https://www.instagram.com/p/{shortcode}/",
+                "title": cap[:200] or None,
+                "thumbnail_url": thumb,
+                "views": views,
+                "likes": int(media.get("like_count") or 0),
+                "comments": int(media.get("comment_count") or 0),
+                "published_at": published,
+            })
+        if result:
+            logger.info(f"Insta clips/user/ SUCCESS for @{username}: {len(result)} reels")
+        return result
+    except Exception as e:
+        logger.warning(f"Insta clips/user/ failed for @{username}: {e}")
+        return None
+
+
 async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_videos: int = 30) -> Optional[list]:
     if _APIFY_INSTA_KILL_SWITCH:
         logger.info(f"[APIFY KILL SWITCH] Apify Insta account scraping desactive pour @{username}")
@@ -5849,9 +5944,32 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     # since_days = 365 -> max_videos = 200 (cap)
     dynamic_max = max(50, min(int(since_days * 2), 200))
 
+    # PRIORITY -1 (NEW GRATUIT) : Scraping de COMPTE direct via Mobile Clips API + GraphQL enrichissement
+    if BACKEND_PROXY_URL:
+        try:
+            account_videos_clips = await _fetch_instagram_account_via_graphql(username, max_videos=dynamic_max)
+            if account_videos_clips:
+                # Enrichit chaque video avec GraphQL direct (vraies vues UI)
+                enriched_clips = []
+                for v in account_videos_clips[:dynamic_max]:
+                    sc = v.get("platform_video_id")
+                    if sc:
+                        try:
+                            url_v = f"https://www.instagram.com/p/{sc}/"
+                            gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=15)
+                            if gd and int(gd.get("views") or 0) > int(v.get("views") or 0):
+                                v["views"] = int(gd.get("views"))
+                                v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
+                        except Exception:
+                            pass
+                    enriched_clips.append(v)
+                await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), "GRATUIT clips_user + graphql")
+                logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}")
+                return enriched_clips
+        except Exception as e:
+            logger.warning(f"Mobile Clips API failed for @{username}: {e}")
+
     # PRIORITY 0 (NEW GRATUIT) : VPS pour liste shortcodes + GraphQL pour vraies vues
-    # On scrape le compte via VPS (gratuit, donne shortcodes + likes), puis pour chaque
-    # video on enrichit via GraphQL direct (proxy webshare) qui retourne video_play_count UI
     if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY and BACKEND_PROXY_URL:
         try:
             cs_videos = await _fetch_via_clipscraper("instagram", username, max_videos=dynamic_max)
