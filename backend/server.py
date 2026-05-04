@@ -413,26 +413,25 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
         "Origin": "https://www.instagram.com",
         "Referer": f"https://www.instagram.com/p/{shortcode}/",
     }
-    # Cookies optionnels (sessionid si dispo, mais NON OBLIGATOIRE selon tests)
-    cookies = {}
+    # Cookies optionnels (sessionid invalide peut faire planter, on tente d'abord SANS)
     sess = _get_instagram_session()
-    if sess:
-        cookies["sessionid"] = sess
-
     data = None
     last_status = None
-    # Methode 1 : httpx avec data DICT form-encoded (pas content=string !)
-    # CONFIRME live mai 2026 : marche depuis IP datacenter SANS proxy/cookie
-    # Source : ahmedrangel/instagram-media-scraper + Scrapfly
-    for doc_id in DOC_IDS_LIST:
-        form_data = {
-            "variables": _json_local.dumps({"shortcode": shortcode}),
-            "doc_id": doc_id,
-            "lsd": "AVqbxe3J_YA",
-        }
-        for attempt_idx in range(2):  # retry x 2 par doc_id
+
+    # On tente d'abord SANS cookies (confirme que ca marche), puis AVEC en fallback
+    for use_cookies in (False, True):
+        if data:
+            break
+        cookies = {"sessionid": sess} if (use_cookies and sess) else None
+        for doc_id in DOC_IDS_LIST:
+            if data:
+                break
+            form_data = {
+                "variables": _json_local.dumps({"shortcode": shortcode}),
+                "doc_id": doc_id,
+                "lsd": "AVqbxe3J_YA",
+            }
             try:
-                # Note : pas de http2=True car package h2 pas toujours installe sur Railway
                 client_kwargs = {"timeout": 15}
                 if BACKEND_PROXY_URL:
                     client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
@@ -440,33 +439,19 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
                     r = await c.post(
                         "https://www.instagram.com/api/graphql",
                         headers=headers,
-                        cookies=cookies if cookies else None,
-                        data=form_data,  # IMPORTANT : data DICT, pas content string
+                        cookies=cookies,
+                        data=form_data,
                     )
                 last_status = r.status_code
                 if r.status_code == 200:
                     parsed = r.json()
-                    if parsed.get("errors"):
-                        err_msg = (parsed["errors"][0] or {}).get("message", "")
-                        if "Rate limit" in err_msg and attempt_idx == 0:
-                            await asyncio.sleep(5)
-                            continue
                     media = (parsed.get("data") or {}).get("xdt_shortcode_media")
                     if media:
                         data = parsed
-                        logger.info(f"GraphQL httpx SUCCESS for {shortcode} via doc_id={doc_id}")
+                        logger.info(f"GraphQL httpx SUCCESS for {shortcode} via doc_id={doc_id} (cookies={'YES' if use_cookies else 'NO'})")
                         break
-                elif r.status_code in (429, 503) and attempt_idx == 0:
-                    # Rate limit -> backoff
-                    await asyncio.sleep(2 ** attempt_idx + 1)
-                    continue
             except Exception as e:
                 logger.debug(f"GraphQL httpx exception doc_id={doc_id}: {type(e).__name__}: {e}")
-                if attempt_idx == 0:
-                    await asyncio.sleep(1)
-                    continue
-        if data:
-            break
 
     # Methode 2 : curl_cffi en fallback (TLS Chrome) si httpx echoue
     if data is None:
