@@ -6335,7 +6335,7 @@ async def _fetch_instagram_via_apify_reel_scraper(url: str, shortcode: str, debu
         return None
 
 
-async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None) -> dict:
+async def _fetch_single_instagram_video(url: str, account_username: Optional[str] = None, prefer_apify: bool = False) -> dict:
     """Fetch real stats for a single Instagram video. Never raises.
     Cascade SIMPLIFIEE :
     0. Apify Reel Scraper (PRIORITE = videoPlayCount, possiblement 92k UI)
@@ -6383,6 +6383,26 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
 
     # IMPORTANT : on stocke le diagnostic dans une global pour le diag endpoint
     cascade_log = []
+
+    # MODE PREFER_APIFY : pour /add-video manuel ou resync hebdo, on FORCE Apify d'abord
+    # car c'est le seul moyen d'avoir le compteur unifié 92k UI.
+    if prefer_apify and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+        cascade_log.append("PREFER_APIFY active : Apify en priorite")
+        try:
+            apify_result = await _fetch_instagram_via_apify_reel_scraper(url, shortcode)
+            if apify_result and (apify_result.get("views", 0) > 0 or apify_result.get("likes", 0) > 0):
+                logger.info(f"[IG cascade] {shortcode}: Apify PREFER_PAID success views={apify_result.get('views')}")
+                try:
+                    await db.cascade_debug_log.replace_one(
+                        {"_id": f"ig_{shortcode}"},
+                        {"_id": f"ig_{shortcode}", "log": cascade_log, "result": apify_result, "ts": datetime.now(timezone.utc).isoformat()},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+                return apify_result
+        except Exception as e:
+            cascade_log.append(f"PREFER_APIFY exception: {type(e).__name__}: {e}")
 
     # STRATEGY -2 (GRATUIT, ULTRA PRIORITE) : GraphQL Insta DIRECT depuis Railway (sans VPS)
     # Marche meme sans VPS configure. Si BACKEND_PROXY_URL configure -> proxy residentiel.
@@ -6772,22 +6792,44 @@ def _validate_video_stats(result: dict, url: str, platform: str) -> dict:
     return result
 
 
-async def fetch_single_video_by_url(url: str, platform: str, account_username: Optional[str] = None) -> dict:
+async def fetch_single_video_by_url(
+    url: str,
+    platform: str,
+    account_username: Optional[str] = None,
+    prefer_apify: bool = False,
+    existing_video: Optional[dict] = None,
+) -> dict:
     """Dispatcher: fetch video stats from a URL by platform.
-    Toujours validé : si l'ID retourné ne matche pas l'URL, on rejette les stats suspectes.
-    account_username : si fourni (pour Instagram surtout), permet le scraping VPS gratuit du compte
-                       puis filtre par shortcode (sinon Insta n'a pas le username dans l'URL).
+    SOLUTION 2 AMELIOREE :
+    - prefer_apify=True : force Apify EN PRIORITE (utilisé pour /add-video : 1 fois par compte)
+    - prefer_apify=False : essaye gratuit d'abord, Apify en fallback (utilisé pour update périodique)
+    - existing_video : si présent, applique 'Max only' (ne baisse jamais les vues)
     """
     platform = platform.lower()
     if platform == "tiktok":
-        result = await _fetch_single_tiktok_video(url)  # username extrait auto de l'URL
+        result = await _fetch_single_tiktok_video(url)
     elif platform == "youtube":
         result = await _fetch_single_youtube_video(url)
     elif platform == "instagram":
-        result = await _fetch_single_instagram_video(url, account_username=account_username)
+        result = await _fetch_single_instagram_video(url, account_username=account_username, prefer_apify=prefer_apify)
     else:
         raise ValueError(f"Plateforme non supportée: {platform}")
-    return _validate_video_stats(result, url, platform)
+    result = _validate_video_stats(result, url, platform)
+
+    # MAX ONLY : si on a deja une valeur stockee plus haute, on la garde
+    # (evite la baisse de vues entre Apify 92k et VPS 54k)
+    if existing_video and platform == "instagram":
+        try:
+            old_views = int(existing_video.get("views") or 0)
+            new_views = int(result.get("views") or 0)
+            if old_views > new_views:
+                # On garde l'ancienne valeur de vues mais update le reste (likes, comments)
+                logger.info(f"MAX ONLY Insta : keep stored views={old_views} (new={new_views} ignored)")
+                result["views"] = old_views
+        except Exception:
+            pass
+
+    return result
 
 async def _scrape_one_account_into_campaign(
     account: dict,
@@ -9265,10 +9307,14 @@ async def track_video_by_url(campaign_id: str, body: dict, user: dict = Depends(
     # on connait le username -> permet le VPS account-scrape gratuit pour Instagram (qui n'a pas le @ dans l'URL video)
     account_username = (body.get("account_username") or body.get("username") or "").strip().lstrip("@") or None
 
+    # SOLUTION 2 AMELIOREE : pour /add-video manuel, on FORCE Apify (vraies vues 92k initial)
+    # Les updates periodiques (run_video_tracking) utiliseront le mode gratuit
+    prefer_apify_for_add = (platform == "instagram")
+
     # Fetch video stats — each platform function is self-contained with its own timeout and never raises
     scraping_failed = False
     try:
-        vid_info = await fetch_single_video_by_url(url, platform, account_username=account_username)
+        vid_info = await fetch_single_video_by_url(url, platform, account_username=account_username, prefer_apify=prefer_apify_for_add)
     except Exception as e:
         logger.warning(f"track-video: could not fetch stats for {url} ({platform}): {type(e).__name__}: {e}")
         scraping_failed = True
