@@ -478,6 +478,123 @@ async def _video_stats_via_tiktok_html(url: str) -> Optional[dict]:
     return None
 
 
+async def _video_stats_via_instagram_graphql(url: str) -> Optional[dict]:
+    """REVERSE-ENGINEERED Apify Reel Scraper : appelle GraphQL Insta avec doc_id Reels.
+    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount.
+    Gratuit, utilise proxy résidentiel + cookie session pour bypass.
+    """
+    import re as _re
+    import json as _json
+    from urllib.parse import quote as _quote
+
+    m = _re.search(r'/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)', url)
+    if not m:
+        return None
+    shortcode = m.group(1)
+
+    # doc_id Reels Insta — trouvé via reverse engineering, à monitorer 1×/mois
+    DOC_ID_REELS = os.environ.get("IG_GRAPHQL_DOC_ID", "10015901848480474")
+    IG_APP_ID = "936619743392459"
+    INSTAGRAM_SESSION_ID = (os.environ.get("INSTAGRAM_SESSION_ID") or "").strip() or None
+
+    variables = _json.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
+    body = f"variables={_quote(variables)}&doc_id={DOC_ID_REELS}&lsd=AVqbxe3J_YA"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "X-IG-App-ID": IG_APP_ID,
+        "X-FB-LSD": "AVqbxe3J_YA",
+        "X-ASBD-ID": "129477",
+        "Sec-Fetch-Site": "same-origin",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://www.instagram.com",
+        "Referer": "https://www.instagram.com/",
+    }
+    cookies = {"sessionid": INSTAGRAM_SESSION_ID} if INSTAGRAM_SESSION_ID else {}
+    proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+
+    try:
+        import httpx
+        # http2=True important : Insta detecte HTTP/1.1 brut comme bot
+        async with httpx.AsyncClient(timeout=30, headers=headers, cookies=cookies, proxies=proxies, http2=True) as c:
+            r = await c.post("https://www.instagram.com/api/graphql", content=body)
+        if r.status_code != 200:
+            log.info(f"IG GraphQL HTTP {r.status_code} for {shortcode}: {r.text[:200]}")
+            return None
+        data = r.json()
+    except Exception as e:
+        log.info(f"IG GraphQL request failed for {shortcode}: {type(e).__name__}: {e}")
+        return None
+
+    media = (data.get("data") or {}).get("xdt_shortcode_media")
+    if not media:
+        log.info(f"IG GraphQL: no media in response for {shortcode}: {str(data)[:200]}")
+        return None
+
+    # video_play_count = LE compteur que Apify renvoie en videoPlayCount
+    play_count = media.get("video_play_count") or media.get("video_view_count") or 0
+    likes = ((media.get("edge_media_preview_like") or {}).get("count")
+             or (media.get("edge_liked_by") or {}).get("count") or 0)
+    comments = (media.get("edge_media_to_parent_comment") or {}).get("count") or 0
+    caption_edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
+    title = ""
+    if caption_edges:
+        title = (caption_edges[0].get("node") or {}).get("text", "")
+    from datetime import datetime as _dt, timezone as _tz
+    published = None
+    taken_at = media.get("taken_at_timestamp")
+    if taken_at:
+        try:
+            published = _dt.fromtimestamp(int(taken_at), tz=_tz.utc).isoformat()
+        except Exception:
+            pass
+
+    log.info(f"IG GraphQL SUCCESS for {shortcode}: video_play_count={play_count} likes={likes}")
+    return {
+        "id": shortcode,
+        "title": title[:200] or None,
+        "thumbnail": media.get("display_url") or media.get("thumbnail_src"),
+        "view_count": int(play_count),
+        "like_count": int(likes),
+        "comment_count": int(comments),
+        "_published_iso": published,
+        "_source": "instagram_graphql",
+    }
+
+
+@app.post("/v1/instagram-graphql-stats")
+async def instagram_graphql_stats(payload: dict, x_api_key: Optional[str] = Header(None)):
+    """Endpoint dedie : reverse-engineered Apify Reel Scraper.
+    Appelle GraphQL Insta avec doc_id Reels, renvoie video_play_count.
+    GRATUIT (vs Apify $0.0026/video). Utilise proxy residentiel + cookie."""
+    await check_auth(x_api_key)
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    cache_key = f"iggraphql:{url}"
+    cached = await cache.aget(cache_key)
+    if cached:
+        return {**cached, "_cached": True}
+    result = await _video_stats_via_instagram_graphql(url)
+    if not result:
+        raise HTTPException(status_code=502, detail="GraphQL Insta scrape returned no stats")
+    out = {
+        "url": url,
+        "platform_video_id": result.get("id"),
+        "title": result.get("title"),
+        "thumbnail_url": result.get("thumbnail"),
+        "views": result.get("view_count", 0),
+        "likes": result.get("like_count", 0),
+        "comments": result.get("comment_count", 0),
+        "published_at": result.get("_published_iso"),
+        "_source": result.get("_source"),
+    }
+    await cache.aset(cache_key, out, ttl=60)
+    return {**out, "_cached": False}
+
+
 async def _video_stats_via_instagram_html(url: str) -> Optional[dict]:
     """Scrape la page HTML publique Insta via proxy résidentiel.
     Parse TOUS les JSON injectés dans le HTML pour trouver le compteur 'Views' UI (le vrai 92k).

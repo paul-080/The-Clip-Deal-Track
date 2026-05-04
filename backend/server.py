@@ -257,6 +257,29 @@ async def _extract_owner_username_from_url(url: str) -> Optional[str]:
     return None
 
 
+async def _fetch_instagram_graphql_via_clipscraper(url: str) -> Optional[dict]:
+    """NOUVELLE METHODE GRATUITE : appelle le VPS endpoint /v1/instagram-graphql-stats
+    qui reproduit la technique Apify (GraphQL Insta avec doc_id Reels).
+    Renvoie video_play_count = ce qu'Apify renvoie en videoPlayCount.
+    Coût : 0€ (vs Apify $0.0026/video)."""
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=45) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/instagram-graphql-stats",
+                json={"url": url},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+        if r.status_code != 200:
+            logger.debug(f"VPS GraphQL Insta HTTP {r.status_code}: {r.text[:150]}")
+            return None
+        return r.json() or None
+    except Exception as e:
+        logger.debug(f"VPS GraphQL Insta error: {type(e).__name__}: {e}")
+        return None
+
+
 async def _fetch_instagram_html_stats_via_clipscraper(url: str) -> Optional[dict]:
     """NOUVEAU : appelle le VPS pour scraper la page HTML publique Insta via proxy résidentiel.
     Cette méthode parse TOUS les JSON injectés dans le HTML et trouve le compteur 'Views' UI maximum.
@@ -6030,9 +6053,41 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
     if not shortcode:
         return fallback
 
-    # STRATEGY 0 (PRIORITE ABSOLUE) : Apify Reel Scraper
     # IMPORTANT : on stocke le diagnostic dans une global pour le diag endpoint
     cascade_log = []
+
+    # STRATEGY -1 (GRATUIT, PRIORITE ULTRA) : VPS GraphQL Insta (reverse-engineered Apify)
+    # Renvoie video_play_count exactement comme Apify mais GRATUIT (proxy residentiel deja paye)
+    try:
+        graphql_result = await _fetch_instagram_graphql_via_clipscraper(url)
+        if graphql_result:
+            v = int(graphql_result.get("views") or 0)
+            l = int(graphql_result.get("likes") or 0)
+            cascade_log.append(f"VPS GraphQL returned views={v} likes={l}")
+            if v > 0 or l > 0:
+                logger.info(f"[IG cascade] {shortcode}: VPS GraphQL SUCCESS views={v} (économie Apify ~$0.0026)")
+                try:
+                    await db.cascade_debug_log.replace_one(
+                        {"_id": f"ig_{shortcode}"},
+                        {"_id": f"ig_{shortcode}", "log": cascade_log, "result": graphql_result, "ts": datetime.now(timezone.utc).isoformat()},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+                return {
+                    "platform_video_id": graphql_result.get("platform_video_id") or shortcode,
+                    "url": url,
+                    "title": graphql_result.get("title"),
+                    "thumbnail_url": graphql_result.get("thumbnail_url"),
+                    "views": v,
+                    "likes": l,
+                    "comments": int(graphql_result.get("comments") or 0),
+                    "published_at": graphql_result.get("published_at"),
+                }
+    except Exception as e:
+        cascade_log.append(f"VPS GraphQL exception: {type(e).__name__}: {e}")
+
+    # STRATEGY 0 (PRIORITE ABSOLUE) : Apify Reel Scraper
     if APIFY_TOKEN and not APIFY_DISABLED:
         budget_ok = await _apify_budget_ok("instagram")
         cascade_log.append(f"APIFY_TOKEN ok, budget_ok={budget_ok}")
