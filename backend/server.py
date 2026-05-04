@@ -11703,6 +11703,60 @@ async def admin_simulate_add_account(
         return diag
 
 
+@api_router.post("/admin/create-test-campaign")
+async def admin_create_test_campaign(request: Request, email: str):
+    """DIAG : crée une campagne test pour un user agency, retourne l'erreur exacte si ça plante."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user or user.get("role") != "agency":
+        return {"error": "user not found or not agency", "email": email}
+
+    # Crée une campagne test directement en BDD
+    try:
+        campaign_id = f"camp_test_{uuid.uuid4().hex[:8]}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        camp_doc = {
+            "campaign_id": campaign_id,
+            "agency_id": user["user_id"],
+            "name": "Campagne Test (admin)",
+            "description": "Campagne créée automatiquement pour debug",
+            "platforms": ["tiktok", "instagram", "youtube"],
+            "rpm": 0.5,
+            "rate_per_click": 0,
+            "payment_model": "views",
+            "budget_total": 1000,
+            "budget_used": 0,
+            "budget_unlimited": False,
+            "status": "active",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "tracking_start_date": now_iso,
+            "click_window_hours": 24,
+            "click_billing_mode": "unique_24h",
+            "max_clippers": None,
+            "min_view_payout": 0,
+            "max_view_payout": None,
+            "max_strikes": 3,
+            "strike_days": 7,
+            "cadence": 1,
+            "application_form_enabled": False,
+            "application_questions": [],
+            "destination_url": "",
+        }
+        await db.campaigns.insert_one(camp_doc)
+        return {
+            "success": True,
+            "campaign_id": campaign_id,
+            "name": "Campagne Test (admin)",
+            "message": "Campagne créée. Reconnecte-toi sur ton interface, va dans la campagne 'Campagne Test (admin)' et teste add-account.",
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @api_router.get("/admin/scraping-history")
 async def admin_get_scraping_history(
     request: Request,
