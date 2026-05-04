@@ -11902,16 +11902,36 @@ async def admin_apify_usage(request: Request, days: int = 30):
         plan_budget = 29.0
         usage_pct = (total_cost / plan_budget) * 100 if plan_budget else 0
 
-        # Status (vert/orange/rouge)
-        if usage_pct < 50:
-            status = "GREEN"
-            recommendation = f"Conso saine ({usage_pct:.1f}% du plan $29). Tu es OK."
-        elif usage_pct < 80:
-            status = "ORANGE"
-            recommendation = f"Conso à surveiller ({usage_pct:.1f}% du plan). Contrôle les comptes qui forcent Apify."
-        else:
+        # Status colore selon LOGIQUE METIER :
+        # - Apify Insta = NORMAL (utilise videoPlayCount = compteur unifie 92k UI)
+        # - Apify TikTok = ALERTE (devrait passer par VPS gratuit, fallback rare)
+        # - Apify YouTube = CRITIQUE (devrait JAMAIS arriver, YouTube = API Google gratuite)
+        # - Surconsommation budget (>80%) = RED meme si tout est Insta
+        youtube_month = await db.scraping_history.count_documents({
+            "source": "apify", "platform": "youtube",
+            "timestamp": {"$gte": month_start}
+        })
+        alerts = []
+        if youtube_month > 0:
+            alerts.append(f"🚨 CRITIQUE : Apify a ete appele {youtube_month}x pour YouTube ce mois — YouTube doit utiliser API Google gratuite. Bug a investiguer.")
+        if tiktok_month > 0:
+            alerts.append(f"⚠️ ALERTE : Apify a ete appele {tiktok_month}x pour TikTok ce mois — TikTok doit passer par VPS gratuit. Verifier que VPS scraping marche (logs Railway).")
+
+        if usage_pct >= 80:
             status = "RED"
-            recommendation = f"Conso élevée ({usage_pct:.1f}% du plan). Risque de dépassement. Réduis APIFY_INSTA_DAILY_BUDGET ou passe Scale $199."
+            recommendation = f"Conso élevée ({usage_pct:.1f}% du plan $29). Risque de dépassement. Réduis APIFY_INSTA_DAILY_BUDGET ou passe Scale $199."
+        elif youtube_month > 0:
+            status = "RED"
+            recommendation = "Apify utilisé pour YouTube alors que API Google gratuite devrait gérer — bug critique à fixer."
+        elif tiktok_month > 0:
+            status = "ORANGE"
+            recommendation = f"Apify utilisé {tiktok_month}x pour TikTok ce mois — devrait être 0 (VPS gratuit). Vérifier les logs Railway."
+        elif usage_pct >= 50:
+            status = "ORANGE"
+            recommendation = f"Conso Apify Insta à surveiller ({usage_pct:.1f}% du plan)."
+        else:
+            status = "GREEN"
+            recommendation = f"Conso saine ({usage_pct:.1f}% du plan). Apify utilisé uniquement pour Insta = normal (vraies vues 92k)."
 
         # Limites configurees
         return {
@@ -11920,6 +11940,7 @@ async def admin_apify_usage(request: Request, days: int = 30):
                 "total_calls": month_calls,
                 "instagram_calls": insta_month,
                 "tiktok_calls": tiktok_month,
+                "youtube_calls": youtube_month,
                 "estimated_cost_usd": round(total_cost, 2),
                 "plan_budget_usd": plan_budget,
                 "usage_percentage": round(usage_pct, 1),
@@ -11934,12 +11955,18 @@ async def admin_apify_usage(request: Request, days: int = 30):
             },
             "status": status,
             "recommendation": recommendation,
+            "alerts": alerts,
             "daily_trend": sorted(daily.values(), key=lambda x: x["day"]),
             "config": {
                 "APIFY_INSTA_DAILY_BUDGET": APIFY_INSTA_DAILY_BUDGET,
                 "APIFY_TIKTOK_DAILY_BUDGET": APIFY_TIKTOK_DAILY_BUDGET,
                 "APIFY_DISABLED": APIFY_DISABLED,
                 "plan": "Starter $29/mois (29$ prepaid inclus)",
+            },
+            "logique_couleur": {
+                "GREEN": "Apify utilisé uniquement pour Insta + conso < 50% = NORMAL",
+                "ORANGE": "Apify utilisé pour TikTok (devrait être VPS gratuit) OU conso 50-80%",
+                "RED": "Apify utilisé pour YouTube (bug critique) OU surconsommation > 80% du budget",
             },
         }
     except Exception as e:
