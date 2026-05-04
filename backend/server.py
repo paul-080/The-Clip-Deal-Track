@@ -384,63 +384,92 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
     if not m:
         return None
     shortcode = m.group(1)
-    # Cascade 3 doc_ids — le 1er est le plus recent (Scrapfly avril 2026)
+    # Cascade 3 doc_ids — on essaie le plus recent en premier
     DOC_IDS_LIST = [
         os.environ.get("IG_GRAPHQL_DOC_ID", "8845758582119845"),  # Scrapfly 2026
         "25981206651899035",  # Scrapfly 2025
         "10015901848480474",  # ahmedrangel 2025-01
     ]
-    # On retient le 1er pour la requete (le code teste les 3 si echec)
-    DOC_ID = DOC_IDS_LIST[0]
     variables = _json_local.dumps({"shortcode": shortcode, "fetch_tagged_user_count": None}, separators=(",", ":"))
-    body_str = f"variables={_quote_local(variables)}&doc_id={DOC_ID}&lsd=AVqbxe3J_YA"
+    # Le code essaie chaque doc_id en boucle dans la methode curl_cffi ci-dessous
+    # Headers MIME PARFAITEMENT Chrome 131 (Client Hints + tous les Sec-CH-UA modernes)
     headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Content-Type": "application/x-www-form-urlencoded",
         "X-IG-App-ID": "936619743392459",
         "X-FB-LSD": "AVqbxe3J_YA",
         "X-ASBD-ID": "129477",
+        "X-Requested-With": "XMLHttpRequest",
         "Sec-Fetch-Site": "same-origin",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-CH-UA": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+        "Sec-CH-UA-Full-Version-List": '"Google Chrome";v="131.0.6778.86", "Chromium";v="131.0.6778.86", "Not_A Brand";v="24.0.0.0"',
+        "Sec-CH-UA-Platform-Version": '"15.0.0"',
+        "Sec-CH-UA-Arch": '"x86"',
+        "Sec-CH-UA-Bitness": '"64"',
+        "Sec-CH-UA-Model": '""',
+        "Sec-CH-Prefers-Color-Scheme": "dark",
         "Origin": "https://www.instagram.com",
-        "Referer": "https://www.instagram.com/",
+        "Referer": f"https://www.instagram.com/p/{shortcode}/",
+        "Priority": "u=1, i",
+        "DNT": "1",
     }
     cookies = {}
     sess = _get_instagram_session()
     if sess:
         cookies["sessionid"] = sess
+        # Ajout de cookies supplémentaires pour ressembler à un vrai navigateur
+        cookies["mid"] = "Z" + sess[:8] if len(sess) > 8 else "ZF1234"
+        cookies["ig_did"] = "12345678-1234-1234-1234-123456789ABC"
+        cookies["csrftoken"] = "missing"  # sera ignoré si vrai csrftoken absent
+        cookies["dpr"] = "2"
+        cookies["wd"] = "1920x1080"
 
     data = None
-    # Methode 1 : curl_cffi (mime Chrome parfaitement, bypass TLS fingerprinting d'Insta)
+    last_status = None
+    # Methode 1 : curl_cffi (chrome131/124/120) x 3 doc_ids = 9 combinaisons max
     try:
         from curl_cffi import requests as _curl_requests
         loop = asyncio.get_event_loop()
-        def _do_curl_post():
-            kw = {
-                "headers": headers,
-                "cookies": cookies,
-                "data": body_str,
-                "timeout": 30,
-                "impersonate": "chrome131",  # mime Chrome 131 (TLS + JA3 + headers)
-            }
-            if BACKEND_PROXY_URL:
-                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
-            try:
-                r = _curl_requests.post("https://www.instagram.com/api/graphql", **kw)
-                return r.status_code, r.text
-            except Exception as e:
-                return None, f"curl_cffi error: {type(e).__name__}: {e}"
-        status_code, text = await loop.run_in_executor(_thread_pool, _do_curl_post)
-        if status_code == 200:
-            try:
-                data = _json_local.loads(text)
-                logger.info(f"GraphQL curl_cffi SUCCESS for {shortcode}")
-            except Exception as e:
-                logger.debug(f"GraphQL curl_cffi JSON parse error for {shortcode}: {e}")
-        else:
-            logger.debug(f"GraphQL curl_cffi HTTP {status_code} for {shortcode}: {str(text)[:200]}")
+        for doc_id in DOC_IDS_LIST:
+            body_str = f"variables={_quote_local(variables)}&doc_id={doc_id}&lsd=AVqbxe3J_YA"
+            for chrome_ver in ("chrome131", "chrome124", "chrome120"):
+                def _do_curl_post(version=chrome_ver, body=body_str):
+                    kw = {
+                        "headers": headers,
+                        "cookies": cookies,
+                        "data": body,
+                        "timeout": 30,
+                        "impersonate": version,
+                    }
+                    if BACKEND_PROXY_URL:
+                        kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+                    try:
+                        r = _curl_requests.post("https://www.instagram.com/api/graphql", **kw)
+                        return r.status_code, r.text
+                    except Exception as e:
+                        return None, f"curl_cffi error: {type(e).__name__}: {e}"
+                status_code, text = await loop.run_in_executor(_thread_pool, _do_curl_post)
+                last_status = status_code
+                if status_code == 200:
+                    try:
+                        parsed = _json_local.loads(text)
+                        if parsed.get("data", {}).get("xdt_shortcode_media"):
+                            data = parsed
+                            logger.info(f"GraphQL curl_cffi SUCCESS for {shortcode} via {chrome_ver}+doc_id={doc_id}")
+                            break
+                    except Exception:
+                        pass
+            if data:
+                break
     except ImportError:
-        logger.warning("curl_cffi not installed, fallback httpx")
+        logger.warning("curl_cffi not installed (pip install curl_cffi), fallback httpx")
     except Exception as e:
         logger.debug(f"GraphQL curl_cffi exception for {shortcode}: {type(e).__name__}: {e}")
 
