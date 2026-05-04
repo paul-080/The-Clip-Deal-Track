@@ -4504,6 +4504,10 @@ async def _apify_get_dataset(dataset_id: str) -> list:
 
 
 async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> list:
+    # KILL SWITCH global Apify Insta
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+        logger.info(f"[APIFY KILL SWITCH] _fetch_instagram_videos_apify desactive pour @{username}")
+        return []
     """
     Fetch Instagram Reels via Apify — run-sync (1 seule requête, pas de polling).
     Économique : 128 MB, max 10 posts par défaut.
@@ -5771,7 +5775,12 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
 
+_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
+
 async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_videos: int = 30) -> Optional[list]:
+    if _APIFY_INSTA_KILL_SWITCH:
+        logger.info(f"[APIFY KILL SWITCH] Apify Insta account scraping desactive pour @{username}")
+        return None
     """Apify instagram-reel-scraper sur un COMPTE entier — renvoie videoPlayCount par video.
     Format input verifie en prod : {"username": [profile_url]}, status 201."""
     if not APIFY_TOKEN or APIFY_DISABLED:
@@ -6352,6 +6361,9 @@ async def _fetch_single_youtube_video(url: str) -> dict:
         return fallback
 
 async def _fetch_instagram_via_apify_reel_scraper(url: str, shortcode: str, debug_collector: Optional[dict] = None) -> Optional[dict]:
+    if _APIFY_INSTA_KILL_SWITCH:
+        logger.info(f"[APIFY KILL SWITCH] Apify Insta single video desactive pour {shortcode}")
+        return None
     """Apify instagram-reel-scraper.
     FORMAT INPUT QUI MARCHE (teste en prod) : {"username": [URL_complete]}
     Apify renvoie status 201 (pas 200) sur run-sync-get-dataset-items."""
