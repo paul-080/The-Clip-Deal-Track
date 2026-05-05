@@ -387,13 +387,33 @@ function DiscoverPage() {
                   )}
                 </div>
                 <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-white/40">
-                    <span>Budget</span>
-                    <span>{Math.round(((campaign.budget_used || 0) / (campaign.budget_total || 1)) * 100)}%</span>
-                  </div>
-                  <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(100, ((campaign.budget_used || 0) / (campaign.budget_total || 1)) * 100)}%` }} />
-                  </div>
+                  {campaign.budget_unlimited ? (
+                    <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-[#39FF14]/10 border border-[#39FF14]/25">
+                      <span className="text-[#39FF14] text-xs font-semibold">♾️ Budget illimité</span>
+                    </div>
+                  ) : (() => {
+                    const total = Number(campaign.budget || campaign.budget_total || 0);
+                    const used = Number(campaign.budget_used || 0);
+                    if (!total || total <= 0) {
+                      return (
+                        <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-white/5 border border-white/10">
+                          <span className="text-white/40 text-xs italic">Budget non défini</span>
+                        </div>
+                      );
+                    }
+                    const pct = Math.min(100, Math.max(0, Math.round((used / total) * 100)));
+                    return (
+                      <>
+                        <div className="flex justify-between text-xs text-white/40">
+                          <span>Budget limité</span>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${pct}%` }} />
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -2099,7 +2119,7 @@ function CampaignDashboard({ campaigns }) {
                   <div className="flex items-center gap-3">
                     <span className="text-white/40">💰 Budget</span>
                     {budgetUnlimited ? (
-                      <span className="text-[#39FF14] font-mono font-bold">∞ Illimité</span>
+                      <span className="text-[#39FF14] font-mono font-bold">♾️ Budget illimité</span>
                     ) : budgetTotal > 0 ? (
                       <>
                         <span className="text-white font-mono font-bold">€{budgetUsed.toFixed(0)} / €{budgetTotal.toFixed(0)}</span>
@@ -2361,7 +2381,7 @@ function CampaignDashboard({ campaigns }) {
                   <div className="flex items-center gap-3">
                     <span className="text-white/40">💰 Budget</span>
                     {budgetUnlimited ? (
-                      <span className="text-[#39FF14] font-mono font-bold">∞ Illimité</span>
+                      <span className="text-[#39FF14] font-mono font-bold">♾️ Budget illimité</span>
                     ) : budgetTotal > 0 ? (
                       <>
                         <span className="text-white font-mono font-bold">€{budgetUsed.toFixed(0)} / €{budgetTotal.toFixed(0)}</span>
