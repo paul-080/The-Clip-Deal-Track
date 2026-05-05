@@ -6058,12 +6058,18 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
 
-    # PRIORITY 0b (FALLBACK PAYANT) : Apify Reel Scraper si tout le reste echoue
+    # PRIORITY 0b (FALLBACK PAYANT EMERGENCY) : Apify uniquement si TOUT le reste a echoue
+    # Si on arrive la, c'est que :
+    #   - Mobile Clips API + GraphQL ont echoue (proxy webshare HS ou IPs bannies)
+    #   - VPS clipscraper a echoue (VPS down)
+    # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
     APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
     if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
+                # ⚠️ Apify a ete utilise = bug a investiguer
+                await _alert_apify_used("instagram", username, "Toute la cascade gratuite (clips_graphql + vps_graphql + clipscraper) a echoue")
                 return apify_videos
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
@@ -7300,16 +7306,19 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
     finally:
         asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
-async def run_video_tracking(scheduled_hour_paris: int = None):
-    """Tourne le scrape pour toutes les campagnes actives.
-    scheduled_hour_paris : heure courante de l'horaire Paris (07/12/15/22).
-    Filtre les campagnes selon le tier de l'agence :
-    - plan_small / plan_medium : tracking_per_day=1 -> seulement à 8h Paris (heure 7=07:30)
-    - plan_unlimited : tracking_per_day=4 -> tous les horaires
-    - plan_custom : tous les horaires (custom)
-    Si scheduled_hour_paris=None -> on track toutes les campagnes (force-scrape, etc.)
+async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool = False):
+    """Tourne le scrape pour les campagnes actives DUES (staggered scheduling).
+
+    Comportement :
+    - Cron tick toutes les 30 minutes (track_videos_loop)
+    - Pour chaque campagne : scrape SEULEMENT si campaign.next_scrape_at <= now
+      OU si force_all=True (force-scrape manuel)
+    - Tous les comptes d'une meme campagne sont scrapes dans le meme run = data consistency
+    - Apres scrape : update next_scrape_at = now + interval (selon plan)
+
+    Backward-compat : scheduled_hour_paris est conservé mais ignore (logique remplacee).
     """
-    logger.info(f"Starting video tracking run (scheduled_hour={scheduled_hour_paris})...")
+    logger.info(f"Starting STAGGERED video tracking run (force_all={force_all})...")
     campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
     now_track_run = datetime.now(timezone.utc)
 
@@ -7321,45 +7330,59 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
     ).to_list(len(agency_ids)) if agency_ids else []
     agency_map = {a["user_id"]: a for a in agencies}
 
+    # Filtre amont : ne garde que les campagnes DUES (next_scrape_at <= now)
+    # et calcule leur interval pour update apres scrape.
+    filtered_campaigns = []
+    skipped_count = 0
+    for campaign in campaigns:
+        cid = campaign["campaign_id"]
+        agency = agency_map.get(campaign.get("agency_id"))
+        # Determine interval selon plan
+        if agency:
+            limits = _get_plan_limits(agency)
+            if limits.get("click_only", False):
+                # Plan click-only : pas de scraping vues → skip total
+                skipped_count += 1
+                continue
+            tracking_per_day = limits.get("tracking_per_day", 1)
+        else:
+            tracking_per_day = 1
+        # Click-only campaigns : 24h fixe
+        if campaign.get("payment_model") == "clicks":
+            interval_h = 24
+        else:
+            interval_h = _scrape_interval_hours(tracking_per_day)
+
+        # Verifier si dü
+        next_scrape = _parse_utc(campaign.get("next_scrape_at"))
+        last_scrape = _parse_utc(campaign.get("last_scraped_at"))
+
+        if not next_scrape:
+            # Premier passage : assigne offset stable bases sur hash(campaign_id)
+            next_scrape = _compute_next_scrape_at(cid, interval_h, last_scrape)
+            await db.campaigns.update_one(
+                {"campaign_id": cid},
+                {"$set": {"next_scrape_at": next_scrape.isoformat(), "scrape_interval_hours": interval_h}}
+            )
+
+        if not force_all and next_scrape > now_track_run:
+            skipped_count += 1
+            continue
+
+        campaign["_scrape_interval_h"] = interval_h
+        filtered_campaigns.append(campaign)
+
+    if not filtered_campaigns:
+        logger.info(f"Aucune campagne due ({len(campaigns)} actives, {skipped_count} skippees)")
+        return
+
+    logger.info(f"Scraping {len(filtered_campaigns)}/{len(campaigns)} campagnes due (skipped {skipped_count})")
+    campaigns = filtered_campaigns  # remplace la liste pour le loop original
+
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
         rpm = campaign.get("rpm", 0)
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
-
-        # Filtrage selon plan agence ET payment_model de la campagne :
-        # - Plan click-only (89/149/225) : aucun scraping de vues
-        # - Campagne CLICK-ONLY sur plan full : 1x/jour à 12h (pour stats vues)
-        # - Campagne VIEWS/BOTH sur plan Starter/Pro : 1x/jour à 7h30
-        # - Campagne VIEWS/BOTH sur plan Business+ : 4x/jour (07:30, 12, 15:30, 22)
-        if scheduled_hour_paris is not None:
-            agency = agency_map.get(campaign.get("agency_id"))
-            if agency:
-                limits = _get_plan_limits(agency)
-                tracking_per_day = limits.get("tracking_per_day", 1)
-                plan_click_only = limits.get("click_only", False)
-                campaign_payment = campaign.get("payment_model", "views")
-
-                # 1. Plan click-only -> jamais de scraping de vues
-                if plan_click_only:
-                    logger.info(f"Skip campaign {campaign_id} : agency plan click_only (no view tracking)")
-                    continue
-
-                # 2. Campagne CLICK-ONLY sur plan full -> 1x/jour a 12h (pour stats vues)
-                if campaign_payment == "clicks":
-                    if scheduled_hour_paris != 12:
-                        logger.info(f"Skip campaign {campaign_id} (clicks-only) : tracking 1x/jour a 12h, hour={scheduled_hour_paris}")
-                        continue
-                # 3. Campagne VIEWS/BOTH : applique le tracking_per_day du plan
-                else:
-                    # Plan Starter (tracking_per_day=1) : seulement a 7h30
-                    if tracking_per_day == 1 and scheduled_hour_paris != 7:
-                        logger.info(f"Skip campaign {campaign_id} : plan tracking 1x/jour a 7h30, hour={scheduled_hour_paris}")
-                        continue
-                    # Plan Pro (tracking_per_day=2) : 07:30 et 15:30 (matin + apres-midi)
-                    if tracking_per_day == 2 and scheduled_hour_paris not in (7, 15):
-                        logger.info(f"Skip campaign {campaign_id} : plan tracking 2x/jour (07:30 + 15:30), hour={scheduled_hour_paris}")
-                        continue
-                    # Plan Business+ (tracking_per_day=4) : 07:30, 12, 15:30, 22 -> tous les horaires
 
         # Get all assignments for this campaign
         assignments = await db.campaign_social_accounts.find(
@@ -7649,6 +7672,23 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
                     logger.debug(f"User snapshot failed for {uid}: {ue}")
         except Exception as e:
             logger.warning(f"Failed to update budget/snapshot for {campaign_id}: {e}")
+
+        # ── STAGGERED : update next_scrape_at = now + interval (selon plan) ──
+        try:
+            interval_h = int(campaign.get("_scrape_interval_h") or 6)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            next_at = datetime.now(timezone.utc) + timedelta(hours=interval_h)
+            await db.campaigns.update_one(
+                {"campaign_id": campaign_id},
+                {"$set": {
+                    "last_scraped_at": now_iso,
+                    "next_scrape_at": next_at.isoformat(),
+                    "scrape_interval_hours": interval_h,
+                }}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update next_scrape_at for {campaign_id}: {e}")
+
     # Global daily snapshot (all campaigns)
     try:
         agg_all = await db.tracked_videos.aggregate([
@@ -7674,6 +7714,8 @@ async def run_video_tracking(scheduled_hour_paris: int = None):
 
 # ── Horaires fixes de scraping (Europe/Paris) ─────────────────────────────────
 # Affichés aux agences/clippeurs sur la campagne. Modifiables ici en 1 endroit.
+# (Conserve pour rétro-compatibilité avec endpoints publics qui exposent ces horaires.
+#  Le NOUVEAU scheduler stagger par campagne ne les utilise plus directement.)
 SCRAPE_SCHEDULE_PARIS = [(7, 30), (12, 0), (15, 30), (22, 0)]
 PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else timezone.utc
 
@@ -7698,23 +7740,126 @@ def _next_scrape_time_utc(now_utc: datetime = None) -> datetime:
     return next_paris.astimezone(timezone.utc)
 
 
-async def track_videos_loop():
-    """Scrape sur horaires fixes (heure de Paris). Filtre par tier d'agence.
-    - Toutes les campagnes (tier Business+) : 07:30, 12:00, 15:30, 22:00
-    - Tiers Starter/Pro : seulement 07:30 (1x/jour à 8h Paris)
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGGERED SCRAPING : chaque campagne a son propre cycle, decale sur 24h
+# pour eviter le pic de charge sur les proxies/APIs externes (anti-ban)
+# ═══════════════════════════════════════════════════════════════════════════
+
+import hashlib as _hashlib_sched
+
+def _campaign_offset_minutes(campaign_id: str) -> int:
+    """Offset stable (0-359 minutes = 0 a 5h59) base sur le hash du campaign_id.
+    Garantit que chaque campagne a TOUJOURS le meme offset = scrape predictible.
+    Le cycle de base est 6h donc on offset dans une fenetre 0-360min."""
+    if not campaign_id:
+        return 0
+    h = _hashlib_sched.md5(campaign_id.encode("utf-8")).hexdigest()
+    return int(h[:8], 16) % 360
+
+
+def _scrape_interval_hours(tracking_per_day: int) -> int:
+    """Intervalle entre 2 scrapes selon le plan agence."""
+    if tracking_per_day >= 4:
+        return 6   # Business+ : 4x/jour
+    if tracking_per_day == 2:
+        return 12  # Pro : 2x/jour
+    return 24      # Starter / click-only : 1x/jour
+
+
+def _compute_next_scrape_at(campaign_id: str, interval_hours: int, last_scraped_at: Optional[datetime] = None) -> datetime:
+    """Calcule le prochain scrape pour une campagne en respectant son offset stable.
+    - Si jamais scrape : prochain tick aligne sur (now + interval - offset)
+    - Sinon : last_scraped_at + interval_hours
     """
+    now = datetime.now(timezone.utc)
+    offset_min = _campaign_offset_minutes(campaign_id)
+    if last_scraped_at:
+        return last_scraped_at + timedelta(hours=interval_hours)
+    # Premier scrape : aligne sur le prochain creneau utilisant l'offset
+    # On veut que la campagne scrape a "epoch_minutes % (interval*60) == offset_min"
+    interval_min = interval_hours * 60
+    epoch_min = int(now.timestamp() / 60)
+    minutes_to_next = (offset_min - (epoch_min % interval_min)) % interval_min
+    if minutes_to_next < 5:
+        minutes_to_next += interval_min  # min 5min de delai pour eviter scrape immediat
+    return now + timedelta(minutes=minutes_to_next)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CIRCUIT BREAKER : skip une source si elle a echoue 5x recemment (anti-spam)
+# Reset auto apres 30min ou apres 1 succes
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CIRCUIT_BREAKERS: dict = {}  # source_name -> {failures: int, blocked_until: ts}
+_CB_FAIL_THRESHOLD = 5
+_CB_WINDOW_SEC = 600       # 10 min : fenetre pour compter les echecs
+_CB_BLOCK_SEC = 1800       # 30 min : duree du blocage
+
+def _circuit_breaker_can_use(source: str) -> bool:
+    """Retourne False si la source est blocked (trop d'echecs recents)."""
+    cb = _CIRCUIT_BREAKERS.get(source)
+    if not cb:
+        return True
+    if cb.get("blocked_until", 0) > time.time():
+        return False
+    return True
+
+def _circuit_breaker_record_success(source: str):
+    """Reset les compteurs sur succes."""
+    if source in _CIRCUIT_BREAKERS:
+        _CIRCUIT_BREAKERS[source] = {"failures": 0, "first_failure": 0, "blocked_until": 0}
+
+def _circuit_breaker_record_failure(source: str):
+    """Incremente compteur, bloque si seuil atteint."""
+    now_ts = time.time()
+    cb = _CIRCUIT_BREAKERS.get(source) or {"failures": 0, "first_failure": 0, "blocked_until": 0}
+    # Reset fenetre si trop ancien
+    if cb.get("first_failure", 0) and (now_ts - cb["first_failure"]) > _CB_WINDOW_SEC:
+        cb = {"failures": 0, "first_failure": now_ts, "blocked_until": 0}
+    cb["failures"] = (cb.get("failures", 0) or 0) + 1
+    if not cb.get("first_failure"):
+        cb["first_failure"] = now_ts
+    if cb["failures"] >= _CB_FAIL_THRESHOLD:
+        cb["blocked_until"] = now_ts + _CB_BLOCK_SEC
+        logger.warning(f"CIRCUIT BREAKER : source '{source}' bloquee {_CB_BLOCK_SEC//60}min apres {_CB_FAIL_THRESHOLD} echecs consecutifs")
+    _CIRCUIT_BREAKERS[source] = cb
+
+
+async def _alert_apify_used(platform: str, username: str, reason: str = ""):
+    """Loggue une alerte CRITIQUE quand Apify est utilise = ca veut dire que
+    toute la cascade gratuite a echoue. C'est un bug a investiguer."""
+    try:
+        await db.fraud_alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "type": "apify_fallback_used",
+            "severity": "critical",
+            "platform": platform,
+            "username": username,
+            "reason": reason or "Toute la cascade gratuite a echoue, fallback Apify utilise",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "resolved": False,
+        })
+        logger.error(f"🚨 APIFY FALLBACK UTILISE pour {platform}/@{username} : {reason} — investiguer")
+    except Exception as e:
+        logger.warning(f"Failed to log apify alert: {e}")
+
+
+async def track_videos_loop():
+    """STAGGERED scheduler : tick toutes les 30 min, scrape les campagnes DUES.
+    Chaque campagne a son propre next_scrape_at calcule depuis un offset stable
+    (hash du campaign_id). Resultat : la charge de scraping est repartie sur 24h
+    au lieu de 4 pics, ce qui reduit drastiquement le risque de ban IP par les
+    plateformes (Insta surtout).
+    """
+    TICK_MINUTES = 30
     while True:
         try:
-            now_paris = datetime.now(timezone.utc).astimezone(PARIS_TZ)
-            current_hour = now_paris.hour
-            await run_video_tracking(scheduled_hour_paris=current_hour)
+            await run_video_tracking()
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
-        # Attend le prochain horaire programmé
-        next_run = _next_scrape_time_utc()
-        sleep_seconds = max(60, (next_run - datetime.now(timezone.utc)).total_seconds())
-        next_paris = next_run.astimezone(PARIS_TZ).strftime("%H:%M")
-        logger.info(f"Next scrape scheduled at {next_paris} Paris ({sleep_seconds/3600:.1f}h sleep)")
+        # Tick fixe : 30 min entre chaque check
+        sleep_seconds = TICK_MINUTES * 60
+        logger.info(f"Next scrape tick dans {TICK_MINUTES}min (staggered scheduler)")
         await asyncio.sleep(sleep_seconds)
 
 
@@ -13009,6 +13154,107 @@ async def admin_resolve_fraud_alert(alert_id: str, request: Request, body: dict 
     if res.modified_count == 0:
         raise HTTPException(status_code=404, detail="Alerte introuvable")
     return {"message": "Alerte résolue", "decision": decision}
+
+
+@api_router.get("/admin/scrape-schedule")
+async def admin_scrape_schedule(request: Request, _: bool = Depends(verify_admin_code)):
+    """Affiche le planning STAGGERED de toutes les campagnes actives (next_scrape_at).
+    Permet de verifier que le scraping est bien reparti sur 24h et pas en pic.
+    Utile pour debug : si toutes les campagnes ont le meme next_scrape_at, c'est cassé.
+    """
+    now = datetime.now(timezone.utc)
+    campaigns = await db.campaigns.find(
+        {"status": "active"},
+        {"_id": 0, "campaign_id": 1, "name": 1, "agency_id": 1,
+         "next_scrape_at": 1, "last_scraped_at": 1, "scrape_interval_hours": 1,
+         "payment_model": 1}
+    ).to_list(500)
+
+    # Distribution par heure UTC
+    by_hour = {h: 0 for h in range(24)}
+    upcoming = []
+    overdue = []
+    never_scraped = 0
+
+    for c in campaigns:
+        cid = c.get("campaign_id")
+        next_at = _parse_utc(c.get("next_scrape_at"))
+        last_at = _parse_utc(c.get("last_scraped_at"))
+        offset = _campaign_offset_minutes(cid)
+
+        if not next_at:
+            never_scraped += 1
+            continue
+
+        hour = next_at.hour
+        by_hour[hour] = by_hour.get(hour, 0) + 1
+
+        info = {
+            "campaign_id": cid,
+            "name": c.get("name", "?"),
+            "agency_id": c.get("agency_id"),
+            "next_scrape_at": next_at.isoformat(),
+            "next_scrape_in_min": round((next_at - now).total_seconds() / 60),
+            "last_scraped_at": last_at.isoformat() if last_at else None,
+            "interval_hours": c.get("scrape_interval_hours", 6),
+            "offset_minutes": offset,
+            "payment_model": c.get("payment_model", "views"),
+        }
+        if next_at < now - timedelta(minutes=5):
+            overdue.append(info)
+        else:
+            upcoming.append(info)
+
+    upcoming.sort(key=lambda x: x["next_scrape_at"])
+    overdue.sort(key=lambda x: x["next_scrape_at"])
+
+    # Stats globales
+    pic_max = max(by_hour.values()) if by_hour else 0
+    pic_avg = round(sum(by_hour.values()) / max(1, len([v for v in by_hour.values() if v > 0])), 1)
+    spread_quality = (
+        "EXCELLENT" if pic_max <= max(2, pic_avg * 1.3)
+        else "BON" if pic_max <= pic_avg * 1.8
+        else "MOYEN" if pic_max <= pic_avg * 2.5
+        else "MAUVAIS (trop concentre)"
+    )
+
+    return {
+        "now": now.isoformat(),
+        "total_active_campaigns": len(campaigns),
+        "never_scraped": never_scraped,
+        "overdue_count": len(overdue),
+        "upcoming_count": len(upcoming),
+        "distribution_by_hour_utc": by_hour,
+        "pic_max_per_hour": pic_max,
+        "pic_avg_per_hour": pic_avg,
+        "spread_quality": spread_quality,
+        "circuit_breakers": {
+            source: {
+                "failures": cb.get("failures", 0),
+                "blocked_until": (datetime.fromtimestamp(cb["blocked_until"], tz=timezone.utc).isoformat()
+                                  if cb.get("blocked_until", 0) > time.time() else None),
+                "blocked_now": cb.get("blocked_until", 0) > time.time(),
+            }
+            for source, cb in _CIRCUIT_BREAKERS.items()
+        },
+        "upcoming_next_10": upcoming[:10],
+        "overdue": overdue[:20],
+    }
+
+
+@api_router.post("/admin/reset-scrape-schedule")
+async def admin_reset_scrape_schedule(request: Request, _: bool = Depends(verify_admin_code)):
+    """Reset next_scrape_at de toutes les campagnes pour redistribuer l'offset.
+    Utile si toutes les campagnes ont des creneaux concentres (mauvais staggering)
+    ou apres un changement de logique d'offset."""
+    res = await db.campaigns.update_many(
+        {"status": "active"},
+        {"$unset": {"next_scrape_at": ""}}
+    )
+    return {
+        "reset_count": res.modified_count,
+        "message": f"{res.modified_count} campagnes reinitialisees. Offset stable sera re-assigne au prochain tick.",
+    }
 
 
 @api_router.get("/admin/test-proxy")
