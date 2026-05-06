@@ -5819,34 +5819,67 @@ _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').stri
 async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
     """REVERSE ENGINEERED Apify Account Scraper : recupere les Reels d'un compte via Mobile Clips API.
     Pagine via max_id pour aller chercher les videos plus anciennes (essentiel pour backfill).
-    Renvoie liste de videos avec play_count gratuit via proxy webshare."""
+    Renvoie liste de videos avec play_count gratuit via proxy webshare.
+
+    Strategie de robustesse :
+    - Essaye avec proxy webshare en premier (residential IP, contourne ban Insta)
+    - Si proxy fail, essaye SANS proxy (direct Railway, marche pour user_id parfois)
+    - Logging detaille a chaque etape pour debug rapide
+    """
     import re as _re_g
     import json as _json_g
     from urllib.parse import quote as _quote_g
 
-    # 1. D'abord, recupere user_id depuis username (via web_profile_info ou cache)
+    username = username.lstrip("@")
+
+    # 1. D'abord, recupere user_id depuis username (via web_profile_info)
     headers_uinfo = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
         "X-IG-App-ID": "936619743392459",
         "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
     }
-    # httpx 0.28+ : utilise 'proxy' (singulier) ou 'mounts', pas 'proxies' (supprime)
-    client_kwargs_uinfo = {"timeout": 15, "headers": headers_uinfo}
-    if BACKEND_PROXY_URL:
-        client_kwargs_uinfo["proxy"] = BACKEND_PROXY_URL
+    # Inject session cookie si dispo (aide a passer les rate-limits)
+    session = _get_instagram_session()
+    if session:
+        headers_uinfo["Cookie"] = f"sessionid={session}; ds_user_id=0"
 
     user_id = None
-    try:
-        async with httpx.AsyncClient(**client_kwargs_uinfo) as c:
-            r = await c.get(f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username.lstrip('@')}")
-        if r.status_code == 200:
-            user = (r.json().get("data") or {}).get("user") or {}
-            user_id = user.get("id") or user.get("pk")
-    except Exception as e:
-        logger.debug(f"web_profile_info failed for @{username}: {e}")
+    last_err_uinfo = None
+
+    async def _try_get_user_id(use_proxy: bool) -> tuple:
+        """Retourne (user_id, error_msg). user_id None si echec."""
+        kwargs = {"timeout": 15, "headers": headers_uinfo}
+        if use_proxy and BACKEND_PROXY_URL:
+            kwargs["proxy"] = BACKEND_PROXY_URL
+        try:
+            async with httpx.AsyncClient(**kwargs) as c:
+                r = await c.get(f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}")
+            if r.status_code == 200:
+                user = (r.json().get("data") or {}).get("user") or {}
+                uid = user.get("id") or user.get("pk")
+                if uid:
+                    return str(uid), None
+                return None, f"HTTP 200 but no user_id in response (account private/not found?)"
+            return None, f"HTTP {r.status_code} (proxy={use_proxy})"
+        except Exception as e:
+            return None, f"{type(e).__name__}: {str(e)[:150]}"
+
+    # Essai 1 : avec proxy webshare (residential)
+    if BACKEND_PROXY_URL:
+        user_id, last_err_uinfo = await _try_get_user_id(use_proxy=True)
+    # Essai 2 : sans proxy (direct Railway) si echec
+    if not user_id:
+        user_id_noproxy, err_noproxy = await _try_get_user_id(use_proxy=False)
+        if user_id_noproxy:
+            user_id = user_id_noproxy
+        else:
+            last_err_uinfo = f"avec_proxy: {last_err_uinfo} | sans_proxy: {err_noproxy}"
 
     if not user_id:
+        logger.warning(f"Insta clips_graphql : impossible de recuperer user_id pour @{username} ({last_err_uinfo})")
         return None
+    logger.info(f"Insta clips_graphql : user_id={user_id} pour @{username}")
 
     # 2. Fetch Reels via API mobile clips (utilise par l'app Insta officielle)
     # Endpoint : i.instagram.com/api/v1/clips/user/
@@ -5867,72 +5900,76 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     max_id_cursor: Optional[str] = None
     seen_shortcodes: set = set()
 
-    client_kwargs_clips = {"timeout": 20, "headers": headers_clips}
-    if BACKEND_PROXY_URL:
-        client_kwargs_clips["proxy"] = BACKEND_PROXY_URL
+    # Helper qui essaye avec ou sans proxy, retourne (status, json_data, error)
+    async def _post_clips_page(body: str, with_proxy: bool) -> tuple:
+        kw = {"timeout": 20, "headers": headers_clips}
+        if with_proxy and BACKEND_PROXY_URL:
+            kw["proxy"] = BACKEND_PROXY_URL
+        try:
+            async with httpx.AsyncClient(**kw) as c:
+                r = await c.post("https://i.instagram.com/api/v1/clips/user/", content=body)
+            if r.status_code == 200:
+                try:
+                    return r.status_code, r.json(), None
+                except Exception as je:
+                    return r.status_code, None, f"JSON parse: {je}"
+            return r.status_code, None, f"HTTP {r.status_code}: {r.text[:120]}"
+        except Exception as e:
+            return None, None, f"{type(e).__name__}: {str(e)[:150]}"
 
     try:
-        async with httpx.AsyncClient(**client_kwargs_clips) as c:
-            for page_idx in range(MAX_PAGES):
-                # Construit le body avec max_id pour la pagination (sauf 1ere page)
-                body_parts = [f"target_user_id={user_id}", f"page_size={PAGE_SIZE}", "include_feed_video=true"]
-                if max_id_cursor:
-                    body_parts.append(f"max_id={_quote_g(str(max_id_cursor), safe='')}")
-                body = "&".join(body_parts)
+        for page_idx in range(MAX_PAGES):
+            # Construit le body avec max_id pour la pagination (sauf 1ere page)
+            body_parts = [f"target_user_id={user_id}", f"page_size={PAGE_SIZE}", "include_feed_video=true"]
+            if max_id_cursor:
+                body_parts.append(f"max_id={_quote_g(str(max_id_cursor), safe='')}")
+            body = "&".join(body_parts)
 
-                try:
-                    r = await c.post(
-                        "https://i.instagram.com/api/v1/clips/user/",
-                        content=body,
-                    )
-                except Exception as e:
-                    logger.warning(f"Insta clips/user/ page {page_idx+1} request failed for @{username}: {e}")
-                    break
-
-                if r.status_code != 200:
-                    logger.warning(f"Insta clips/user/ HTTP {r.status_code} for @{username} page {page_idx+1}")
-                    if page_idx == 0:
+            # Essaye avec proxy d'abord, puis sans proxy si echec sur la page 1
+            status, data, err = await _post_clips_page(body, with_proxy=True)
+            if status != 200 or data is None:
+                if page_idx == 0:
+                    logger.warning(f"Insta clips/user/ avec proxy echec pour @{username} page 1 : {err} — retry sans proxy")
+                    status, data, err = await _post_clips_page(body, with_proxy=False)
+                    if status != 200 or data is None:
+                        logger.warning(f"Insta clips/user/ sans proxy aussi echec pour @{username} : {err}")
                         return None
+                else:
+                    logger.warning(f"Insta clips/user/ page {page_idx+1} echec pour @{username} : {err}")
                     break
 
-                try:
-                    data = r.json()
-                except Exception:
-                    logger.warning(f"Insta clips/user/ JSON parse failed for @{username} page {page_idx+1}")
-                    break
+            items = (data.get("items") or [])
+            if not items:
+                break
 
-                items = (data.get("items") or [])
-                if not items:
-                    break
+            # De-duplique au cas ou l'API renvoie le meme reel sur 2 pages
+            page_added = 0
+            for it in items:
+                media = it.get("media") if isinstance(it, dict) else None
+                media = media or it
+                if not isinstance(media, dict):
+                    continue
+                sc = media.get("code") or media.get("shortcode")
+                if not sc or sc in seen_shortcodes:
+                    continue
+                seen_shortcodes.add(sc)
+                all_items.append(media)
+                page_added += 1
 
-                # De-duplique au cas ou l'API renvoie le meme reel sur 2 pages
-                page_added = 0
-                for it in items:
-                    media = it.get("media") if isinstance(it, dict) else None
-                    media = media or it
-                    if not isinstance(media, dict):
-                        continue
-                    sc = media.get("code") or media.get("shortcode")
-                    if not sc or sc in seen_shortcodes:
-                        continue
-                    seen_shortcodes.add(sc)
-                    all_items.append(media)
-                    page_added += 1
+            # Cursor pour la page suivante
+            paging = data.get("paging_info") or {}
+            more_available = paging.get("more_available", False)
+            next_cursor = paging.get("max_id")
 
-                # Cursor pour la page suivante
-                paging = data.get("paging_info") or {}
-                more_available = paging.get("more_available", False)
-                next_cursor = paging.get("max_id")
-
-                if len(all_items) >= max_videos:
-                    break
-                if not more_available or not next_cursor:
-                    break
-                if page_added == 0:
-                    break  # securite anti-boucle infinie
-                max_id_cursor = next_cursor
-                # Petit delai pour ne pas spammer l'API
-                await asyncio.sleep(0.4)
+            if len(all_items) >= max_videos:
+                break
+            if not more_available or not next_cursor:
+                break
+            if page_added == 0:
+                break  # securite anti-boucle infinie
+            max_id_cursor = next_cursor
+            # Petit delai pour ne pas spammer l'API
+            await asyncio.sleep(0.4)
 
         # Conversion au format standard
         result = []
