@@ -3458,6 +3458,33 @@ async def remove_manual_strike(campaign_id: str, member_user_id: str, user: dict
 
 _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# RATE LIMITERS GLOBAUX : protege contre overload quand l'agence ajoute
+# 60 comptes d'un coup. Chaque ajout declenche un scrape qui peut saturer
+# le proxy webshare, l'IP Railway, et faire crasher tout le systeme.
+# Sans ces limiters, 60 ajouts = 60 scrapes paralleles = OOM/timeout/ban IP.
+#
+# Semaphores partages entre TOUS les workers Railway (donc valides processus
+# unique - si scaling multi-instance plus tard, passer a Redis-based).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Max scrapes post-create simultanes (apres ajout d'un compte)
+# Limite a 3 = quand 60 comptes ajoutes, ils s'enchainent par batch de 3
+_POST_CREATE_SCRAPE_SEM = asyncio.Semaphore(3)
+
+# Max verifications de compte simultanees (verify_account)
+# Limite a 5 = compromis entre rapidite UX et risque ban IP
+_VERIFY_ACCOUNT_SEM = asyncio.Semaphore(5)
+
+# Max appels concurrents a la Mobile Clips API d'Instagram (anti-ban)
+# Insta detecte facilement >10/sec depuis meme IP/proxy
+_INSTA_CLIPS_API_SEM = asyncio.Semaphore(8)
+
+# Max scrapes paralleles depuis le scheduler (run_video_tracking)
+# Compatible avec le sem_campaigns existant (3) mais s'applique aussi au
+# scrape par compte au sein d'une campagne
+_SCHEDULER_ACCOUNT_SCRAPE_SEM = asyncio.Semaphore(5)
+
 def extract_handle_from_url(url: str, platform: str) -> str:
     """Extract @handle from a social media URL or raw handle.
     Robuste : gère query params, fragments, www/non-www, http/https, mobile (m.tiktok.com), espaces, /@.
@@ -5156,6 +5183,12 @@ async def verify_account(platform: str, username: str) -> dict:
         asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
 async def _verify_and_update_account(account_id: str, platform: str, username: str, via_url: bool = False):
+    # SEMAPHORE : max 5 verifications simultanees (anti-overload quand 60 comptes ajoutes)
+    async with _VERIFY_ACCOUNT_SEM:
+        return await _verify_and_update_account_inner(account_id, platform, username, via_url)
+
+
+async def _verify_and_update_account_inner(account_id: str, platform: str, username: str, via_url: bool = False):
     verified_ok = False
     channel_id = None
     try:
@@ -5901,21 +5934,23 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     seen_shortcodes: set = set()
 
     # Helper qui essaye avec ou sans proxy, retourne (status, json_data, error)
+    # Protege par semaphore global pour limiter calls concurrents Insta (anti-ban)
     async def _post_clips_page(body: str, with_proxy: bool) -> tuple:
-        kw = {"timeout": 20, "headers": headers_clips}
-        if with_proxy and BACKEND_PROXY_URL:
-            kw["proxy"] = BACKEND_PROXY_URL
-        try:
-            async with httpx.AsyncClient(**kw) as c:
-                r = await c.post("https://i.instagram.com/api/v1/clips/user/", content=body)
-            if r.status_code == 200:
-                try:
-                    return r.status_code, r.json(), None
-                except Exception as je:
-                    return r.status_code, None, f"JSON parse: {je}"
-            return r.status_code, None, f"HTTP {r.status_code}: {r.text[:120]}"
-        except Exception as e:
-            return None, None, f"{type(e).__name__}: {str(e)[:150]}"
+        async with _INSTA_CLIPS_API_SEM:
+            kw = {"timeout": 20, "headers": headers_clips}
+            if with_proxy and BACKEND_PROXY_URL:
+                kw["proxy"] = BACKEND_PROXY_URL
+            try:
+                async with httpx.AsyncClient(**kw) as c:
+                    r = await c.post("https://i.instagram.com/api/v1/clips/user/", content=body)
+                if r.status_code == 200:
+                    try:
+                        return r.status_code, r.json(), None
+                    except Exception as je:
+                        return r.status_code, None, f"JSON parse: {je}"
+                return r.status_code, None, f"HTTP {r.status_code}: {r.text[:120]}"
+            except Exception as e:
+                return None, None, f"{type(e).__name__}: {str(e)[:150]}"
 
     try:
         for page_idx in range(MAX_PAGES):
@@ -8734,18 +8769,22 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
         days_back = min(days_back, 365)
 
     async def _scrape_after_create():
-        try:
-            acc_doc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
-            if acc_doc:
-                await _scrape_one_account_into_campaign(
-                    acc_doc, campaign, cutoff, since_days=days_back, wait_verification=True
+        # SEMAPHORE GLOBAL : max 3 scrapes post-create simultanes pour eviter
+        # crash quand l'agence ajoute 60 comptes d'un coup. Les autres attendent
+        # leur tour, le user ne s'en rend pas compte (background task).
+        async with _POST_CREATE_SCRAPE_SEM:
+            try:
+                acc_doc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+                if acc_doc:
+                    await _scrape_one_account_into_campaign(
+                        acc_doc, campaign, cutoff, since_days=days_back, wait_verification=True
+                    )
+            except Exception as e:
+                logger.error(f"Track-account post-create scrape failed: {e}")
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {"last_scrape_error": str(e)[:500]}}
                 )
-        except Exception as e:
-            logger.error(f"Track-account post-create scrape failed: {e}")
-            await db.social_accounts.update_one(
-                {"account_id": account_id},
-                {"$set": {"last_scrape_error": str(e)[:500]}}
-            )
 
     asyncio.create_task(_scrape_after_create())
 
