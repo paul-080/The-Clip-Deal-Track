@@ -3197,7 +3197,7 @@ function CampaignDashboard({ campaigns }) {
                         </div>
                       </div>
 
-                      {/* Comptes en grille */}
+                      {/* Comptes en grille — chaque carte montre stats CETTE campagne (vues/likes/posts) + abonnes (compte global) */}
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
                         {clipper.accounts.map(acc => {
                           const link = acc.account_url || (
@@ -3205,34 +3205,55 @@ function CampaignDashboard({ campaigns }) {
                             acc.platform === "instagram" ? `https://instagram.com/${acc.username}` :
                             `https://youtube.com/@${acc.username}`
                           );
-                          const color = PLAT_COLOR[acc.platform] || "#fff";
+                          // Stats cumulees sur cette campagne (filtre allVideos par account_id)
+                          const accVideos = (allVideos || []).filter(v => v.account_id === acc.account_id);
+                          const accViews = accVideos.reduce((s, v) => s + (v.views || 0), 0);
+                          const accLikes = accVideos.reduce((s, v) => s + (v.likes || 0), 0);
+                          const accPosts = accVideos.length;
                           return (
                             <div key={acc.account_id}
-                              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/8 transition-all group">
-                              <a href={link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 flex-1 min-w-0">
-                                <span className="text-base">{PLAT_ICON[acc.platform]}</span>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-white text-xs font-medium truncate">@{acc.username}</p>
-                                  {acc.follower_count != null && (
-                                    <p className="text-white/30 text-[10px]">{fmt(acc.follower_count)} abonnés</p>
+                              className="flex flex-col gap-1.5 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/8 transition-all group">
+                              {/* Ligne 1 : nom du compte + actions */}
+                              <div className="flex items-center gap-2">
+                                <a href={link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 flex-1 min-w-0">
+                                  <span className="text-base">{PLAT_ICON[acc.platform]}</span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-white text-xs font-medium truncate">@{acc.username}</p>
+                                    {acc.follower_count != null && (
+                                      <p className="text-white/30 text-[10px]">{fmt(acc.follower_count)} abonnés</p>
+                                    )}
+                                  </div>
+                                  <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
+                                  {acc.status !== "verified" && (
+                                    <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
                                   )}
+                                </a>
+                                <div className="flex items-center gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity">
+                                  <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReassignAccount(acc.account_id, clipper.user_id); }}
+                                    title="Réattribuer ce compte à un autre clippeur"
+                                    className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E5FF] text-xs">👤</button>
+                                  <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRefreshHistoric(acc.account_id); }}
+                                    title="Refresh historique depuis début campagne"
+                                    className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#39FF14] text-xs">↻</button>
+                                  <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveSocialAccount(acc.account_id); }}
+                                    title="Retirer ce compte de la campagne"
+                                    className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-red-400 text-xs">🗑</button>
                                 </div>
-                                <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
-                                {acc.status !== "verified" && (
-                                  <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
-                                )}
-                              </a>
-                              {/* Actions : réassigner / refresh historique / supprimer */}
-                              <div className="flex items-center gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity">
-                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReassignAccount(acc.account_id, clipper.user_id); }}
-                                  title="Réattribuer ce compte à un autre clippeur"
-                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E5FF] text-xs">👤</button>
-                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRefreshHistoric(acc.account_id); }}
-                                  title="Refresh historique depuis début campagne"
-                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#39FF14] text-xs">↻</button>
-                                <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveSocialAccount(acc.account_id); }}
-                                  title="Retirer ce compte de la campagne"
-                                  className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-red-400 text-xs">🗑</button>
+                              </div>
+                              {/* Ligne 2 : stats sur cette campagne */}
+                              <div className="grid grid-cols-3 gap-1 pt-1 border-t border-white/8">
+                                <div className="text-center">
+                                  <p className="text-[#00E5FF] text-xs font-mono font-bold">{fmt(accViews)}</p>
+                                  <p className="text-[9px] text-white/40 uppercase">Vues</p>
+                                </div>
+                                <div className="text-center border-x border-white/8">
+                                  <p className="text-[#FF007F] text-xs font-mono font-bold">{fmt(accLikes)}</p>
+                                  <p className="text-[9px] text-white/40 uppercase">Likes</p>
+                                </div>
+                                <div className="text-center">
+                                  <p className="text-white text-xs font-mono font-bold">{accPosts}</p>
+                                  <p className="text-[9px] text-white/40 uppercase">Posts</p>
+                                </div>
                               </div>
                             </div>
                           );
