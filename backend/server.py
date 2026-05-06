@@ -237,7 +237,7 @@ async def _extract_owner_username_from_url(url: str) -> Optional[str]:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
         client_kwargs = {"timeout": 10, "headers": headers, "follow_redirects": True}
         if BACKEND_PROXY_URL:
-            client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+            client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
         async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get(f"https://www.instagram.com/p/{shortcode}/embed/captioned/")
         if r.status_code == 200:
@@ -435,7 +435,7 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
             try:
                 client_kwargs = {"timeout": 15}
                 if BACKEND_PROXY_URL:
-                    client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+                    client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
                 async with httpx.AsyncClient(**client_kwargs) as c:
                     r = await c.post(
                         "https://www.instagram.com/api/graphql",
@@ -501,7 +501,7 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
             ua_headers = {**headers, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
             client_kwargs = {"timeout": 30, "headers": ua_headers, "cookies": cookies}
             if BACKEND_PROXY_URL:
-                client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+                client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
             async with httpx.AsyncClient(**client_kwargs) as c:
                 r = await c.post("https://www.instagram.com/api/graphql", content=body_str)
             if r.status_code != 200:
@@ -5830,11 +5830,14 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         "X-IG-App-ID": "936619743392459",
         "Accept": "application/json",
     }
-    proxies_kw = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL} if BACKEND_PROXY_URL else None
+    # httpx 0.28+ : utilise 'proxy' (singulier) ou 'mounts', pas 'proxies' (supprime)
+    client_kwargs_uinfo = {"timeout": 15, "headers": headers_uinfo}
+    if BACKEND_PROXY_URL:
+        client_kwargs_uinfo["proxy"] = BACKEND_PROXY_URL
 
     user_id = None
     try:
-        async with httpx.AsyncClient(timeout=15, headers=headers_uinfo, proxies=proxies_kw) as c:
+        async with httpx.AsyncClient(**client_kwargs_uinfo) as c:
             r = await c.get(f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username.lstrip('@')}")
         if r.status_code == 200:
             user = (r.json().get("data") or {}).get("user") or {}
@@ -5864,8 +5867,12 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     max_id_cursor: Optional[str] = None
     seen_shortcodes: set = set()
 
+    client_kwargs_clips = {"timeout": 20, "headers": headers_clips}
+    if BACKEND_PROXY_URL:
+        client_kwargs_clips["proxy"] = BACKEND_PROXY_URL
+
     try:
-        async with httpx.AsyncClient(timeout=20, headers=headers_clips, proxies=proxies_kw) as c:
+        async with httpx.AsyncClient(**client_kwargs_clips) as c:
             for page_idx in range(MAX_PAGES):
                 # Construit le body avec max_id pour la pagination (sauf 1ere page)
                 body_parts = [f"target_user_id={user_id}", f"page_size={PAGE_SIZE}", "include_feed_video=true"]
@@ -6872,7 +6879,7 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
             cookies["sessionid"] = session
         client_kwargs = {"timeout": 15, "headers": headers, "cookies": cookies, "follow_redirects": True}
         if BACKEND_PROXY_URL:
-            client_kwargs["proxies"] = {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}
+            client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
         async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get(f"https://www.instagram.com/api/v1/media/{shortcode}/info/")
             if r.status_code == 200:
@@ -13844,7 +13851,7 @@ async def admin_test_proxy(request: Request):
 
     # Test 1 : appel à un service de test IP (httpbin.org/ip ou ipinfo.io)
     try:
-        client_kwargs = {"timeout": 15, "proxies": {"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}}
+        client_kwargs = {"timeout": 15, "proxy": BACKEND_PROXY_URL}  # httpx 0.28+
         async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get("https://api.ipify.org?format=json")
         if r.status_code == 200:
@@ -13877,7 +13884,7 @@ async def admin_test_proxy(request: Request):
             "doc_id": "10015901848480474",
             "lsd": "AVqbxe3J_YA",
         }
-        async with httpx.AsyncClient(timeout=20, proxies={"http://": BACKEND_PROXY_URL, "https://": BACKEND_PROXY_URL}) as c:
+        async with httpx.AsyncClient(timeout=20, proxy=BACKEND_PROXY_URL) as c:
             r = await c.post("https://www.instagram.com/api/graphql", headers=headers, data=form_data)
         result["test_insta_graphql"] = {
             "status_code": r.status_code,
