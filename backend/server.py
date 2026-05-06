@@ -6045,6 +6045,105 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         return None
 
 
+async def _fetch_instagram_via_ytdlp_profile(username: str, max_videos: int = 30) -> Optional[list]:
+    """FALLBACK ULTIME GRATUIT (aucune config requise) :
+    yt-dlp scrape un profil Instagram public sans proxy/session/API key.
+    Utilise les headers internes de yt-dlp qui passent souvent meme depuis IPs cloud.
+    Renvoie liste de videos meme si web_profile_info / Mobile Clips API echouent.
+    """
+    if not YT_DLP_AVAILABLE:
+        return None
+    username = username.lstrip("@")
+    profile_url = f"https://www.instagram.com/{username}/"
+    loop = asyncio.get_event_loop()
+
+    def _ytdlp_extract():
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "playlist_items": f"1-{max_videos}",  # limite le nb de videos
+            "playlistend": max_videos,
+            "skip_download": True,
+            "noplaylist": False,
+            "ignoreerrors": True,
+            "cookiefile": None,
+            "no_check_certificate": True,
+            "socket_timeout": 30,
+            # Headers anti-bot
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        }
+        # Si proxy webshare configure, l'utilise
+        if BACKEND_PROXY_URL:
+            ydl_opts["proxy"] = BACKEND_PROXY_URL
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(profile_url, download=False)
+        except Exception as e:
+            return None, f"{type(e).__name__}: {str(e)[:200]}"
+
+        if not info:
+            return None, "extract_info returned None"
+
+        # info peut etre playlist (entries) ou single video selon le profil
+        entries = info.get("entries") or [info] if info.get("id") else info.get("entries", [])
+        if not entries:
+            return None, "no entries"
+
+        result = []
+        from datetime import datetime as _dt, timezone as _tz
+        for entry in entries[:max_videos]:
+            if not entry:
+                continue
+            shortcode = entry.get("display_id") or entry.get("id") or ""
+            if not shortcode:
+                continue
+            views = int(entry.get("view_count") or entry.get("play_count") or 0)
+            likes = int(entry.get("like_count") or 0)
+            comments = int(entry.get("comment_count") or 0)
+            ts = entry.get("timestamp") or entry.get("epoch")
+            published = None
+            if ts:
+                try:
+                    published = _dt.fromtimestamp(int(ts), tz=_tz.utc).isoformat()
+                except Exception:
+                    pass
+            title = (entry.get("title") or entry.get("description") or "")[:200]
+            thumb = entry.get("thumbnail") or ""
+            result.append({
+                "platform_video_id": shortcode,
+                "url": entry.get("webpage_url") or f"https://www.instagram.com/p/{shortcode}/",
+                "title": title or None,
+                "thumbnail_url": thumb,
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "published_at": published,
+            })
+        return result, None
+
+    try:
+        out = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
+        if isinstance(out, tuple):
+            result, err = out
+        else:
+            result, err = out, None
+        if result:
+            logger.info(f"yt-dlp Insta profile @{username}: {len(result)} videos")
+            await _log_scrape("ytdlp_insta", "instagram", username, True, len(result), "FALLBACK no-config")
+            return result
+        else:
+            logger.warning(f"yt-dlp Insta profile @{username} no result: {err}")
+            return None
+    except Exception as e:
+        logger.warning(f"yt-dlp Insta profile @{username} exception: {type(e).__name__}: {e}")
+        return None
+
+
 async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_videos: int = 30) -> Optional[list]:
     if _APIFY_INSTA_KILL_SWITCH:
         logger.info(f"[APIFY KILL SWITCH] Apify Insta account scraping desactive pour @{username}")
@@ -6179,10 +6278,23 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
 
+    # PRIORITY 0c (FALLBACK ULTIME GRATUIT) : yt-dlp scrape profil Insta public
+    # Aucune config requise (pas de proxy, pas de VPS, pas de session, pas d'API key)
+    # Marche meme si BACKEND_PROXY_URL/CLIP_SCRAPER_URL sont absents
+    if YT_DLP_AVAILABLE:
+        try:
+            ytdlp_videos = await _fetch_instagram_via_ytdlp_profile(username, max_videos=dynamic_max)
+            if ytdlp_videos:
+                logger.info(f"yt-dlp Insta fallback: {len(ytdlp_videos)} videos for @{username}")
+                return ytdlp_videos
+        except Exception as e:
+            logger.warning(f"yt-dlp Insta profile failed for @{username}: {e}")
+
     # PRIORITY 0b (FALLBACK PAYANT EMERGENCY) : Apify uniquement si TOUT le reste a echoue
     # Si on arrive la, c'est que :
     #   - Mobile Clips API + GraphQL ont echoue (proxy webshare HS ou IPs bannies)
     #   - VPS clipscraper a echoue (VPS down)
+    #   - yt-dlp fallback aussi a echoue (Insta vraiment HS)
     # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
     APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
     if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
@@ -6190,7 +6302,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
                 # ⚠️ Apify a ete utilise = bug a investiguer
-                await _alert_apify_used("instagram", username, "Toute la cascade gratuite (clips_graphql + vps_graphql + clipscraper) a echoue")
+                await _alert_apify_used("instagram", username, "Toute la cascade gratuite (clips_graphql + vps_graphql + clipscraper + yt-dlp) a echoue")
                 return apify_videos
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
