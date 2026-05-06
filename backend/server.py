@@ -2090,11 +2090,45 @@ def _check_agency_subscription(user: dict):
         }
     )
 
+# Limite max retroactive du tracking : 2 mois en arriere
+# Au-dela, le scraping est trop lourd (backfill long, risque saturation API)
+TRACKING_START_MAX_MONTHS_BACK = 2
+
+def _validate_tracking_start_date(tracking_start_iso: Optional[str]) -> Optional[str]:
+    """Valide que tracking_start_date n'est pas plus de 2 mois en arriere.
+    Renvoie None si la date est OK ou absente, sinon un message d'erreur."""
+    if not tracking_start_iso:
+        return None
+    try:
+        ts = _parse_utc(tracking_start_iso)
+        if not ts:
+            return None
+        cutoff = datetime.now(timezone.utc) - timedelta(days=TRACKING_START_MAX_MONTHS_BACK * 31)
+        if ts < cutoff:
+            cutoff_str = cutoff.strftime("%d/%m/%Y")
+            return (
+                f"La date de debut tracking ne peut pas etre antérieure à 2 mois "
+                f"(soit avant le {cutoff_str}). Choisis une date plus recente. "
+                f"Cette limite protege le scraping de surcharges et garantit la fiabilite des donnees."
+            )
+        # Pas dans le futur lointain non plus
+        if ts > datetime.now(timezone.utc) + timedelta(days=7):
+            return "La date de debut tracking ne peut pas etre plus de 7 jours dans le futur."
+    except Exception:
+        return None
+    return None
+
+
 @api_router.post("/campaigns", response_model=dict)
 async def create_campaign(campaign_data: CampaignCreate, user: dict = Depends(get_current_user)):
     if user.get("role") != "agency":
         raise HTTPException(status_code=403, detail="Only agencies can create campaigns")
     _check_agency_subscription(user)
+
+    # Bloque tracking_start_date > 2 mois en arriere
+    err = _validate_tracking_start_date(campaign_data.tracking_start_date)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     # Check campaign limit for current plan
     limits = _get_plan_limits(user)
     effective_plan = _get_user_effective_plan(user)
@@ -7844,6 +7878,133 @@ async def _alert_apify_used(platform: str, username: str, reason: str = ""):
         logger.warning(f"Failed to log apify alert: {e}")
 
 
+async def _alert_critical(alert_type: str, severity: str, message: str, platform: Optional[str] = None, username: Optional[str] = None):
+    """Helper generique pour creer une alerte admin critique.
+    severity : "info", "warning", "critical"
+    """
+    try:
+        await db.fraud_alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "type": alert_type,
+            "severity": severity,
+            "platform": platform,
+            "username": username,
+            "reason": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "resolved": False,
+        })
+        emoji = "🚨" if severity == "critical" else "⚠️" if severity == "warning" else "ℹ️"
+        logger.error(f"{emoji} ADMIN ALERT [{alert_type}] {message}")
+    except Exception as e:
+        logger.warning(f"Failed to log admin alert: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WATCHDOG : surveille la sante du scraping et alerte si une plateforme casse
+# Tourne toutes les heures, fait un test scrape sur un compte public connu.
+# Si 3 echecs consecutifs : alerte critique => Paul investigue.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Comptes test publics (jamais privés, posts à compteurs visibles)
+WATCHDOG_TEST_ACCOUNTS = {
+    "instagram": "instagram",  # compte officiel Insta (~600M followers, jamais privé)
+    "tiktok": "tiktok",        # compte officiel TikTok
+    "youtube": "UCBR8-60-B28hp2BmDPdntcQ",  # YouTube channel id officiel
+}
+
+_WATCHDOG_FAILURES: dict = {"instagram": 0, "tiktok": 0, "youtube": 0}
+_WATCHDOG_LAST_CHECK: dict = {}
+
+
+async def _run_watchdog_check(platform: str) -> dict:
+    """Test scrape sur le compte test pour verifier que la cascade marche.
+    Renvoie {success, source, count, error, duration_ms}."""
+    username = WATCHDOG_TEST_ACCOUNTS.get(platform)
+    if not username:
+        return {"success": False, "error": "no test account"}
+
+    start = time.time()
+    try:
+        if platform == "youtube":
+            videos = await _fetch_youtube_videos(username, since_days=7)
+        elif platform == "tiktok":
+            videos = await _fetch_tiktok_videos_async(username, since_days=7, platform_channel_id=None)
+        elif platform == "instagram":
+            videos = await _fetch_instagram_videos_async(username, platform_channel_id=None, since_days=7)
+        else:
+            return {"success": False, "error": "unknown platform"}
+
+        duration_ms = int((time.time() - start) * 1000)
+        success = bool(videos and len(videos) > 0)
+
+        if success:
+            _WATCHDOG_FAILURES[platform] = 0  # reset
+        else:
+            _WATCHDOG_FAILURES[platform] = _WATCHDOG_FAILURES.get(platform, 0) + 1
+
+        _WATCHDOG_LAST_CHECK[platform] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "success": success,
+            "video_count": len(videos) if videos else 0,
+            "duration_ms": duration_ms,
+            "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
+        }
+
+        # Alerte critique apres 3 echecs consecutifs (= API probablement cassee)
+        if _WATCHDOG_FAILURES.get(platform, 0) >= 3:
+            await _alert_critical(
+                alert_type=f"{platform}_api_broken",
+                severity="critical",
+                platform=platform,
+                username=username,
+                message=(
+                    f"WATCHDOG : {platform.upper()} a echoue {_WATCHDOG_FAILURES[platform]}× "
+                    f"de suite sur le test '@{username}'. L'API a probablement change. "
+                    f"Verifie les logs Railway et patche la cascade {platform}."
+                ),
+            )
+
+        return {
+            "success": success,
+            "platform": platform,
+            "test_account": username,
+            "video_count": len(videos) if videos else 0,
+            "duration_ms": duration_ms,
+            "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
+        }
+    except Exception as e:
+        _WATCHDOG_FAILURES[platform] = _WATCHDOG_FAILURES.get(platform, 0) + 1
+        _WATCHDOG_LAST_CHECK[platform] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "success": False,
+            "error": str(e)[:200],
+            "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
+        }
+        if _WATCHDOG_FAILURES.get(platform, 0) >= 3:
+            await _alert_critical(
+                alert_type=f"{platform}_api_broken",
+                severity="critical",
+                platform=platform,
+                message=f"WATCHDOG : {platform.upper()} cascade exception {_WATCHDOG_FAILURES[platform]}× : {str(e)[:200]}",
+            )
+        return {"success": False, "error": str(e)[:200], "platform": platform}
+
+
+async def watchdog_loop():
+    """Tourne toutes les heures, teste chaque plateforme."""
+    while True:
+        try:
+            for plat in ("instagram", "tiktok", "youtube"):
+                try:
+                    await _run_watchdog_check(plat)
+                except Exception as e:
+                    logger.warning(f"Watchdog {plat} error: {e}")
+                await asyncio.sleep(2)  # petit delai entre plateformes
+        except Exception as e:
+            logger.error(f"Watchdog loop error: {e}")
+        await asyncio.sleep(3600)  # 1h entre checks
+
+
 async def track_videos_loop():
     """STAGGERED scheduler : tick toutes les 30 min, scrape les campagnes DUES.
     Chaque campagne a son propre next_scrape_at calcule depuis un offset stable
@@ -13156,6 +13317,288 @@ async def admin_resolve_fraud_alert(alert_id: str, request: Request, body: dict 
     return {"message": "Alerte résolue", "decision": decision}
 
 
+@api_router.get("/admin/site-health")
+async def admin_site_health(request: Request, _: bool = Depends(verify_admin_code)):
+    """VUE COMPLETE de surveillance : tout ce qu'il faut watch pour savoir
+    quand upgrader. Inclut alertes proactives a chaque seuil critique.
+    """
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_iso = now.strftime("%Y-%m-%dT00:00:00+00:00")
+
+    # Capacites theoriques (avec staggered scraping x3-5 vs concentre)
+    CAPACITY_DAILY = {
+        "tiktok": 30_000,        # 5 IPs × ~6000 calls/jour staggered
+        "instagram": 15_000,     # 5 IPs × ~3000 calls/jour staggered (plus restrictif)
+        "youtube": 3_300,        # quota Google fixe
+    }
+    CAPACITY_MONTHLY = {plat: cap * 30 for plat, cap in CAPACITY_DAILY.items()}
+
+    # ── 1. Clippeurs et campagnes ──────────────────────────────────────────
+    total_clippers = await db.users.count_documents({"role": "clipper"})
+    active_clippers = await db.users.count_documents({
+        "role": "clipper",
+        "last_seen_at": {"$gte": (now - timedelta(days=30)).isoformat()}
+    })
+    total_agencies = await db.users.count_documents({"role": "agency"})
+    active_campaigns = await db.campaigns.count_documents({"status": "active"})
+    total_accounts = await db.social_accounts.count_documents({})
+
+    # Comptes par plateforme
+    accounts_by_platform = {}
+    pipeline = [{"$group": {"_id": "$platform", "count": {"$sum": 1}}}]
+    async for doc in db.social_accounts.aggregate(pipeline):
+        if doc.get("_id"):
+            accounts_by_platform[doc["_id"]] = doc["count"]
+
+    # ── 2. Capacites scraping ──────────────────────────────────────────────
+    platforms_health = {}
+    for plat in ("tiktok", "instagram", "youtube"):
+        month_calls = await db.scraping_history.count_documents({
+            "platform": plat,
+            "success": True,
+            "timestamp": {"$gte": month_start},
+        })
+        today_calls = await db.scraping_history.count_documents({
+            "platform": plat,
+            "success": True,
+            "timestamp": {"$gte": today_iso},
+        })
+        cap_month = CAPACITY_MONTHLY[plat]
+        cap_day = CAPACITY_DAILY[plat]
+        month_pct = round((month_calls / cap_month) * 100, 1) if cap_month else 0
+        day_pct = round((today_calls / cap_day) * 100, 1) if cap_day else 0
+
+        if month_pct >= 80 or day_pct >= 80:
+            status = "critical"
+        elif month_pct >= 50 or day_pct >= 50:
+            status = "warning"
+        else:
+            status = "ok"
+
+        platforms_health[plat] = {
+            "month_calls": month_calls,
+            "month_capacity": cap_month,
+            "month_pct": month_pct,
+            "today_calls": today_calls,
+            "day_capacity": cap_day,
+            "day_pct": day_pct,
+            "status": status,
+            "accounts_tracked": accounts_by_platform.get(plat, 0),
+        }
+
+    # ── 3. Watchdog (sante API real-time) ──────────────────────────────────
+    watchdog_status = {}
+    for plat, last in _WATCHDOG_LAST_CHECK.items():
+        consec = last.get("consecutive_failures", 0)
+        if consec >= 3:
+            wd_status = "critical"
+        elif consec >= 1:
+            wd_status = "warning"
+        else:
+            wd_status = "ok"
+        watchdog_status[plat] = {**last, "status": wd_status}
+    for plat in ("instagram", "tiktok", "youtube"):
+        if plat not in watchdog_status:
+            watchdog_status[plat] = {"status": "unknown", "message": "pas encore teste"}
+
+    # ── 4. Alertes admin actives (non resolues) ────────────────────────────
+    open_alerts_critical = await db.fraud_alerts.count_documents({
+        "severity": "critical",
+        "resolved": False,
+    })
+    open_alerts_warning = await db.fraud_alerts.count_documents({
+        "severity": "warning",
+        "resolved": False,
+    })
+    apify_used_today = await db.fraud_alerts.count_documents({
+        "type": "apify_fallback_used",
+        "timestamp": {"$gte": today_iso},
+    })
+
+    # ── 5. Circuit breakers actifs ─────────────────────────────────────────
+    cb_active = []
+    for source, cb in _CIRCUIT_BREAKERS.items():
+        if cb.get("blocked_until", 0) > time.time():
+            cb_active.append({
+                "source": source,
+                "blocked_until": datetime.fromtimestamp(cb["blocked_until"], tz=timezone.utc).isoformat(),
+                "failures": cb.get("failures", 0),
+            })
+
+    # ── 6. Spread quality du staggered scheduling ─────────────────────────
+    by_hour = {h: 0 for h in range(24)}
+    overdue = 0
+    async for c in db.campaigns.find({"status": "active"}, {"_id": 0, "next_scrape_at": 1}):
+        next_at = _parse_utc(c.get("next_scrape_at"))
+        if not next_at:
+            continue
+        if next_at < now - timedelta(minutes=10):
+            overdue += 1
+        by_hour[next_at.hour] = by_hour.get(next_at.hour, 0) + 1
+
+    pic_max = max(by_hour.values()) if by_hour else 0
+    pic_avg = round(sum(by_hour.values()) / max(1, len([v for v in by_hour.values() if v > 0])), 1) if by_hour else 0
+    if pic_max <= max(2, pic_avg * 1.3):
+        spread_quality = "excellent"
+    elif pic_max <= pic_avg * 1.8:
+        spread_quality = "good"
+    elif pic_max <= pic_avg * 2.5:
+        spread_quality = "moderate"
+    else:
+        spread_quality = "poor"
+
+    # ── 7. Seuils & Action items proactifs ─────────────────────────────────
+    action_items = []
+
+    # Approche capacite plateforme (seuils 50%, 70%, 85%)
+    for plat, h in platforms_health.items():
+        if h["month_pct"] >= 85:
+            action_items.append({
+                "priority": "critical",
+                "icon": "🚨",
+                "title": f"{plat.title()} a {h['month_pct']}% du quota mensuel",
+                "action": f"Upgrade urgent : ajoute des IPs proxy (Webshare) ou demande une extension quota {plat}",
+            })
+        elif h["month_pct"] >= 70:
+            action_items.append({
+                "priority": "warning",
+                "icon": "⚠️",
+                "title": f"{plat.title()} a {h['month_pct']}% du quota mensuel",
+                "action": f"Prevoir upgrade dans 30j si tendance continue. {plat}=goulot.",
+            })
+        elif h["month_pct"] >= 50:
+            action_items.append({
+                "priority": "info",
+                "icon": "ℹ️",
+                "title": f"{plat.title()} a 50% — surveille la croissance",
+                "action": "Pas urgent, mais marque dans ton plan : prevoir +5 IPs Webshare a 70%",
+            })
+
+    # Clippeurs : alerte preventive 100 clippeurs avant chaque seuil
+    if total_clippers >= 700 and total_clippers < 800:
+        action_items.append({
+            "priority": "info",
+            "icon": "🎯",
+            "title": f"Tu approches 800 clippeurs ({total_clippers} actuels)",
+            "action": "Action preventive GRATUITE : remplir le formulaire Google pour quota YouTube etendu (5 min, gratuit). Voir https://support.google.com/youtube/contact/yt_api_form",
+        })
+    if total_clippers >= 1400 and total_clippers < 1500:
+        action_items.append({
+            "priority": "warning",
+            "icon": "⚠️",
+            "title": f"Tu approches 1500 clippeurs ({total_clippers})",
+            "action": "Action requise : ajoute +5 IPs Webshare (25€/mois) pour doubler la capacite TT/IG.",
+        })
+    if total_clippers >= 1900 and total_clippers < 2000:
+        action_items.append({
+            "priority": "warning",
+            "icon": "⚠️",
+            "title": f"Tu approches 2000 clippeurs ({total_clippers})",
+            "action": "Action requise : active le 2eme VPS Hostinger en load-balancing (5€/mois).",
+        })
+
+    # Watchdog : alerte si une API est cassee
+    for plat, wd in watchdog_status.items():
+        if wd.get("status") == "critical":
+            action_items.append({
+                "priority": "critical",
+                "icon": "🚨",
+                "title": f"WATCHDOG : {plat.upper()} CASSE",
+                "action": f"L'API {plat} a echoue {wd.get('consecutive_failures', 0)}x consecutivement sur le test. Verifier les logs Railway et patcher la cascade.",
+            })
+
+    # Apify utilise aujourd'hui = bug
+    if apify_used_today > 0:
+        action_items.append({
+            "priority": "critical",
+            "icon": "🚨",
+            "title": f"Apify a ete utilise {apify_used_today}x aujourd'hui",
+            "action": "Investiguer pourquoi la cascade gratuite Insta a echoue. Voir Admin -> Alertes Fraude.",
+        })
+
+    # Spread mauvais = mauvaise rep load
+    if spread_quality in ("moderate", "poor"):
+        action_items.append({
+            "priority": "warning",
+            "icon": "⚠️",
+            "title": f"Repartition scraping {spread_quality}",
+            "action": f"Pic max {pic_max}/heure, moyenne {pic_avg}. Reset le planning via POST /admin/reset-scrape-schedule",
+        })
+
+    # Campagnes overdue = scheduler en retard
+    if overdue > 5:
+        action_items.append({
+            "priority": "warning",
+            "icon": "⚠️",
+            "title": f"{overdue} campagnes en retard de scrape",
+            "action": "Le scheduler est sature ou le worker plante. Verifier les logs Railway.",
+        })
+
+    # ── 8. Verdict global ───────────────────────────────────────────────────
+    has_critical = any(a["priority"] == "critical" for a in action_items)
+    has_warning = any(a["priority"] == "warning" for a in action_items)
+
+    if has_critical:
+        global_status = "critical"
+        global_message = "🚨 Action urgente requise ! Vois les items ci-dessous."
+    elif has_warning:
+        global_status = "warning"
+        global_message = "⚠️ Attention requise — anticipe les actions ci-dessous."
+    else:
+        # Capacite d'accueil restante en clippeurs
+        max_capacity_estimate = 1500  # mix typique TT+IG dominant
+        margin = max(0, max_capacity_estimate - total_clippers)
+        global_status = "ok"
+        global_message = f"✅ RAS — encore ~{margin:,} clippeurs avant action requise. Concentre-toi sur le commercial."
+
+    return {
+        "now": now.isoformat(),
+        "global_status": global_status,
+        "global_message": global_message,
+        "summary": {
+            "total_clippers": total_clippers,
+            "active_clippers_30d": active_clippers,
+            "total_agencies": total_agencies,
+            "active_campaigns": active_campaigns,
+            "total_tracked_accounts": total_accounts,
+            "accounts_by_platform": accounts_by_platform,
+            "open_alerts_critical": open_alerts_critical,
+            "open_alerts_warning": open_alerts_warning,
+            "apify_used_today": apify_used_today,
+            "circuit_breakers_active": len(cb_active),
+        },
+        "platforms_health": platforms_health,
+        "watchdog": watchdog_status,
+        "circuit_breakers_active": cb_active,
+        "scheduling": {
+            "spread_quality": spread_quality,
+            "pic_max_per_hour": pic_max,
+            "pic_avg_per_hour": pic_avg,
+            "overdue_campaigns": overdue,
+            "distribution_by_hour": by_hour,
+        },
+        "action_items": action_items,
+        "thresholds": {
+            "youtube_quota_request_at": 800,
+            "extra_proxy_ips_at": 1500,
+            "second_vps_at": 2000,
+            "max_safe_clippers_estimate": 1500,
+            "max_capacity_with_full_upgrade": 5000,
+        },
+    }
+
+
+@api_router.post("/admin/run-watchdog-now")
+async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admin_code)):
+    """Force un check watchdog immediat sur les 3 plateformes (debug/test)."""
+    results = {}
+    for plat in ("instagram", "tiktok", "youtube"):
+        results[plat] = await _run_watchdog_check(plat)
+        await asyncio.sleep(2)
+    return {"results": results}
+
+
 @api_router.get("/admin/scrape-schedule")
 async def admin_scrape_schedule(request: Request, _: bool = Depends(verify_admin_code)):
     """Affiche le planning STAGGERED de toutes les campagnes actives (next_scrape_at).
@@ -15212,6 +15655,12 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
     if not updates:
         raise HTTPException(status_code=400, detail="Aucun champ modifiable fourni")
 
+    # Bloque tracking_start_date > 2 mois en arriere
+    if "tracking_start_date" in updates:
+        err = _validate_tracking_start_date(updates.get("tracking_start_date"))
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
     # Détecte si tracking_start_date est reculée → besoin de backfill
     old_start = _parse_utc(campaign.get("tracking_start_date"))
     new_start = _parse_utc(updates.get("tracking_start_date")) if "tracking_start_date" in updates else None
@@ -16082,6 +16531,9 @@ async def startup_event():
 
     asyncio.create_task(auto_strike_loop())
     asyncio.create_task(track_videos_loop())
+    # Watchdog : surveille la sante des APIs (Insta/TikTok/YouTube) toutes les heures
+    # Si 3 echecs consecutifs sur une plateforme = alerte critique admin
+    asyncio.create_task(watchdog_loop())
 
     # Test TikWm API key at startup and log the result
     if TIKWM_API_KEY:
