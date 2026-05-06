@@ -7868,14 +7868,18 @@ async def _alert_apify_used(platform: str, username: str, reason: str = ""):
     """Loggue une alerte CRITIQUE quand Apify est utilise = ca veut dire que
     toute la cascade gratuite a echoue. C'est un bug a investiguer."""
     try:
+        now_iso = datetime.now(timezone.utc).isoformat()
         await db.fraud_alerts.insert_one({
             "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
             "type": "apify_fallback_used",
             "severity": "critical",
+            "status": "pending",  # compat avec endpoint existant
             "platform": platform,
             "username": username,
             "reason": reason or "Toute la cascade gratuite a echoue, fallback Apify utilise",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "details": reason or "Toute la cascade gratuite a echoue, fallback Apify utilise",
+            "timestamp": now_iso,
+            "created_at": now_iso,  # compat avec sort existant
             "resolved": False,
         })
         logger.error(f"🚨 APIFY FALLBACK UTILISE pour {platform}/@{username} : {reason} — investiguer")
@@ -7888,14 +7892,18 @@ async def _alert_critical(alert_type: str, severity: str, message: str, platform
     severity : "info", "warning", "critical"
     """
     try:
+        now_iso = datetime.now(timezone.utc).isoformat()
         await db.fraud_alerts.insert_one({
             "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
             "type": alert_type,
             "severity": severity,
+            "status": "pending",  # compat avec endpoint existant
             "platform": platform,
             "username": username,
             "reason": message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "details": message,
+            "timestamp": now_iso,
+            "created_at": now_iso,  # compat avec sort existant
             "resolved": False,
         })
         emoji = "🚨" if severity == "critical" else "⚠️" if severity == "warning" else "ℹ️"
@@ -13214,10 +13222,27 @@ async def admin_get_fraud_alerts(request: Request, status: str = "pending", limi
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
         raise HTTPException(status_code=403, detail="Code admin invalide")
 
-    query = {}
+    # Filtre tolerant : accepte status="pending" OU resolved=False (nouveau schema)
+    query: dict = {}
     if status and status != "all":
-        query["status"] = status
-    alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+        if status == "pending":
+            query["$or"] = [{"status": "pending"}, {"resolved": False}, {"status": {"$exists": False}, "resolved": {"$exists": False}}]
+        elif status == "resolved":
+            query["$or"] = [{"status": "resolved"}, {"resolved": True}]
+        else:
+            query["status"] = status
+
+    # Sort tolerant : essaye created_at, fallback timestamp
+    try:
+        alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    except Exception:
+        alerts = []
+    # Si rien avec created_at, retry avec timestamp
+    if not alerts:
+        try:
+            alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+        except Exception:
+            alerts = []
 
     # Detection live de patterns suspects en plus des alertes stockees
     live_alerts = []
