@@ -6084,55 +6084,63 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     dynamic_max = max(50, min(int(since_days * 3), 360))
 
     # PRIORITY -1 (NEW GRATUIT) : Scraping de COMPTE direct via Mobile Clips API + GraphQL enrichissement
-    if BACKEND_PROXY_URL:
-        try:
-            account_videos_clips = await _fetch_instagram_account_via_graphql(username, max_videos=dynamic_max)
-            if account_videos_clips:
-                # Enrichit chaque video avec GraphQL direct (vraies vues UI)
-                enriched_clips = []
-                for v in account_videos_clips[:dynamic_max]:
-                    sc = v.get("platform_video_id")
-                    if sc:
-                        try:
-                            url_v = f"https://www.instagram.com/p/{sc}/"
-                            gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=15)
-                            if gd and int(gd.get("views") or 0) > int(v.get("views") or 0):
-                                v["views"] = int(gd.get("views"))
-                                v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
-                        except Exception:
-                            pass
-                    enriched_clips.append(v)
-                await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), "GRATUIT clips_user + graphql")
-                logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}")
-                return enriched_clips
-        except Exception as e:
-            logger.warning(f"Mobile Clips API failed for @{username}: {e}")
+    # Tourne TOUJOURS, meme sans proxy (la fonction interne fallback proxy ON/OFF)
+    try:
+        account_videos_clips = await _fetch_instagram_account_via_graphql(username, max_videos=dynamic_max)
+        if account_videos_clips:
+            # Enrichit chaque video avec GraphQL direct (vraies vues UI) - SEULEMENT si proxy dispo
+            enriched_clips = []
+            for v in account_videos_clips[:dynamic_max]:
+                sc = v.get("platform_video_id")
+                if sc and BACKEND_PROXY_URL:
+                    try:
+                        url_v = f"https://www.instagram.com/p/{sc}/"
+                        gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=15)
+                        if gd and int(gd.get("views") or 0) > int(v.get("views") or 0):
+                            v["views"] = int(gd.get("views"))
+                            v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
+                    except Exception:
+                        pass
+                enriched_clips.append(v)
+            await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), "GRATUIT clips_user + graphql")
+            logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}")
+            return enriched_clips
+    except Exception as e:
+        logger.warning(f"Mobile Clips API failed for @{username}: {e}")
 
     # PRIORITY 0 (NEW GRATUIT) : VPS pour liste shortcodes + GraphQL pour vraies vues
-    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY and BACKEND_PROXY_URL:
+    # Tourne sans BACKEND_PROXY_URL aussi : VPS retourne shortcodes, enrichissement GraphQL
+    # est skip s'il n'y a pas de proxy (mais on garde quand meme les videos basiques)
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
         try:
             cs_videos = await _fetch_via_clipscraper("instagram", username, max_videos=dynamic_max)
             if cs_videos:
-                logger.info(f"GraphQL enrich for {len(cs_videos)} videos of @{username}")
-                # Enrichit chaque video via GraphQL direct pour avoir le video_play_count UI (92k)
-                enriched = []
-                for v in cs_videos[:dynamic_max]:
-                    shortcode_v = v.get("platform_video_id")
-                    if not shortcode_v:
+                # Enrichissement GraphQL SEULEMENT si proxy dispo, sinon retourne brut
+                if BACKEND_PROXY_URL:
+                    logger.info(f"GraphQL enrich for {len(cs_videos)} videos of @{username}")
+                    enriched = []
+                    for v in cs_videos[:dynamic_max]:
+                        shortcode_v = v.get("platform_video_id")
+                        if not shortcode_v:
+                            enriched.append(v)
+                            continue
+                        try:
+                            url_v = f"https://www.instagram.com/p/{shortcode_v}/"
+                            gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=20)
+                            if gd and int(gd.get("views") or 0) > 0:
+                                v["views"] = int(gd.get("views"))
+                                v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
+                                v["comments"] = int(gd.get("comments") or v.get("comments") or 0)
+                        except Exception as e:
+                            logger.debug(f"GraphQL enrich failed for {shortcode_v}: {e}")
                         enriched.append(v)
-                        continue
-                    try:
-                        url_v = f"https://www.instagram.com/p/{shortcode_v}/"
-                        gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=20)
-                        if gd and int(gd.get("views") or 0) > 0:
-                            v["views"] = int(gd.get("views"))
-                            v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
-                            v["comments"] = int(gd.get("comments") or v.get("comments") or 0)
-                    except Exception as e:
-                        logger.debug(f"GraphQL enrich failed for {shortcode_v}: {e}")
-                    enriched.append(v)
-                await _log_scrape("vps_graphql", "instagram", username, True, len(enriched), "enriched via GraphQL")
-                return enriched
+                    await _log_scrape("vps_graphql", "instagram", username, True, len(enriched), "enriched via GraphQL")
+                    return enriched
+                else:
+                    # Sans proxy : retourne les videos VPS sans enrichissement
+                    await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos), "VPS only (no proxy for graphql enrich)")
+                    logger.info(f"VPS Insta sans enrich pour @{username}: {len(cs_videos)} videos")
+                    return cs_videos[:dynamic_max]
         except Exception as e:
             logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
 
