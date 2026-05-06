@@ -13413,60 +13413,72 @@ async def admin_simulate_add_account(
 
 @api_router.get("/admin/fraud-alerts")
 async def admin_get_fraud_alerts(request: Request, status: str = "pending", limit: int = 100):
-    """Liste les alertes de fraude detectees."""
+    """Liste les alertes de fraude detectees. BULLETPROOF : ne renvoie jamais 500."""
     code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
         raise HTTPException(status_code=403, detail="Code admin invalide")
 
-    # Filtre tolerant : accepte status="pending" OU resolved=False (nouveau schema)
-    query: dict = {}
-    if status and status != "all":
-        if status == "pending":
-            query["$or"] = [{"status": "pending"}, {"resolved": False}, {"status": {"$exists": False}, "resolved": {"$exists": False}}]
-        elif status == "resolved":
-            query["$or"] = [{"status": "resolved"}, {"resolved": True}]
-        else:
-            query["status"] = status
-
-    # Sort tolerant : essaye created_at, fallback timestamp
+    # ── 1. Charge alertes stockees (NE PEUT JAMAIS PLANTER) ──────────────
+    alerts: list = []
     try:
-        alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    except Exception:
+        # Strategie simple : prend TOUTES les alertes (limite a 200)
+        # Filtre apres en Python pour eviter les bugs de query MongoDB complexes
+        all_alerts = await db.fraud_alerts.find({}, {"_id": 0}).to_list(200)
+
+        # Filtre par status en Python
+        def _matches_status(a: dict) -> bool:
+            if status == "all":
+                return True
+            is_resolved = a.get("status") == "resolved" or a.get("resolved") is True
+            if status == "pending":
+                return not is_resolved
+            if status == "resolved":
+                return is_resolved
+            return a.get("status") == status
+
+        alerts = [a for a in all_alerts if _matches_status(a)]
+
+        # Sort par date desc (essaye created_at, fallback timestamp, fallback aucun)
+        def _sort_key(a: dict):
+            return a.get("created_at") or a.get("timestamp") or ""
+        alerts.sort(key=_sort_key, reverse=True)
+        alerts = alerts[:limit]
+    except Exception as e:
+        logger.warning(f"fraud-alerts stored alerts query failed: {e}")
         alerts = []
-    # Si rien avec created_at, retry avec timestamp
-    if not alerts:
-        try:
-            alerts = await db.fraud_alerts.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-        except Exception:
-            alerts = []
 
-    # Detection live de patterns suspects en plus des alertes stockees
-    live_alerts = []
+    # ── 2. Live detection (chacun dans son try/except, jamais fatal) ────
+    live_alerts: list = []
 
-    # 1. Comptes avec plus de 1000 vues mais 0 likes (potentiel fake views)
     try:
         suspicious_videos = await db.tracked_videos.find(
             {"views": {"$gte": 1000}, "likes": {"$lte": 5}},
             {"_id": 0, "video_id": 1, "url": 1, "views": 1, "likes": 1, "user_id": 1, "campaign_id": 1, "platform": 1}
         ).limit(50).to_list(50)
         for v in suspicious_videos:
-            ratio = v["likes"] / v["views"] if v["views"] > 0 else 0
-            if ratio < 0.001:  # moins de 0.1% likes/views = ultra suspect
-                live_alerts.append({
-                    "type": "fake_views_pattern",
-                    "severity": "medium",
-                    "video_url": v.get("url"),
-                    "views": v["views"],
-                    "likes": v["likes"],
-                    "ratio": f"{ratio*100:.3f}%",
-                    "campaign_id": v.get("campaign_id"),
-                    "user_id": v.get("user_id"),
-                    "details": f"Vidéo avec {v['views']} vues et seulement {v['likes']} likes (ratio {ratio*100:.3f}% — potentielles fake views)",
-                })
+            try:
+                views = int(v.get("views") or 0)
+                likes = int(v.get("likes") or 0)
+                if views <= 0:
+                    continue
+                ratio = likes / views
+                if ratio < 0.001:
+                    live_alerts.append({
+                        "type": "fake_views_pattern",
+                        "severity": "medium",
+                        "video_url": v.get("url"),
+                        "views": views,
+                        "likes": likes,
+                        "ratio": f"{ratio*100:.3f}%",
+                        "campaign_id": v.get("campaign_id"),
+                        "user_id": v.get("user_id"),
+                        "details": f"Vidéo avec {views} vues et seulement {likes} likes (ratio {ratio*100:.3f}% — potentielles fake views)",
+                    })
+            except Exception:
+                continue
     except Exception as e:
         logger.warning(f"Live fraud detection 1 failed: {e}")
 
-    # 2. Comptes ajoutes pour 2+ campagnes simultanement (devrait etre bloque par anti-fraude niveau 2)
     try:
         pipeline = [
             {"$group": {"_id": "$account_id", "count": {"$sum": 1}, "campaigns": {"$push": "$campaign_id"}}},
@@ -13475,47 +13487,50 @@ async def admin_get_fraud_alerts(request: Request, status: str = "pending", limi
         ]
         multi_camp_accounts = await db.campaign_social_accounts.aggregate(pipeline).to_list(50)
         for mca in multi_camp_accounts:
-            acc = await db.social_accounts.find_one({"account_id": mca["_id"]}, {"_id": 0, "username": 1, "platform": 1, "user_id": 1})
-            if acc:
-                live_alerts.append({
-                    "type": "account_multi_campaigns",
-                    "severity": "high",
-                    "account_id": mca["_id"],
-                    "username": acc.get("username"),
-                    "platform": acc.get("platform"),
-                    "campaigns_count": mca["count"],
-                    "campaign_ids": mca["campaigns"],
-                    "details": f"Compte @{acc.get('username')} ({acc.get('platform')}) tracké dans {mca['count']} campagnes simultanément",
-                })
+            try:
+                acc = await db.social_accounts.find_one({"account_id": mca["_id"]}, {"_id": 0, "username": 1, "platform": 1, "user_id": 1})
+                if acc:
+                    live_alerts.append({
+                        "type": "account_multi_campaigns",
+                        "severity": "high",
+                        "account_id": mca["_id"],
+                        "username": acc.get("username"),
+                        "platform": acc.get("platform"),
+                        "campaigns_count": mca["count"],
+                        "campaign_ids": mca["campaigns"],
+                        "details": f"Compte @{acc.get('username')} ({acc.get('platform')}) tracké dans {mca['count']} campagnes simultanément",
+                    })
+            except Exception:
+                continue
     except Exception as e:
         logger.warning(f"Live fraud detection 2 failed: {e}")
 
-    # 3. Clics depuis IP unique avec volume anormal (potentiel bot)
     try:
         from datetime import datetime as _dt, timedelta as _td
         cutoff_24h = (_dt.now(timezone.utc) - _td(hours=24)).isoformat()
         pipeline_clicks = [
             {"$match": {"clicked_at": {"$gte": cutoff_24h}}},
             {"$group": {"_id": "$ip_hash", "count": {"$sum": 1}, "links": {"$addToSet": "$link_id"}}},
-            {"$match": {"count": {"$gte": 50}}},  # 50+ clics depuis 1 IP en 24h
+            {"$match": {"count": {"$gte": 50}}},
             {"$sort": {"count": -1}},
             {"$limit": 20}
         ]
         bot_ips = await db.click_events.aggregate(pipeline_clicks).to_list(20)
         for bip in bot_ips:
-            live_alerts.append({
-                "type": "click_bot_pattern",
-                "severity": "medium",
-                "ip_hash_prefix": bip["_id"][:12] + "...",
-                "clicks_24h": bip["count"],
-                "links_targeted": len(bip.get("links", [])),
-                "details": f"IP avec {bip['count']} clics en 24h sur {len(bip.get('links', []))} lien(s) — potentiel bot",
-            })
+            try:
+                ip_hash = bip.get("_id") or ""
+                live_alerts.append({
+                    "type": "click_bot_pattern",
+                    "severity": "medium",
+                    "ip_hash_prefix": (ip_hash[:12] + "...") if len(ip_hash) >= 12 else ip_hash,
+                    "clicks_24h": bip.get("count", 0),
+                    "links_targeted": len(bip.get("links", [])),
+                    "details": f"IP avec {bip.get('count', 0)} clics en 24h sur {len(bip.get('links', []))} lien(s) — potentiel bot",
+                })
+            except Exception:
+                continue
     except Exception as e:
         logger.warning(f"Live fraud detection 3 failed: {e}")
-
-    # 4. Augmentation soudaine de vues (boost suspect)
-    # Skip pour MVP, ajout futur si necessaire
 
     return {
         "stored_alerts": alerts,
