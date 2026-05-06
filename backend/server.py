@@ -7801,22 +7801,20 @@ def _scrape_interval_hours(tracking_per_day: int) -> int:
 
 
 def _compute_next_scrape_at(campaign_id: str, interval_hours: int, last_scraped_at: Optional[datetime] = None) -> datetime:
-    """Calcule le prochain scrape pour une campagne en respectant son offset stable.
-    - Si jamais scrape : prochain tick aligne sur (now + interval - offset)
-    - Sinon : last_scraped_at + interval_hours
+    """Calcule le prochain scrape pour une campagne.
+    - PREMIER SCRAPE (jamais scrape) : IMMEDIAT (1 minute) pour que les nouvelles
+      campagnes/comptes soient tracker des le prochain tick. L'offset stable
+      s'appliquera SEULEMENT aux scrapes suivants.
+    - SCRAPES SUIVANTS : last_scraped_at + interval (offset deja respecte
+      naturellement par la position du dernier scrape sur l'epoch).
     """
     now = datetime.now(timezone.utc)
-    offset_min = _campaign_offset_minutes(campaign_id)
     if last_scraped_at:
         return last_scraped_at + timedelta(hours=interval_hours)
-    # Premier scrape : aligne sur le prochain creneau utilisant l'offset
-    # On veut que la campagne scrape a "epoch_minutes % (interval*60) == offset_min"
-    interval_min = interval_hours * 60
-    epoch_min = int(now.timestamp() / 60)
-    minutes_to_next = (offset_min - (epoch_min % interval_min)) % interval_min
-    if minutes_to_next < 5:
-        minutes_to_next += interval_min  # min 5min de delai pour eviter scrape immediat
-    return now + timedelta(minutes=minutes_to_next)
+    # Premier scrape : immediat (au prochain tick = max 30min)
+    # Apres ce premier scrape, le cycle staggered s'enclenche naturellement
+    # car last_scraped_at sera fixe a ce moment-la et next = last + interval
+    return now + timedelta(minutes=1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -7905,11 +7903,13 @@ async def _alert_critical(alert_type: str, severity: str, message: str, platform
 # Si 3 echecs consecutifs : alerte critique => Paul investigue.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Comptes test publics (jamais privés, posts à compteurs visibles)
+# Comptes test publics. Configurables via env vars pour eviter les comptes
+# trop populaires (@instagram, @tiktok) qui peuvent etre special-cases par les
+# plateformes (rate-limit different, anti-scraping renforce).
 WATCHDOG_TEST_ACCOUNTS = {
-    "instagram": "instagram",  # compte officiel Insta (~600M followers, jamais privé)
-    "tiktok": "tiktok",        # compte officiel TikTok
-    "youtube": "UCBR8-60-B28hp2BmDPdntcQ",  # YouTube channel id officiel
+    "instagram": os.environ.get("WATCHDOG_TEST_INSTA", "natgeo"),  # National Geographic — gros mais public, pas official
+    "tiktok": os.environ.get("WATCHDOG_TEST_TIKTOK", "khaby.lame"),  # Khaby Lame — top public
+    "youtube": os.environ.get("WATCHDOG_TEST_YOUTUBE", "UCBR8-60-B28hp2BmDPdntcQ"),  # YouTube channel id officiel
 }
 
 _WATCHDOG_FAILURES: dict = {"instagram": 0, "tiktok": 0, "youtube": 0}
@@ -7950,8 +7950,10 @@ async def _run_watchdog_check(platform: str) -> dict:
             "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
         }
 
-        # Alerte critique apres 3 echecs consecutifs (= API probablement cassee)
-        if _WATCHDOG_FAILURES.get(platform, 0) >= 3:
+        # Alerte critique apres 6 echecs consecutifs (~6h vu que watchdog tourne toutes les heures)
+        # Plus tolerant que 3 pour eviter faux positifs sur comptes populaires
+        WATCHDOG_FAIL_THRESHOLD = 6
+        if _WATCHDOG_FAILURES.get(platform, 0) >= WATCHDOG_FAIL_THRESHOLD:
             await _alert_critical(
                 alert_type=f"{platform}_api_broken",
                 severity="critical",
@@ -7959,8 +7961,10 @@ async def _run_watchdog_check(platform: str) -> dict:
                 username=username,
                 message=(
                     f"WATCHDOG : {platform.upper()} a echoue {_WATCHDOG_FAILURES[platform]}× "
-                    f"de suite sur le test '@{username}'. L'API a probablement change. "
-                    f"Verifie les logs Railway et patche la cascade {platform}."
+                    f"de suite (~{_WATCHDOG_FAILURES[platform]}h) sur le test '@{username}'. "
+                    f"L'API a probablement change OU le test account est bloque. "
+                    f"Tente : 1) curl /api/admin/diagnose-scrape/{platform}/X "
+                    f"2) Change WATCHDOG_TEST_{platform.upper()} dans Railway env."
                 ),
             )
 
@@ -7974,20 +7978,21 @@ async def _run_watchdog_check(platform: str) -> dict:
         }
     except Exception as e:
         _WATCHDOG_FAILURES[platform] = _WATCHDOG_FAILURES.get(platform, 0) + 1
+        err_str = str(e)[:300]
         _WATCHDOG_LAST_CHECK[platform] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "success": False,
-            "error": str(e)[:200],
+            "error": err_str,
             "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
         }
-        if _WATCHDOG_FAILURES.get(platform, 0) >= 3:
+        if _WATCHDOG_FAILURES.get(platform, 0) >= 6:
             await _alert_critical(
                 alert_type=f"{platform}_api_broken",
                 severity="critical",
                 platform=platform,
-                message=f"WATCHDOG : {platform.upper()} cascade exception {_WATCHDOG_FAILURES[platform]}× : {str(e)[:200]}",
+                message=f"WATCHDOG : {platform.upper()} cascade exception {_WATCHDOG_FAILURES[platform]}× : {err_str}",
             )
-        return {"success": False, "error": str(e)[:200], "platform": platform}
+        return {"success": False, "error": err_str, "platform": platform}
 
 
 async def watchdog_loop():
@@ -13597,6 +13602,126 @@ async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admi
         results[plat] = await _run_watchdog_check(plat)
         await asyncio.sleep(2)
     return {"results": results}
+
+
+@api_router.get("/admin/diagnose-scrape/{platform}/{username}")
+async def admin_diagnose_scrape(platform: str, username: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """DIAGNOSTIC : test scrape un compte avec capture des erreurs detaillees a chaque
+    etape de la cascade. Utile pour debug 'pourquoi @x ne se scrape pas'.
+    """
+    if platform not in ("instagram", "tiktok", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide (instagram/tiktok/youtube)")
+    username = username.lstrip("@")
+    diag = {
+        "platform": platform,
+        "username": username,
+        "config": {
+            "BACKEND_PROXY_URL": "set" if BACKEND_PROXY_URL else "MISSING",
+            "CLIP_SCRAPER_URL": "set" if CLIP_SCRAPER_URL else "MISSING",
+            "CLIP_SCRAPER_KEY": "set" if CLIP_SCRAPER_KEY else "MISSING",
+            "RAPIDAPI_KEY": "set" if RAPIDAPI_KEY else "MISSING",
+            "INSTAGRAM_SESSIONS": len(INSTAGRAM_SESSIONS) if INSTAGRAM_SESSIONS else 0,
+            "APIFY_TOKEN": "set" if APIFY_TOKEN else "MISSING",
+            "APIFY_INSTA_KILL_SWITCH": _APIFY_INSTA_KILL_SWITCH,
+        },
+        "steps": [],
+    }
+
+    if platform == "instagram":
+        # Etape 1 : web_profile_info pour user_id
+        try:
+            t0 = time.time()
+            data = await _scrape_instagram_api(username)
+            uid = (data.get("data", {}).get("user", {}) or {}).get("id") or (data.get("data", {}).get("user", {}) or {}).get("pk")
+            diag["steps"].append({
+                "name": "web_profile_info",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "ok": bool(uid),
+                "user_id": str(uid) if uid else None,
+            })
+        except Exception as e:
+            diag["steps"].append({"name": "web_profile_info", "ok": False, "error": str(e)[:300]})
+
+        # Etape 2 : Mobile Clips API + GraphQL enrichissement (priority -1)
+        if BACKEND_PROXY_URL:
+            try:
+                t0 = time.time()
+                videos = await _fetch_instagram_account_via_graphql(username, max_videos=20)
+                diag["steps"].append({
+                    "name": "clips_graphql (priority -1, gratuit)",
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "ok": bool(videos and len(videos) > 0),
+                    "video_count": len(videos) if videos else 0,
+                    "first_video": videos[0] if videos else None,
+                })
+            except Exception as e:
+                diag["steps"].append({"name": "clips_graphql", "ok": False, "error": str(e)[:300]})
+        else:
+            diag["steps"].append({"name": "clips_graphql", "ok": False, "error": "BACKEND_PROXY_URL not configured"})
+
+        # Etape 3 : VPS clipscraper
+        if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+            try:
+                t0 = time.time()
+                videos = await _fetch_via_clipscraper("instagram", username, max_videos=20)
+                diag["steps"].append({
+                    "name": "vps_clipscraper",
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "ok": bool(videos and len(videos) > 0),
+                    "video_count": len(videos) if videos else 0,
+                })
+            except Exception as e:
+                diag["steps"].append({"name": "vps_clipscraper", "ok": False, "error": str(e)[:300]})
+        else:
+            diag["steps"].append({"name": "vps_clipscraper", "ok": False, "error": "CLIP_SCRAPER_URL/KEY not set"})
+
+    elif platform == "tiktok":
+        if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+            try:
+                t0 = time.time()
+                videos = await _fetch_via_clipscraper("tiktok", username, max_videos=20)
+                diag["steps"].append({
+                    "name": "vps_clipscraper",
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "ok": bool(videos and len(videos) > 0),
+                    "video_count": len(videos) if videos else 0,
+                    "first_video": videos[0] if videos else None,
+                })
+            except Exception as e:
+                diag["steps"].append({"name": "vps_clipscraper", "ok": False, "error": str(e)[:300]})
+
+    elif platform == "youtube":
+        try:
+            t0 = time.time()
+            yt_info = await _verify_youtube(username)
+            channel_id = yt_info.get("platform_channel_id") if yt_info else None
+            diag["steps"].append({
+                "name": "youtube_verify",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "ok": bool(channel_id),
+                "channel_id": channel_id,
+            })
+            if channel_id:
+                t0 = time.time()
+                videos = await _fetch_youtube_videos(channel_id, since_days=30)
+                diag["steps"].append({
+                    "name": "youtube_videos",
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "ok": bool(videos and len(videos) > 0),
+                    "video_count": len(videos) if videos else 0,
+                })
+        except Exception as e:
+            diag["steps"].append({"name": "youtube_videos", "ok": False, "error": str(e)[:300]})
+
+    # Verdict
+    has_success = any(s.get("ok") for s in diag["steps"])
+    diag["verdict"] = "ok" if has_success else "all_steps_failed"
+    diag["recommendation"] = (
+        f"✅ Au moins une source marche pour @{username} sur {platform}"
+        if has_success
+        else f"🚨 Aucune source ne marche pour @{username} sur {platform}. Verifie la config (BACKEND_PROXY_URL, CLIP_SCRAPER_URL, etc) et que le compte existe + est public."
+    )
+    return diag
 
 
 @api_router.get("/admin/scrape-schedule")
