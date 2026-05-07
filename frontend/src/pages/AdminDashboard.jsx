@@ -1780,6 +1780,34 @@ function InstaHealthSection() {
       .finally(() => setVpsLoading(false));
   }, []);
 
+  const [resetAllLoading, setResetAllLoading] = useState(false);
+  const handleResetAllCampaigns = useCallback(() => {
+    if (!window.confirm(
+      "🚨 PURGE TOTALE — DERNIER AVERTISSEMENT 🚨\n\n" +
+      "Cette action va effacer TOUTES les stats de TOUTES les campagnes :\n" +
+      "- Toutes les vidéos trackées\n" +
+      "- Tous les snapshots quotidiens\n" +
+      "- Tous les budget_used remis à 0\n\n" +
+      "Un re-scrape complet sera lancé en background (2-10 min).\n\n" +
+      "Confirmer la purge globale ?"
+    )) return;
+    setResetAllLoading(true);
+    adminFetch("/admin/reset-all-tracking-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    })
+      .then((d) => {
+        const del = d?.deleted || {};
+        toast.success(
+          `✓ Purge effectuée : ${del.tracked_videos || 0} vidéos + ${(del.video_snapshots || 0) + (del.campaign_snapshots || 0) + (del.user_snapshots || 0)} snapshots supprimés. Re-scrape lancé.`,
+          { duration: 10000 }
+        );
+      })
+      .catch((e) => toast.error("Reset all failed : " + (e.message || "erreur")))
+      .finally(() => setResetAllLoading(false));
+  }, []);
+
   const retryFailed = useCallback(() => {
     setRetrying(true);
     setRetryResult(null);
@@ -1816,6 +1844,14 @@ function InstaHealthSection() {
             className="px-3 py-2 rounded-lg bg-purple-500 hover:bg-purple-500/80 text-white text-sm font-semibold disabled:opacity-50"
           >
             {vpsLoading ? "Test VPS..." : "🖥️ Tester VPS"}
+          </button>
+          <button
+            onClick={handleResetAllCampaigns}
+            disabled={resetAllLoading}
+            title="🚨 PURGE TOTALE de toutes les campagnes : efface toutes les stats DB et relance un scrape complet"
+            className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 border-2 border-red-500/50"
+          >
+            {resetAllLoading ? "🚨 Purge..." : "🚨 Reset toutes campagnes"}
           </button>
           <button
             onClick={runTest}

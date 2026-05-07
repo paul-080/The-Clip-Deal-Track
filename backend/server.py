@@ -13842,6 +13842,96 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
     }
 
 
+@api_router.post("/admin/reset-all-tracking-data")
+async def admin_reset_all_tracking_data(request: Request, body: dict = None, _: bool = Depends(verify_admin_code)):
+    """🚨 ADMIN NUCLEAR : purge TOUTES les tracked_videos + snapshots de TOUTES
+    les campagnes actives, et lance un fresh scrape complet sur toutes.
+
+    Utile pour repartir de zero quand le systeme avait des donnees faussees.
+    Body : { confirm: true } REQUIS.
+    """
+    body = body or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation requise — body must contain confirm: true. Cette action efface TOUTES les stats de TOUTES les campagnes."
+        )
+
+    # Compteurs avant suppression
+    videos_count = await db.tracked_videos.count_documents({})
+    video_snaps = await db.video_views_snapshots.count_documents({})
+    daily_snaps = await db.views_snapshots.count_documents({})
+    user_snaps = await db.user_views_snapshots.count_documents({})
+
+    # SUPPRESSION TOTALE
+    await db.tracked_videos.delete_many({})
+    await db.video_views_snapshots.delete_many({})
+    await db.views_snapshots.delete_many({})
+    await db.user_views_snapshots.delete_many({})
+
+    # Reset budget_used + next_scrape_at sur TOUTES les campagnes actives
+    await db.campaigns.update_many(
+        {"status": "active"},
+        {"$set": {
+            "budget_used": 0,
+            "next_scrape_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+
+    # Reset cache des comptes
+    await db.social_accounts.update_many(
+        {},
+        {"$set": {
+            "last_growth": None,
+            "last_total_views": 0,
+            "last_tracked_at": None,
+            "last_scrape_error": None,
+            "last_scrape_warning": None,
+        }}
+    )
+
+    # Lance un fresh scrape global en background
+    async def _global_fresh_scrape():
+        try:
+            campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
+            sem = asyncio.Semaphore(3)
+            async def _scrape_campaign(cam):
+                cid = cam.get("campaign_id")
+                cutoff = _parse_utc(cam.get("tracking_start_date")) or datetime.now(timezone.utc)
+                days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+                days_back = min(days_back, 90)
+                assignments = await db.campaign_social_accounts.find(
+                    {"campaign_id": cid}, {"_id": 0}
+                ).to_list(500)
+                for a in assignments:
+                    async with sem:
+                        try:
+                            acc = await db.social_accounts.find_one({"account_id": a.get("account_id")}, {"_id": 0})
+                            if acc and acc.get("status") == "verified":
+                                await _scrape_one_account_into_campaign(
+                                    acc, cam, cutoff, since_days=days_back, wait_verification=False
+                                )
+                        except Exception as e:
+                            logger.warning(f"global reset scrape failed for {a.get('account_id')}: {e}")
+            await asyncio.gather(*[_scrape_campaign(c) for c in campaigns], return_exceptions=True)
+            logger.info(f"reset-all-tracking-data : {len(campaigns)} campagnes re-scrapees")
+        except Exception as e:
+            logger.error(f"global reset scrape error: {e}")
+
+    asyncio.create_task(_global_fresh_scrape())
+
+    return {
+        "ok": True,
+        "deleted": {
+            "tracked_videos": videos_count,
+            "video_snapshots": video_snaps,
+            "campaign_snapshots": daily_snaps,
+            "user_snapshots": user_snaps,
+        },
+        "message": f"PURGE TOTALE effectuee : {videos_count} videos + {video_snaps + daily_snaps + user_snaps} snapshots supprimes. Re-scrape global lance — donnees fraiches dans 2-10 min selon le nombre de campagnes.",
+    }
+
+
 @api_router.post("/admin/run-watchdog-now")
 async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admin_code)):
     """Force un check watchdog immediat sur les 3 plateformes (debug/test)."""
