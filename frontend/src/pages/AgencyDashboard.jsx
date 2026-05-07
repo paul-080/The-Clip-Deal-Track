@@ -1232,6 +1232,42 @@ function CampaignDashboard({ campaigns }) {
     try { fetchMonthlyEarnings?.(); } catch {}
   }, []);
 
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const handleResetTrackingData = async () => {
+    if (resetting) return;
+    setResetting(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/reset-tracking-data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ confirm: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const d = data.deleted || {};
+        toast.success(
+          `✓ Reset effectué : ${d.tracked_videos || 0} vidéos supprimées. Re-scrape en cours, données fraîches dans 1-3 min.`,
+          { duration: 8000 }
+        );
+        setResetConfirmOpen(false);
+        // Refresh UI immediatement (DB vidée) puis encore après scrape
+        try { fetchAllVideos?.(); } catch {}
+        try { fetchTopClips?.(); } catch {}
+        try { fetchStats?.(); } catch {}
+        setTimeout(() => { try { fetchAllVideos?.(); fetchTopClips?.(); fetchStats?.(); } catch {} }, 60000);
+        setTimeout(() => { try { fetchAllVideos?.(); fetchTopClips?.(); fetchStats?.(); } catch {} }, 180000);
+      } else {
+        toast.error(data.detail || `Erreur ${res.status}`);
+      }
+    } catch (e) {
+      toast.error("Erreur réseau");
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleRefreshStats = async () => {
     if (refreshingStats) return;
     setRefreshingStats(true);
@@ -2187,6 +2223,23 @@ function CampaignDashboard({ campaigns }) {
                        refreshCountdown > 0 ? `⏳ Scraping ${refreshCountdown}s` :
                        "↻ Refresh stats"}
                     </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm(
+                          "⚠️ ATTENTION : Cette action va effacer TOUTES les stats actuelles de la campagne (vidéos, vues, snapshots) et relancer un scrape complet.\n\n" +
+                          "Les données actuellement affichées seront perdues.\n\n" +
+                          "À utiliser SEULEMENT si tu vois des stats fausses qui persistent.\n\n" +
+                          "Confirmer le reset ?"
+                        )) {
+                          handleResetTrackingData();
+                        }
+                      }}
+                      disabled={resetting}
+                      title="Efface toutes les stats actuelles et relance un scrape complet (utile si stats fausses persistent)"
+                      className="px-3 py-1 rounded-lg text-xs font-semibold border bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30 transition-all disabled:opacity-50"
+                    >
+                      {resetting ? "🗑️ Reset..." : "🗑️ Reset stats"}
+                    </button>
                   </div>
                 </div>
                 {!budgetUnlimited && budgetTotal > 0 && (
@@ -2464,6 +2517,23 @@ function CampaignDashboard({ campaigns }) {
                       {refreshingStats ? "↻ ..." :
                        refreshCountdown > 0 ? `⏳ Scraping ${refreshCountdown}s` :
                        "↻ Refresh stats"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (window.confirm(
+                          "⚠️ ATTENTION : Cette action va effacer TOUTES les stats actuelles de la campagne (vidéos, vues, snapshots) et relancer un scrape complet.\n\n" +
+                          "Les données actuellement affichées seront perdues.\n\n" +
+                          "À utiliser SEULEMENT si tu vois des stats fausses qui persistent.\n\n" +
+                          "Confirmer le reset ?"
+                        )) {
+                          handleResetTrackingData();
+                        }
+                      }}
+                      disabled={resetting}
+                      title="Efface toutes les stats actuelles et relance un scrape complet (utile si stats fausses persistent)"
+                      className="px-3 py-1 rounded-lg text-xs font-semibold border bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30 transition-all disabled:opacity-50"
+                    >
+                      {resetting ? "🗑️ Reset..." : "🗑️ Reset stats"}
                     </button>
                   </div>
                 </div>

@@ -8530,6 +8530,111 @@ async def cleanup_and_rescrape(campaign_id: str, user: dict = Depends(get_curren
 _REFRESH_STATS_COOLDOWN_SEC = 300  # 5 min entre 2 refresh manuels par campagne (anti-abus)
 _REFRESH_STATS_LAST: dict = {}  # campaign_id -> timestamp dernier refresh
 
+@api_router.post("/campaigns/{campaign_id}/reset-tracking-data")
+async def reset_campaign_tracking_data(campaign_id: str, body: dict = None, user: dict = Depends(get_current_user)):
+    """🗑️ PURGE ABSOLU : supprime toutes les tracked_videos + snapshots de cette
+    campagne, et relance un scrape complet depuis zero. Utile quand des stats
+    fausses persistent en DB (ancien scraping bugue, anciennes valeurs gonflees,
+    etc).
+
+    ATTENTION : action destructrice — l'historique des videos trackees est perdu.
+    Confirmation requise via body['confirm'] = true.
+    """
+    if user.get("role") not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Reserve agence/manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if user.get("role") == "agency" and campaign.get("agency_id") != user.get("user_id"):
+        raise HTTPException(status_code=403, detail="Cette campagne ne vous appartient pas")
+
+    body = body or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation requise — body must contain confirm: true. Cette action efface toutes les stats actuelles."
+        )
+
+    # 1. Compte ce qu'on va supprimer
+    videos_count = await db.tracked_videos.count_documents({"campaign_id": campaign_id})
+    snapshots_count = await db.video_views_snapshots.count_documents({"campaign_id": campaign_id})
+    daily_snapshots_count = await db.views_snapshots.count_documents({"campaign_id": campaign_id})
+    user_snapshots_count = await db.user_views_snapshots.count_documents({"campaign_id": campaign_id})
+
+    # 2. Supprime
+    try:
+        await db.tracked_videos.delete_many({"campaign_id": campaign_id})
+        await db.video_views_snapshots.delete_many({"campaign_id": campaign_id})
+        await db.views_snapshots.delete_many({"campaign_id": campaign_id})
+        await db.user_views_snapshots.delete_many({"campaign_id": campaign_id})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur suppression : {e}")
+
+    # 3. Reset budget_used + last_growth des comptes
+    try:
+        await db.campaigns.update_one(
+            {"campaign_id": campaign_id},
+            {"$set": {"budget_used": 0, "next_scrape_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        # Reset les compteurs cache des comptes pour forcer un fresh scrape
+        assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": campaign_id}, {"_id": 0}
+        ).to_list(500)
+        for a in assignments:
+            await db.social_accounts.update_one(
+                {"account_id": a.get("account_id")},
+                {"$set": {
+                    "last_growth": None,
+                    "last_total_views": 0,
+                    "last_tracked_at": None,
+                    "last_scrape_error": None,
+                    "last_scrape_warning": None,
+                }}
+            )
+    except Exception as e:
+        logger.warning(f"reset-tracking-data : reset secondaires failed : {e}")
+
+    # 4. Lance un fresh scrape immediat en background
+    cutoff = _parse_utc(campaign.get("tracking_start_date")) or datetime.now(timezone.utc)
+    days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+    days_back = min(days_back, 90)
+
+    async def _fresh_scrape():
+        try:
+            assignments = await db.campaign_social_accounts.find(
+                {"campaign_id": campaign_id}, {"_id": 0}
+            ).to_list(500)
+            sem = asyncio.Semaphore(3)
+            async def _scrape_one(a):
+                async with sem:
+                    acc = await db.social_accounts.find_one({"account_id": a["account_id"]}, {"_id": 0})
+                    if acc and acc.get("status") == "verified":
+                        try:
+                            await _scrape_one_account_into_campaign(
+                                acc, campaign, cutoff, since_days=days_back, wait_verification=False
+                            )
+                        except Exception as e:
+                            logger.warning(f"reset fresh scrape failed for {acc.get('username')}: {e}")
+            await asyncio.gather(*[_scrape_one(a) for a in assignments], return_exceptions=True)
+            logger.info(f"reset-tracking-data : campagne {campaign_id} re-scrapee après reset")
+        except Exception as e:
+            logger.error(f"reset fresh scrape error: {e}")
+
+    asyncio.create_task(_fresh_scrape())
+
+    return {
+        "ok": True,
+        "deleted": {
+            "tracked_videos": videos_count,
+            "video_snapshots": snapshots_count,
+            "campaign_snapshots": daily_snapshots_count,
+            "user_snapshots": user_snapshots_count,
+        },
+        "message": f"Reset effectue : {videos_count} videos + snapshots supprimes. Re-scrape lance, donnees fraiches dans 1-3 min.",
+    }
+
+
 @api_router.post("/campaigns/{campaign_id}/refresh-stats")
 async def refresh_campaign_stats(campaign_id: str, user: dict = Depends(get_current_user)):
     """Permet a l'agence/manager de forcer un scrape immediat de sa campagne.
