@@ -1774,6 +1774,8 @@ function InstaHealthSection() {
   const [loading, setLoading] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryResult, setRetryResult] = useState(null);
+  const [globalData, setGlobalData] = useState(null);
+  const [globalLoading, setGlobalLoading] = useState(false);
 
   const runTest = useCallback(() => {
     setLoading(true);
@@ -1782,6 +1784,15 @@ function InstaHealthSection() {
       .then(setData)
       .catch((e) => toast.error("Test failed : " + (e.message || "erreur")))
       .finally(() => setLoading(false));
+  }, []);
+
+  const runGlobalTest = useCallback(() => {
+    setGlobalLoading(true);
+    setGlobalData(null);
+    adminFetch("/admin/scraping-health-all")
+      .then(setGlobalData)
+      .catch((e) => toast.error("Test global failed : " + (e.message || "erreur")))
+      .finally(() => setGlobalLoading(false));
   }, []);
 
   const retryFailed = useCallback(() => {
@@ -1801,18 +1812,25 @@ function InstaHealthSection() {
     <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <p className="text-white font-semibold text-base">🩺 Diagnostic Scraping Instagram</p>
+          <p className="text-white font-semibold text-base">🩺 Diagnostic Scraping (Insta + TikTok + YouTube)</p>
           <p className="text-xs text-white/50 mt-1">
-            Teste chaque source en live sur @natgeo. Identifie ce qui pète exactement.
+            Teste chaque source en live. Identifie ce qui pète exactement et propose le fix.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={runGlobalTest}
+            disabled={globalLoading}
+            className="px-3 py-2 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black text-sm font-semibold disabled:opacity-50"
+          >
+            {globalLoading ? "Test 3 plateformes..." : "🌐 Test 3 plateformes"}
+          </button>
           <button
             onClick={runTest}
             disabled={loading}
             className="px-3 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold disabled:opacity-50"
           >
-            {loading ? "Test en cours..." : "🩺 Lancer test complet"}
+            {loading ? "Test Insta..." : "🩺 Test Insta détaillé"}
           </button>
           {data?.failed_accounts_count > 0 && (
             <button
@@ -1820,11 +1838,99 @@ function InstaHealthSection() {
               disabled={retrying}
               className="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 text-sm border border-amber-500/30 disabled:opacity-50"
             >
-              {retrying ? "Retry..." : `↻ Retry ${data.failed_accounts_count} comptes`}
+              {retrying ? "Retry..." : `↻ Retry ${data.failed_accounts_count} comptes Insta`}
             </button>
           )}
         </div>
       </div>
+
+      {/* Resultat test global 3 plateformes */}
+      {globalData && (
+        <div className="space-y-3">
+          {/* Verdict */}
+          <div className={`p-3 rounded-lg border ${
+            globalData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
+            globalData.verdict?.includes("⚠️") ? "bg-amber-500/10 border-amber-500/40" :
+            "bg-green-500/10 border-green-500/40"
+          }`}>
+            <p className={`font-bold ${
+              globalData.verdict?.includes("🚨") ? "text-red-400" :
+              globalData.verdict?.includes("⚠️") ? "text-amber-400" : "text-green-400"
+            }`}>{globalData.verdict}</p>
+            {globalData.recommendation && (
+              <p className="text-white/70 text-xs mt-2">💡 {globalData.recommendation}</p>
+            )}
+          </div>
+
+          {/* Config globale */}
+          {globalData.config_global && (
+            <div className="bg-white/3 rounded-lg p-3">
+              <p className="text-[11px] text-white/50 font-semibold uppercase mb-2">Config env Railway</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
+                {Object.entries(globalData.config_global).map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-2">
+                    <span className="text-white/50 truncate">{k}</span>
+                    <span className={`font-mono ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-green-400" : "text-white"}`}>
+                      {typeof v === "boolean" ? (v ? "✅ true" : "❌ false") : String(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3 plateformes */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            {Object.entries(globalData.platforms || {}).map(([plat, info]) => {
+              const platMeta = { instagram: { icon: "📸", label: "Instagram" }, tiktok: { icon: "🎵", label: "TikTok" }, youtube: { icon: "▶️", label: "YouTube" } }[plat] || { icon: "?", label: plat };
+              return (
+                <div key={plat} className={`rounded-lg border p-3 ${info.any_working ? "bg-green-500/5 border-green-500/30" : "bg-red-500/5 border-red-500/30"}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-white font-bold text-sm">{platMeta.icon} {platMeta.label}</p>
+                    <span className={`text-xs font-bold ${info.any_working ? "text-green-400" : "text-red-400"}`}>
+                      {info.any_working ? "✅ OK" : "❌ HS"}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-white/40 mb-2">Test : @{info.test_account}</p>
+                  <div className="space-y-1">
+                    {(info.sources || []).map((s, i) => (
+                      <div key={i} className={`text-xs px-2 py-1 rounded ${
+                        s.skipped ? "bg-white/5 text-white/40" :
+                        s.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"
+                      }`}>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="truncate">{s.skipped ? "⏭️" : s.ok ? "✅" : "❌"} {s.name}</span>
+                          {s.duration_ms !== undefined && <span className="text-[9px] opacity-60">{s.duration_ms}ms</span>}
+                        </div>
+                        {s.result && <p className="text-[10px] opacity-80 mt-0.5">→ {s.result}</p>}
+                        {s.error && <p className="text-[10px] opacity-80 mt-0.5">err: {s.error.substring(0, 80)}</p>}
+                        {!s.ok && s.fix_if_failed && (
+                          <p className="text-[10px] text-amber-300 mt-0.5">🔧 {s.fix_if_failed}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {(globalData.failed_accounts_by_platform?.[plat] || []).length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-white/10">
+                      <p className="text-[10px] text-red-400 font-semibold mb-1">
+                        {globalData.failed_accounts_by_platform[plat].length} compte{globalData.failed_accounts_by_platform[plat].length > 1 ? "s" : ""} en erreur :
+                      </p>
+                      <div className="max-h-32 overflow-y-auto space-y-0.5">
+                        {globalData.failed_accounts_by_platform[plat].slice(0, 5).map((a, i) => (
+                          <div key={i} className="text-[10px] bg-white/3 rounded p-1">
+                            <p className="text-white truncate">@{a.username}</p>
+                            <p className="text-red-300/70 truncate">{a.error}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {!data && !loading && (
         <p className="text-xs text-white/40 text-center py-3">Clique "Lancer test complet" pour voir l'état des sources.</p>

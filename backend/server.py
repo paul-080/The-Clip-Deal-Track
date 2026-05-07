@@ -13847,6 +13847,237 @@ async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admi
     return {"results": results}
 
 
+@api_router.get("/admin/scraping-health-all")
+async def admin_scraping_health_all(request: Request, _: bool = Depends(verify_admin_code)):
+    """TEST EXHAUSTIF des 3 plateformes (Insta + TikTok + YouTube).
+    Identifie ce qui marche/pete et propose le fix.
+    """
+    test_accounts = {
+        "instagram": "natgeo",
+        "tiktok": "khaby.lame",
+        "youtube": "UCBR8-60-B28hp2BmDPdntcQ",  # YouTube channel id officiel
+    }
+
+    report = {
+        "config_global": {
+            "BACKEND_PROXY_URL": "✅ set" if BACKEND_PROXY_URL else "❌ MISSING (needed for Insta proxy)",
+            "CLIP_SCRAPER_URL": "✅ set" if CLIP_SCRAPER_URL else "❌ MISSING (VPS Hostinger)",
+            "CLIP_SCRAPER_KEY": "✅ set" if CLIP_SCRAPER_KEY else "❌ MISSING (VPS auth)",
+            "TIKWM_API_KEY": "✅ set" if TIKWM_API_KEY else "❌ MISSING (TikTok backup API)",
+            "YOUTUBE_API_KEY": "✅ set" if YOUTUBE_API_KEY else "❌ MISSING (YouTube Data API v3)",
+            "APIFY_TOKEN": "✅ set" if APIFY_TOKEN else "❌ MISSING",
+            "INSTAGRAM_SESSIONS": f"✅ {len(INSTAGRAM_SESSIONS)} sessions" if INSTAGRAM_SESSIONS else "❌ MISSING",
+            "RAPIDAPI_KEY": "✅ set" if RAPIDAPI_KEY else "❌ MISSING",
+            "APIFY_INSTA_KILL_SWITCH": _APIFY_INSTA_KILL_SWITCH,
+            "YT_DLP_AVAILABLE": YT_DLP_AVAILABLE,
+        },
+        "platforms": {},
+    }
+
+    # ─── INSTAGRAM ───────────────────────────────────────────────────
+    insta_sources = []
+    insta_account = test_accounts["instagram"]
+
+    # 1. Mobile Clips API
+    t0 = time.time()
+    try:
+        videos = await _fetch_instagram_account_via_graphql(insta_account, max_videos=5)
+        insta_sources.append({"name": "Mobile Clips API + GraphQL (free)", "ok": bool(videos),
+                              "duration_ms": int((time.time() - t0) * 1000),
+                              "result": f"{len(videos)} reels" if videos else "no videos",
+                              "fix_if_failed": "Configure BACKEND_PROXY_URL (proxy webshare)"})
+    except Exception as e:
+        insta_sources.append({"name": "Mobile Clips API", "ok": False,
+                              "duration_ms": int((time.time() - t0) * 1000),
+                              "error": str(e)[:200],
+                              "fix_if_failed": "Configure BACKEND_PROXY_URL"})
+
+    # 2. VPS clipscraper Insta
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        t0 = time.time()
+        try:
+            videos = await _fetch_via_clipscraper("instagram", insta_account, max_videos=5)
+            insta_sources.append({"name": "VPS clipscraper (free)", "ok": bool(videos),
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "result": f"{len(videos)} videos" if videos else "no videos",
+                                  "fix_if_failed": "VPS Hostinger down ou clipscraper plante"})
+        except Exception as e:
+            insta_sources.append({"name": "VPS clipscraper", "ok": False,
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "error": str(e)[:200],
+                                  "fix_if_failed": "VPS Hostinger injoignable"})
+    else:
+        insta_sources.append({"name": "VPS clipscraper", "ok": False, "skipped": True,
+                              "fix_if_failed": "Set CLIP_SCRAPER_URL + CLIP_SCRAPER_KEY"})
+
+    # 3. yt-dlp Insta (no config)
+    if YT_DLP_AVAILABLE:
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_via_ytdlp_profile(insta_account, max_videos=5)
+            insta_sources.append({"name": "yt-dlp profile (no config)", "ok": bool(videos),
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "result": f"{len(videos)} videos" if videos else "no videos",
+                                  "fix_if_failed": "Insta bloque IPs cloud sans proxy"})
+        except Exception as e:
+            insta_sources.append({"name": "yt-dlp Insta", "ok": False,
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "error": str(e)[:200]})
+
+    # 4. Apify Insta
+    if APIFY_TOKEN and not _APIFY_INSTA_KILL_SWITCH:
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_via_apify_reel_scraper_account(insta_account, max_videos=3)
+            insta_sources.append({"name": "Apify Reel Scraper (paid)", "ok": bool(videos),
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "result": f"{len(videos)} reels (~$0.008)" if videos else "no videos"})
+        except Exception as e:
+            insta_sources.append({"name": "Apify Reel Scraper", "ok": False,
+                                  "duration_ms": int((time.time() - t0) * 1000),
+                                  "error": str(e)[:200]})
+    else:
+        insta_sources.append({"name": "Apify Reel Scraper", "ok": False, "skipped": True,
+                              "reason": "kill switch ON" if _APIFY_INSTA_KILL_SWITCH else "no APIFY_TOKEN",
+                              "fix_if_failed": "Set APIFY_INSTA_FORCE_OFF=false + APIFY_TOKEN"})
+
+    report["platforms"]["instagram"] = {
+        "test_account": insta_account,
+        "sources": insta_sources,
+        "any_working": any(s.get("ok") for s in insta_sources),
+    }
+
+    # ─── TIKTOK ──────────────────────────────────────────────────────
+    tt_sources = []
+    tt_account = test_accounts["tiktok"]
+
+    # 1. VPS clipscraper TikTok
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        t0 = time.time()
+        try:
+            videos = await _fetch_via_clipscraper("tiktok", tt_account, max_videos=5)
+            tt_sources.append({"name": "VPS clipscraper (free)", "ok": bool(videos),
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "result": f"{len(videos)} videos" if videos else "no videos",
+                               "fix_if_failed": "VPS Hostinger down ou TikTok bloque"})
+        except Exception as e:
+            tt_sources.append({"name": "VPS clipscraper", "ok": False,
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "error": str(e)[:200]})
+    else:
+        tt_sources.append({"name": "VPS clipscraper", "ok": False, "skipped": True,
+                           "fix_if_failed": "Set CLIP_SCRAPER_URL + CLIP_SCRAPER_KEY"})
+
+    # 2. TikWm API
+    if TIKWM_API_KEY:
+        t0 = time.time()
+        try:
+            videos = await _fetch_tiktok_tikwm(tt_account)
+            tt_sources.append({"name": "TikWm API (paid)", "ok": bool(videos),
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "result": f"{len(videos)} videos" if videos else "no videos",
+                               "fix_if_failed": "TIKWM_API_KEY expiree, voir tikwm.com"})
+        except Exception as e:
+            tt_sources.append({"name": "TikWm API", "ok": False,
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "error": str(e)[:200]})
+    else:
+        tt_sources.append({"name": "TikWm API", "ok": False, "skipped": True,
+                           "fix_if_failed": "Set TIKWM_API_KEY (acheter cle sur tikwm.com, ~$3/mois)"})
+
+    # 3. Apify TikTok
+    if APIFY_TOKEN and not APIFY_DISABLED:
+        t0 = time.time()
+        try:
+            videos = await _fetch_tiktok_videos_apify(tt_account)
+            tt_sources.append({"name": "Apify TikTok (paid)", "ok": bool(videos),
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "result": f"{len(videos)} videos" if videos else "no videos"})
+        except Exception as e:
+            tt_sources.append({"name": "Apify TikTok", "ok": False,
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "error": str(e)[:200]})
+    else:
+        tt_sources.append({"name": "Apify TikTok", "ok": False, "skipped": True,
+                           "fix_if_failed": "Set APIFY_TOKEN"})
+
+    report["platforms"]["tiktok"] = {
+        "test_account": tt_account,
+        "sources": tt_sources,
+        "any_working": any(s.get("ok") for s in tt_sources),
+    }
+
+    # ─── YOUTUBE ─────────────────────────────────────────────────────
+    yt_sources = []
+    yt_channel = test_accounts["youtube"]
+
+    if YOUTUBE_API_KEY:
+        t0 = time.time()
+        try:
+            videos = await _fetch_youtube_videos(yt_channel, since_days=30)
+            yt_sources.append({"name": "YouTube Data API v3 (free with quota)", "ok": bool(videos),
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "result": f"{len(videos)} videos" if videos else "no videos OR quota depasse",
+                               "fix_if_failed": "Verifier YOUTUBE_API_KEY ou quota Google Cloud Console"})
+        except Exception as e:
+            yt_sources.append({"name": "YouTube API", "ok": False,
+                               "duration_ms": int((time.time() - t0) * 1000),
+                               "error": str(e)[:200],
+                               "fix_if_failed": "API key invalide ou quota depasse"})
+    else:
+        yt_sources.append({"name": "YouTube API", "ok": False, "skipped": True,
+                           "fix_if_failed": "Set YOUTUBE_API_KEY (gratuit sur Google Cloud Console)"})
+
+    report["platforms"]["youtube"] = {
+        "test_account": yt_channel,
+        "sources": yt_sources,
+        "any_working": any(s.get("ok") for s in yt_sources),
+    }
+
+    # ─── COMPTES EN ERREUR DANS LA DB ────────────────────────────────
+    failed_by_platform = {}
+    for plat in ("instagram", "tiktok", "youtube"):
+        try:
+            failed_accs = []
+            async for acc in db.social_accounts.find(
+                {"platform": plat, "last_scrape_error": {"$ne": None}},
+                {"_id": 0, "username": 1, "last_scrape_error": 1, "status": 1, "last_scrape_attempt_at": 1}
+            ).limit(15):
+                failed_accs.append({
+                    "username": acc.get("username"),
+                    "status": acc.get("status"),
+                    "error": (acc.get("last_scrape_error") or "")[:200],
+                    "last_attempt": acc.get("last_scrape_attempt_at"),
+                })
+            failed_by_platform[plat] = failed_accs
+        except Exception:
+            failed_by_platform[plat] = []
+    report["failed_accounts_by_platform"] = failed_by_platform
+
+    # ─── VERDICT GLOBAL ──────────────────────────────────────────────
+    all_working = all(report["platforms"][p]["any_working"] for p in ("instagram", "tiktok", "youtube"))
+    none_working = not any(report["platforms"][p]["any_working"] for p in ("instagram", "tiktok", "youtube"))
+
+    if all_working:
+        report["verdict"] = "✅ Toutes les plateformes ont au moins une source qui marche"
+        report["recommendation"] = "Tout va bien. Les comptes en erreur sont des cas isoles."
+    elif none_working:
+        report["verdict"] = "🚨 AUCUNE plateforme ne marche — config manquante"
+        report["recommendation"] = (
+            "URGENT : configure les env vars manquantes (voir config_global ci-dessus). "
+            "Sans config, aucun scraping ne peut tourner depuis Railway IPs."
+        )
+    else:
+        broken = [p for p in ("instagram", "tiktok", "youtube") if not report["platforms"][p]["any_working"]]
+        report["verdict"] = f"⚠️ Plateformes cassees : {', '.join(broken)}"
+        report["recommendation"] = (
+            f"Configure les env vars manquantes pour : {', '.join(broken)}. "
+            "Voir 'fix_if_failed' sur chaque source pour le detail."
+        )
+
+    return report
+
+
 @api_router.get("/admin/insta-health-full")
 async def admin_insta_health_full(request: Request, _: bool = Depends(verify_admin_code)):
     """TEST EXHAUSTIF : verifie chaque source de scraping Insta avec un compte
