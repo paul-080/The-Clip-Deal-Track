@@ -10029,27 +10029,40 @@ async def get_campaign_period_stats(
         period_label = {"24h": "24 dernières heures", "7d": "7 derniers jours",
                         "30d": "30 derniers jours", "year": "Cette année"}[period]
 
-    # ── Views = somme des vues actuelles des vidéos PUBLIEES dans la période ──
-    # (cohérent avec views-chart : on agrège par published_at, pas par fetched_at)
-    views_match = {
-        "campaign_id": campaign_id,
-        "published_at": {"$ne": None},
-    }
-    pipeline = [
-        {"$match": views_match},
-        {"$addFields": {
-            "_pub_dt": {"$cond": [
-                {"$eq": [{"$type": "$published_at"}, "string"]},
-                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
-                "$published_at",
-            ]}
-        }},
-        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}} if period != "all" else {"$match": {}},
-        {"$group": {"_id": None, "views": {"$sum": "$views"}, "videos": {"$sum": 1}}},
-    ]
-    agg_res = await db.tracked_videos.aggregate(pipeline).to_list(1)
-    views_in_period = int(agg_res[0]["views"]) if agg_res else 0
-    videos_in_period = int(agg_res[0]["videos"]) if agg_res else 0
+    # ── Views = vues GAGNEES dans la periode (delta snapshots) ──
+    # Calcul HONNETE : views_in_period = total_au_jour_end - total_au_jour_start
+    # Si pas de snapshots, on retourne 0 (pas d'invention).
+    if period == "all":
+        # Total cumule (toutes les vues actuelles de la campagne)
+        agg_total = await db.tracked_videos.aggregate([
+            {"$match": {"campaign_id": campaign_id}},
+            {"$group": {"_id": None, "views": {"$sum": "$views"}, "videos": {"$sum": 1}}},
+        ]).to_list(1)
+        views_in_period = int(agg_total[0]["views"]) if agg_total else 0
+        videos_in_period = int(agg_total[0]["videos"]) if agg_total else 0
+    else:
+        # Snapshots quotidiens — delta entre debut et fin de periode
+        start_date_str = start.strftime("%Y-%m-%d")
+        end_date_str = end.strftime("%Y-%m-%d")
+        # Snapshot le plus recent <= end
+        snap_end_doc = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": {"$lte": end_date_str}},
+            sort=[("date", -1)]
+        )
+        # Snapshot le plus recent < start (ie. juste avant le debut)
+        snap_start_doc = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": {"$lt": start_date_str}},
+            sort=[("date", -1)]
+        )
+        end_total = int((snap_end_doc or {}).get("total_views") or 0)
+        start_total = int((snap_start_doc or {}).get("total_views") or 0)
+        views_in_period = max(0, end_total - start_total)
+
+        # Videos publiees dans la periode (count reel)
+        videos_in_period = await db.tracked_videos.count_documents({
+            "campaign_id": campaign_id,
+            "published_at": {"$ne": None},
+        })
 
     # ── Earnings (depends on payment model) ──
     payment_model = campaign.get("payment_model", "views")
@@ -10239,45 +10252,50 @@ async def get_campaign_views_chart(
     user: dict = Depends(get_current_user)
 ):
     """
-    Graphique des vues : agregation par DATE DE PUBLICATION des videos.
-    Toutes les granularites utilisent published_at (vrai jour de publication).
-    Le parametre offset permet la navigation entre periodes via les fleches.
+    Graphique des vues GAGNEES par jour, base UNIQUEMENT sur les snapshots quotidiens
+    reels (views_snapshots). Pas d'invention : si pas de snapshot pour un jour, la
+    valeur est 0 (donc avant que le tracking soit en place, courbe a plat = honnete).
     """
     from datetime import timedelta
     start, end = _compute_chart_window(days, offset)
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
 
-    # Agregation par jour de publication : montre les vues de chaque video au jour OU
-    # elle a ete publiee, peu importe quand elle a ete scrapee/ingeree.
-    # Resout le bug "toutes les vues sur le jour de creation" pour les campagnes avec backfill.
-    pipeline = [
-        {"$match": {"campaign_id": campaign_id, "published_at": {"$ne": None}}},
-        {"$addFields": {
-            "_pub_dt": {"$cond": [
-                {"$eq": [{"$type": "$published_at"}, "string"]},
-                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
-                "$published_at",
-            ]}
-        }},
-        {"$match": {"_pub_dt": {"$ne": None, "$gte": start, "$lte": end}}},
-        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}}, "views": {"$sum": "$views"}}},
-    ]
-    rows = await db.tracked_videos.aggregate(pipeline).to_list(days + 2)
-    views_by_day = {r["_id"]: r["views"] for r in rows}
+    # Recupere TOUS les snapshots quotidiens de la campagne (pas que la fenetre
+    # car on a besoin du snapshot J-1 pour calculer le delta du J=start)
+    snapshots = await db.views_snapshots.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(2000)
 
+    # Construit map date -> total_views
+    snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots if s.get("date")}
+
+    # Pour chaque jour de la fenetre : delta = today_total - yesterday_total
+    # Si pas de snapshot pour un jour : 0 (PAS d'extrapolation, PAS d'invention)
     timeline = []
     current = start
     while current <= end:
         day = current.strftime("%Y-%m-%d")
-        timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
+        prev = (current - timedelta(days=1)).strftime("%Y-%m-%d")
+        # Delta = total_au_jour_J - total_au_jour_J-1
+        # Si l'un des deux manque -> 0 (pas de donnee fiable)
+        if day in snap_by_date and prev in snap_by_date:
+            delta = max(0, snap_by_date[day] - snap_by_date[prev])
+        else:
+            delta = 0
+        timeline.append({"date": day, "views": int(delta)})
         current += timedelta(days=1)
+
     return {
         "timeline": timeline,
-        "source": "by_published_at",
+        "source": "daily_snapshots_delta",
         "granularity": "daily",
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "offset": offset,
         "days": days,
+        "note": "Vues GAGNEES par jour (delta entre snapshots). 0 = pas de snapshot pour cette date (pas d'invention).",
     }
 
 
@@ -10290,49 +10308,41 @@ async def get_my_views_chart(
 ):
     """
     Vues du clippeur connecté avec meme logique que campaign chart (horaire 24h/7j/30j, daily 90j/1an).
-    Note : les snapshots horaires sont par campagne (pas par user), donc pour le clipper on garde une approche simple :
-    - Pour 24h/7j/30j : agrege par jour de fetch (fetched_at) au lieu de published_at pour avoir l'evolution recente
-    - Pour 90j/365j : par published_at
+    Vues GAGNEES par jour pour ce clippeur, basees UNIQUEMENT sur user_views_snapshots
+    (delta total_views entre J et J-1). Pas d'invention : 0 si pas de snapshot.
     """
     from datetime import timedelta
     uid = user["user_id"]
     start, end = _compute_chart_window(days, offset)
 
-    pipeline = [
-        {"$match": {
-            "campaign_id": campaign_id,
-            "user_id": uid,
-            "published_at": {"$ne": None},
-        }},
-        {"$addFields": {
-            "_pub_dt": {"$cond": [
-                {"$eq": [{"$type": "$published_at"}, "string"]},
-                {"$dateFromString": {"dateString": "$published_at", "onError": None}},
-                "$published_at",
-            ]}
-        }},
-        {"$match": {"_pub_dt": {"$gte": start, "$lte": end}}},
-        {"$group": {
-            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$_pub_dt"}},
-            "views": {"$sum": "$views"},
-        }},
-    ]
-    rows = await db.tracked_videos.aggregate(pipeline).to_list(days + 2)
-    views_by_day = {r["_id"]: r["views"] for r in rows}
+    snapshots = await db.user_views_snapshots.find(
+        {"campaign_id": campaign_id, "user_id": uid},
+        {"_id": 0, "date": 1, "total_views": 1}
+    ).sort("date", 1).to_list(2000)
+
+    snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots if s.get("date")}
 
     timeline = []
     current = start
     while current <= end:
         day = current.strftime("%Y-%m-%d")
-        timeline.append({"date": day, "views": int(views_by_day.get(day, 0))})
+        prev = (current - timedelta(days=1)).strftime("%Y-%m-%d")
+        if day in snap_by_date and prev in snap_by_date:
+            delta = max(0, snap_by_date[day] - snap_by_date[prev])
+        else:
+            delta = 0
+        timeline.append({"date": day, "views": int(delta)})
         current += timedelta(days=1)
+
     return {
         "timeline": timeline,
         "granularity": "daily",
+        "source": "user_daily_snapshots_delta",
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "offset": offset,
         "days": days,
+        "note": "Vues GAGNEES par jour (delta snapshots). 0 si pas de snapshot pour cette date.",
     }
 
 @api_router.get("/campaigns/{campaign_id}/my-videos")
