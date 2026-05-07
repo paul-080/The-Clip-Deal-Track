@@ -3263,6 +3263,13 @@ function CampaignDashboard({ campaigns }) {
                                   </p>
                                 </div>
                               )}
+                              {!acc.last_scrape_error && acc.last_scrape_warning && (
+                                <div className="pt-1 border-t border-amber-500/20">
+                                  <p className="text-amber-400 text-[10px] truncate" title={acc.last_scrape_warning}>
+                                    {acc.last_scrape_warning}
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           );
                         })}

@@ -3550,14 +3550,48 @@ def _looks_like_url_or_dirty(s: str) -> bool:
 
 async def _verify_youtube(username: str) -> dict:
     if not YOUTUBE_API_KEY:
-        raise ValueError("YOUTUBE_API_KEY non configurée")
+        raise ValueError("YOUTUBE_API_KEY non configurée — ajouter dans Railway env (gratuit sur Google Cloud Console)")
+    last_error_msg = None
     async with httpx.AsyncClient(timeout=15) as c:
         for param in ("forHandle", "forUsername"):
-            r = await c.get(
-                "https://www.googleapis.com/youtube/v3/channels",
-                params={"part": "snippet,statistics", param: username.lstrip("@"), "key": YOUTUBE_API_KEY}
-            )
-            data = r.json()
+            try:
+                r = await c.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet,statistics", param: username.lstrip("@"), "key": YOUTUBE_API_KEY}
+                )
+            except Exception as e:
+                last_error_msg = f"Connexion YouTube echouee : {type(e).__name__}: {e}"
+                logger.warning(f"YouTube verify network error for @{username} ({param}): {e}")
+                continue
+
+            if r.status_code != 200:
+                # Detection erreurs precises (quota, key invalide)
+                err_reason = ""
+                try:
+                    err_data = r.json()
+                    err_reason = (err_data.get("error", {}).get("message") or "")[:200]
+                    for er in err_data.get("error", {}).get("errors", []):
+                        reason = er.get("reason", "")
+                        if reason in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+                            err_reason = f"QUOTA YouTube depasse (10000 units/jour) - voir Google Cloud Console"
+                            break
+                        if reason in ("keyInvalid", "ipRefererBlocked", "accessNotConfigured"):
+                            err_reason = f"YOUTUBE_API_KEY invalide ou restreinte ({reason})"
+                            break
+                except Exception:
+                    pass
+                last_error_msg = f"YouTube API HTTP {r.status_code}: {err_reason or r.text[:200]}"
+                logger.error(f"YouTube verify HTTP {r.status_code} for @{username} ({param}): {err_reason}")
+                # Si quota depasse ou key invalide, pas la peine d'essayer l'autre param
+                if "quota" in (err_reason or "").lower() or "invalide" in (err_reason or "").lower():
+                    raise ValueError(last_error_msg)
+                continue
+
+            try:
+                data = r.json()
+            except Exception:
+                last_error_msg = "YouTube : reponse JSON invalide"
+                continue
             items = data.get("items", [])
             if items:
                 item = items[0]
@@ -3569,7 +3603,9 @@ async def _verify_youtube(username: str) -> dict:
                     "follower_count": int(stats.get("subscriberCount", 0)),
                     "platform_channel_id": item["id"],
                 }
-    raise ValueError(f"Chaîne YouTube '{username}' introuvable")
+    if last_error_msg:
+        raise ValueError(last_error_msg)
+    raise ValueError(f"Chaîne YouTube '{username}' introuvable (ni handle ni username)")
 
 _STEALTH_SCRIPT = """
     () => {
@@ -4566,7 +4602,7 @@ async def _apify_get_dataset(dataset_id: str) -> list:
 
 async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> list:
     # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _fetch_instagram_videos_apify desactive pour @{username}")
         return []
     """
@@ -5006,7 +5042,7 @@ def _parse_instagram_videos(data: dict) -> list:
 async def _verify_instagram_apify(username: str) -> dict:
     """Verify Instagram account via Apify — uses residential proxies, cloud-safe."""
     # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _verify_instagram_apify desactive pour @{username}")
         raise ValueError("Apify Insta desactive (kill switch APIFY_INSTA_FORCE_OFF)")
     if not APIFY_TOKEN:
@@ -5164,7 +5200,8 @@ async def _track_api_call(service: str, success: bool = True):
 
 
 async def verify_account(platform: str, username: str) -> dict:
-    service_map = {"youtube": "youtube", "tiktok": "apify", "instagram": "apify"}
+    # service_map = plateforme reelle (pas "apify"). Stats Apify trackees via _log_scrape.
+    service_map = {"youtube": "youtube", "tiktok": "tiktok", "instagram": "instagram"}
     success = True
     try:
         if platform == "youtube":
@@ -5700,8 +5737,9 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         logger.info(f"TikWm fetched {len(tikwm_videos)} videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
-    # If TikWm found many videos (API key worked), return immediately
-    if len(tikwm_videos) >= 10:
+    # If TikWm found many videos avec au moins 1 avec vues > 0 = API key vraiment OK
+    # Sans cette verif, on retourne tot meme si toutes les videos ont views=0 (block IP partiel)
+    if len(tikwm_videos) >= 10 and any((v.get("views") or 0) > 0 for v in tikwm_videos):
         return tikwm_videos
     # Strategy 2: TikTok mobile API (requires numeric user_id)
     mobile_videos = []
@@ -5846,7 +5884,7 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
 
-_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
+_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes'))
 
 
 async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
@@ -6296,7 +6334,9 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     #   - VPS clipscraper a echoue (VPS down)
     #   - yt-dlp fallback aussi a echoue (Insta vraiment HS)
     # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
-    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
+    # Apify Insta autorise en FALLBACK uniquement quand TOUTES les sources gratuites ont echoue
+    # Defaut 'true' = activer (cree alerte critique a chaque utilisation pour signaler le probleme)
+    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'true').strip().lower() in ('true', '1', 'yes'))
     if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
@@ -6492,53 +6532,153 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
-    if not YOUTUBE_API_KEY or not channel_id:
+    """Fetch YouTube videos via Data API v3 avec full error handling.
+    Erreurs explicites loggees au lieu de retourner [] silencieusement.
+    Pagination via pageToken jusqu'a couvrir since_days (ou max 500 videos).
+    """
+    if not YOUTUBE_API_KEY:
+        logger.warning(f"YouTube fetch : YOUTUBE_API_KEY manquante (channel_id={channel_id})")
         return []
-    # Get uploads playlist id
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(
-            "https://www.googleapis.com/youtube/v3/channels",
-            params={"part": "contentDetails", "id": channel_id, "key": YOUTUBE_API_KEY}
-        )
-        items = r.json().get("items", [])
-        if not items:
+    if not channel_id:
+        logger.warning(f"YouTube fetch : channel_id manquant")
+        return []
+
+    # 1. Recupere uploads playlist id
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "contentDetails", "id": channel_id, "key": YOUTUBE_API_KEY}
+            )
+        if r.status_code != 200:
+            err_body = r.text[:300]
+            err_reason = ""
+            try:
+                err_data = r.json()
+                err_reason = (err_data.get("error", {}).get("message") or "")[:200]
+                # Detection quota depasse
+                errors_arr = err_data.get("error", {}).get("errors", [])
+                for e in errors_arr:
+                    if e.get("reason") in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+                        err_reason = f"QUOTA YouTube depasse : {e.get('message', '')}"
+                        break
+            except Exception:
+                pass
+            logger.error(f"YouTube channels API HTTP {r.status_code} for {channel_id}: {err_reason or err_body}")
+            raise ValueError(f"YouTube API HTTP {r.status_code}: {err_reason or 'verifie YOUTUBE_API_KEY ou quota Google Cloud'}")
+        try:
+            data = r.json()
+        except Exception as je:
+            logger.error(f"YouTube channels JSON parse failed for {channel_id}: {je}")
             return []
-        uploads_playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+        items = data.get("items", [])
+        if not items:
+            logger.warning(f"YouTube : channel {channel_id} introuvable (no items returned)")
+            return []
+        uploads_playlist = items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
+        if not uploads_playlist:
+            logger.warning(f"YouTube : channel {channel_id} sans playlist uploads")
+            return []
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"YouTube channels fetch failed for {channel_id}: {type(e).__name__}: {e}")
+        return []
 
-        r2 = await c.get(
-            "https://www.googleapis.com/youtube/v3/playlistItems",
-            params={"part": "snippet,contentDetails", "playlistId": uploads_playlist,
-                    "maxResults": 200, "key": YOUTUBE_API_KEY}
-        )
-        playlist_items = r2.json().get("items", [])
+    # 2. Recupere les videos de la playlist (avec pagination si necessaire)
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
+    video_ids: list = []
+    page_token = None
+    pages_fetched = 0
+    MAX_PAGES = 10  # 10 pages * 50 = 500 videos max
 
-    # Pas de filtre de date — on récupère toutes les vidéos
-    video_ids = [item["contentDetails"]["videoId"] for item in playlist_items if item.get("contentDetails", {}).get("videoId")]
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            while pages_fetched < MAX_PAGES:
+                params = {
+                    "part": "snippet,contentDetails",
+                    "playlistId": uploads_playlist,
+                    "maxResults": 50,
+                    "key": YOUTUBE_API_KEY,
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                r2 = await c.get("https://www.googleapis.com/youtube/v3/playlistItems", params=params)
+                if r2.status_code != 200:
+                    logger.error(f"YouTube playlistItems HTTP {r2.status_code} for {channel_id}: {r2.text[:200]}")
+                    break
+                try:
+                    data2 = r2.json()
+                except Exception:
+                    break
+                playlist_items = data2.get("items", [])
+                if not playlist_items:
+                    break
+                # Stop si la plus ancienne video de la page est > since_days
+                stop_pagination = False
+                for item in playlist_items:
+                    vid = item.get("contentDetails", {}).get("videoId")
+                    if not vid:
+                        continue
+                    pub = item.get("contentDetails", {}).get("videoPublishedAt") or item.get("snippet", {}).get("publishedAt")
+                    if pub:
+                        try:
+                            pub_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                            if pub_dt < cutoff_dt:
+                                stop_pagination = True
+                                continue  # skip cette video mais ne break pas (les suivantes pourraient etre OK ?)
+                        except Exception:
+                            pass
+                    video_ids.append(vid)
+                if stop_pagination:
+                    break
+                page_token = data2.get("nextPageToken")
+                if not page_token:
+                    break
+                pages_fetched += 1
+    except Exception as e:
+        logger.error(f"YouTube playlistItems failed for {channel_id}: {type(e).__name__}: {e}")
 
     if not video_ids:
+        logger.warning(f"YouTube : 0 videos retrouvees pour channel {channel_id}")
         return []
 
-    async with httpx.AsyncClient(timeout=15) as c:
-        r3 = await c.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={"part": "snippet,statistics", "id": ",".join(video_ids), "key": YOUTUBE_API_KEY}
-        )
-        vid_items = r3.json().get("items", [])
+    # 3. Recupere les stats des videos (par batch de 50)
+    result: list = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            for i in range(0, len(video_ids), 50):
+                batch = video_ids[i:i+50]
+                r3 = await c.get(
+                    "https://www.googleapis.com/youtube/v3/videos",
+                    params={"part": "snippet,statistics", "id": ",".join(batch), "key": YOUTUBE_API_KEY}
+                )
+                if r3.status_code != 200:
+                    logger.error(f"YouTube videos stats HTTP {r3.status_code} for batch {i//50}: {r3.text[:200]}")
+                    continue
+                try:
+                    vid_data = r3.json()
+                except Exception:
+                    continue
+                vid_items = vid_data.get("items", [])
+                for v in vid_items:
+                    snip = v.get("snippet", {})
+                    stats = v.get("statistics", {})
+                    result.append({
+                        "platform_video_id": v["id"],
+                        "url": f"https://www.youtube.com/watch?v={v['id']}",
+                        "title": snip.get("title"),
+                        "thumbnail_url": snip.get("thumbnails", {}).get("medium", {}).get("url"),
+                        "views": int(stats.get("viewCount", 0)),
+                        "likes": int(stats.get("likeCount", 0)),
+                        "comments": int(stats.get("commentCount", 0)),
+                        "published_at": snip.get("publishedAt"),
+                    })
+    except Exception as e:
+        logger.error(f"YouTube stats fetch failed for {channel_id}: {type(e).__name__}: {e}")
 
-    result = []
-    for v in vid_items:
-        snip = v.get("snippet", {})
-        stats = v.get("statistics", {})
-        result.append({
-            "platform_video_id": v["id"],
-            "url": f"https://www.youtube.com/watch?v={v['id']}",
-            "title": snip.get("title"),
-            "thumbnail_url": snip.get("thumbnails", {}).get("medium", {}).get("url"),
-            "views": int(stats.get("viewCount", 0)),
-            "likes": int(stats.get("likeCount", 0)),
-            "comments": int(stats.get("commentCount", 0)),
-            "published_at": snip.get("publishedAt"),
-        })
+    if result:
+        logger.info(f"YouTube : {len(result)} videos for channel {channel_id} (paginated {pages_fetched+1} pages)")
     return result
 
 def _parse_utc(s) -> "datetime | None":
@@ -7495,12 +7635,6 @@ async def _scrape_one_account_into_campaign(
         except Exception as e:
             logger.warning(f"Insert tracked_video failed: {e}")
 
-    await db.social_accounts.update_one(
-        {"account_id": acc_id},
-        {"$set": {"last_tracked_at": now_iso, "last_scrape_error": None,
-                  "last_scrape_attempt_at": now_iso}}
-    )
-
     # Si fetched > 0 mais inserted = 0 et tout filtré par cutoff : warning
     warning = None
     if inserted == 0 and skipped_pre_cutoff > 0:
@@ -7510,6 +7644,17 @@ async def _scrape_one_account_into_campaign(
             f"(tracking_start_date) — aucune ne compte. Recule la date pour les inclure."
         )
         logger.warning(f"{plat}/@{uname} : {warning}")
+
+    # Update social_account avec last_scrape_warning si applicable (visible UI agence)
+    update_fields = {
+        "last_tracked_at": now_iso, "last_scrape_error": None,
+        "last_scrape_attempt_at": now_iso,
+        "last_scrape_warning": warning,  # null si tout OK, sinon message a afficher
+    }
+    await db.social_accounts.update_one(
+        {"account_id": acc_id},
+        {"$set": update_fields}
+    )
 
     logger.info(f"Scrape OK {plat}/@{uname} → {inserted} insérées sur {len(videos)} fetched (skipped pre-cutoff: {skipped_pre_cutoff})")
     return {
@@ -7521,7 +7666,9 @@ async def _scrape_one_account_into_campaign(
 
 
 async def fetch_videos(platform: str, username: str, account: dict, since_days: int = 30) -> list:
-    service_map = {"youtube": "youtube", "tiktok": "apify", "instagram": "apify"}
+    # service_map = nom de la plateforme reelle (pas "apify" - les stats apify
+    # sont trackees via _log_scrape uniquement quand Apify est vraiment utilise)
+    service_map = {"youtube": "youtube", "tiktok": "tiktok", "instagram": "instagram"}
     success = True
     try:
         if platform == "youtube":
@@ -7646,7 +7793,10 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 last_tracked = account.get("last_tracked_at")
                 last_growth = account.get("last_growth", None)
                 last_total = account.get("last_total_views", 0) or 0
-                if platform != "youtube" and last_tracked:
+                # Si le dernier scrape a echoue, on RETENTE toujours (pas de skip)
+                # pour ne pas laisser un compte en panne pendant 12-24h
+                last_scrape_err = account.get("last_scrape_error")
+                if platform != "youtube" and last_tracked and not last_scrape_err:
                     last_dt = _parse_utc(last_tracked) or datetime.now(timezone.utc)
                     elapsed_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
                     if is_clicks_campaign:
@@ -15206,7 +15356,7 @@ async def admin_debug_instagram(username: str, request: Request, _: bool = Depen
 
     # ── 0. Test Apify — démarrage uniquement (sans poll, évite timeout) ──
     # KILL SWITCH : skip si Apify Insta desactive
-    apify_kill = os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')
+    apify_kill = os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')
     if APIFY_TOKEN and not APIFY_DISABLED and not apify_kill:
         try:
             actor_id = "apify~instagram-reel-scraper"
