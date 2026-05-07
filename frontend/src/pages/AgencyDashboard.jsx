@@ -624,7 +624,7 @@ function CreateCampaign({ onCreated }) {
         ...formData,
         rpm: (formData.payment_model === "views" || formData.payment_model === "both") ? parseFloat(formData.rpm) || 0 : 0,
         rate_per_click: (formData.payment_model === "clicks" || formData.payment_model === "both") ? parseFloat(formData.rate_per_click) || 0 : 0,
-        tracking_start_date: formData.tracking_start_date ? new Date(formData.tracking_start_date).toISOString() : null,
+        tracking_start_date: null,  // Plus utilise dans UI : backend defaut = now() au moment de la creation
         destination_url: formData.destination_url.trim() || null,
         budget_total: formData.budget_unlimited ? null : parseFloat(formData.budget_total) || null,
         min_view_payout: parseInt(formData.min_view_payout) || 0,
@@ -750,31 +750,8 @@ function CreateCampaign({ onCreated }) {
         </CardHeader>
         <CardContent className="space-y-5">
 
-          {/* Date debut tracking - permet de tracker les videos deja postees pour migration agence */}
-          {/* Limite : max 2 mois en arriere (protege le scraping de surcharge) */}
-          {(() => {
-            const minDate = new Date();
-            minDate.setMonth(minDate.getMonth() - 2);
-            const minDateStr = minDate.toISOString().slice(0, 10);
-            const maxDate = new Date();
-            maxDate.setDate(maxDate.getDate() + 7);
-            const maxDateStr = maxDate.toISOString().slice(0, 10);
-            return (
-              <div className="bg-[#FF007F]/5 border border-[#FF007F]/20 rounded-xl p-4 space-y-2">
-                <label className="block text-sm text-white font-medium">📅 Tracker les vidéos postées depuis :</label>
-                <input
-                  type="date"
-                  min={minDateStr}
-                  max={maxDateStr}
-                  value={formData.tracking_start_date}
-                  onChange={(e) => handleChange("tracking_start_date", e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-[#FF007F]/50"
-                />
-                <p className="text-xs text-white/50">Vide = à partir de maintenant. Mets une date passée si tu démarres au milieu d'une campagne déjà en cours.</p>
-                <p className="text-[10px] text-amber-400/80">⚠️ Limite : 2 mois maximum en arrière (depuis le {new Date(minDateStr).toLocaleDateString("fr-FR")}). Au-delà, le scraping serait trop lourd et les données peu fiables.</p>
-              </div>
-            );
-          })()}
+          {/* tracking_start_date retire du UI : la campagne tracke automatiquement
+              les videos postees a partir de sa creation. Plus de backfill estime. */}
 
           {/* Toggle modèle */}
           <div>
@@ -1401,13 +1378,9 @@ function CampaignDashboard({ campaigns }) {
     if (!settingsForm) return;
     setSavingSettings(true);
     try {
-      // Convert tracking_start_date (YYYY-MM-DD) to ISO datetime
       const payload = { ...settingsForm };
-      if (payload.tracking_start_date) {
-        payload.tracking_start_date = new Date(payload.tracking_start_date + "T00:00:00Z").toISOString();
-      } else {
-        payload.tracking_start_date = null;
-      }
+      // tracking_start_date retire du UI : ne pas le modifier via les settings
+      delete payload.tracking_start_date;
       const res = await fetch(`${API}/campaigns/${campaignId}/settings`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -3939,30 +3912,8 @@ function CampaignDashboard({ campaigns }) {
               />
             </div>
 
-            {/* Tracking start date - permet de modifier la date de debut tracking */}
-            <div className="bg-white/3 border border-white/10 rounded-xl p-4 space-y-2">
-              <h4 className="text-sm font-semibold text-white">📅 Date de début du tracking</h4>
-              <p className="text-xs text-white/40">Toutes les vidéos publiées par tes clippeurs depuis cette date sont trackées + rémunérées. Modifier permet d'inclure/exclure des vidéos déjà postées.</p>
-              {(() => {
-                const minDate = new Date(); minDate.setMonth(minDate.getMonth() - 2);
-                const minDateStr = minDate.toISOString().slice(0, 10);
-                const maxDate = new Date(); maxDate.setDate(maxDate.getDate() + 7);
-                const maxDateStr = maxDate.toISOString().slice(0, 10);
-                return (
-                  <>
-                    <input
-                      type="date"
-                      min={minDateStr}
-                      max={maxDateStr}
-                      value={settingsForm.tracking_start_date || ""}
-                      onChange={e => setSettingsForm(p => ({ ...p, tracking_start_date: e.target.value }))}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/25"
-                    />
-                    <p className="text-[10px] text-amber-400/80 mt-1">⚠️ Limite : 2 mois max en arrière (depuis le {new Date(minDateStr).toLocaleDateString("fr-FR")}).</p>
-                  </>
-                );
-              })()}
-            </div>
+            {/* Date debut tracking retiree du UI :
+                la campagne tracke automatiquement les videos a partir de sa creation. */}
 
             {/* Strikes : nb max + jours d'inactivite + cadence */}
             <div className="bg-white/3 border border-white/10 rounded-xl p-4 space-y-3">
