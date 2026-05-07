@@ -1839,6 +1839,17 @@ function InstaHealthSection() {
       .finally(() => setGlobalLoading(false));
   }, []);
 
+  const [vpsData, setVpsData] = useState(null);
+  const [vpsLoading, setVpsLoading] = useState(false);
+  const runVpsTest = useCallback(() => {
+    setVpsLoading(true);
+    setVpsData(null);
+    adminFetch("/admin/vps-health")
+      .then(setVpsData)
+      .catch((e) => toast.error("Test VPS failed : " + (e.message || "erreur")))
+      .finally(() => setVpsLoading(false));
+  }, []);
+
   const retryFailed = useCallback(() => {
     setRetrying(true);
     setRetryResult(null);
@@ -1870,6 +1881,13 @@ function InstaHealthSection() {
             {globalLoading ? "Test 3 plateformes..." : "🌐 Test 3 plateformes"}
           </button>
           <button
+            onClick={runVpsTest}
+            disabled={vpsLoading}
+            className="px-3 py-2 rounded-lg bg-purple-500 hover:bg-purple-500/80 text-white text-sm font-semibold disabled:opacity-50"
+          >
+            {vpsLoading ? "Test VPS..." : "🖥️ Tester VPS"}
+          </button>
+          <button
             onClick={runTest}
             disabled={loading}
             className="px-3 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold disabled:opacity-50"
@@ -1887,6 +1905,43 @@ function InstaHealthSection() {
           )}
         </div>
       </div>
+
+      {/* Resultat test VPS */}
+      {vpsData && (
+        <div className={`rounded-lg border p-4 ${
+          vpsData.verdict?.includes("✅") ? "bg-green-500/10 border-green-500/40" :
+          vpsData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
+          "bg-amber-500/10 border-amber-500/40"
+        }`}>
+          <p className={`font-bold text-sm mb-2 ${
+            vpsData.verdict?.includes("✅") ? "text-green-400" :
+            vpsData.verdict?.includes("🚨") ? "text-red-400" : "text-amber-400"
+          }`}>{vpsData.verdict}</p>
+          {vpsData.fix && (
+            <p className="text-white/70 text-xs mb-2">🔧 {vpsData.fix}</p>
+          )}
+          {vpsData.vps_url && (
+            <p className="text-[10px] text-white/40 mb-2 font-mono">URL : {vpsData.vps_url}</p>
+          )}
+          <div className="space-y-1">
+            {(vpsData.tests || []).map((t, i) => (
+              <div key={i} className={`text-xs px-2 py-1.5 rounded ${
+                t.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"
+              }`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">{t.ok ? "✅" : "❌"} {t.name}</span>
+                  {t.duration_ms !== undefined && <span className="text-[10px] opacity-60">{t.duration_ms}ms</span>}
+                </div>
+                {t.result && <p className="text-[10px] opacity-80 mt-0.5">→ {t.result}</p>}
+                {t.error && <p className="text-[10px] opacity-80 mt-0.5">err: {t.error.substring(0, 200)}</p>}
+                {!t.ok && t.fix_if_failed && (
+                  <p className="text-[10px] text-amber-300 mt-1">🔧 {t.fix_if_failed}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Resultat test global 3 plateformes */}
       {globalData && (

@@ -14188,6 +14188,147 @@ async def admin_apify_usage_today(request: Request, _: bool = Depends(verify_adm
         return {"error": str(e)[:300]}
 
 
+@api_router.get("/admin/vps-health")
+async def admin_vps_health(request: Request, _: bool = Depends(verify_admin_code)):
+    """DIAGNOSTIC VPS : test 4 actions sur le VPS pour identifier ce qui pete.
+    1. Connectivite TCP/HTTP de base (ping racine)
+    2. Auth avec X-API-Key
+    3. Endpoint scraping (test sur natgeo Insta)
+    4. Endpoint scraping TikTok (test sur khaby.lame)
+    """
+    if not CLIP_SCRAPER_URL:
+        return {
+            "configured": False,
+            "verdict": "❌ CLIP_SCRAPER_URL non configure dans Railway env",
+            "fix": "Ajoute CLIP_SCRAPER_URL=https://srv1619447.hstgr.cloud (ou ton VPS)",
+        }
+    if not CLIP_SCRAPER_KEY:
+        return {
+            "configured": False,
+            "verdict": "❌ CLIP_SCRAPER_KEY non configure dans Railway env",
+            "fix": "Ajoute CLIP_SCRAPER_KEY=ta_cle_secrete (definie sur le VPS)",
+        }
+
+    report = {
+        "configured": True,
+        "vps_url": CLIP_SCRAPER_URL,
+        "tests": [],
+    }
+
+    # Test 1 : Connectivite de base (HTTP root)
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(CLIP_SCRAPER_URL)
+        report["tests"].append({
+            "name": "1. Connectivité HTTP racine",
+            "ok": r.status_code in (200, 404, 401, 403),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "status_code": r.status_code,
+            "result": f"HTTP {r.status_code}" + (" — VPS repond" if r.status_code in (200, 404, 401, 403) else ""),
+            "fix_if_failed": "VPS injoignable ou DNS cassé. Verifie srv1619447.hstgr.cloud dans navigateur.",
+        })
+    except Exception as e:
+        report["tests"].append({
+            "name": "1. Connectivité HTTP racine",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+            "fix_if_failed": "VPS injoignable. Verifie : 1) URL exacte 2) VPS allume 3) Docker container running",
+        })
+
+    # Test 2 : Endpoint healthcheck si dispose
+    t0 = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(f"{CLIP_SCRAPER_URL}/health", headers={"X-API-Key": CLIP_SCRAPER_KEY})
+        if r.status_code == 200:
+            try:
+                health_data = r.json()
+            except Exception:
+                health_data = {"raw": r.text[:200]}
+            report["tests"].append({
+                "name": "2. Endpoint /health avec auth",
+                "ok": True,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "status_code": 200,
+                "result": str(health_data)[:200],
+            })
+        else:
+            report["tests"].append({
+                "name": "2. Endpoint /health avec auth",
+                "ok": False,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "status_code": r.status_code,
+                "result": f"HTTP {r.status_code}: {r.text[:150]}",
+                "fix_if_failed": "401/403 = CLIP_SCRAPER_KEY incorrect. 404 = endpoint /health pas implemente sur le VPS.",
+            })
+    except Exception as e:
+        report["tests"].append({
+            "name": "2. Endpoint /health avec auth",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+
+    # Test 3 : Scrape Instagram via VPS
+    t0 = time.time()
+    try:
+        videos = await _fetch_via_clipscraper("instagram", "natgeo", max_videos=3)
+        report["tests"].append({
+            "name": "3. Scrape Instagram @natgeo via VPS",
+            "ok": bool(videos and len(videos) > 0),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "result": f"{len(videos)} reels recuperes" if videos else "0 video — VPS repond mais scraping casse",
+            "fix_if_failed": "VPS Docker container plante ou manque de proxy residentiel. Voir logs VPS.",
+        })
+    except Exception as e:
+        report["tests"].append({
+            "name": "3. Scrape Instagram @natgeo via VPS",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": f"{type(e).__name__}: {str(e)[:300]}",
+            "fix_if_failed": "Le scrapeur sur le VPS ne peut pas atteindre Instagram. Ajoute proxy residentiel sur le VPS lui-meme.",
+        })
+
+    # Test 4 : Scrape TikTok via VPS
+    t0 = time.time()
+    try:
+        videos = await _fetch_via_clipscraper("tiktok", "khaby.lame", max_videos=3)
+        report["tests"].append({
+            "name": "4. Scrape TikTok @khaby.lame via VPS",
+            "ok": bool(videos and len(videos) > 0),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "result": f"{len(videos)} videos recuperees" if videos else "0 video — VPS repond mais scraping TikTok casse",
+            "fix_if_failed": "Le scrapeur TikTok sur le VPS plante. Voir logs Docker container.",
+        })
+    except Exception as e:
+        report["tests"].append({
+            "name": "4. Scrape TikTok @khaby.lame via VPS",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": f"{type(e).__name__}: {str(e)[:300]}",
+        })
+
+    # Verdict
+    all_ok = all(t.get("ok") for t in report["tests"])
+    none_ok = not any(t.get("ok") for t in report["tests"])
+    if all_ok:
+        report["verdict"] = "✅ VPS marche parfaitement — Insta + TikTok scrapent correctement"
+    elif none_ok:
+        report["verdict"] = "🚨 VPS COMPLETEMENT HS — VPS injoignable ou Docker container down"
+        report["fix"] = "1) SSH sur srv1619447.hstgr.cloud 2) docker ps (verifie clipscraper running) 3) docker logs clipscraper"
+    else:
+        connectivity_ok = report["tests"][0].get("ok") if report["tests"] else False
+        if connectivity_ok:
+            report["verdict"] = "⚠️ VPS repond mais scraping plante (Insta/TikTok) — proxy residentiel manquant ou plateforme bloque IP du VPS"
+            report["fix"] = "Ajouter un proxy residentiel sur le VPS lui-meme (Webshare configure dans le code clipscraper)"
+        else:
+            report["verdict"] = "⚠️ VPS partiellement HS — auth OK mais scraping casse"
+
+    return report
+
+
 @api_router.get("/admin/scraping-health-all")
 async def admin_scraping_health_all(request: Request, _: bool = Depends(verify_admin_code)):
     """TEST EXHAUSTIF des 3 plateformes (Insta + TikTok + YouTube).
