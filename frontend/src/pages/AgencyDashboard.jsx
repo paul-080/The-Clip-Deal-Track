@@ -1242,6 +1242,19 @@ function CampaignDashboard({ campaigns }) {
   }, [campaignId, activeTab, periodSel, periodOffset]);
 
   const [refreshingStats, setRefreshingStats] = useState(false);
+  const [refreshCountdown, setRefreshCountdown] = useState(0);
+  const refreshAllData = useCallback(() => {
+    // Reload ALL data sources de la campagne
+    try { fetchCampaign?.(); } catch {}
+    try { fetchStats?.(); } catch {}
+    try { fetchAllVideos?.(); } catch {}
+    try { fetchTopClips?.(); } catch {}
+    try { fetchAllAccounts?.(); } catch {}
+    try { fetchPeriodStats?.(); } catch {}
+    try { fetchViewsTimeline?.(); } catch {}
+    try { fetchMonthlyEarnings?.(); } catch {}
+  }, []);
+
   const handleRefreshStats = async () => {
     if (refreshingStats) return;
     setRefreshingStats(true);
@@ -1251,17 +1264,28 @@ function CampaignDashboard({ campaigns }) {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        toast.success(data.message || "Refresh lancé — vues mises à jour dans 1-3 min", { duration: 6000 });
-        // Auto-refresh des stats apres 60s puis 180s
-        setTimeout(() => { fetchAllVideos(); fetchTopClips(); }, 60000);
-        setTimeout(() => { fetchAllVideos(); fetchTopClips(); }, 180000);
+        toast.success("✓ Scrape lancé — refresh auto dans 60s, 90s, 180s", { duration: 6000 });
+        // Refresh IMMEDIAT (fetch les data deja en DB)
+        refreshAllData();
+        // Refresh apres 60s, 90s, 180s pour capter les nouvelles vues
+        setTimeout(() => refreshAllData(), 60000);
+        setTimeout(() => refreshAllData(), 90000);
+        setTimeout(() => refreshAllData(), 180000);
+        // Countdown visuel pendant 3 min
+        let countdown = 180;
+        setRefreshCountdown(countdown);
+        const timer = setInterval(() => {
+          countdown -= 1;
+          setRefreshCountdown(countdown);
+          if (countdown <= 0) clearInterval(timer);
+        }, 1000);
       } else if (res.status === 429) {
         toast.error(data.detail || "Trop tôt, attends 5 min entre 2 refresh", { duration: 5000 });
       } else {
-        toast.error(data.detail || "Erreur lors du refresh");
+        toast.error(data.detail || `Erreur ${res.status} lors du refresh`);
       }
     } catch (e) {
-      toast.error("Erreur réseau");
+      toast.error("Erreur réseau : " + (e?.message || "connexion impossible"));
     } finally {
       setRefreshingStats(false);
     }
@@ -2178,11 +2202,17 @@ function CampaignDashboard({ campaigns }) {
                     </div>
                     <button
                       onClick={handleRefreshStats}
-                      disabled={refreshingStats}
+                      disabled={refreshingStats || refreshCountdown > 0}
                       title="Force un scrape immédiat (cooldown 5 min)"
-                      className="px-3 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] text-xs font-semibold border border-[#00E5FF]/30 disabled:opacity-50"
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                        refreshCountdown > 0
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-wait"
+                          : "bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] border-[#00E5FF]/30 disabled:opacity-50"
+                      }`}
                     >
-                      {refreshingStats ? "↻ Refresh..." : "↻ Refresh stats"}
+                      {refreshingStats ? "↻ ..." :
+                       refreshCountdown > 0 ? `⏳ Scraping ${refreshCountdown}s` :
+                       "↻ Refresh stats"}
                     </button>
                   </div>
                 </div>
@@ -2450,11 +2480,17 @@ function CampaignDashboard({ campaigns }) {
                     </div>
                     <button
                       onClick={handleRefreshStats}
-                      disabled={refreshingStats}
+                      disabled={refreshingStats || refreshCountdown > 0}
                       title="Force un scrape immédiat (cooldown 5 min)"
-                      className="px-3 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] text-xs font-semibold border border-[#00E5FF]/30 disabled:opacity-50"
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-all ${
+                        refreshCountdown > 0
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30 cursor-wait"
+                          : "bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] border-[#00E5FF]/30 disabled:opacity-50"
+                      }`}
                     >
-                      {refreshingStats ? "↻ Refresh..." : "↻ Refresh stats"}
+                      {refreshingStats ? "↻ ..." :
+                       refreshCountdown > 0 ? `⏳ Scraping ${refreshCountdown}s` :
+                       "↻ Refresh stats"}
                     </button>
                   </div>
                 </div>
