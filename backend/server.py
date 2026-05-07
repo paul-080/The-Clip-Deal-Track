@@ -13997,6 +13997,76 @@ async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admi
     return {"results": results}
 
 
+@api_router.get("/admin/apify-usage-today")
+async def admin_apify_usage_today(request: Request, _: bool = Depends(verify_admin_code)):
+    """ALARME : compteur d'utilisation Apify aujourd'hui vs sources gratuites.
+    Si Apify > 5% du total = signal que le scraping gratuit est casse.
+    """
+    today_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
+
+    try:
+        # Total scrapes (success uniquement, par source)
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": today_start}, "success": True}},
+            {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+        ]
+        results = await db.scraping_history.aggregate(pipeline).to_list(50)
+
+        by_source = {r["_id"]: r["count"] for r in results}
+        total_scrapes = sum(by_source.values())
+
+        # Compteurs Apify par plateforme
+        apify_total = sum(c for src, c in by_source.items() if src and src.startswith("apify"))
+        apify_insta = await db.scraping_history.count_documents({
+            "source": "apify", "platform": "instagram", "success": True,
+            "timestamp": {"$gte": today_start}
+        })
+        apify_tiktok = await db.scraping_history.count_documents({
+            "source": "apify", "platform": "tiktok", "success": True,
+            "timestamp": {"$gte": today_start}
+        })
+
+        # Pourcentage Apify
+        apify_pct = round((apify_total / total_scrapes) * 100, 1) if total_scrapes > 0 else 0
+
+        # Verdict (selon ta regle : Apify = alarme uniquement)
+        if apify_total == 0:
+            severity = "ok"
+            verdict = "✅ Apify non utilise — scraping gratuit OK"
+            advice = "Tout va bien, le scraping gratuit suffit."
+        elif apify_pct < 1:
+            severity = "info"
+            verdict = f"ℹ️ Apify utilise tres rarement ({apify_total} calls, {apify_pct}%)"
+            advice = "Cas isoles, surveille mais pas urgent."
+        elif apify_pct < 5:
+            severity = "warning"
+            verdict = f"⚠️ Apify utilise {apify_pct}% — fallback frequent"
+            advice = "Le scraping gratuit echoue regulierement. Verifier proxy/VPS."
+        else:
+            severity = "critical"
+            verdict = f"🚨 Apify utilise {apify_pct}% — SYSTEME CASSE, refaire le scraping"
+            advice = "Le scraping gratuit ne marche plus. URGENT : reconfigure BACKEND_PROXY_URL ou CLIP_SCRAPER_URL."
+
+        # Estimation cout Apify aujourd'hui (Insta = $0.0026/reel * 12 reels = $0.031/call)
+        cost_today_eur = round(apify_insta * 12 * 0.0026 * 0.92 + apify_tiktok * 0.0003 * 0.92, 2)
+
+        return {
+            "today": today_start[:10],
+            "total_scrapes_today": total_scrapes,
+            "apify_total_today": apify_total,
+            "apify_instagram_today": apify_insta,
+            "apify_tiktok_today": apify_tiktok,
+            "apify_percentage": apify_pct,
+            "by_source": by_source,
+            "estimated_cost_eur_today": cost_today_eur,
+            "severity": severity,
+            "verdict": verdict,
+            "advice": advice,
+        }
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 @api_router.get("/admin/scraping-health-all")
 async def admin_scraping_health_all(request: Request, _: bool = Depends(verify_admin_code)):
     """TEST EXHAUSTIF des 3 plateformes (Insta + TikTok + YouTube).

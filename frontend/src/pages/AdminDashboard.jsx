@@ -1527,6 +1527,47 @@ function ProspectsTab() {
 
 
 // ─── Capacite & Couts ─────────────────────────────────────────────
+function ApifyAlarmBanner() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    const refresh = () => adminFetch("/admin/apify-usage-today").then(setData).catch(() => {});
+    refresh();
+    const i = setInterval(refresh, 2 * 60 * 1000);  // 2 min refresh
+    return () => clearInterval(i);
+  }, []);
+
+  if (!data || data.error || data.severity === "ok") return null;
+
+  const bg = data.severity === "critical" ? "bg-red-500/20 border-red-500/60" :
+             data.severity === "warning" ? "bg-amber-500/20 border-amber-500/60" :
+             "bg-blue-500/15 border-blue-500/40";
+  const fg = data.severity === "critical" ? "text-red-400" :
+             data.severity === "warning" ? "text-amber-400" : "text-blue-300";
+
+  return (
+    <div className={`rounded-xl border-2 p-4 ${bg}`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <p className={`font-bold text-base ${fg}`}>{data.verdict}</p>
+          <p className="text-white/70 text-xs mt-1">{data.advice}</p>
+          <p className="text-white/50 text-[10px] mt-1.5">
+            Aujourd'hui : <span className="font-mono text-white">{data.apify_total_today || 0}</span> calls Apify
+            (Insta {data.apify_instagram_today || 0} + TikTok {data.apify_tiktok_today || 0})
+            sur <span className="font-mono text-white">{data.total_scrapes_today || 0}</span> scrapes total
+            · Coût estimé : <span className="font-mono text-[#f0c040]">{data.estimated_cost_eur_today || 0}€</span>
+          </p>
+        </div>
+        {data.severity === "critical" && (
+          <div className="text-right">
+            <p className={`text-3xl font-mono font-bold ${fg}`}>{data.apify_percentage}%</p>
+            <p className="text-[10px] text-white/40">Apify usage</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SiteHealthSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1569,6 +1610,9 @@ function SiteHealthSection() {
 
   return (
     <div className="space-y-4">
+      {/* ── ALARME APIFY (uniquement si Apify utilisé) ── */}
+      <ApifyAlarmBanner />
+
       {/* ── BANDEAU GLOBAL : verdict + action urgente ── */}
       <div className={`rounded-xl border-2 p-5 ${statusBg(global_status)}`}>
         <div className="flex items-start justify-between gap-3 flex-wrap">
