@@ -3255,6 +3255,14 @@ function CampaignDashboard({ campaigns }) {
                                   <p className="text-[9px] text-white/40 uppercase">Posts</p>
                                 </div>
                               </div>
+                              {/* Ligne 3 : erreur de scraping si presente (visible direct par agence) */}
+                              {acc.last_scrape_error && (
+                                <div className="pt-1 border-t border-red-500/20">
+                                  <p className="text-red-400 text-[10px] truncate" title={acc.last_scrape_error}>
+                                    ⚠️ {acc.last_scrape_error}
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           );
                         })}

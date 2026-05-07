@@ -13847,6 +13847,247 @@ async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admi
     return {"results": results}
 
 
+@api_router.get("/admin/insta-health-full")
+async def admin_insta_health_full(request: Request, _: bool = Depends(verify_admin_code)):
+    """TEST EXHAUSTIF : verifie chaque source de scraping Insta avec un compte
+    test (@natgeo). Rapport clair pour identifier ce qui marche / pete.
+
+    Aussi : liste les comptes Insta de la DB qui ont un last_scrape_error
+    pour qu'on voie tous les comptes qui rateraient.
+    """
+    test_username = "natgeo"
+    report = {
+        "test_username": test_username,
+        "config": {
+            "BACKEND_PROXY_URL": "✅ set" if BACKEND_PROXY_URL else "❌ MISSING",
+            "CLIP_SCRAPER_URL": "✅ set" if CLIP_SCRAPER_URL else "❌ MISSING",
+            "CLIP_SCRAPER_KEY": "✅ set" if CLIP_SCRAPER_KEY else "❌ MISSING",
+            "RAPIDAPI_KEY": "✅ set" if RAPIDAPI_KEY else "❌ MISSING",
+            "INSTAGRAM_SESSIONS": f"✅ {len(INSTAGRAM_SESSIONS)} sessions" if INSTAGRAM_SESSIONS else "❌ MISSING",
+            "APIFY_TOKEN": "✅ set" if APIFY_TOKEN else "❌ MISSING",
+            "APIFY_INSTA_KILL_SWITCH (APIFY_INSTA_FORCE_OFF)": "ON (Apify Insta bloque)" if _APIFY_INSTA_KILL_SWITCH else "OFF (Apify Insta autorise)",
+            "APIFY_FOR_INSTA_ACCOUNT": os.environ.get("APIFY_FOR_INSTA_ACCOUNT", "false"),
+            "YT_DLP_AVAILABLE": YT_DLP_AVAILABLE,
+        },
+        "sources": [],
+    }
+
+    # 1. web_profile_info pour user_id
+    t0 = time.time()
+    try:
+        data = await _scrape_instagram_api(test_username)
+        uid = (data.get("data", {}).get("user", {}) or {}).get("id") or (data.get("data", {}).get("user", {}) or {}).get("pk")
+        report["sources"].append({
+            "name": "1. web_profile_info (récupère user_id)",
+            "ok": bool(uid),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "result": f"user_id={uid}" if uid else "no user_id in response",
+            "fix_if_failed": "Configure INSTAGRAM_SESSION_ID (cookie sessionid Insta) ou BACKEND_PROXY_URL (proxy webshare).",
+        })
+    except Exception as e:
+        report["sources"].append({
+            "name": "1. web_profile_info (récupère user_id)",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": str(e)[:300],
+            "fix_if_failed": "Configure INSTAGRAM_SESSION_ID ou BACKEND_PROXY_URL.",
+        })
+
+    # 2. Mobile Clips API (PRIORITY -1)
+    t0 = time.time()
+    try:
+        videos = await _fetch_instagram_account_via_graphql(test_username, max_videos=10)
+        report["sources"].append({
+            "name": "2. Mobile Clips API + GraphQL (PRIORITY -1, free)",
+            "ok": bool(videos),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "result": f"{len(videos)} reels" if videos else "no reels returned",
+            "fix_if_failed": "Configure BACKEND_PROXY_URL avec un proxy residentiel (webshare). Sans ca, Insta bloque les IPs cloud Railway.",
+        })
+    except Exception as e:
+        report["sources"].append({
+            "name": "2. Mobile Clips API + GraphQL (PRIORITY -1, free)",
+            "ok": False,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "error": str(e)[:300],
+            "fix_if_failed": "Configure BACKEND_PROXY_URL.",
+        })
+
+    # 3. VPS clipscraper (PRIORITY 0)
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        t0 = time.time()
+        try:
+            videos = await _fetch_via_clipscraper("instagram", test_username, max_videos=10)
+            report["sources"].append({
+                "name": "3. VPS clipscraper (PRIORITY 0, free)",
+                "ok": bool(videos),
+                "duration_ms": int((time.time() - t0) * 1000),
+                "result": f"{len(videos)} reels" if videos else "no reels returned",
+                "fix_if_failed": "VPS Hostinger down ou clipscraper plante. Verifier srv1619447.hstgr.cloud (logs Docker).",
+            })
+        except Exception as e:
+            report["sources"].append({
+                "name": "3. VPS clipscraper (PRIORITY 0, free)",
+                "ok": False,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "error": str(e)[:300],
+                "fix_if_failed": "VPS injoignable. Verifier que Docker tourne et que CLIP_SCRAPER_URL/KEY sont corrects.",
+            })
+    else:
+        report["sources"].append({
+            "name": "3. VPS clipscraper",
+            "ok": False,
+            "skipped": True,
+            "fix_if_failed": "Configure CLIP_SCRAPER_URL et CLIP_SCRAPER_KEY (VPS Hostinger).",
+        })
+
+    # 4. yt-dlp profile (PRIORITY 0c, NEW)
+    if YT_DLP_AVAILABLE:
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_via_ytdlp_profile(test_username, max_videos=10)
+            report["sources"].append({
+                "name": "4. yt-dlp profile (PRIORITY 0c, free, no config)",
+                "ok": bool(videos),
+                "duration_ms": int((time.time() - t0) * 1000),
+                "result": f"{len(videos)} videos" if videos else "no videos returned",
+                "fix_if_failed": "yt-dlp aussi bloque par Insta depuis IP Railway. Solution : proxy webshare ou VPS.",
+            })
+        except Exception as e:
+            report["sources"].append({
+                "name": "4. yt-dlp profile",
+                "ok": False,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "error": str(e)[:300],
+            })
+
+    # 5. Apify (toujours fallback, doit marcher)
+    if APIFY_TOKEN and not _APIFY_INSTA_KILL_SWITCH:
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_via_apify_reel_scraper_account(test_username, max_videos=5)
+            report["sources"].append({
+                "name": "5. Apify Reel Scraper (FALLBACK PAYANT)",
+                "ok": bool(videos),
+                "duration_ms": int((time.time() - t0) * 1000),
+                "result": f"{len(videos)} reels (cost ~$0.013)" if videos else "no reels returned",
+                "fix_if_failed": "Verifier APIFY_TOKEN valide et budget Apify (dashboard.apify.com).",
+            })
+        except Exception as e:
+            report["sources"].append({
+                "name": "5. Apify Reel Scraper",
+                "ok": False,
+                "duration_ms": int((time.time() - t0) * 1000),
+                "error": str(e)[:300],
+            })
+    else:
+        report["sources"].append({
+            "name": "5. Apify Reel Scraper",
+            "ok": False,
+            "skipped": True,
+            "reason": "kill switch ON" if _APIFY_INSTA_KILL_SWITCH else "no APIFY_TOKEN",
+            "fix_if_failed": "Pour activer : env var APIFY_INSTA_FORCE_OFF=false + APIFY_TOKEN.",
+        })
+
+    # 6. Liste les comptes Insta avec last_scrape_error
+    failed_accounts = []
+    try:
+        async for acc in db.social_accounts.find(
+            {"platform": "instagram", "last_scrape_error": {"$ne": None}},
+            {"_id": 0, "username": 1, "last_scrape_error": 1, "last_scrape_attempt_at": 1, "status": 1}
+        ).limit(30):
+            failed_accounts.append({
+                "username": acc.get("username"),
+                "status": acc.get("status"),
+                "last_scrape_error": (acc.get("last_scrape_error") or "")[:300],
+                "last_scrape_attempt_at": acc.get("last_scrape_attempt_at"),
+            })
+    except Exception as e:
+        logger.warning(f"failed_accounts query failed: {e}")
+    report["failed_accounts_in_db"] = failed_accounts
+    report["failed_accounts_count"] = len(failed_accounts)
+
+    # Verdict global
+    working_sources = [s for s in report["sources"] if s.get("ok")]
+    free_working = [s for s in working_sources if "free" in s.get("name", "").lower() or "no config" in s.get("name", "").lower()]
+
+    if not working_sources:
+        report["verdict"] = "🚨 AUCUNE SOURCE NE MARCHE — scraping Insta totalement HS"
+        report["recommendation"] = (
+            "URGENT: configure BACKEND_PROXY_URL (proxy webshare residential) "
+            "OU CLIP_SCRAPER_URL/KEY (VPS Hostinger). Sans proxy/VPS, Insta bloque "
+            "toutes les requetes depuis IP Railway."
+        )
+    elif not free_working:
+        report["verdict"] = "⚠️ SEUL APIFY MARCHE — coute des credits"
+        report["recommendation"] = (
+            "Apify marche (paye), mais aucune source gratuite. "
+            "Configure BACKEND_PROXY_URL ou CLIP_SCRAPER_URL/KEY pour eviter de payer Apify."
+        )
+    elif len(working_sources) >= 3:
+        report["verdict"] = "✅ Multi sources OK — robuste"
+        report["recommendation"] = "Tout va bien, plusieurs fallbacks dispo."
+    else:
+        report["verdict"] = "⚠️ Peu de sources fonctionnelles — fragile"
+        report["recommendation"] = "Au moins 2 sources marchent mais le systeme manque de redondance."
+
+    return report
+
+
+@api_router.post("/admin/retry-failed-insta")
+async def admin_retry_failed_insta(request: Request, _: bool = Depends(verify_admin_code)):
+    """Re-scrape tous les comptes Insta qui ont last_scrape_error.
+    Limite a 50 comptes simultanes pour eviter overload."""
+    failed = await db.social_accounts.find(
+        {"platform": "instagram", "last_scrape_error": {"$ne": None}, "status": "verified"},
+        {"_id": 0, "account_id": 1, "username": 1}
+    ).limit(50).to_list(50)
+
+    if not failed:
+        return {"message": "Aucun compte Insta en erreur a retry", "retried": 0}
+
+    results = {"retried": 0, "ok": 0, "failed": 0, "details": []}
+    sem = asyncio.Semaphore(3)
+
+    async def _retry_one(acc_doc):
+        nonlocal results
+        async with sem:
+            results["retried"] += 1
+            try:
+                # Trouve la campagne
+                csa = await db.campaign_social_accounts.find_one({"account_id": acc_doc["account_id"]}, {"_id": 0})
+                if not csa:
+                    results["details"].append({"username": acc_doc.get("username"), "ok": False, "error": "pas d'assignation campagne"})
+                    results["failed"] += 1
+                    return
+                campaign = await db.campaigns.find_one({"campaign_id": csa["campaign_id"]}, {"_id": 0})
+                if not campaign:
+                    results["details"].append({"username": acc_doc.get("username"), "ok": False, "error": "campagne introuvable"})
+                    results["failed"] += 1
+                    return
+                # Refetch acc complet
+                acc_full = await db.social_accounts.find_one({"account_id": acc_doc["account_id"]}, {"_id": 0})
+                if not acc_full:
+                    results["failed"] += 1
+                    return
+                cutoff = _parse_utc(campaign.get("tracking_start_date")) or datetime.now(timezone.utc)
+                days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+                days_back = min(days_back, 60)  # cap 60j pour retry
+                res = await _scrape_one_account_into_campaign(acc_full, campaign, cutoff, since_days=days_back, wait_verification=False)
+                if res.get("ok"):
+                    results["ok"] += 1
+                    results["details"].append({"username": acc_doc.get("username"), "ok": True, "inserted": res.get("inserted", 0)})
+                else:
+                    results["failed"] += 1
+                    results["details"].append({"username": acc_doc.get("username"), "ok": False, "error": (res.get("error") or "")[:200]})
+            except Exception as e:
+                results["failed"] += 1
+                results["details"].append({"username": acc_doc.get("username"), "ok": False, "error": str(e)[:200]})
+
+    await asyncio.gather(*[_retry_one(a) for a in failed], return_exceptions=True)
+    return results
+
+
 @api_router.get("/admin/diagnose-scrape/{platform}/{username}")
 async def admin_diagnose_scrape(platform: str, username: str, request: Request, _: bool = Depends(verify_admin_code)):
     """DIAGNOSTIC : test scrape un compte avec capture des erreurs detaillees a chaque

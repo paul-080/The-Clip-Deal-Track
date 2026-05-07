@@ -1706,6 +1706,9 @@ function SiteHealthSection() {
         </div>
       </div>
 
+      {/* ── TEST SCRAPING INSTA (DIAGNOSTIC AUTONOME) ── */}
+      <InstaHealthSection />
+
       {/* ── SEUILS PROACTIFS ── */}
       <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
         <p className="text-white font-semibold text-base">🎯 Seuils d'action proactifs</p>
@@ -1762,6 +1765,160 @@ function SiteHealthSection() {
           <p className="text-[10px] text-white/40">/ {summary.total_clippers?.toLocaleString("fr-FR")} total</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function InstaHealthSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryResult, setRetryResult] = useState(null);
+
+  const runTest = useCallback(() => {
+    setLoading(true);
+    setData(null);
+    adminFetch("/admin/insta-health-full")
+      .then(setData)
+      .catch((e) => toast.error("Test failed : " + (e.message || "erreur")))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const retryFailed = useCallback(() => {
+    setRetrying(true);
+    setRetryResult(null);
+    adminFetch("/admin/retry-failed-insta", { method: "POST" })
+      .then((r) => {
+        setRetryResult(r);
+        toast.success(`Retry : ${r.ok || 0} OK / ${r.failed || 0} echec`);
+        runTest();  // refresh apres retry
+      })
+      .catch((e) => toast.error("Retry failed : " + (e.message || "erreur")))
+      .finally(() => setRetrying(false));
+  }, [runTest]);
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-white font-semibold text-base">🩺 Diagnostic Scraping Instagram</p>
+          <p className="text-xs text-white/50 mt-1">
+            Teste chaque source en live sur @natgeo. Identifie ce qui pète exactement.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={runTest}
+            disabled={loading}
+            className="px-3 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold disabled:opacity-50"
+          >
+            {loading ? "Test en cours..." : "🩺 Lancer test complet"}
+          </button>
+          {data?.failed_accounts_count > 0 && (
+            <button
+              onClick={retryFailed}
+              disabled={retrying}
+              className="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 text-sm border border-amber-500/30 disabled:opacity-50"
+            >
+              {retrying ? "Retry..." : `↻ Retry ${data.failed_accounts_count} comptes`}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!data && !loading && (
+        <p className="text-xs text-white/40 text-center py-3">Clique "Lancer test complet" pour voir l'état des sources.</p>
+      )}
+
+      {data && (
+        <>
+          {/* Verdict global */}
+          <div className={`p-3 rounded-lg border ${
+            data.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
+            data.verdict?.includes("⚠️") ? "bg-amber-500/10 border-amber-500/40" :
+            "bg-green-500/10 border-green-500/40"
+          }`}>
+            <p className={`font-bold ${
+              data.verdict?.includes("🚨") ? "text-red-400" :
+              data.verdict?.includes("⚠️") ? "text-amber-400" : "text-green-400"
+            }`}>{data.verdict}</p>
+            {data.recommendation && (
+              <p className="text-white/70 text-xs mt-2">💡 {data.recommendation}</p>
+            )}
+          </div>
+
+          {/* Config */}
+          {data.config && (
+            <div className="bg-white/3 rounded-lg p-3">
+              <p className="text-[11px] text-white/50 font-semibold uppercase mb-2">Configuration env</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
+                {Object.entries(data.config).map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-2">
+                    <span className="text-white/50 truncate">{k}</span>
+                    <span className={`font-mono ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-green-400" : "text-white"}`}>
+                      {typeof v === "boolean" ? (v ? "✅ true" : "❌ false") : String(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sources testees */}
+          <div className="space-y-2">
+            <p className="text-[11px] text-white/50 font-semibold uppercase">Sources testées sur @{data.test_username}</p>
+            {(data.sources || []).map((s, i) => (
+              <div key={i} className={`p-3 rounded-lg border text-sm ${
+                s.skipped ? "bg-white/3 border-white/10" :
+                s.ok ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"
+              }`}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className={`font-semibold ${s.skipped ? "text-white/40" : s.ok ? "text-green-400" : "text-red-400"}`}>
+                    {s.skipped ? "⏭️" : s.ok ? "✅" : "❌"} {s.name}
+                  </span>
+                  {s.duration_ms !== undefined && (
+                    <span className="text-[10px] text-white/40 font-mono">{s.duration_ms}ms</span>
+                  )}
+                </div>
+                {s.result && <p className="text-xs text-white/70 mt-1">→ {s.result}</p>}
+                {s.error && <p className="text-xs text-red-300 mt-1">Erreur : {s.error}</p>}
+                {s.reason && <p className="text-xs text-white/50 mt-1 italic">{s.reason}</p>}
+                {!s.ok && s.fix_if_failed && (
+                  <p className="text-[11px] text-amber-300 mt-1.5">🔧 Fix : {s.fix_if_failed}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Comptes en erreur dans la DB */}
+          {data.failed_accounts_count > 0 && (
+            <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-3">
+              <p className="text-red-400 font-semibold text-sm mb-2">
+                🚨 {data.failed_accounts_count} compte{data.failed_accounts_count > 1 ? "s" : ""} Insta en erreur dans la DB
+              </p>
+              <div className="space-y-1 max-h-60 overflow-y-auto">
+                {(data.failed_accounts_in_db || []).map((acc, i) => (
+                  <div key={i} className="text-xs bg-white/3 rounded p-2">
+                    <p className="text-white">@{acc.username} <span className="text-white/40 ml-2">({acc.status})</span></p>
+                    <p className="text-red-300 text-[10px] mt-0.5 truncate" title={acc.last_scrape_error}>
+                      {acc.last_scrape_error || "?"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {retryResult && (
+            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-xs">
+              <p className="text-blue-300 font-semibold">Résultat retry</p>
+              <p className="text-white/70">
+                Re-scrapé : {retryResult.retried || 0} · ✓ OK : {retryResult.ok || 0} · ❌ Échec : {retryResult.failed || 0}
+              </p>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
