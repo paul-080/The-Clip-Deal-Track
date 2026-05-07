@@ -1532,37 +1532,27 @@ function ApifyAlarmBanner() {
   useEffect(() => {
     const refresh = () => adminFetch("/admin/apify-usage-today").then(setData).catch(() => {});
     refresh();
-    const i = setInterval(refresh, 2 * 60 * 1000);  // 2 min refresh
+    const i = setInterval(refresh, 2 * 60 * 1000);
     return () => clearInterval(i);
   }, []);
 
-  if (!data || data.error || data.severity === "ok") return null;
+  if (!data || data.error || (data.apify_total_today || 0) === 0) return null;
 
-  const bg = data.severity === "critical" ? "bg-red-500/20 border-red-500/60" :
-             data.severity === "warning" ? "bg-amber-500/20 border-amber-500/60" :
-             "bg-blue-500/15 border-blue-500/40";
-  const fg = data.severity === "critical" ? "text-red-400" :
-             data.severity === "warning" ? "text-amber-400" : "text-blue-300";
-
+  // Pas d'estimation : juste les compteurs reels
   return (
-    <div className={`rounded-xl border-2 p-4 ${bg}`}>
+    <div className="rounded-xl border-2 p-4 bg-amber-500/15 border-amber-500/40">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex-1 min-w-0">
-          <p className={`font-bold text-base ${fg}`}>{data.verdict}</p>
-          <p className="text-white/70 text-xs mt-1">{data.advice}</p>
+          <p className="text-amber-400 font-bold text-base">⚠️ Apify utilisé aujourd'hui</p>
+          <p className="text-white/70 text-xs mt-1">
+            Apify ne devrait être utilisé qu'en dernier recours. Si le compteur monte, le scraping gratuit est à investiguer.
+          </p>
           <p className="text-white/50 text-[10px] mt-1.5">
             Aujourd'hui : <span className="font-mono text-white">{data.apify_total_today || 0}</span> calls Apify
             (Insta {data.apify_instagram_today || 0} + TikTok {data.apify_tiktok_today || 0})
-            sur <span className="font-mono text-white">{data.total_scrapes_today || 0}</span> scrapes total
-            · Coût estimé : <span className="font-mono text-[#f0c040]">{data.estimated_cost_eur_today || 0}€</span>
+            sur <span className="font-mono text-white">{data.total_scrapes_today || 0}</span> scrapes total.
           </p>
         </div>
-        {data.severity === "critical" && (
-          <div className="text-right">
-            <p className={`text-3xl font-mono font-bold ${fg}`}>{data.apify_percentage}%</p>
-            <p className="text-[10px] text-white/40">Apify usage</p>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1598,28 +1588,25 @@ function SiteHealthSection() {
   }
 
   const PLATFORM_META = {
-    tiktok: { label: "TikTok", icon: "🎵", color: "#00E5FF" },
-    instagram: { label: "Instagram", icon: "📸", color: "#FF007F" },
-    youtube: { label: "YouTube", icon: "▶️", color: "#FF4444" },
+    tiktok: { label: "TikTok", icon: "🎵" },
+    instagram: { label: "Instagram", icon: "📸" },
+    youtube: { label: "YouTube", icon: "▶️" },
   };
-  const statusBg = (s) => s === "critical" ? "bg-red-500/15 border-red-500/40" : s === "warning" ? "bg-amber-500/15 border-amber-500/40" : s === "ok" ? "bg-green-500/15 border-green-500/40" : "bg-white/5 border-white/10";
-  const statusFg = (s) => s === "critical" ? "text-red-400" : s === "warning" ? "text-amber-400" : s === "ok" ? "text-green-400" : "text-white/40";
-  const priorityBg = (p) => p === "critical" ? "bg-red-500/10 border-red-500/30" : p === "warning" ? "bg-amber-500/10 border-amber-500/30" : "bg-blue-500/10 border-blue-500/30";
 
-  const { global_status, global_message, summary, platforms_health, watchdog, scheduling, action_items, thresholds } = data;
+  const { summary, scrapes_by_platform, watchdog, scheduling } = data;
 
   return (
     <div className="space-y-4">
-      {/* ── ALARME APIFY (uniquement si Apify utilisé) ── */}
+      {/* Alarme Apify si utilise */}
       <ApifyAlarmBanner />
 
-      {/* ── BANDEAU GLOBAL : verdict + action urgente ── */}
-      <div className={`rounded-xl border-2 p-5 ${statusBg(global_status)}`}>
-        <div className="flex items-start justify-between gap-3 flex-wrap">
+      {/* Header simple : compteurs reels */}
+      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <p className={`text-2xl font-bold ${statusFg(global_status)}`}>{global_message}</p>
-            <p className="text-xs text-white/50 mt-2">
-              {summary.total_clippers.toLocaleString("fr-FR")} clippeurs · {summary.active_campaigns} campagnes actives · {summary.total_tracked_accounts.toLocaleString("fr-FR")} comptes trackés
+            <p className="text-white font-semibold text-base">État du site (données réelles)</p>
+            <p className="text-xs text-white/50 mt-1">
+              {summary.total_clippers?.toLocaleString("fr-FR")} clippeurs · {summary.active_campaigns} campagnes actives · {summary.total_tracked_accounts?.toLocaleString("fr-FR")} comptes trackés
             </p>
           </div>
           <button onClick={refresh} disabled={loading}
@@ -1629,47 +1616,26 @@ function SiteHealthSection() {
         </div>
       </div>
 
-      {/* ── ACTION ITEMS : ce que tu dois faire MAINTENANT ── */}
-      {action_items && action_items.length > 0 && (
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-2">
-          <p className="text-white font-semibold text-base mb-2">📋 Actions à prévoir</p>
-          {action_items.map((a, i) => (
-            <div key={i} className={`p-3 rounded-lg border ${priorityBg(a.priority)}`}>
-              <p className={`font-semibold text-sm ${a.priority === "critical" ? "text-red-400" : a.priority === "warning" ? "text-amber-400" : "text-blue-300"}`}>
-                {a.icon} {a.title}
-              </p>
-              <p className="text-white/70 text-xs mt-1">{a.action}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── CAPACITES PAR PLATEFORME ── */}
+      {/* Compteurs scrapes par plateforme (REEL, sans % vs capacite estimee) */}
       <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-        <p className="text-white font-semibold text-base">📊 Capacité scraping mensuelle (staggered)</p>
+        <p className="text-white font-semibold text-base">📊 Scrapes réels par plateforme</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {Object.entries(platforms_health || {}).map(([plat, p]) => {
-            const meta = PLATFORM_META[plat] || { label: plat, icon: "", color: "#fff" };
+          {Object.entries(scrapes_by_platform || {}).map(([plat, p]) => {
+            const meta = PLATFORM_META[plat] || { label: plat, icon: "" };
             return (
-              <div key={plat} className={`rounded-lg border p-4 ${statusBg(p.status)}`}>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xl">{meta.icon}</span>
-                    <span className="text-white font-semibold">{meta.label}</span>
-                  </div>
-                  <span className={`text-2xl font-mono font-bold ${statusFg(p.status)}`}>{p.month_pct}%</span>
-                </div>
-                <div className="h-2 bg-white/5 rounded-full overflow-hidden mb-3">
-                  <div className="h-full transition-all" style={{ width: `${Math.min(100, p.month_pct)}%`, background: meta.color }} />
+              <div key={plat} className="rounded-lg border border-white/10 bg-white/3 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xl">{meta.icon}</span>
+                  <span className="text-white font-semibold">{meta.label}</span>
                 </div>
                 <div className="space-y-1 text-xs text-white/60">
                   <div className="flex justify-between">
-                    <span>Mois</span>
-                    <span className="font-mono text-white">{(p.month_calls || 0).toLocaleString("fr-FR")} / {(p.month_capacity || 0).toLocaleString("fr-FR")}</span>
+                    <span>Scrapes ce mois</span>
+                    <span className="font-mono text-white">{(p.month_calls || 0).toLocaleString("fr-FR")}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>Aujourd'hui ({p.day_pct}%)</span>
-                    <span className="font-mono text-white">{(p.today_calls || 0).toLocaleString("fr-FR")} / {(p.day_capacity || 0).toLocaleString("fr-FR")}</span>
+                    <span>Aujourd'hui</span>
+                    <span className="font-mono text-white">{(p.today_calls || 0).toLocaleString("fr-FR")}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Comptes trackés</span>
@@ -1682,10 +1648,10 @@ function SiteHealthSection() {
         </div>
       </div>
 
-      {/* ── WATCHDOG : APIs en panne ? ── */}
+      {/* Watchdog : derniers tests reels (pas de verdict couleur arbitraire) */}
       <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-white font-semibold text-base">🐕 Watchdog APIs (test horaire)</p>
+          <p className="text-white font-semibold text-base">🐕 Derniers tests Watchdog</p>
           <button
             onClick={() => adminFetch("/admin/run-watchdog-now", { method: "POST" }).then(refresh).catch(() => {})}
             className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white/70">
@@ -1695,13 +1661,21 @@ function SiteHealthSection() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {Object.entries(watchdog || {}).map(([plat, w]) => {
             const meta = PLATFORM_META[plat] || { label: plat, icon: "" };
+            const isOk = w.success === true;
+            const hasResult = w.success !== undefined;
             return (
-              <div key={plat} className={`rounded-lg border p-3 ${statusBg(w.status)}`}>
+              <div key={plat} className={`rounded-lg border p-3 ${
+                hasResult && isOk ? "bg-green-500/10 border-green-500/30" :
+                hasResult && !isOk ? "bg-red-500/10 border-red-500/30" :
+                "bg-white/5 border-white/10"
+              }`}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-white font-medium text-sm">{meta.icon} {meta.label}</span>
-                  <span className={`text-xs font-bold ${statusFg(w.status)}`}>
-                    {w.status === "ok" ? "✓ OK" : w.status === "warning" ? "⚠️ Attention" : w.status === "critical" ? "🚨 PANNE" : "?"}
-                  </span>
+                  {hasResult && (
+                    <span className={`text-xs font-bold ${isOk ? "text-green-400" : "text-red-400"}`}>
+                      {isOk ? "✓ Test OK" : "✗ Test échec"}
+                    </span>
+                  )}
                 </div>
                 {w.timestamp && (
                   <p className="text-[10px] text-white/40">
@@ -1711,104 +1685,60 @@ function SiteHealthSection() {
                 {w.video_count !== undefined && (
                   <p className="text-[10px] text-white/40">{w.video_count} vidéos · {w.duration_ms || 0}ms</p>
                 )}
-                {w.consecutive_failures > 0 && (
-                  <p className="text-[10px] text-red-400 font-semibold mt-1">⚠ {w.consecutive_failures} échecs de suite</p>
-                )}
-                {w.error && <p className="text-[10px] text-red-400 truncate">{w.error}</p>}
+                {w.error && <p className="text-[10px] text-red-400 truncate" title={w.error}>{w.error}</p>}
+                {!hasResult && <p className="text-[10px] text-white/30">{w.message || "pas encore testé"}</p>}
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* ── SCHEDULING staggered ── */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-        <p className="text-white font-semibold text-base">⏱️ Répartition scraping (staggered 24h)</p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-          <div className="bg-white/3 rounded-lg p-3">
-            <p className="text-white/40">Qualité spread</p>
-            <p className={`font-mono font-bold text-sm mt-1 ${
-              scheduling?.spread_quality === "excellent" ? "text-green-400" :
-              scheduling?.spread_quality === "good" ? "text-green-400" :
-              scheduling?.spread_quality === "moderate" ? "text-amber-400" : "text-red-400"
-            }`}>{scheduling?.spread_quality?.toUpperCase() || "?"}</p>
-          </div>
-          <div className="bg-white/3 rounded-lg p-3">
-            <p className="text-white/40">Pic max / heure</p>
-            <p className="text-white font-mono font-bold text-sm mt-1">{scheduling?.pic_max_per_hour || 0}</p>
-          </div>
-          <div className="bg-white/3 rounded-lg p-3">
-            <p className="text-white/40">Moyenne / heure</p>
-            <p className="text-white font-mono font-bold text-sm mt-1">{scheduling?.pic_avg_per_hour || 0}</p>
-          </div>
-          <div className="bg-white/3 rounded-lg p-3">
-            <p className="text-white/40">Campagnes en retard</p>
-            <p className={`font-mono font-bold text-sm mt-1 ${(scheduling?.overdue_campaigns || 0) > 5 ? "text-red-400" : "text-white"}`}>
-              {scheduling?.overdue_campaigns || 0}
-            </p>
+      {/* Scheduling : juste les compteurs, pas de qualité spread arbitraire */}
+      {scheduling && (
+        <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+          <p className="text-white font-semibold text-base">⏱️ Planning scraping</p>
+          <div className="flex justify-between text-xs">
+            <span className="text-white/60">Campagnes en retard</span>
+            <span className={`font-mono font-bold ${(scheduling.overdue_campaigns || 0) > 5 ? "text-red-400" : "text-white"}`}>
+              {scheduling.overdue_campaigns || 0}
+            </span>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* ── TEST SCRAPING INSTA (DIAGNOSTIC AUTONOME) ── */}
+      {/* Test scraping autonome */}
       <InstaHealthSection />
 
-      {/* ── SEUILS PROACTIFS ── */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-        <p className="text-white font-semibold text-base">🎯 Seuils d'action proactifs</p>
-        <p className="text-xs text-white/50">Tu seras alerté automatiquement quand tu approcheras chaque seuil ci-dessous (notif 100 clippeurs avant).</p>
-        <div className="space-y-2">
-          {[
-            { label: "Remplir formulaire YouTube quota (gratuit, 5min)", at: thresholds?.youtube_quota_request_at, current: summary.total_clippers, color: "text-blue-300" },
-            { label: "Ajouter +5 IPs Webshare (+25€/mois)", at: thresholds?.extra_proxy_ips_at, current: summary.total_clippers, color: "text-amber-400" },
-            { label: "Activer 2ᵉ VPS Hostinger (+5€/mois)", at: thresholds?.second_vps_at, current: summary.total_clippers, color: "text-amber-400" },
-          ].map((t, i) => {
-            const remaining = Math.max(0, (t.at || 0) - t.current);
-            const reached = t.current >= (t.at || 0);
-            return (
-              <div key={i} className={`flex items-center justify-between p-2 rounded-lg ${reached ? "bg-red-500/10 border border-red-500/30" : "bg-white/3"}`}>
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm ${reached ? "text-red-400 font-semibold" : t.color}`}>{reached ? "🚨 " : ""}À {t.at?.toLocaleString("fr-FR")} clippeurs : {t.label}</p>
-                </div>
-                <p className="text-xs font-mono text-white/60 ml-2 whitespace-nowrap">
-                  {reached ? "DÉPASSÉ" : `dans ${remaining.toLocaleString("fr-FR")} clippeurs`}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-        <p className="text-[10px] text-white/30 mt-2">
-          Capacité max actuelle : ~{thresholds?.max_safe_clippers_estimate?.toLocaleString("fr-FR")} clippeurs · Avec upgrade complet : ~{thresholds?.max_capacity_with_full_upgrade?.toLocaleString("fr-FR")}
-        </p>
-      </div>
-
-      {/* ── RESUME compact (Apify, alertes, circuit breakers) ── */}
+      {/* Compteurs reels (Apify, alertes, circuit breakers) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className={`bg-[#121212] border rounded-xl p-4 ${summary.apify_used_today > 0 ? "border-red-500/40" : "border-white/10"}`}>
+        <div className={`bg-[#121212] border rounded-xl p-4 ${summary.apify_used_today > 0 ? "border-amber-500/40" : "border-white/10"}`}>
           <p className="text-xs text-white/40">Apify utilisé ajd</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.apify_used_today > 0 ? "text-red-400" : "text-white"}`}>
-            {summary.apify_used_today}
+          <p className={`text-2xl font-mono font-bold mt-1 ${summary.apify_used_today > 0 ? "text-amber-400" : "text-white"}`}>
+            {summary.apify_used_today || 0}
           </p>
-          <p className="text-[10px] text-white/40">{summary.apify_used_today === 0 ? "✅ aucun bug" : "🚨 investiguer"}</p>
         </div>
         <div className={`bg-[#121212] border rounded-xl p-4 ${summary.open_alerts_critical > 0 ? "border-red-500/40" : "border-white/10"}`}>
-          <p className="text-xs text-white/40">Alertes critiques</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.open_alerts_critical > 0 ? "text-red-400" : "text-green-400"}`}>
-            {summary.open_alerts_critical}
+          <p className="text-xs text-white/40">Alertes ouvertes</p>
+          <p className={`text-2xl font-mono font-bold mt-1 ${summary.open_alerts_critical > 0 ? "text-red-400" : "text-white"}`}>
+            {summary.open_alerts_critical || 0}
           </p>
         </div>
         <div className={`bg-[#121212] border rounded-xl p-4 ${summary.circuit_breakers_active > 0 ? "border-amber-500/40" : "border-white/10"}`}>
           <p className="text-xs text-white/40">Circuit breakers</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.circuit_breakers_active > 0 ? "text-amber-400" : "text-green-400"}`}>
-            {summary.circuit_breakers_active}
+          <p className={`text-2xl font-mono font-bold mt-1 ${summary.circuit_breakers_active > 0 ? "text-amber-400" : "text-white"}`}>
+            {summary.circuit_breakers_active || 0}
           </p>
         </div>
         <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
           <p className="text-xs text-white/40">Clippeurs actifs 30j</p>
-          <p className="text-2xl font-mono font-bold mt-1 text-white">{summary.active_clippers_30d?.toLocaleString("fr-FR")}</p>
-          <p className="text-[10px] text-white/40">/ {summary.total_clippers?.toLocaleString("fr-FR")} total</p>
+          <p className="text-2xl font-mono font-bold mt-1 text-white">{summary.active_clippers_30d?.toLocaleString("fr-FR") || 0}</p>
+          <p className="text-[10px] text-white/40">/ {summary.total_clippers?.toLocaleString("fr-FR") || 0} total</p>
         </div>
       </div>
+
+      <p className="text-[10px] text-white/30 italic text-center pt-2">
+        Toutes les données ci-dessus sont des compteurs réels en base, sans estimation ni seuil arbitraire.
+      </p>
     </div>
   );
 }

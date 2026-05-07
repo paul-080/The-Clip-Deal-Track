@@ -8385,24 +8385,8 @@ async def _run_watchdog_check(platform: str) -> dict:
             "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
         }
 
-        # Alerte critique apres 6 echecs consecutifs (~6h vu que watchdog tourne toutes les heures)
-        # Plus tolerant que 3 pour eviter faux positifs sur comptes populaires
-        WATCHDOG_FAIL_THRESHOLD = 6
-        if _WATCHDOG_FAILURES.get(platform, 0) >= WATCHDOG_FAIL_THRESHOLD:
-            await _alert_critical(
-                alert_type=f"{platform}_api_broken",
-                severity="critical",
-                platform=platform,
-                username=username,
-                message=(
-                    f"WATCHDOG : {platform.upper()} a echoue {_WATCHDOG_FAILURES[platform]}× "
-                    f"de suite (~{_WATCHDOG_FAILURES[platform]}h) sur le test '@{username}'. "
-                    f"L'API a probablement change OU le test account est bloque. "
-                    f"Tente : 1) curl /api/admin/diagnose-scrape/{platform}/X "
-                    f"2) Change WATCHDOG_TEST_{platform.upper()} dans Railway env."
-                ),
-            )
-
+        # Pas d'auto-alerte basee sur seuil arbitraire.
+        # Le user consultera _WATCHDOG_LAST_CHECK pour voir les status reels.
         return {
             "success": success,
             "platform": platform,
@@ -8420,13 +8404,6 @@ async def _run_watchdog_check(platform: str) -> dict:
             "error": err_str,
             "consecutive_failures": _WATCHDOG_FAILURES.get(platform, 0),
         }
-        if _WATCHDOG_FAILURES.get(platform, 0) >= 6:
-            await _alert_critical(
-                alert_type=f"{platform}_api_broken",
-                severity="critical",
-                platform=platform,
-                message=f"WATCHDOG : {platform.upper()} cascade exception {_WATCHDOG_FAILURES[platform]}× : {err_str}",
-            )
         return {"success": False, "error": err_str, "platform": platform}
 
 
@@ -9908,219 +9885,9 @@ async def add_video_manually(account_id: str, request: Request, user: dict = Dep
     }
 
 
-@api_router.get("/campaigns/{campaign_id}/monthly-earnings")
-async def get_campaign_monthly_earnings(
-    campaign_id: str,
-    user: dict = Depends(get_current_user)
-):
-    """Calcule les gains generes mois par mois pour une campagne.
-    Utilise les snapshots quotidiens si disponibles (precis), sinon distribution
-    lineaire des vues actuelles depuis published_at jusqu'a maintenant (estime).
-
-    Renvoie pour chaque mois :
-    - total_earnings   : montant genere ce mois (rpm * vues / 1000)
-    - total_views      : vues estimees ce mois
-    - by_clipper       : split par clipper attitre (avec montant du)
-    - agency_only      : vues/gains des videos sans clipper attitre (agence)
-    - method           : "snapshot" (precis) ou "linear" (estime)
-    """
-    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campagne introuvable")
-    if user.get("role") not in ("agency", "manager"):
-        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
-    if campaign.get("agency_id") != user.get("user_id") and user.get("role") != "manager":
-        raise HTTPException(status_code=403, detail="Non autorise")
-
-    rpm = float(campaign.get("rpm") or 0)
-    rate_per_click = float(campaign.get("rate_per_click") or 0)
-
-    videos = await db.tracked_videos.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(20000)
-
-    # Pre-fetch user info pour le split par clipper
-    user_ids = list({v.get("user_id") for v in videos if v.get("user_id")})
-    user_map: dict = {}
-    if user_ids:
-        users_docs = await db.users.find(
-            {"user_id": {"$in": user_ids}},
-            {"_id": 0, "user_id": 1, "first_name": 1, "last_name": 1, "email": 1}
-        ).to_list(len(user_ids))
-        for u in users_docs:
-            full = f"{u.get('first_name', '') or ''} {u.get('last_name', '') or ''}".strip()
-            user_map[u["user_id"]] = full or u.get("email") or "Inconnu"
-
-    now = datetime.now(timezone.utc)
-    months: dict = {}  # "YYYY-MM" -> { total_views, total_earnings, by_clipper{}, agency_only{} }
-
-    def _ensure_month(mk: str):
-        if mk not in months:
-            months[mk] = {
-                "month": mk,
-                "total_views": 0.0,
-                "total_earnings": 0.0,
-                "by_clipper": {},
-                "agency_only": {"views": 0.0, "earnings": 0.0},
-                "videos_count": 0,
-            }
-        return months[mk]
-
-    # Distribution lineaire des vues entre published_at et maintenant
-    # (approximation : suppose que la croissance des vues est constante,
-    #  ce qui sur-estime les premiers jours et sous-estime la decroissance long terme,
-    #  mais c'est la meilleure approximation sans historique fin)
-    for v in videos:
-        pub_at = _parse_utc(v.get("published_at"))
-        if not pub_at:
-            continue
-        if pub_at > now:
-            continue
-        views_total = int(v.get("views") or 0)
-        if views_total <= 0:
-            continue
-        total_seconds = (now - pub_at).total_seconds()
-        if total_seconds <= 0:
-            continue
-        views_per_sec = views_total / total_seconds
-
-        uid = v.get("user_id")
-
-        # On itere sur les segments de mois entre pub_at et now
-        cursor = pub_at
-        first_month = True
-        while cursor < now:
-            # Debut du mois suivant
-            if cursor.month == 12:
-                next_month_start = cursor.replace(year=cursor.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            else:
-                next_month_start = cursor.replace(month=cursor.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            segment_end = min(next_month_start, now)
-            seg_seconds = (segment_end - cursor).total_seconds()
-            if seg_seconds <= 0:
-                break
-            segment_views = views_per_sec * seg_seconds
-            segment_earnings = (segment_views / 1000.0) * rpm
-
-            mk = cursor.strftime("%Y-%m")
-            mdata = _ensure_month(mk)
-            mdata["total_views"] += segment_views
-            mdata["total_earnings"] += segment_earnings
-            if first_month:
-                mdata["videos_count"] += 1
-                first_month = False
-
-            if uid:
-                if uid not in mdata["by_clipper"]:
-                    mdata["by_clipper"][uid] = {
-                        "user_id": uid,
-                        "name": user_map.get(uid, "Inconnu"),
-                        "views": 0.0,
-                        "earnings": 0.0,
-                    }
-                mdata["by_clipper"][uid]["views"] += segment_views
-                mdata["by_clipper"][uid]["earnings"] += segment_earnings
-            else:
-                mdata["agency_only"]["views"] += segment_views
-                mdata["agency_only"]["earnings"] += segment_earnings
-
-            cursor = next_month_start
-
-    # AFFINAGE : si on a des views_snapshots quotidiens pour ce mois,
-    # on utilise la difference entre debut et fin du mois pour avoir la valeur reelle
-    # (ecrase l'estimation lineaire avec la vraie valeur)
-    try:
-        snapshots = await db.views_snapshots.find(
-            {"campaign_id": campaign_id},
-            {"_id": 0, "date": 1, "total_views": 1}
-        ).to_list(2000)
-        if snapshots:
-            # Index par date
-            snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots}
-            sorted_dates = sorted(snap_by_date.keys())
-            # Pour chaque mois present : trouve premier snapshot >= debut mois et dernier <= fin mois
-            for mk in list(months.keys()):
-                year, month = mk.split("-")
-                year_i = int(year)
-                month_i = int(month)
-                month_start = datetime(year_i, month_i, 1, tzinfo=timezone.utc)
-                if month_i == 12:
-                    month_end = datetime(year_i + 1, 1, 1, tzinfo=timezone.utc)
-                else:
-                    month_end = datetime(year_i, month_i + 1, 1, tzinfo=timezone.utc)
-
-                start_str = month_start.strftime("%Y-%m-%d")
-                end_str = month_end.strftime("%Y-%m-%d")
-
-                # Premier snapshot >= debut du mois
-                first_snap = None
-                last_snap = None
-                for d in sorted_dates:
-                    if d >= start_str and d < end_str:
-                        if first_snap is None:
-                            first_snap = (d, snap_by_date[d])
-                        last_snap = (d, snap_by_date[d])
-
-                if first_snap and last_snap and last_snap[0] != first_snap[0]:
-                    # Snapshot avant le mois pour le delta debut
-                    pre_snap_views = 0
-                    for d in sorted_dates:
-                        if d < start_str:
-                            pre_snap_views = snap_by_date[d]
-                        else:
-                            break
-                    real_views_month = max(0, last_snap[1] - pre_snap_views)
-                    if real_views_month > 0:
-                        months[mk]["total_views"] = float(real_views_month)
-                        months[mk]["total_earnings"] = (real_views_month / 1000.0) * rpm
-                        months[mk]["method"] = "snapshot"
-                    else:
-                        months[mk]["method"] = "linear"
-                else:
-                    months[mk]["method"] = "linear"
-    except Exception as e:
-        logger.debug(f"monthly-earnings snapshot enrich failed for {campaign_id}: {e}")
-
-    # Conversion finale
-    sorted_months = sorted(months.values(), key=lambda m: m["month"], reverse=True)
-    for m in sorted_months:
-        m["total_views"] = round(m["total_views"])
-        m["total_earnings"] = round(m["total_earnings"], 2)
-        m["agency_only"]["views"] = round(m["agency_only"]["views"])
-        m["agency_only"]["earnings"] = round(m["agency_only"]["earnings"], 2)
-        # by_clipper en list triee par earnings desc
-        clippers_list = []
-        for uid, d in m["by_clipper"].items():
-            clippers_list.append({
-                "user_id": uid,
-                "name": d["name"],
-                "views": round(d["views"]),
-                "earnings": round(d["earnings"], 2),
-            })
-        m["by_clipper"] = sorted(clippers_list, key=lambda c: -c["earnings"])
-        if "method" not in m:
-            m["method"] = "linear"
-
-    total_all = sum(m["total_earnings"] for m in sorted_months)
-    total_agency = sum(m["agency_only"]["earnings"] for m in sorted_months)
-    total_clippers = total_all - total_agency
-
-    return {
-        "campaign_id": campaign_id,
-        "campaign_name": campaign.get("name"),
-        "rpm": rpm,
-        "currency": "EUR",
-        "months": sorted_months,
-        "totals": {
-            "all_time_earnings": round(total_all, 2),
-            "agency_videos_earnings": round(total_agency, 2),
-            "clippers_earnings_owed": round(total_clippers, 2),
-        },
-        "note": (
-            "Les gains des mois ou aucun snapshot quotidien n'existait sont estimes "
-            "par distribution lineaire des vues actuelles depuis la date de publication. "
-            "Les mois avec snapshots utilisent les valeurs reelles."
-        ),
-    }
-
+# Endpoint /monthly-earnings retire (calcul estimatif par distribution lineaire,
+# donc supprime conformement a la regle 'jamais de donnees inventees').
+# Le frontend qui l'utilisait a ete retire dans le commit 899bb96.
 
 @api_router.get("/campaigns/{campaign_id}/period-stats")
 async def get_campaign_period_stats(
@@ -13868,22 +13635,15 @@ async def admin_resolve_fraud_alert(alert_id: str, request: Request, body: dict 
 
 @api_router.get("/admin/site-health")
 async def admin_site_health(request: Request, _: bool = Depends(verify_admin_code)):
-    """VUE COMPLETE de surveillance : tout ce qu'il faut watch pour savoir
-    quand upgrader. Inclut alertes proactives a chaque seuil critique.
+    """Vue de surveillance — UNIQUEMENT donnees reelles, pas d'estimations.
+    Affiche les compteurs reels (scrapes, comptes, alertes) sans inventer
+    de capacites theoriques ou de seuils arbitraires.
     """
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     today_iso = now.strftime("%Y-%m-%dT00:00:00+00:00")
 
-    # Capacites theoriques (avec staggered scraping x3-5 vs concentre)
-    CAPACITY_DAILY = {
-        "tiktok": 30_000,        # 5 IPs × ~6000 calls/jour staggered
-        "instagram": 15_000,     # 5 IPs × ~3000 calls/jour staggered (plus restrictif)
-        "youtube": 3_300,        # quota Google fixe
-    }
-    CAPACITY_MONTHLY = {plat: cap * 30 for plat, cap in CAPACITY_DAILY.items()}
-
-    # ── 1. Clippeurs et campagnes ──────────────────────────────────────────
+    # ── Donnees reelles uniquement ─────────────────────────────────────────
     total_clippers = await db.users.count_documents({"role": "clipper"})
     active_clippers = await db.users.count_documents({
         "role": "clipper",
@@ -13893,79 +13653,47 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
     active_campaigns = await db.campaigns.count_documents({"status": "active"})
     total_accounts = await db.social_accounts.count_documents({})
 
-    # Comptes par plateforme
+    # Comptes par plateforme (REEL)
     accounts_by_platform = {}
     pipeline = [{"$group": {"_id": "$platform", "count": {"$sum": 1}}}]
     async for doc in db.social_accounts.aggregate(pipeline):
         if doc.get("_id"):
             accounts_by_platform[doc["_id"]] = doc["count"]
 
-    # ── 2. Capacites scraping ──────────────────────────────────────────────
-    platforms_health = {}
+    # Compteurs scrapes par plateforme (REEL, pas de % vs capacite estimee)
+    scrapes_by_platform = {}
     for plat in ("tiktok", "instagram", "youtube"):
         month_calls = await db.scraping_history.count_documents({
-            "platform": plat,
-            "success": True,
-            "timestamp": {"$gte": month_start},
+            "platform": plat, "success": True, "timestamp": {"$gte": month_start}
         })
         today_calls = await db.scraping_history.count_documents({
-            "platform": plat,
-            "success": True,
-            "timestamp": {"$gte": today_iso},
+            "platform": plat, "success": True, "timestamp": {"$gte": today_iso}
         })
-        cap_month = CAPACITY_MONTHLY[plat]
-        cap_day = CAPACITY_DAILY[plat]
-        month_pct = round((month_calls / cap_month) * 100, 1) if cap_month else 0
-        day_pct = round((today_calls / cap_day) * 100, 1) if cap_day else 0
-
-        if month_pct >= 80 or day_pct >= 80:
-            status = "critical"
-        elif month_pct >= 50 or day_pct >= 50:
-            status = "warning"
-        else:
-            status = "ok"
-
-        platforms_health[plat] = {
+        scrapes_by_platform[plat] = {
             "month_calls": month_calls,
-            "month_capacity": cap_month,
-            "month_pct": month_pct,
             "today_calls": today_calls,
-            "day_capacity": cap_day,
-            "day_pct": day_pct,
-            "status": status,
             "accounts_tracked": accounts_by_platform.get(plat, 0),
         }
 
-    # ── 3. Watchdog (sante API real-time) ──────────────────────────────────
+    # Watchdog status (REEL : derniers checks)
     watchdog_status = {}
     for plat, last in _WATCHDOG_LAST_CHECK.items():
-        consec = last.get("consecutive_failures", 0)
-        if consec >= 3:
-            wd_status = "critical"
-        elif consec >= 1:
-            wd_status = "warning"
-        else:
-            wd_status = "ok"
-        watchdog_status[plat] = {**last, "status": wd_status}
+        watchdog_status[plat] = last
     for plat in ("instagram", "tiktok", "youtube"):
         if plat not in watchdog_status:
-            watchdog_status[plat] = {"status": "unknown", "message": "pas encore teste"}
+            watchdog_status[plat] = {"message": "pas encore teste"}
 
-    # ── 4. Alertes admin actives (non resolues) ────────────────────────────
+    # Alertes admin (REEL : count en DB)
     open_alerts_critical = await db.fraud_alerts.count_documents({
-        "severity": "critical",
-        "resolved": False,
-    })
-    open_alerts_warning = await db.fraud_alerts.count_documents({
-        "severity": "warning",
-        "resolved": False,
+        "$or": [{"severity": "critical"}, {"status": "pending"}],
+        "$nor": [{"status": "resolved"}, {"resolved": True}],
     })
     apify_used_today = await db.fraud_alerts.count_documents({
         "type": "apify_fallback_used",
         "timestamp": {"$gte": today_iso},
     })
 
-    # ── 5. Circuit breakers actifs ─────────────────────────────────────────
+    # Circuit breakers actifs (REEL : memoire process)
     cb_active = []
     for source, cb in _CIRCUIT_BREAKERS.items():
         if cb.get("blocked_until", 0) > time.time():
@@ -13975,7 +13703,7 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
                 "failures": cb.get("failures", 0),
             })
 
-    # ── 6. Spread quality du staggered scheduling ─────────────────────────
+    # Distribution scraping par heure (REEL)
     by_hour = {h: 0 for h in range(24)}
     overdue = 0
     async for c in db.campaigns.find({"status": "active"}, {"_id": 0, "next_scrape_at": 1}):
@@ -13986,125 +13714,8 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
             overdue += 1
         by_hour[next_at.hour] = by_hour.get(next_at.hour, 0) + 1
 
-    pic_max = max(by_hour.values()) if by_hour else 0
-    pic_avg = round(sum(by_hour.values()) / max(1, len([v for v in by_hour.values() if v > 0])), 1) if by_hour else 0
-    if pic_max <= max(2, pic_avg * 1.3):
-        spread_quality = "excellent"
-    elif pic_max <= pic_avg * 1.8:
-        spread_quality = "good"
-    elif pic_max <= pic_avg * 2.5:
-        spread_quality = "moderate"
-    else:
-        spread_quality = "poor"
-
-    # ── 7. Seuils & Action items proactifs ─────────────────────────────────
-    action_items = []
-
-    # Approche capacite plateforme (seuils 50%, 70%, 85%)
-    for plat, h in platforms_health.items():
-        if h["month_pct"] >= 85:
-            action_items.append({
-                "priority": "critical",
-                "icon": "🚨",
-                "title": f"{plat.title()} a {h['month_pct']}% du quota mensuel",
-                "action": f"Upgrade urgent : ajoute des IPs proxy (Webshare) ou demande une extension quota {plat}",
-            })
-        elif h["month_pct"] >= 70:
-            action_items.append({
-                "priority": "warning",
-                "icon": "⚠️",
-                "title": f"{plat.title()} a {h['month_pct']}% du quota mensuel",
-                "action": f"Prevoir upgrade dans 30j si tendance continue. {plat}=goulot.",
-            })
-        elif h["month_pct"] >= 50:
-            action_items.append({
-                "priority": "info",
-                "icon": "ℹ️",
-                "title": f"{plat.title()} a 50% — surveille la croissance",
-                "action": "Pas urgent, mais marque dans ton plan : prevoir +5 IPs Webshare a 70%",
-            })
-
-    # Clippeurs : alerte preventive 100 clippeurs avant chaque seuil
-    if total_clippers >= 700 and total_clippers < 800:
-        action_items.append({
-            "priority": "info",
-            "icon": "🎯",
-            "title": f"Tu approches 800 clippeurs ({total_clippers} actuels)",
-            "action": "Action preventive GRATUITE : remplir le formulaire Google pour quota YouTube etendu (5 min, gratuit). Voir https://support.google.com/youtube/contact/yt_api_form",
-        })
-    if total_clippers >= 1400 and total_clippers < 1500:
-        action_items.append({
-            "priority": "warning",
-            "icon": "⚠️",
-            "title": f"Tu approches 1500 clippeurs ({total_clippers})",
-            "action": "Action requise : ajoute +5 IPs Webshare (25€/mois) pour doubler la capacite TT/IG.",
-        })
-    if total_clippers >= 1900 and total_clippers < 2000:
-        action_items.append({
-            "priority": "warning",
-            "icon": "⚠️",
-            "title": f"Tu approches 2000 clippeurs ({total_clippers})",
-            "action": "Action requise : active le 2eme VPS Hostinger en load-balancing (5€/mois).",
-        })
-
-    # Watchdog : alerte si une API est cassee
-    for plat, wd in watchdog_status.items():
-        if wd.get("status") == "critical":
-            action_items.append({
-                "priority": "critical",
-                "icon": "🚨",
-                "title": f"WATCHDOG : {plat.upper()} CASSE",
-                "action": f"L'API {plat} a echoue {wd.get('consecutive_failures', 0)}x consecutivement sur le test. Verifier les logs Railway et patcher la cascade.",
-            })
-
-    # Apify utilise aujourd'hui = bug
-    if apify_used_today > 0:
-        action_items.append({
-            "priority": "critical",
-            "icon": "🚨",
-            "title": f"Apify a ete utilise {apify_used_today}x aujourd'hui",
-            "action": "Investiguer pourquoi la cascade gratuite Insta a echoue. Voir Admin -> Alertes Fraude.",
-        })
-
-    # Spread mauvais = mauvaise rep load
-    if spread_quality in ("moderate", "poor"):
-        action_items.append({
-            "priority": "warning",
-            "icon": "⚠️",
-            "title": f"Repartition scraping {spread_quality}",
-            "action": f"Pic max {pic_max}/heure, moyenne {pic_avg}. Reset le planning via POST /admin/reset-scrape-schedule",
-        })
-
-    # Campagnes overdue = scheduler en retard
-    if overdue > 5:
-        action_items.append({
-            "priority": "warning",
-            "icon": "⚠️",
-            "title": f"{overdue} campagnes en retard de scrape",
-            "action": "Le scheduler est sature ou le worker plante. Verifier les logs Railway.",
-        })
-
-    # ── 8. Verdict global ───────────────────────────────────────────────────
-    has_critical = any(a["priority"] == "critical" for a in action_items)
-    has_warning = any(a["priority"] == "warning" for a in action_items)
-
-    if has_critical:
-        global_status = "critical"
-        global_message = "🚨 Action urgente requise ! Vois les items ci-dessous."
-    elif has_warning:
-        global_status = "warning"
-        global_message = "⚠️ Attention requise — anticipe les actions ci-dessous."
-    else:
-        # Capacite d'accueil restante en clippeurs
-        max_capacity_estimate = 1500  # mix typique TT+IG dominant
-        margin = max(0, max_capacity_estimate - total_clippers)
-        global_status = "ok"
-        global_message = f"✅ RAS — encore ~{margin:,} clippeurs avant action requise. Concentre-toi sur le commercial."
-
     return {
         "now": now.isoformat(),
-        "global_status": global_status,
-        "global_message": global_message,
         "summary": {
             "total_clippers": total_clippers,
             "active_clippers_30d": active_clippers,
@@ -14113,27 +13724,15 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
             "total_tracked_accounts": total_accounts,
             "accounts_by_platform": accounts_by_platform,
             "open_alerts_critical": open_alerts_critical,
-            "open_alerts_warning": open_alerts_warning,
             "apify_used_today": apify_used_today,
             "circuit_breakers_active": len(cb_active),
         },
-        "platforms_health": platforms_health,
+        "scrapes_by_platform": scrapes_by_platform,
         "watchdog": watchdog_status,
         "circuit_breakers_active": cb_active,
         "scheduling": {
-            "spread_quality": spread_quality,
-            "pic_max_per_hour": pic_max,
-            "pic_avg_per_hour": pic_avg,
             "overdue_campaigns": overdue,
             "distribution_by_hour": by_hour,
-        },
-        "action_items": action_items,
-        "thresholds": {
-            "youtube_quota_request_at": 800,
-            "extra_proxy_ips_at": 1500,
-            "second_vps_at": 2000,
-            "max_safe_clippers_estimate": 1500,
-            "max_capacity_with_full_upgrade": 5000,
         },
     }
 
@@ -14150,23 +13749,18 @@ async def admin_run_watchdog_now(request: Request, _: bool = Depends(verify_admi
 
 @api_router.get("/admin/apify-usage-today")
 async def admin_apify_usage_today(request: Request, _: bool = Depends(verify_admin_code)):
-    """ALARME : compteur d'utilisation Apify aujourd'hui vs sources gratuites.
-    Si Apify > 5% du total = signal que le scraping gratuit est casse.
+    """Compteur REEL d'utilisation Apify aujourd'hui (donnees DB uniquement,
+    pas d'estimation de cout ni de seuil arbitraire).
     """
     today_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00+00:00")
-
     try:
-        # Total scrapes (success uniquement, par source)
         pipeline = [
             {"$match": {"timestamp": {"$gte": today_start}, "success": True}},
             {"$group": {"_id": "$source", "count": {"$sum": 1}}},
         ]
         results = await db.scraping_history.aggregate(pipeline).to_list(50)
-
         by_source = {r["_id"]: r["count"] for r in results}
         total_scrapes = sum(by_source.values())
-
-        # Compteurs Apify par plateforme
         apify_total = sum(c for src, c in by_source.items() if src and src.startswith("apify"))
         apify_insta = await db.scraping_history.count_documents({
             "source": "apify", "platform": "instagram", "success": True,
@@ -14176,43 +13770,14 @@ async def admin_apify_usage_today(request: Request, _: bool = Depends(verify_adm
             "source": "apify", "platform": "tiktok", "success": True,
             "timestamp": {"$gte": today_start}
         })
-
-        # Pourcentage Apify
-        apify_pct = round((apify_total / total_scrapes) * 100, 1) if total_scrapes > 0 else 0
-
-        # Verdict (selon ta regle : Apify = alarme uniquement)
-        if apify_total == 0:
-            severity = "ok"
-            verdict = "✅ Apify non utilise — scraping gratuit OK"
-            advice = "Tout va bien, le scraping gratuit suffit."
-        elif apify_pct < 1:
-            severity = "info"
-            verdict = f"ℹ️ Apify utilise tres rarement ({apify_total} calls, {apify_pct}%)"
-            advice = "Cas isoles, surveille mais pas urgent."
-        elif apify_pct < 5:
-            severity = "warning"
-            verdict = f"⚠️ Apify utilise {apify_pct}% — fallback frequent"
-            advice = "Le scraping gratuit echoue regulierement. Verifier proxy/VPS."
-        else:
-            severity = "critical"
-            verdict = f"🚨 Apify utilise {apify_pct}% — SYSTEME CASSE, refaire le scraping"
-            advice = "Le scraping gratuit ne marche plus. URGENT : reconfigure BACKEND_PROXY_URL ou CLIP_SCRAPER_URL."
-
-        # Estimation cout Apify aujourd'hui (Insta = $0.0026/reel * 12 reels = $0.031/call)
-        cost_today_eur = round(apify_insta * 12 * 0.0026 * 0.92 + apify_tiktok * 0.0003 * 0.92, 2)
-
         return {
             "today": today_start[:10],
             "total_scrapes_today": total_scrapes,
             "apify_total_today": apify_total,
             "apify_instagram_today": apify_insta,
             "apify_tiktok_today": apify_tiktok,
-            "apify_percentage": apify_pct,
             "by_source": by_source,
-            "estimated_cost_eur_today": cost_today_eur,
-            "severity": severity,
-            "verdict": verdict,
-            "advice": advice,
+            "note": "Compteurs reels DB. Pas d'estimation de cout ni de seuil arbitraire.",
         }
     except Exception as e:
         return {"error": str(e)[:300]}
@@ -15271,136 +14836,40 @@ async def admin_apify_usage(request: Request, days: int = 30):
 
 @api_router.get("/admin/api-capacity")
 async def admin_api_capacity(request: Request, _: bool = Depends(verify_admin_code)):
-    """DASHBOARD : pourcentage d'utilisation mensuelle des APIs gratuites TikTok / Instagram / YouTube.
-    Permet de savoir quand upgrader proxy webshare ou quota YouTube avant saturation.
-
-    Capacites theoriques (avec proxy webshare 5 IPs + cle YouTube standard) :
-    - TikTok via VPS clipscraper       : ~10000 scrapes/jour = ~300k/mois
-    - Instagram via Mobile Clips API   : ~3000 scrapes/jour = ~90k/mois
-    - YouTube via Data API v3 (quota)  : ~3300 scrapes/jour = ~100k/mois (10k units/jour, 3 units/call)
-
-    Ces capacites sont des estimations conservatrices. Au-dela de 70% c'est l'alerte
-    pour upgrader (plus d'IPs proxy, plan API YouTube, etc).
+    """Compteurs REELS de scrapes par plateforme. Pas d'estimation de capacite ni
+    de seuil arbitraire. L'utilisateur voit les chiffres bruts et juge.
     """
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     today_iso = now.strftime("%Y-%m-%dT00:00:00+00:00")
 
-    # Capacites theoriques mensuelles (calls reussis maximum confortable)
-    CAPACITY = {
-        "tiktok": {"month": 300_000, "day": 10_000},
-        "instagram": {"month": 90_000, "day": 3_000},
-        "youtube": {"month": 100_000, "day": 3_300},
-    }
-
     try:
         result_per_platform = {}
-        for plat, cap in CAPACITY.items():
-            # Compte mois en cours TOUS scrapes (succes uniquement) sur cette plateforme
+        for plat in ("tiktok", "instagram", "youtube"):
             month_count = await db.scraping_history.count_documents({
-                "platform": plat,
-                "success": True,
-                "timestamp": {"$gte": month_start},
+                "platform": plat, "success": True, "timestamp": {"$gte": month_start},
             })
             today_count = await db.scraping_history.count_documents({
-                "platform": plat,
-                "success": True,
-                "timestamp": {"$gte": today_iso},
+                "platform": plat, "success": True, "timestamp": {"$gte": today_iso},
             })
-            month_pct = round((month_count / cap["month"]) * 100, 1) if cap["month"] else 0
-            day_pct = round((today_count / cap["day"]) * 100, 1) if cap["day"] else 0
-
-            # Status colore
-            if month_pct >= 80 or day_pct >= 80:
-                status = "RED"
-                advice = f"⚠️ {plat.title()} sature : {month_pct}% du mois consomme. Upgrade urgent (proxy supplementaire ou plan API)."
-            elif month_pct >= 50 or day_pct >= 50:
-                status = "ORANGE"
-                advice = f"⚠️ {plat.title()} a {month_pct}% — surveille la croissance, prevoir upgrade dans 30j si tendance continue."
-            else:
-                status = "GREEN"
-                advice = f"✅ {plat.title()} a {month_pct}% — capacite saine, encore {round(cap['month'] - month_count):,} appels possibles ce mois."
-
-            # Estimation jours restants au rythme actuel
             daily_avg = month_count / max(now.day, 1)
-            days_until_full = round((cap["month"] - month_count) / daily_avg) if daily_avg > 0 else None
-
             result_per_platform[plat] = {
                 "month_calls": month_count,
-                "month_capacity": cap["month"],
-                "month_usage_pct": month_pct,
                 "today_calls": today_count,
-                "day_capacity": cap["day"],
-                "day_usage_pct": day_pct,
-                "remaining_month": max(0, cap["month"] - month_count),
                 "daily_avg": round(daily_avg),
-                "days_until_full": days_until_full,
-                "status": status,
-                "advice": advice,
             }
 
-        # Estimation capacite agences (basee sur usage moyen actuel par campagne)
         total_active_campaigns = await db.campaigns.count_documents({"status": "active"})
         total_accounts = await db.social_accounts.count_documents({})
-
-        # Si on a deja des campagnes actives, on extrapole
-        accounts_per_agency_avg = max(1, total_accounts / max(1, await db.users.count_documents({"role": "agency"})))
-
-        # Calls/mois par compte tracke (moyenne 4 scrapes/jour × 30 jours = 120 calls/mois)
-        calls_per_account_month = 120
-
-        # Capacite restante en nombre d'agences additionnelles
-        agencies_estimates = {}
-        for plat, cap in CAPACITY.items():
-            remaining = cap["month"] - result_per_platform[plat]["month_calls"]
-            if accounts_per_agency_avg > 0:
-                additional_agencies = int(remaining / (accounts_per_agency_avg * calls_per_account_month))
-            else:
-                additional_agencies = int(remaining / (30 * calls_per_account_month))  # default 30 comptes
-            agencies_estimates[plat] = max(0, additional_agencies)
-
-        # Verdict global : la plateforme la plus saturee determine la limite
-        worst_plat = max(result_per_platform.keys(), key=lambda p: result_per_platform[p]["month_usage_pct"])
-        worst_pct = result_per_platform[worst_plat]["month_usage_pct"]
-
-        # Estimation comptes additionnels possibles (limite par la plateforme la plus saturee)
-        additional_accounts_capacity = min(
-            int((CAPACITY[p]["month"] - result_per_platform[p]["month_calls"]) / calls_per_account_month)
-            for p in CAPACITY
-        )
-        additional_accounts_capacity = max(0, additional_accounts_capacity)
-
-        # Plans tarifaires Paul
-        PLANS = {
-            "small": 30,    # 30 comptes
-            "medium": 100,  # 100 comptes
-            "large": 400,   # 400 comptes
-        }
-        max_agencies_per_plan = {
-            plan_name: max(0, int(additional_accounts_capacity / accounts))
-            for plan_name, accounts in PLANS.items()
-        }
 
         return {
             "month_start": month_start[:10],
             "platforms": result_per_platform,
-            "global": {
+            "totals": {
                 "active_campaigns": total_active_campaigns,
                 "total_tracked_accounts": total_accounts,
-                "avg_accounts_per_agency": round(accounts_per_agency_avg, 1),
-                "calls_per_account_month_estimate": calls_per_account_month,
-                "additional_accounts_capacity": additional_accounts_capacity,
-                "additional_agencies_estimate": agencies_estimates,
-                "max_new_agencies_per_plan": max_agencies_per_plan,
-                "bottleneck_platform": worst_plat,
-                "bottleneck_usage_pct": worst_pct,
             },
-            "recommendation": (
-                f"Tu peux encore accueillir environ {additional_accounts_capacity:,} comptes trackes supplementaires "
-                f"(soit {max_agencies_per_plan['small']} agences plan_small / {max_agencies_per_plan['medium']} plan_medium / "
-                f"{max_agencies_per_plan['large']} plan_large) avant saturation. "
-                f"Goulot actuel : {worst_plat} a {worst_pct}%."
-            ),
+            "note": "Compteurs reels DB. Pas d'estimation de capacite (depend du proxy/VPS configure).",
         }
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
