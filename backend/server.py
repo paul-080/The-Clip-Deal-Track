@@ -8101,6 +8101,36 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     )
                 except Exception as ue:
                     logger.debug(f"User snapshot failed for {uid}: {ue}")
+
+            # ── NOUVEAU : Snapshot quotidien PAR VIDEO ────────────────────
+            # Permet de tracker l'evolution exacte des vues jour par jour.
+            # Dans 30 jours, on aura les VRAIES vues quotidiennes par video.
+            try:
+                videos_in_campaign = await db.tracked_videos.find(
+                    {"campaign_id": campaign_id},
+                    {"_id": 0, "video_id": 1, "platform_video_id": 1, "views": 1, "likes": 1, "comments": 1, "user_id": 1}
+                ).to_list(5000)
+                # Bulk upsert (un par video, sur la journee)
+                for vid in videos_in_campaign:
+                    if not vid.get("video_id"):
+                        continue
+                    await db.video_views_snapshots.update_one(
+                        {"video_id": vid["video_id"], "date": today_str},
+                        {"$set": {
+                            "video_id": vid["video_id"],
+                            "platform_video_id": vid.get("platform_video_id"),
+                            "campaign_id": campaign_id,
+                            "user_id": vid.get("user_id"),
+                            "date": today_str,
+                            "views": int(vid.get("views") or 0),
+                            "likes": int(vid.get("likes") or 0),
+                            "comments": int(vid.get("comments") or 0),
+                            "snapshot_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                        upsert=True
+                    )
+            except Exception as vse:
+                logger.warning(f"Per-video daily snapshot failed for {campaign_id}: {vse}")
         except Exception as e:
             logger.warning(f"Failed to update budget/snapshot for {campaign_id}: {e}")
 
@@ -17780,6 +17810,10 @@ async def startup_event():
         (db.views_snapshots_hourly, [("campaign_id", 1), ("hour_key", 1)], {"unique": True, "sparse": True}),
         # user_views_snapshots (per clipper, per campaign, per day)
         (db.user_views_snapshots, [("campaign_id", 1), ("user_id", 1), ("date", -1)], {}),
+        # video_views_snapshots : evolution quotidienne PAR VIDEO (vraies donnees historiques)
+        (db.video_views_snapshots, [("video_id", 1), ("date", -1)], {}),
+        (db.video_views_snapshots, [("campaign_id", 1), ("date", -1)], {}),
+        (db.video_views_snapshots, [("video_id", 1), ("date", 1)], {"unique": True, "name": "video_date_unique"}),
         # payments
         (db.payments, [("user_id", 1), ("campaign_id", 1)], {}),
         (db.payments, [("agency_id", 1)], {}),
