@@ -17525,6 +17525,42 @@ async def startup_event():
     # Si 3 echecs consecutifs sur une plateforme = alerte critique admin
     asyncio.create_task(watchdog_loop())
 
+    # ═══ HEALTH CHECK STARTUP : log CLAIREMENT ce qui est configure ═══
+    # Permet de voir au boot Railway ce qui marche et ce qui manque
+    config_status = []
+    config_status.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    config_status.append(f"  CONFIG SCRAPING — verifie au demarrage Railway")
+    config_status.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    config_status.append(f"  YOUTUBE_API_KEY              : {'✅ SET' if YOUTUBE_API_KEY else '❌ MISSING — YouTube ne marchera PAS'}")
+    config_status.append(f"  APIFY_TOKEN                  : {'✅ SET' if APIFY_TOKEN else '❌ MISSING — fallback paye indispo'}")
+    config_status.append(f"  APIFY_INSTA_FORCE_OFF        : {'⚠️ ON (kill switch)' if _APIFY_INSTA_KILL_SWITCH else '✅ OFF (Apify Insta dispo)'}")
+    config_status.append(f"  BACKEND_PROXY_URL            : {'✅ SET' if BACKEND_PROXY_URL else '⚠️ MISSING — Insta sans proxy fragile'}")
+    config_status.append(f"  CLIP_SCRAPER_URL             : {'✅ SET' if CLIP_SCRAPER_URL else '⚠️ MISSING — VPS scraper indisponible'}")
+    config_status.append(f"  CLIP_SCRAPER_KEY             : {'✅ SET' if CLIP_SCRAPER_KEY else '⚠️ MISSING'}")
+    config_status.append(f"  TIKWM_API_KEY                : {'✅ SET' if TIKWM_API_KEY else '⚠️ MISSING — TikWm indispo'}")
+    config_status.append(f"  RAPIDAPI_KEY                 : {'✅ SET' if RAPIDAPI_KEY else '⚠️ MISSING'}")
+    config_status.append(f"  INSTAGRAM_SESSIONS           : {'✅ ' + str(len(INSTAGRAM_SESSIONS)) + ' sessions' if INSTAGRAM_SESSIONS else '⚠️ MISSING'}")
+    config_status.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    # Verdict
+    has_youtube = bool(YOUTUBE_API_KEY)
+    has_apify = bool(APIFY_TOKEN) and not _APIFY_INSTA_KILL_SWITCH
+    has_proxy_or_vps = bool(BACKEND_PROXY_URL or (CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY))
+    if has_youtube and has_apify:
+        config_status.append(f"  VERDICT : ✅ Scraping operationnel")
+        if not has_proxy_or_vps:
+            config_status.append(f"            (Insta/TikTok via Apify uniquement = paye)")
+    elif has_apify:
+        config_status.append(f"  VERDICT : ⚠️ YouTube manquant (set YOUTUBE_API_KEY gratuit)")
+    elif has_proxy_or_vps:
+        config_status.append(f"  VERDICT : ⚠️ Pas de fallback Apify (set APIFY_TOKEN)")
+    else:
+        config_status.append(f"  VERDICT : 🚨 AUCUNE source configuree — scraping IMPOSSIBLE")
+        config_status.append(f"            URGENT : configure YOUTUBE_API_KEY (gratuit) +")
+        config_status.append(f"            APIFY_TOKEN ou BACKEND_PROXY_URL ou CLIP_SCRAPER_URL")
+    config_status.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    for line in config_status:
+        logger.info(line)
+
     # Test TikWm API key at startup and log the result
     if TIKWM_API_KEY:
         try:
