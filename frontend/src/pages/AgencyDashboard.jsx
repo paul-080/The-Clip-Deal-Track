@@ -1241,6 +1241,32 @@ function CampaignDashboard({ campaigns }) {
     // eslint-disable-next-line
   }, [campaignId, activeTab, periodSel, periodOffset]);
 
+  const [refreshingStats, setRefreshingStats] = useState(false);
+  const handleRefreshStats = async () => {
+    if (refreshingStats) return;
+    setRefreshingStats(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/refresh-stats`, {
+        method: "POST", credentials: "include"
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(data.message || "Refresh lancé — vues mises à jour dans 1-3 min", { duration: 6000 });
+        // Auto-refresh des stats apres 60s puis 180s
+        setTimeout(() => { fetchAllVideos(); fetchTopClips(); }, 60000);
+        setTimeout(() => { fetchAllVideos(); fetchTopClips(); }, 180000);
+      } else if (res.status === 429) {
+        toast.error(data.detail || "Trop tôt, attends 5 min entre 2 refresh", { duration: 5000 });
+      } else {
+        toast.error(data.detail || "Erreur lors du refresh");
+      }
+    } catch (e) {
+      toast.error("Erreur réseau");
+    } finally {
+      setRefreshingStats(false);
+    }
+  };
+
   const fetchClickStats = async (p = period, cFrom = customFrom, cTo = customTo) => {
     setClickStatsLoading(true);
     try {
@@ -2145,9 +2171,19 @@ function CampaignDashboard({ campaigns }) {
                       <span className="text-white/30">Pas de budget défini</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-white/40">Généré ce mois ({monthLabel})</span>
-                    <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white/40">Généré ce mois ({monthLabel})</span>
+                      <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
+                    </div>
+                    <button
+                      onClick={handleRefreshStats}
+                      disabled={refreshingStats}
+                      title="Force un scrape immédiat (cooldown 5 min)"
+                      className="px-3 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] text-xs font-semibold border border-[#00E5FF]/30 disabled:opacity-50"
+                    >
+                      {refreshingStats ? "↻ Refresh..." : "↻ Refresh stats"}
+                    </button>
                   </div>
                 </div>
                 {!budgetUnlimited && budgetTotal > 0 && (
@@ -2407,9 +2443,19 @@ function CampaignDashboard({ campaigns }) {
                       <span className="text-white/30">Pas de budget défini</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-white/40">Généré ce mois ({monthLabel})</span>
-                    <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white/40">Généré ce mois ({monthLabel})</span>
+                      <span className="text-[#f0c040] font-mono font-bold">€{earningsThisMonth.toFixed(2)}</span>
+                    </div>
+                    <button
+                      onClick={handleRefreshStats}
+                      disabled={refreshingStats}
+                      title="Force un scrape immédiat (cooldown 5 min)"
+                      className="px-3 py-1 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] text-xs font-semibold border border-[#00E5FF]/30 disabled:opacity-50"
+                    >
+                      {refreshingStats ? "↻ Refresh..." : "↻ Refresh stats"}
+                    </button>
                   </div>
                 </div>
                 {!budgetUnlimited && budgetTotal > 0 && (

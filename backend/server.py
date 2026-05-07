@@ -7598,6 +7598,17 @@ async def _scrape_one_account_into_campaign(
     now_iso = datetime.now(timezone.utc).isoformat()
     inserted = 0
     skipped_pre_cutoff = 0
+    # Pre-fetch existing videos for MAX ONLY logic
+    existing_videos_map = {}
+    try:
+        existing_docs = await db.tracked_videos.find(
+            {"account_id": acc_id},
+            {"_id": 0, "platform_video_id": 1, "views": 1, "likes": 1, "comments": 1}
+        ).to_list(500)
+        existing_videos_map = {d["platform_video_id"]: d for d in existing_docs}
+    except Exception:
+        pass
+
     for vid in videos:
         if not vid.get("platform_video_id"):
             continue
@@ -7605,7 +7616,14 @@ async def _scrape_one_account_into_campaign(
         if pub_dt and cutoff and pub_dt < cutoff:
             skipped_pre_cutoff += 1
             continue
-        earnings = (vid.get("views", 0) / 1000) * rpm
+
+        # MAX ONLY : views/likes/comments ne diminuent JAMAIS entre 2 scrapes
+        existing = existing_videos_map.get(vid["platform_video_id"], {})
+        new_views = max(int(vid.get("views", 0) or 0), int(existing.get("views") or 0))
+        new_likes = max(int(vid.get("likes", 0) or 0), int(existing.get("likes") or 0))
+        new_comments = max(int(vid.get("comments", 0) or 0), int(existing.get("comments") or 0))
+
+        earnings = (new_views / 1000) * rpm
         set_fields = {
             "platform_video_id": vid["platform_video_id"],
             "account_id": acc_id,
@@ -7615,9 +7633,9 @@ async def _scrape_one_account_into_campaign(
             "url": vid.get("url", ""),
             "title": vid.get("title"),
             "thumbnail_url": vid.get("thumbnail_url"),
-            "views": vid.get("views", 0),
-            "likes": vid.get("likes", 0),
-            "comments": vid.get("comments", 0),
+            "views": new_views,
+            "likes": new_likes,
+            "comments": new_comments,
             "published_at": vid.get("published_at"),
             "fetched_at": now_iso,
             "earnings": round(earnings, 4),
@@ -7889,6 +7907,18 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     pass
 
                 saved_count = 0
+                # Pre-fetch likes/comments aussi pour MAX ONLY logic
+                existing_full_map = {}
+                try:
+                    existing_full_docs = await db.tracked_videos.find(
+                        {"account_id": account_id},
+                        {"_id": 0, "platform_video_id": 1, "views": 1, "likes": 1, "comments": 1}
+                    ).to_list(500)
+                    existing_full_map = {d["platform_video_id"]: d for d in existing_full_docs}
+                except Exception:
+                    pass
+
+                saved_count = 0
                 skipped_cold = 0
                 for vid in videos:
                     if not vid.get("platform_video_id"):
@@ -7898,9 +7928,27 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     if assigned_cutoff and pub_dt and pub_dt < assigned_cutoff:
                         continue
 
-                    # ── Smart cache : skip update si video froide (< 100 vues ET pas de growth) ──
-                    new_views = int(vid.get("views", 0) or 0)
-                    old_views = int(existing_map.get(vid["platform_video_id"], 0) or 0)
+                    new_views_raw = int(vid.get("views", 0) or 0)
+                    new_likes_raw = int(vid.get("likes", 0) or 0)
+                    new_comments_raw = int(vid.get("comments", 0) or 0)
+                    existing = existing_full_map.get(vid["platform_video_id"], {})
+                    old_views = int(existing.get("views") or 0)
+                    old_likes = int(existing.get("likes") or 0)
+                    old_comments = int(existing.get("comments") or 0)
+
+                    # ── MAX ONLY : views ne diminuent JAMAIS entre 2 scrapes ──
+                    # Protege contre :
+                    # - APIs qui renvoient temporairement moins (cache delais, IP partial block)
+                    # - Sources differentes qui ne comptent pas pareil (ex Apify vs Mobile API)
+                    # - Bug scraping (parser incomplet)
+                    # Anti-fraude : empeche aussi un clipper de "tricher" en faisant baisser
+                    new_views = max(new_views_raw, old_views)
+                    new_likes = max(new_likes_raw, old_likes)
+                    new_comments = max(new_comments_raw, old_comments)
+
+                    # ── Smart cache : skip update si video PETITE et stagnante ──
+                    # On skip uniquement les videos < 100 vues SANS growth (anciennes inactives)
+                    # Les videos avec growth ou >= 100 vues sont TOUJOURS mises a jour
                     has_growth = new_views > old_views
                     is_cold = (not has_growth) and new_views < 100 and old_views > 0
                     if is_cold:
@@ -7917,9 +7965,9 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "url": vid.get("url", ""),
                         "title": vid.get("title"),
                         "thumbnail_url": vid.get("thumbnail_url"),
-                        "views": new_views,
-                        "likes": vid["likes"],
-                        "comments": vid["comments"],
+                        "views": new_views,  # MAX entre nouveau scrape et historique
+                        "likes": new_likes,
+                        "comments": new_comments,
                         "published_at": vid.get("published_at"),
                         "fetched_at": now_iso,
                         "earnings": round(earnings, 4),
@@ -8469,6 +8517,79 @@ async def cleanup_and_rescrape(campaign_id: str, user: dict = Depends(get_curren
         "fixed_count": cleanup["fixed"],
         "samples": cleanup["samples"],
         "message": f"{cleanup['fixed']} comptes nettoyés. Re-vérification en cours (~30-60s). Lance ensuite 'Scraping maintenant'.",
+    }
+
+
+_REFRESH_STATS_COOLDOWN_SEC = 300  # 5 min entre 2 refresh manuels par campagne (anti-abus)
+_REFRESH_STATS_LAST: dict = {}  # campaign_id -> timestamp dernier refresh
+
+@api_router.post("/campaigns/{campaign_id}/refresh-stats")
+async def refresh_campaign_stats(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Permet a l'agence/manager de forcer un scrape immediat de sa campagne.
+    Rate-limit a 1 refresh par 5 minutes par campagne (anti-spam).
+    Tous les comptes sont rescrapes en background, vues mises a jour en 1-3 min.
+    """
+    if user.get("role") not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Reserve agence/manager")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    # Verifier ownership
+    if user.get("role") == "agency" and campaign.get("agency_id") != user.get("user_id"):
+        raise HTTPException(status_code=403, detail="Cette campagne ne vous appartient pas")
+
+    # Rate limit
+    last_refresh = _REFRESH_STATS_LAST.get(campaign_id, 0)
+    elapsed = time.time() - last_refresh
+    if elapsed < _REFRESH_STATS_COOLDOWN_SEC:
+        wait_min = round((_REFRESH_STATS_COOLDOWN_SEC - elapsed) / 60, 1)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Refresh deja effectue recemment. Reessaye dans {wait_min} min."
+        )
+    _REFRESH_STATS_LAST[campaign_id] = time.time()
+
+    # Force le next_scrape_at a maintenant pour declencher au prochain tick (max 30s)
+    await db.campaigns.update_one(
+        {"campaign_id": campaign_id},
+        {"$set": {"next_scrape_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    # Background : scrape immediat tous les comptes
+    cutoff = _parse_utc(campaign.get("tracking_start_date")) or datetime.now(timezone.utc)
+    days_back = max(2, int((datetime.now(timezone.utc) - cutoff).total_seconds() / 86400) + 2)
+    days_back = min(days_back, 90)  # cap 90j pour refresh manuel
+
+    async def _scrape_campaign_now():
+        try:
+            assignments = await db.campaign_social_accounts.find(
+                {"campaign_id": campaign_id}, {"_id": 0}
+            ).to_list(500)
+            sem = asyncio.Semaphore(3)
+            async def _scrape_one(a):
+                async with sem:
+                    acc = await db.social_accounts.find_one({"account_id": a["account_id"]}, {"_id": 0})
+                    if acc and acc.get("status") == "verified":
+                        try:
+                            await _scrape_one_account_into_campaign(
+                                acc, campaign, cutoff, since_days=days_back, wait_verification=False
+                            )
+                        except Exception as e:
+                            logger.warning(f"refresh-stats scrape failed for {acc.get('username')}: {e}")
+            await asyncio.gather(*[_scrape_one(a) for a in assignments], return_exceptions=True)
+            logger.info(f"refresh-stats : campagne {campaign_id} rescrapee ({len(assignments)} comptes)")
+        except Exception as e:
+            logger.error(f"refresh-stats background error: {e}")
+
+    asyncio.create_task(_scrape_campaign_now())
+
+    accounts_count = await db.campaign_social_accounts.count_documents({"campaign_id": campaign_id})
+    return {
+        "ok": True,
+        "message": f"Refresh lance : {accounts_count} comptes en cours de scraping (1-3 min).",
+        "accounts_count": accounts_count,
     }
 
 
