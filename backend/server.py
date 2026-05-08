@@ -5915,6 +5915,112 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     if session:
         headers_uinfo["Cookie"] = f"sessionid={session}; ds_user_id=0"
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # STRATEGIE A (PRIORITAIRE) : GraphQL profile posts directement.
+    # Utilise le MEME endpoint /api/graphql qui marche pour scraping video
+    # individuelle (94k vues confirmees via test-proxy). On envoie un doc_id
+    # pour PolarisProfilePostsTabContentDirectQuery.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    PROFILE_POSTS_DOC_IDS = [
+        "9588641724560466",  # PolarisProfilePostsTabContentDirectQuery
+        "9810751812295552",  # alternate
+        "7950326061742207",  # legacy
+    ]
+    headers_gql = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "X-IG-App-ID": "936619743392459",
+        "X-FB-LSD": "AVqbxe3J_YA",
+        "X-ASBD-ID": "129477",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Origin": "https://www.instagram.com",
+        "Referer": f"https://www.instagram.com/{username}/",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    gql_kwargs = {"timeout": 20, "headers": headers_gql}
+    if BACKEND_PROXY_URL:
+        gql_kwargs["proxy"] = BACKEND_PROXY_URL
+
+    gql_videos: list = []
+    try:
+        async with httpx.AsyncClient(**gql_kwargs) as c:
+            for doc_id in PROFILE_POSTS_DOC_IDS:
+                form_data = {
+                    "variables": _json_g.dumps({"username": username, "first": min(max_videos, 50)}),
+                    "doc_id": doc_id,
+                    "lsd": "AVqbxe3J_YA",
+                }
+                try:
+                    r = await c.post("https://www.instagram.com/api/graphql", data=form_data)
+                    if r.status_code != 200:
+                        logger.info(f"GraphQL profile posts doc_id={doc_id} HTTP {r.status_code} for @{username}")
+                        continue
+                    data = r.json()
+                except Exception as e:
+                    logger.info(f"GraphQL profile posts doc_id={doc_id} exception for @{username}: {e}")
+                    continue
+
+                # La structure varie selon le doc_id. Essaye plusieurs chemins.
+                user_obj = (data.get("data") or {}).get("user") or (data.get("data") or {}).get("xdt_user") or {}
+                edges = (user_obj.get("edge_owner_to_timeline_media") or {}).get("edges", [])
+                if not edges:
+                    # Autre structure : connection
+                    conn = user_obj.get("connection") or user_obj.get("xdt_api__v1__feed__user_timeline_graphql_connection")
+                    if conn:
+                        edges = conn.get("edges", []) if isinstance(conn, dict) else []
+                if not edges:
+                    continue
+
+                from datetime import datetime as _dt_g, timezone as _tz_g
+                for edge in edges[:max_videos]:
+                    node = edge.get("node") if isinstance(edge, dict) else edge
+                    if not isinstance(node, dict):
+                        continue
+                    sc = node.get("shortcode") or node.get("code")
+                    if not sc:
+                        continue
+                    ts = node.get("taken_at_timestamp") or node.get("taken_at")
+                    published = None
+                    if ts:
+                        try:
+                            published = _dt_g.fromtimestamp(int(ts), tz=_tz_g.utc).isoformat()
+                        except Exception:
+                            pass
+                    views = int(node.get("video_view_count") or node.get("video_play_count")
+                                or node.get("play_count") or node.get("view_count") or 0)
+                    likes = int((node.get("edge_liked_by") or {}).get("count")
+                                or (node.get("edge_media_preview_like") or {}).get("count")
+                                or node.get("like_count") or 0)
+                    comments = int((node.get("edge_media_to_comment") or {}).get("count")
+                                   or node.get("comment_count") or 0)
+                    cap_edges = (node.get("edge_media_to_caption") or {}).get("edges", [])
+                    caption = (cap_edges[0].get("node", {}).get("text", "")[:200]
+                               if cap_edges else (node.get("caption") or "")[:200])
+                    gql_videos.append({
+                        "platform_video_id": sc,
+                        "url": f"https://www.instagram.com/p/{sc}/",
+                        "title": caption or None,
+                        "thumbnail_url": node.get("thumbnail_src") or node.get("display_url"),
+                        "views": views,
+                        "likes": likes,
+                        "comments": comments,
+                        "published_at": published,
+                    })
+                if gql_videos:
+                    logger.info(f"GraphQL profile posts SUCCESS doc_id={doc_id} @{username}: {len(gql_videos)} videos")
+                    break
+    except Exception as e:
+        logger.warning(f"GraphQL profile posts cascade failed for @{username}: {e}")
+
+    if gql_videos:
+        return gql_videos[:max_videos]
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # STRATEGIE B : Mobile Clips API (logique existante)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     user_id = None
     last_err_uinfo = None
 
