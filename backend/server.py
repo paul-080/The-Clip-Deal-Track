@@ -673,10 +673,34 @@ async def _fetch_instagram_html_stats_via_clipscraper(url: str) -> Optional[dict
         return None
 
 # Instagram session cookie rotation
-# Supports multiple cookies: INSTAGRAM_SESSION_IDS=cookie1,cookie2,cookie3
-# Also supports single: INSTAGRAM_SESSION_ID=cookie (legacy)
-_raw_sessions = os.environ.get('INSTAGRAM_SESSION_IDS', '') or os.environ.get('INSTAGRAM_SESSION_ID', '')
-INSTAGRAM_SESSIONS: list[str] = [s.strip() for s in _raw_sessions.split(',') if s.strip()]
+# Supporte plusieurs noms de variables d'environnement (priorite haut en bas) :
+#   - INSTAGRAM_COOKIE (le plus simple, recommande pour user)
+#   - INSTAGRAM_SESSION_IDS (legacy multi-cookies, separes par virgule)
+#   - INSTAGRAM_SESSION_ID (legacy single)
+# On filtre les valeurs placeholder fakes ('cookie1', 'cookie2', etc.)
+def _filter_real_cookies(raw: str) -> list[str]:
+    """Garde uniquement les cookies qui ressemblent a de vraies sessions Insta.
+    Vrai sessionid : commence par chiffres + %3A + texte (ex: '12345%3AABC...')
+    Fake : 'cookie1', 'cookie2', 'test', etc.
+    """
+    cookies = [s.strip() for s in (raw or '').split(',') if s.strip()]
+    real = []
+    for c in cookies:
+        # Un vrai sessionid Insta a au moins 30 chars + contient '%3A' (= : encode)
+        if len(c) >= 30 and ('%3A' in c or ':' in c):
+            real.append(c)
+    return real
+
+_raw_cookie = os.environ.get('INSTAGRAM_COOKIE', '').strip()
+_raw_sessions = os.environ.get('INSTAGRAM_SESSION_IDS', '').strip()
+_raw_legacy = os.environ.get('INSTAGRAM_SESSION_ID', '').strip()
+
+# Priorite : INSTAGRAM_COOKIE > INSTAGRAM_SESSION_IDS > INSTAGRAM_SESSION_ID
+INSTAGRAM_SESSIONS: list[str] = (
+    _filter_real_cookies(_raw_cookie)
+    or _filter_real_cookies(_raw_sessions)
+    or _filter_real_cookies(_raw_legacy)
+)
 # Single alias for backward compat
 INSTAGRAM_SESSION_ID = INSTAGRAM_SESSIONS[0] if INSTAGRAM_SESSIONS else ''
 _instagram_session_index = 0
