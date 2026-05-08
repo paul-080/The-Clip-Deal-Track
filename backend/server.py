@@ -4602,7 +4602,7 @@ async def _apify_get_dataset(dataset_id: str) -> list:
 
 async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> list:
     # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _fetch_instagram_videos_apify desactive pour @{username}")
         return []
     """
@@ -5042,7 +5042,7 @@ def _parse_instagram_videos(data: dict) -> list:
 async def _verify_instagram_apify(username: str) -> dict:
     """Verify Instagram account via Apify — uses residential proxies, cloud-safe."""
     # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _verify_instagram_apify desactive pour @{username}")
         raise ValueError("Apify Insta desactive (kill switch APIFY_INSTA_FORCE_OFF)")
     if not APIFY_TOKEN:
@@ -5884,7 +5884,7 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
 
 
-_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes'))
+_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
 
 
 async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
@@ -6080,6 +6080,115 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         return result
     except Exception as e:
         logger.warning(f"Insta clips/user/ failed for @{username}: {e}")
+        return None
+
+
+async def _fetch_instagram_via_public_html(username: str, max_videos: int = 30) -> Optional[list]:
+    """FREE PATH ULTIME : scrape la page profil public d'Instagram via HTML.
+    Marche depuis IPs cloud SI Insta n'a pas bloque l'IP. Utilise des
+    User-Agents varies, pas besoin de proxy ni de session.
+
+    Strategy : GET https://www.instagram.com/{user}/?__a=1 (deprecate mais
+    encore actif pour certains comptes) puis fallback sur la page HTML
+    avec extraction du JSON embed.
+    """
+    import re as _re_pub
+    import json as _json_pub
+    username = username.lstrip("@")
+
+    # User-Agents varies pour eviter detection pattern
+    user_agents = [
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+    ]
+    import random as _rnd
+    ua = _rnd.choice(user_agents)
+    headers = {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+    }
+    # Session cookie si dispo
+    sess = _get_instagram_session()
+    if sess:
+        headers["Cookie"] = f"sessionid={sess}; ds_user_id=0"
+
+    client_kwargs = {"timeout": 20, "headers": headers, "follow_redirects": True}
+    if BACKEND_PROXY_URL:
+        client_kwargs["proxy"] = BACKEND_PROXY_URL
+
+    profile_url = f"https://www.instagram.com/{username}/"
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as c:
+            r = await c.get(profile_url)
+        if r.status_code != 200:
+            logger.debug(f"Insta public HTML HTTP {r.status_code} for @{username}")
+            return None
+
+        body = r.text
+        # Cherche le JSON embed avec data du profil
+        # Pattern courant : "edge_owner_to_timeline_media":{...}
+        m = _re_pub.search(r'"edge_owner_to_timeline_media":\s*\{[^{}]*"edges":\s*(\[(?:[^[\]]|\[[^[\]]*\])*\])', body)
+        if not m:
+            # Pattern alternatif : profile data dans script JSON
+            m = _re_pub.search(r'window\._sharedData\s*=\s*(\{.*?\});</script>', body)
+            if not m:
+                return None
+            try:
+                shared = _json_pub.loads(m.group(1))
+                user_data = (shared.get("entry_data", {}).get("ProfilePage", [{}])[0]
+                             .get("graphql", {}).get("user", {}))
+                edges = user_data.get("edge_owner_to_timeline_media", {}).get("edges", [])
+            except Exception:
+                return None
+        else:
+            try:
+                edges = _json_pub.loads(m.group(1))
+            except Exception:
+                return None
+
+        if not edges:
+            return None
+
+        result = []
+        from datetime import datetime as _dt, timezone as _tz
+        for edge in edges[:max_videos]:
+            node = edge.get("node") if isinstance(edge, dict) else edge
+            if not isinstance(node, dict):
+                continue
+            shortcode = node.get("shortcode") or node.get("code")
+            if not shortcode:
+                continue
+            ts = node.get("taken_at_timestamp") or node.get("taken_at")
+            published = None
+            if ts:
+                try:
+                    published = _dt.fromtimestamp(int(ts), tz=_tz.utc).isoformat()
+                except Exception:
+                    pass
+            views = int(node.get("video_view_count") or node.get("video_play_count") or 0)
+            likes = int((node.get("edge_liked_by") or {}).get("count") or node.get("like_count") or 0)
+            comments = int((node.get("edge_media_to_comment") or {}).get("count") or node.get("comment_count") or 0)
+            caption_edges = (node.get("edge_media_to_caption") or {}).get("edges", [])
+            caption = caption_edges[0].get("node", {}).get("text", "")[:200] if caption_edges else ""
+            result.append({
+                "platform_video_id": shortcode,
+                "url": f"https://www.instagram.com/p/{shortcode}/",
+                "title": caption or None,
+                "thumbnail_url": node.get("thumbnail_src") or node.get("display_url"),
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "published_at": published,
+            })
+        if result:
+            logger.info(f"Insta public HTML SUCCESS for @{username}: {len(result)} posts")
+            await _log_scrape("instagram_public_html", "instagram", username, True, len(result), "free path no auth")
+        return result if result else None
+    except Exception as e:
+        logger.debug(f"Insta public HTML failed for @{username}: {e}")
         return None
 
 
@@ -6316,9 +6425,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
 
-    # PRIORITY 0c (FALLBACK ULTIME GRATUIT) : yt-dlp scrape profil Insta public
-    # Aucune config requise (pas de proxy, pas de VPS, pas de session, pas d'API key)
-    # Marche meme si BACKEND_PROXY_URL/CLIP_SCRAPER_URL sont absents
+    # PRIORITY 0c (FALLBACK GRATUIT NO-CONFIG) : yt-dlp scrape profil Insta public
     if YT_DLP_AVAILABLE:
         try:
             ytdlp_videos = await _fetch_instagram_via_ytdlp_profile(username, max_videos=dynamic_max)
@@ -6328,15 +6435,24 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"yt-dlp Insta profile failed for @{username}: {e}")
 
+    # PRIORITY 0d (FALLBACK GRATUIT HTML PUBLIC) : scrape la page profil HTML
+    try:
+        html_videos = await _fetch_instagram_via_public_html(username, max_videos=dynamic_max)
+        if html_videos:
+            logger.info(f"Instagram public HTML fallback: {len(html_videos)} videos for @{username}")
+            return html_videos
+    except Exception as e:
+        logger.warning(f"Instagram public HTML failed for @{username}: {e}")
+
     # PRIORITY 0b (FALLBACK PAYANT EMERGENCY) : Apify uniquement si TOUT le reste a echoue
     # Si on arrive la, c'est que :
     #   - Mobile Clips API + GraphQL ont echoue (proxy webshare HS ou IPs bannies)
     #   - VPS clipscraper a echoue (VPS down)
     #   - yt-dlp fallback aussi a echoue (Insta vraiment HS)
     # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
-    # Apify Insta autorise en FALLBACK uniquement quand TOUTES les sources gratuites ont echoue
-    # Defaut 'true' = activer (cree alerte critique a chaque utilisation pour signaler le probleme)
-    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'true').strip().lower() in ('true', '1', 'yes'))
+    # Apify Insta DESACTIVE PAR DEFAUT — l'utilisateur veut que le free path marche
+    # Pour reactiver explicitement (cas exceptionnel) : APIFY_FOR_INSTA_ACCOUNT=true
+    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
     if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
@@ -15392,7 +15508,7 @@ async def admin_debug_instagram(username: str, request: Request, _: bool = Depen
 
     # ── 0. Test Apify — démarrage uniquement (sans poll, évite timeout) ──
     # KILL SWITCH : skip si Apify Insta desactive
-    apify_kill = os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')
+    apify_kill = os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')
     if APIFY_TOKEN and not APIFY_DISABLED and not apify_kill:
         try:
             actor_id = "apify~instagram-reel-scraper"
