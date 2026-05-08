@@ -6019,16 +6019,57 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         return gql_videos[:max_videos]
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # STRATEGIE B : Mobile Clips API (logique existante)
+    # STRATEGIE B : Recupere user_id via plusieurs methodes, puis clips/user/
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     user_id = None
     last_err_uinfo = None
 
+    async def _try_get_user_id_via_html_meta(use_proxy: bool) -> tuple:
+        """Extrait user_id depuis la balise meta du HTML profil public.
+        Pattern : <meta property="al:ios:url" content="instagram://user?username=X"> + numeric ID.
+        OU recherche du JSON inline 'profile_id':'XXX' / 'owner':{'id':'XXX'}.
+        """
+        kwargs = {
+            "timeout": 15,
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            "follow_redirects": True,
+        }
+        if use_proxy and BACKEND_PROXY_URL:
+            kwargs["proxy"] = BACKEND_PROXY_URL
+        try:
+            async with httpx.AsyncClient(**kwargs) as c:
+                r = await c.get(f"https://www.instagram.com/{username}/")
+            if r.status_code != 200:
+                return None, f"HTML HTTP {r.status_code}"
+            html = r.text
+            # Patterns multiples pour extraire user_id
+            patterns = [
+                r'"profile_id":"(\d+)"',
+                r'"owner":\{"id":"(\d+)"',
+                r'"user_id":"(\d+)"',
+                r'"profilePage_(\d+)"',
+                r'instagram://user\?username=[^&]+&id=(\d+)',
+                r'"id":"(\d{6,15})","username":"' + _re_g.escape(username) + r'"',
+            ]
+            for pat in patterns:
+                m = _re_g.search(pat, html)
+                if m:
+                    return m.group(1), None
+            return None, "no user_id pattern found in HTML"
+        except Exception as e:
+            return None, f"{type(e).__name__}: {str(e)[:150]}"
+
     async def _try_get_user_id(use_proxy: bool) -> tuple:
-        """Retourne (user_id, error_msg). user_id None si echec."""
+        """Retourne (user_id, error_msg). user_id None si echec.
+        Essaye 2 methodes : web_profile_info puis HTML meta extraction.
+        """
         kwargs = {"timeout": 15, "headers": headers_uinfo}
         if use_proxy and BACKEND_PROXY_URL:
             kwargs["proxy"] = BACKEND_PROXY_URL
+        # Methode 1 : web_profile_info
         try:
             async with httpx.AsyncClient(**kwargs) as c:
                 r = await c.get(f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}")
@@ -6037,10 +6078,13 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
                 uid = user.get("id") or user.get("pk")
                 if uid:
                     return str(uid), None
-                return None, f"HTTP 200 but no user_id in response (account private/not found?)"
-            return None, f"HTTP {r.status_code} (proxy={use_proxy})"
-        except Exception as e:
-            return None, f"{type(e).__name__}: {str(e)[:150]}"
+        except Exception:
+            pass
+        # Methode 2 : extraction depuis HTML public
+        uid, err = await _try_get_user_id_via_html_meta(use_proxy)
+        if uid:
+            return uid, None
+        return None, f"web_profile_info+html_meta both failed (last: {err})"
 
     # Essai 1 : avec proxy webshare (residential)
     if BACKEND_PROXY_URL:
