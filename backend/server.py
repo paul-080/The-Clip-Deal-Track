@@ -13968,6 +13968,242 @@ async def admin_site_health(request: Request, _: bool = Depends(verify_admin_cod
     }
 
 
+@api_router.get("/admin/test-free-path/{platform}/{username}")
+async def admin_test_free_path(platform: str, username: str, request: Request, _: bool = Depends(verify_admin_code)):
+    """🧪 TEST FREE PATH : essaie de scraper UN compte UNIQUEMENT via les sources
+    gratuites (Apify desactive force). Trace CHAQUE etape avec resultat detaille.
+    Utilise ce test pour diagnostiquer pourquoi le free path tombe sur Apify
+    en production.
+    """
+    if platform not in ("instagram", "tiktok", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide")
+    username = username.lstrip("@")
+
+    report = {
+        "platform": platform,
+        "username": username,
+        "config_status": {
+            "BACKEND_PROXY_URL": "SET" if BACKEND_PROXY_URL else "MISSING",
+            "CLIP_SCRAPER_URL": "SET" if CLIP_SCRAPER_URL else "MISSING",
+            "CLIP_SCRAPER_KEY": "SET" if CLIP_SCRAPER_KEY else "MISSING",
+            "INSTAGRAM_SESSIONS": len(INSTAGRAM_SESSIONS) if INSTAGRAM_SESSIONS else 0,
+            "RAPIDAPI_KEY": "SET" if RAPIDAPI_KEY else "MISSING",
+            "TIKWM_API_KEY": "SET" if TIKWM_API_KEY else "MISSING",
+            "YOUTUBE_API_KEY": "SET" if YOUTUBE_API_KEY else "MISSING",
+            "APIFY_INSTA_KILL_SWITCH": _APIFY_INSTA_KILL_SWITCH,
+        },
+        "steps": [],
+    }
+
+    if platform == "instagram":
+        # Etape 1 : Mobile Clips API
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_account_via_graphql(username, max_videos=10)
+            report["steps"].append({
+                "name": "1. Mobile Clips API + GraphQL (PRIORITY -1)",
+                "ok": bool(videos),
+                "duration_ms": int((time.time() - t0) * 1000),
+                "result": f"{len(videos)} reels" if videos else "no reels",
+                "source": "clips_graphql",
+                "uses_proxy": bool(BACKEND_PROXY_URL),
+            })
+            if videos:
+                report["found_via"] = "clips_graphql"
+                report["videos_count"] = len(videos)
+                report["sample_video"] = videos[0]
+                return report
+        except Exception as e:
+            report["steps"].append({"name": "1. Mobile Clips API", "ok": False, "error": str(e)[:300],
+                                    "duration_ms": int((time.time() - t0) * 1000)})
+
+        # Etape 2 : VPS clipscraper
+        if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+            t0 = time.time()
+            try:
+                videos = await _fetch_via_clipscraper("instagram", username, max_videos=10)
+                report["steps"].append({
+                    "name": "2. VPS clipscraper (PRIORITY 0)",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} videos" if videos else "no videos",
+                    "source": "vps_clipscraper",
+                    "vps_url": CLIP_SCRAPER_URL,
+                })
+                if videos:
+                    report["found_via"] = "vps_clipscraper"
+                    report["videos_count"] = len(videos)
+                    report["sample_video"] = videos[0]
+                    return report
+            except Exception as e:
+                report["steps"].append({
+                    "name": "2. VPS clipscraper", "ok": False,
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "error": str(e)[:300],
+                    "fix": "VPS injoignable ou clipscraper plante. Vérifie srv1619447.hstgr.cloud + docker logs.",
+                })
+        else:
+            report["steps"].append({
+                "name": "2. VPS clipscraper", "ok": False, "skipped": True,
+                "fix": "Configure CLIP_SCRAPER_URL + CLIP_SCRAPER_KEY dans Railway env",
+            })
+
+        # Etape 3 : yt-dlp
+        if YT_DLP_AVAILABLE:
+            t0 = time.time()
+            try:
+                videos = await _fetch_instagram_via_ytdlp_profile(username, max_videos=10)
+                report["steps"].append({
+                    "name": "3. yt-dlp profile (PRIORITY 0c)",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} videos" if videos else "no videos",
+                })
+                if videos:
+                    report["found_via"] = "ytdlp"
+                    report["videos_count"] = len(videos)
+                    return report
+            except Exception as e:
+                report["steps"].append({"name": "3. yt-dlp", "ok": False, "error": str(e)[:300]})
+
+        # Etape 4 : public HTML
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_via_public_html(username, max_videos=10)
+            report["steps"].append({
+                "name": "4. Public HTML profile (PRIORITY 0d)",
+                "ok": bool(videos),
+                "duration_ms": int((time.time() - t0) * 1000),
+                "result": f"{len(videos)} videos" if videos else "no videos",
+            })
+            if videos:
+                report["found_via"] = "public_html"
+                report["videos_count"] = len(videos)
+                return report
+        except Exception as e:
+            report["steps"].append({"name": "4. Public HTML", "ok": False, "error": str(e)[:300]})
+
+        # Etape 5 : Insta private API (cookie session)
+        if INSTAGRAM_SESSIONS:
+            t0 = time.time()
+            try:
+                profile = await _scrape_instagram_api(username)
+                uid = (profile.get("data", {}).get("user", {}) or {}).get("id") or (profile.get("data", {}).get("user", {}) or {}).get("pk")
+                if uid:
+                    feed = await _fetch_instagram_feed_videos(str(uid))
+                    report["steps"].append({
+                        "name": "5. Insta private API (cookie session)",
+                        "ok": bool(feed),
+                        "duration_ms": int((time.time() - t0) * 1000),
+                        "result": f"{len(feed)} feed items" if feed else "no items",
+                    })
+                    if feed:
+                        report["found_via"] = "insta_private"
+                        report["videos_count"] = len(feed)
+                        return report
+            except Exception as e:
+                report["steps"].append({"name": "5. Insta private", "ok": False, "error": str(e)[:300]})
+
+    elif platform == "tiktok":
+        if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+            t0 = time.time()
+            try:
+                videos = await _fetch_via_clipscraper("tiktok", username, max_videos=10)
+                report["steps"].append({
+                    "name": "1. VPS clipscraper TikTok",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} videos" if videos else "no videos",
+                })
+                if videos:
+                    report["found_via"] = "vps_clipscraper"
+                    report["videos_count"] = len(videos)
+                    return report
+            except Exception as e:
+                report["steps"].append({"name": "1. VPS clipscraper", "ok": False, "error": str(e)[:300]})
+        if TIKWM_API_KEY:
+            t0 = time.time()
+            try:
+                videos = await _fetch_tiktok_tikwm(username)
+                report["steps"].append({
+                    "name": "2. TikWm API",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} videos" if videos else "no videos",
+                })
+                if videos:
+                    report["found_via"] = "tikwm"
+                    report["videos_count"] = len(videos)
+                    return report
+            except Exception as e:
+                report["steps"].append({"name": "2. TikWm", "ok": False, "error": str(e)[:300]})
+
+    elif platform == "youtube":
+        try:
+            yt_info = await _verify_youtube(username)
+            channel_id = yt_info.get("platform_channel_id") if yt_info else None
+            if channel_id:
+                t0 = time.time()
+                videos = await _fetch_youtube_videos(channel_id, since_days=30)
+                report["steps"].append({
+                    "name": "1. YouTube Data API v3",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} videos" if videos else "no videos",
+                })
+                if videos:
+                    report["found_via"] = "youtube_api"
+                    report["videos_count"] = len(videos)
+                    return report
+        except Exception as e:
+            report["steps"].append({"name": "1. YouTube API", "ok": False, "error": str(e)[:300]})
+
+    # Si on arrive ici, AUCUNE source gratuite n'a marche
+    report["found_via"] = None
+    report["verdict"] = "🚨 AUCUNE source gratuite n'a marche pour ce compte"
+    fixes = []
+    if not BACKEND_PROXY_URL and platform == "instagram":
+        fixes.append("Configure BACKEND_PROXY_URL (proxy webshare residentiel)")
+    if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+        fixes.append("Configure CLIP_SCRAPER_URL + CLIP_SCRAPER_KEY (VPS Hostinger)")
+    if platform == "instagram" and not INSTAGRAM_SESSIONS:
+        fixes.append("Configure INSTAGRAM_SESSIONS (cookie sessionid)")
+    if platform == "tiktok" and not TIKWM_API_KEY:
+        fixes.append("Configure TIKWM_API_KEY (tikwm.com)")
+    if platform == "youtube" and not YOUTUBE_API_KEY:
+        fixes.append("Configure YOUTUBE_API_KEY (gratuit Google Cloud)")
+    report["fixes_required"] = fixes
+    return report
+
+
+@api_router.get("/admin/recent-scrapes")
+async def admin_recent_scrapes(request: Request, limit: int = 50, platform: Optional[str] = None, _: bool = Depends(verify_admin_code)):
+    """Liste les 50 derniers scrapes effectues avec leur source.
+    Permet de voir si Apify est encore appele ou si le free path marche.
+    """
+    query = {}
+    if platform:
+        query["platform"] = platform
+    items = await db.scraping_history.find(
+        query, {"_id": 0}
+    ).sort("timestamp", -1).to_list(min(limit, 200))
+
+    # Stats par source dans les N derniers
+    from collections import Counter
+    source_counts = Counter(item.get("source", "?") for item in items)
+    apify_count = sum(c for src, c in source_counts.items() if src and src.startswith("apify"))
+    free_count = sum(c for src, c in source_counts.items() if src and not src.startswith("apify"))
+
+    return {
+        "items": items,
+        "total": len(items),
+        "source_breakdown": dict(source_counts),
+        "apify_count": apify_count,
+        "free_path_count": free_count,
+        "apify_pct": round((apify_count / len(items) * 100), 1) if items else 0,
+    }
+
+
 @api_router.post("/admin/reset-all-tracking-data")
 async def admin_reset_all_tracking_data(request: Request, body: dict = None, _: bool = Depends(verify_admin_code)):
     """🚨 ADMIN NUCLEAR : purge TOUTES les tracked_videos + snapshots de TOUTES
