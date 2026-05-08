@@ -705,6 +705,31 @@ INSTAGRAM_SESSIONS: list[str] = (
 INSTAGRAM_SESSION_ID = INSTAGRAM_SESSIONS[0] if INSTAGRAM_SESSIONS else ''
 _instagram_session_index = 0
 
+def _extract_ds_user_id(session: str) -> str:
+    """Extrait le ds_user_id du cookie sessionid Instagram.
+    Format: 'USER_ID%3A...' (URL-encoded). Renvoie '0' si extraction echoue.
+    """
+    if not session:
+        return "0"
+    try:
+        # %3A = ':' URL-encoded
+        if '%3A' in session:
+            return session.split('%3A')[0]
+        if ':' in session:
+            return session.split(':')[0]
+    except Exception:
+        pass
+    return "0"
+
+
+def _build_instagram_cookie_header(session: str) -> str:
+    """Construit le header Cookie Insta complet (sessionid + ds_user_id extrait)."""
+    if not session:
+        return ""
+    ds_uid = _extract_ds_user_id(session)
+    return f"sessionid={session}; ds_user_id={ds_uid}"
+
+
 def _get_instagram_session() -> str:
     """Round-robin rotation entre les cookies Instagram configurés."""
     global _instagram_session_index
@@ -4550,7 +4575,7 @@ async def _scrape_instagram_api(username: str) -> dict:
     # Inject session cookie — required from cloud/datacenter IPs (rotation)
     session = _get_instagram_session()
     if session:
-        headers["Cookie"] = f"sessionid={session}; ds_user_id=0"
+        headers["Cookie"] = _build_instagram_cookie_header(session)
     url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
         r = await c.get(url, headers=headers)
@@ -5937,7 +5962,7 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     # Inject session cookie si dispo (aide a passer les rate-limits)
     session = _get_instagram_session()
     if session:
-        headers_uinfo["Cookie"] = f"sessionid={session}; ds_user_id=0"
+        headers_uinfo["Cookie"] = _build_instagram_cookie_header(session)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # STRATEGIE A (PRIORITAIRE) : GraphQL profile posts directement.
@@ -6287,7 +6312,7 @@ async def _fetch_instagram_via_public_html(username: str, max_videos: int = 30) 
     # Session cookie si dispo
     sess = _get_instagram_session()
     if sess:
-        headers["Cookie"] = f"sessionid={sess}; ds_user_id=0"
+        headers["Cookie"] = _build_instagram_cookie_header(sess)
 
     client_kwargs = {"timeout": 20, "headers": headers, "follow_redirects": True}
     if BACKEND_PROXY_URL:
