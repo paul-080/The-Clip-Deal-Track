@@ -9757,22 +9757,40 @@ async def _background_scrape_account(account_id: str, user_id: str):
             return
 
         if not videos:
-            platform_tips = {
-                "tiktok": (
-                    "Aucune vidéo trouvée. TikTok bloque le scraping depuis les serveurs cloud. "
-                    "Utilisez 'Ajouter vidéo' pour coller l'URL manuellement, "
-                    "ou configurez TIKWM_API_KEY (gratuit sur tikwm.com) dans Railway."
-                ),
-                "instagram": (
-                    "Aucune vidéo trouvée. Vérifiez que le compte Instagram est public et a des Reels. "
-                    "Instagram bloque souvent le scraping cloud — utilisez 'Ajouter vidéo' manuellement."
-                ),
-                "youtube": (
-                    "Aucune vidéo trouvée. Vérifiez que YOUTUBE_API_KEY est configurée dans Railway "
-                    "et que la chaîne a des vidéos publiques."
-                ),
-            }
-            msg = platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}.")
+            # Diagnostic config manquante
+            missing = []
+            if platform == "instagram":
+                if not BACKEND_PROXY_URL: missing.append("BACKEND_PROXY_URL")
+                if not CLIP_SCRAPER_URL: missing.append("CLIP_SCRAPER_URL+KEY")
+                if not INSTAGRAM_SESSIONS: missing.append("INSTAGRAM_SESSIONS")
+            elif platform == "tiktok":
+                if not CLIP_SCRAPER_URL: missing.append("CLIP_SCRAPER_URL+KEY")
+                if not TIKWM_API_KEY: missing.append("TIKWM_API_KEY")
+            elif platform == "youtube":
+                if not YOUTUBE_API_KEY: missing.append("YOUTUBE_API_KEY")
+
+            if missing:
+                msg = (
+                    f"Aucune vidéo trouvée pour @{username}. "
+                    f"⚠️ Config Railway manquante : {', '.join(missing)}. "
+                    f"Diagnostic : /api/admin/test-free-path/{platform}/{username}?code=ADMIN"
+                )
+            else:
+                platform_tips = {
+                    "tiktok": (
+                        f"Aucune vidéo trouvée pour @{username}. Toutes les sources gratuites configurees ont echoue. "
+                        f"Lance /api/admin/test-free-path/tiktok/{username}?code=ADMIN pour voir pourquoi."
+                    ),
+                    "instagram": (
+                        f"Aucune vidéo trouvée pour @{username}. Toutes les sources gratuites configurees ont echoue. "
+                        f"Lance /api/admin/test-free-path/instagram/{username}?code=ADMIN pour voir pourquoi."
+                    ),
+                    "youtube": (
+                        f"Aucune vidéo trouvée pour @{username}. Quota YouTube depasse ou compte introuvable. "
+                        f"Lance /api/admin/test-free-path/youtube/{username}?code=ADMIN pour le detail."
+                    ),
+                }
+                msg = platform_tips.get(platform, f"Aucune vidéo trouvée pour {platform}/@{username}.")
             await db.social_accounts.update_one(
                 {"account_id": account_id},
                 {"$set": {
@@ -10577,7 +10595,37 @@ async def list_account_videos(campaign_id: str, body: dict, user: dict = Depends
         videos = await fetch_videos(platform, username, account_doc, since_days=180)
 
         if not videos:
-            raise HTTPException(status_code=404, detail=f"Aucune vidéo trouvée pour @{username} sur {platform}. Le compte existe-t-il et est-il public ?")
+            # Construit message d'erreur AVEC diagnostic config (env vars manquantes)
+            missing_config = []
+            if platform == "instagram":
+                if not BACKEND_PROXY_URL:
+                    missing_config.append("BACKEND_PROXY_URL (proxy webshare)")
+                if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+                    missing_config.append("CLIP_SCRAPER_URL+KEY (VPS Hostinger)")
+                if not INSTAGRAM_SESSIONS:
+                    missing_config.append("INSTAGRAM_SESSIONS (cookie session)")
+            elif platform == "tiktok":
+                if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+                    missing_config.append("CLIP_SCRAPER_URL+KEY (VPS)")
+                if not TIKWM_API_KEY:
+                    missing_config.append("TIKWM_API_KEY (tikwm.com)")
+            elif platform == "youtube":
+                if not YOUTUBE_API_KEY:
+                    missing_config.append("YOUTUBE_API_KEY (Google Cloud, gratuit)")
+
+            if missing_config:
+                detail = (
+                    f"Aucune vidéo trouvée pour @{username} sur {platform}. "
+                    f"⚠️ Config Railway manquante : {', '.join(missing_config)}. "
+                    f"Lance /api/admin/test-free-path/{platform}/{username} pour le diagnostic complet."
+                )
+            else:
+                detail = (
+                    f"Aucune vidéo trouvée pour @{username} sur {platform}. "
+                    f"Toutes les sources gratuites ont échoué (proxy/VPS configurés mais bloqués par la plateforme). "
+                    f"Lance /api/admin/test-free-path/{platform}/{username} pour voir laquelle pète exactement."
+                )
+            raise HTTPException(status_code=404, detail=detail)
 
         # Limite a 30 videos pour l'UI
         videos = videos[:30]
