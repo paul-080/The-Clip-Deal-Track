@@ -1362,10 +1362,11 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
       }
       const data = await res.json();
       if (data.status === "started") {
-        toast.info("Scraping lancé… Les vidéos arrivent dans quelques secondes ⏳", { duration: 4000 });
-        // Poll every 3s until scrape_status is no longer "running"
+        toast("⏳ Scraping lancé… 1-3 min selon la plateforme.", { duration: 5000 });
+        // Poll every 3s jusqu'à 3 min (60 attempts × 3s = 180s) pour laisser le temps à
+        // la cascade complète (VPS timeout 30s + autres sources). Au-delà : message plus doux.
         let attempts = 0;
-        const maxAttempts = 25; // 75s max
+        const maxAttempts = 60; // 180s max (3 min)
         const poll = setInterval(async () => {
           attempts++;
           try {
@@ -1392,7 +1393,8 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
           } catch (_) {}
           if (attempts >= maxAttempts) {
             clearInterval(poll);
-            toast.error("Scraping trop long — vérifiez la connexion ou ajoutez les vidéos manuellement.", { duration: 8000 });
+            // Message plus doux : le scraping continue en arrière-plan, pas d'erreur
+            toast("⏱️ Scraping toujours en cours — recharge la page dans 1-2 min pour voir les vidéos.", { duration: 8000, icon: "⏳" });
             setScrapingAccounts((prev) => { const s = new Set(prev); s.delete(accountId); return s; });
           }
         }, 3000);
