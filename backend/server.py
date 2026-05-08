@@ -12723,10 +12723,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # ================= ADMIN ROUTES =================
 
 async def verify_admin_code(request: Request):
-    """Dependency: verify X-Admin-Code header against env var."""
+    """Dependency: verify X-Admin-Code header OR ?code= query param against env var.
+    Permet tests rapides depuis navigateur via ?code=ADMIN_CODE.
+    """
     if not ADMIN_SECRET_CODE:
         raise HTTPException(status_code=503, detail="ADMIN_SECRET_CODE non configuré sur le serveur")
-    code = request.headers.get("X-Admin-Code", "")
+    code = request.headers.get("X-Admin-Code", "") or request.query_params.get("code", "")
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
