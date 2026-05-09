@@ -5936,6 +5936,92 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
 _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
 
 
+async def _fetch_instagram_via_business_discovery_account(username: str, max_videos: int = 50) -> Optional[list]:
+    """🌟 STRATEGIE OFFICIELLE META : Business Discovery API pour scraper un profil
+    Instagram entier. Utilise IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN.
+
+    Limites :
+    - Le compte cible doit etre Business ou Creator (sinon retourne erreur)
+    - Le compte cible doit etre PUBLIC
+    - 200 calls/heure quota Meta (largement suffisant)
+
+    GRATUIT, OFFICIEL META, donnees REELLES (les vraies vues UI).
+    Cette strategie est PRIORITAIRE quand IG_BUSINESS_ACCOUNT_ID est configure.
+    """
+    if not IG_BUSINESS_ACCOUNT_ID or not IG_LONG_LIVED_TOKEN or not username:
+        return None
+    username = username.lstrip("@")
+
+    # Limite Meta : max 50 medias par appel via Business Discovery
+    limit = min(max_videos, 50)
+
+    fields = (
+        f"business_discovery.username({username}){{"
+        f"media.limit({limit}){{"
+        f"id,shortcode,caption,thumbnail_url,media_url,permalink,"
+        f"like_count,comments_count,view_count,timestamp,media_type"
+        f"}}"
+        f"}}"
+    )
+    url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{IG_BUSINESS_ACCOUNT_ID}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(url, params={"fields": fields, "access_token": IG_LONG_LIVED_TOKEN})
+
+        if r.status_code != 200:
+            err_data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_msg = (err_data.get("error") or {}).get("message", r.text[:200])
+            err_code = (err_data.get("error") or {}).get("code")
+            err_subcode = (err_data.get("error") or {}).get("error_subcode")
+            # Erreurs typiques :
+            # - 24 : Compte non Business/Creator (tres frequent pour clippeurs persos)
+            # - 803 : Compte introuvable
+            # - 190 : Token expire (a renouveler)
+            if err_code == 190:
+                logger.error(f"BusinessDiscovery TOKEN EXPIRE pour @{username} - renouvelle IG_LONG_LIVED_TOKEN")
+            elif err_code == 24 or "not a business" in err_msg.lower() or "non business" in err_msg.lower():
+                logger.info(f"BusinessDiscovery : @{username} n'est pas un compte Business/Creator")
+            else:
+                logger.warning(f"BusinessDiscovery HTTP {r.status_code} for @{username}: {err_msg}")
+            return None
+
+        data = r.json()
+        bd = data.get("business_discovery") or {}
+        media_list = (bd.get("media") or {}).get("data") or []
+
+        if not media_list:
+            logger.info(f"BusinessDiscovery : @{username} - 0 media retournes")
+            return None
+
+        result = []
+        from datetime import datetime as _dt_bd, timezone as _tz_bd
+        for m in media_list:
+            shortcode = m.get("shortcode") or m.get("id")
+            if not shortcode:
+                continue
+            # view_count peut etre None (pour images, posts non-video)
+            views = int(m.get("view_count") or 0)
+            published_at = m.get("timestamp")
+            result.append({
+                "platform_video_id": shortcode,
+                "url": m.get("permalink") or f"https://www.instagram.com/p/{shortcode}/",
+                "title": (m.get("caption") or "")[:200] or None,
+                "thumbnail_url": m.get("thumbnail_url") or m.get("media_url"),
+                "views": views,  # vraies vues UI Meta (compteur unifie IG+FB)
+                "likes": int(m.get("like_count") or 0),
+                "comments": int(m.get("comments_count") or 0),
+                "published_at": published_at,
+                "media_type": m.get("media_type"),
+            })
+        logger.info(f"🌟 BusinessDiscovery SUCCESS @{username}: {len(result)} medias (vraies vues officielles Meta)")
+        await _log_scrape("business_discovery", "instagram", username, True, len(result), "API officielle Meta")
+        return result
+    except Exception as e:
+        logger.warning(f"BusinessDiscovery exception for @{username}: {type(e).__name__}: {e}")
+        return None
+
+
 async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 30) -> Optional[list]:
     """REVERSE ENGINEERED Apify Account Scraper : recupere les Reels d'un compte via Mobile Clips API.
     Pagine via max_id pour aller chercher les videos plus anciennes (essentiel pour backfill).
@@ -6563,7 +6649,21 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     # cap eleve pour permettre backfill profond quand tracking_start_date est reculee
     dynamic_max = max(50, min(int(since_days * 3), 360))
 
-    # PRIORITY -1 (NEW GRATUIT) : Scraping de COMPTE direct via Mobile Clips API + GraphQL enrichissement
+    # 🌟 PRIORITY -2 (NEW : OFFICIEL META) : Business Discovery API
+    # Strategie OFFICIELLE Meta qui marche a 100% si :
+    #   - IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN configures
+    #   - Le compte cible est Business/Creator public
+    # Renvoie les VRAIES vues officielles (compteur unifie Meta).
+    if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
+        try:
+            bd_videos = await _fetch_instagram_via_business_discovery_account(username, max_videos=dynamic_max)
+            if bd_videos:
+                logger.info(f"🌟 Insta Business Discovery: {len(bd_videos)} videos for @{username} (vraies vues Meta)")
+                return bd_videos
+        except Exception as e:
+            logger.warning(f"Business Discovery failed for @{username}: {e}")
+
+    # PRIORITY -1 (GRATUIT FALLBACK) : Scraping de COMPTE direct via Mobile Clips API + GraphQL enrichissement
     # Tourne TOUJOURS, meme sans proxy (la fonction interne fallback proxy ON/OFF)
     try:
         account_videos_clips = await _fetch_instagram_account_via_graphql(username, max_videos=dynamic_max)
