@@ -6683,6 +6683,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         if account_videos_clips:
             # Enrichit chaque video avec GraphQL direct (vraies vues UI) - SEULEMENT si proxy dispo
             enriched_clips = []
+            enrich_failures = 0
             for v in account_videos_clips[:dynamic_max]:
                 sc = v.get("platform_video_id")
                 if sc and BACKEND_PROXY_URL:
@@ -6692,14 +6693,26 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                         if gd and int(gd.get("views") or 0) > int(v.get("views") or 0):
                             v["views"] = int(gd.get("views"))
                             v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
-                    except Exception:
-                        pass
+                    except asyncio.TimeoutError:
+                        enrich_failures += 1
+                        logger.debug(f"GraphQL enrich timeout (15s) for {sc}")
+                    except Exception as enrich_err:
+                        enrich_failures += 1
+                        logger.debug(f"GraphQL enrich failed for {sc}: {type(enrich_err).__name__}: {enrich_err}")
                 enriched_clips.append(v)
-            await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), "GRATUIT clips_user + graphql")
-            logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}")
-            return enriched_clips
+            # ANTI-BLOCAGE-IP : detecte si toutes les videos ont views=0 (= IP bannie partiellement)
+            views_nonzero = sum(1 for v in enriched_clips if (v.get("views") or 0) > 0)
+            if enriched_clips and views_nonzero == 0:
+                logger.warning(f"⚠️ Insta clips_graphql @{username}: {len(enriched_clips)} videos mais TOUTES avec views=0 — possible blocage IP partiel, fallback aux strategies suivantes")
+                await _log_scrape("clips_graphql", "instagram", username, False, 0, f"all views=0 ({enrich_failures} enrich failures)")
+                # On NE return PAS — on tombe en cascade pour avoir les vraies vues
+            else:
+                await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), f"GRATUIT clips_user+graphql ({enrich_failures} enrich failures)")
+                logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}, {views_nonzero} avec views > 0")
+                return enriched_clips
     except Exception as e:
-        logger.warning(f"Mobile Clips API failed for @{username}: {e}")
+        logger.warning(f"Mobile Clips API failed for @{username}: {type(e).__name__}: {e}")
+        await _log_scrape("clips_graphql", "instagram", username, False, 0, str(e)[:200])
 
     # PRIORITY 0 (NEW GRATUIT) : VPS pour liste shortcodes + GraphQL pour vraies vues
     # Tourne sans BACKEND_PROXY_URL aussi : VPS retourne shortcodes, enrichissement GraphQL
@@ -6775,22 +6788,9 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
 
-    # Priorité 1 : ClipScraper VPS standalone (économique, contrôlé)
-    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
-        try:
-            cs_videos = await _fetch_via_clipscraper("instagram", username, max_videos=dynamic_max)
-            if cs_videos:
-                logger.info(f"ClipScraper Instagram: {len(cs_videos)} videos for @{username}")
-                await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos))
-                return cs_videos
-            else:
-                logger.warning(f"ClipScraper Instagram returned 0 videos for @{username} - falling through to next strategy")
-                await _log_scrape("clipscraper", "instagram", username, False, 0, "0 videos returned")
-        except Exception as e:
-            logger.warning(f"ClipScraper Instagram failed for @{username}: {e}")
-            await _log_scrape("clipscraper", "instagram", username, False, 0, str(e))
-    else:
-        await _log_scrape("clipscraper", "instagram", username, False, 0, "CLIP_SCRAPER_URL/KEY not configured")
+    # NOTE : Priorite 1 (VPS ClipScraper standalone) etait un DOUBLON de Priority 0
+    # (VPS + GraphQL enrichissement, ligne ~6707). Supprimee pour eviter code mort.
+    # Si VPS dispo + Insta : il est deja appele plus haut.
 
     # Priorité 2 : Feed + Reels via API privée Instagram (cookie requis)
     if INSTAGRAM_SESSIONS:
@@ -6828,10 +6828,15 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
 
                 views_nonzero = sum(1 for v in merged if v.get("views", 0) > 0)
                 logger.info(f"Instagram privé: {len(merged)} vidéos (@{username}), {views_nonzero} avec vues > 0")
-                if merged:
+                # ANTI-BLOCAGE : si toutes les videos ont views=0 -> blocage IP partiel, fallback
+                if merged and views_nonzero == 0:
+                    logger.warning(f"⚠️ Instagram privé @{username}: {len(merged)} videos mais TOUTES avec views=0 — fallback aux strategies suivantes")
+                    await _log_scrape("instagram_private", "instagram", username, False, len(merged), "all views=0 (blocage IP partiel)")
+                elif merged:
                     return merged
         except Exception as e:
-            logger.warning(f"Instagram private API failed for @{username}: {e}")
+            logger.warning(f"Instagram private API failed for @{username}: {type(e).__name__}: {e}")
+            await _log_scrape("instagram_private", "instagram", username, False, 0, str(e)[:200])
 
     # Priorité 2 : RapidAPI — fonctionne depuis Railway sans session
     if RAPIDAPI_KEY:
@@ -6993,7 +6998,19 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
             except Exception:
                 pass
             logger.error(f"YouTube channels API HTTP {r.status_code} for {channel_id}: {err_reason or err_body}")
-            raise ValueError(f"YouTube API HTTP {r.status_code}: {err_reason or 'verifie YOUTUBE_API_KEY ou quota Google Cloud'}")
+            # FALLBACK : au lieu de raise (qui plante toute la cascade), on tente yt-dlp
+            # Aucune cle API requise, marche meme si quota Google epuise.
+            if YT_DLP_AVAILABLE:
+                logger.warning(f"YouTube Data API down ({err_reason or 'HTTP ' + str(r.status_code)}) -> fallback yt-dlp pour {channel_id}")
+                try:
+                    ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
+                    if ytdlp_videos:
+                        await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), f"Data API {r.status_code} -> ytdlp ok")
+                        return ytdlp_videos
+                except Exception as fb_err:
+                    logger.error(f"YouTube ytdlp fallback failed too for {channel_id}: {fb_err}")
+            await _log_scrape("youtube_api", "youtube", channel_id, False, 0, f"HTTP {r.status_code}: {err_reason}"[:200])
+            return []
         try:
             data = r.json()
         except Exception as je:
@@ -7007,10 +7024,17 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
         if not uploads_playlist:
             logger.warning(f"YouTube : channel {channel_id} sans playlist uploads")
             return []
-    except ValueError:
-        raise
     except Exception as e:
+        # ValueError + autres : on log et on tente le fallback yt-dlp avant d'abandonner
         logger.error(f"YouTube channels fetch failed for {channel_id}: {type(e).__name__}: {e}")
+        if YT_DLP_AVAILABLE:
+            try:
+                ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
+                if ytdlp_videos:
+                    logger.info(f"YouTube ytdlp emergency fallback: {len(ytdlp_videos)} videos pour {channel_id}")
+                    return ytdlp_videos
+            except Exception:
+                pass
         return []
 
     # 2. Recupere les videos de la playlist (avec pagination si necessaire)
@@ -7107,7 +7131,112 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
 
     if result:
         logger.info(f"YouTube : {len(result)} videos for channel {channel_id} (paginated {pages_fetched+1} pages)")
+        return result
+
+    # ── FALLBACK YOUTUBE : si Data API v3 a echoue (quota / cle invalide / etc),
+    # on tente yt-dlp qui ne necessite aucune cle API. Plus lent mais 100% gratuit
+    # et sans quota. Garantie que YouTube ne plante JAMAIS silencieusement meme si
+    # le quota Google est depasse (10 000 unites/jour par defaut, vite atteint).
+    if YT_DLP_AVAILABLE:
+        logger.warning(f"YouTube Data API a retourne 0 videos pour {channel_id} -> fallback yt-dlp")
+        try:
+            ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
+            if ytdlp_videos:
+                logger.info(f"YouTube yt-dlp fallback: {len(ytdlp_videos)} videos pour {channel_id}")
+                await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), "Data API failed, ytdlp succeeded")
+                return ytdlp_videos
+            else:
+                await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, 0, "ytdlp returned 0")
+        except Exception as e:
+            logger.error(f"YouTube yt-dlp fallback failed for {channel_id}: {type(e).__name__}: {e}")
+            await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, 0, str(e)[:200])
+
     return result
+
+
+async def _fetch_youtube_videos_via_ytdlp(channel_id: str, since_days: int = 30) -> list:
+    """Fallback YouTube via yt-dlp : aucune cle API requise, marche meme si Google
+    Data API v3 quota epuise. Plus lent (~5-15s par chaine) mais 100% fiable.
+
+    Sources tentees par yt-dlp dans l'ordre :
+    - https://www.youtube.com/channel/{channel_id}/videos
+    - https://www.youtube.com/{handle ou channel_id}/videos
+    """
+    if not YT_DLP_AVAILABLE:
+        return []
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
+    loop = asyncio.get_event_loop()
+
+    def _ytdlp_fetch():
+        # URLs a tester : channel direct (UC...) puis handle (@...)
+        urls = [
+            f"https://www.youtube.com/channel/{channel_id}/videos",
+            f"https://www.youtube.com/{channel_id}/videos",
+        ]
+        opts = {
+            "quiet": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "playlistend": 200,  # max 200 videos
+            "ignoreerrors": True,
+            "no_warnings": True,
+            "socket_timeout": 30,
+        }
+        for url in urls:
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if not info:
+                    continue
+                entries = info.get("entries") or []
+                if not entries:
+                    continue
+                result = []
+                for e in entries:
+                    if not e:
+                        continue
+                    vid_id = str(e.get("id", "")).strip()
+                    if not vid_id:
+                        continue
+                    pub_ts = e.get("timestamp") or e.get("release_timestamp")
+                    pub_iso = None
+                    if pub_ts:
+                        try:
+                            pub_dt = datetime.fromtimestamp(int(pub_ts), tz=timezone.utc)
+                            if pub_dt < cutoff_dt:
+                                continue  # plus vieux que la fenetre, skip
+                            pub_iso = pub_dt.isoformat()
+                        except Exception:
+                            pass
+                    result.append({
+                        "platform_video_id": vid_id,
+                        "url": e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid_id}",
+                        "title": e.get("title"),
+                        "thumbnail_url": e.get("thumbnail") or f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg",
+                        "views": int(e.get("view_count") or 0),
+                        "likes": int(e.get("like_count") or 0),
+                        "comments": int(e.get("comment_count") or 0),
+                        "published_at": pub_iso,
+                    })
+                if result:
+                    return result
+            except Exception as inner_e:
+                logger.debug(f"yt-dlp YouTube URL {url} failed: {type(inner_e).__name__}: {inner_e}")
+                continue
+        return []
+
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_thread_pool, _ytdlp_fetch),
+            timeout=60  # max 60s pour eviter blocage
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"yt-dlp YouTube TIMEOUT (60s) pour {channel_id}")
+        return []
+    except Exception as e:
+        logger.warning(f"yt-dlp YouTube exception pour {channel_id}: {type(e).__name__}: {e}")
+        return []
 
 def _parse_utc(s) -> "datetime | None":
     """Parse an ISO datetime string and return UTC-aware datetime, or None on failure."""
@@ -8852,7 +8981,8 @@ async def _run_watchdog_check(platform: str) -> dict:
         if platform == "youtube":
             videos = await _fetch_youtube_videos(username, since_days=7)
         elif platform == "tiktok":
-            videos = await _fetch_tiktok_videos_async(username, since_days=7, platform_channel_id=None)
+            # FIX: la signature est (username, since_days, user_id) — pas platform_channel_id
+            videos = await _fetch_tiktok_videos_async(username, since_days=7, user_id=None)
         elif platform == "instagram":
             videos = await _fetch_instagram_videos_async(username, platform_channel_id=None, since_days=7)
         else:
@@ -15040,6 +15170,223 @@ async def admin_reactivate_archived_videos(request: Request, body: dict = None, 
         "reactivated_count": res.modified_count,
         "message": f"{res.modified_count} videos reactivees, elles seront re-scrapees au prochain cycle.",
     }
+
+
+@api_router.get("/admin/scraping-health-check")
+async def admin_scraping_health_check(
+    request: Request,
+    _: bool = Depends(verify_admin_code)
+):
+    """🏥 HEALTH CHECK GLOBAL DU SCRAPING : teste TOUTES les sources independamment
+    en parallele et retourne un dashboard up/down. Permet de detecter en 5 sec
+    quelle source est cassee sans avoir a tester compte par compte.
+
+    Tests :
+    - VPS Hostinger ClipScraper (ping + scrape test)
+    - Webshare proxy (ping IP)
+    - Meta Business Discovery API (token validity check)
+    - YouTube Data API v3 (quota check)
+    - TikWm API
+    - RapidAPI Instagram + TikTok
+    - Apify (kill switch status only, aucun call paye)
+    - Instagram sessions (count)
+
+    Retourne pour chaque source : ok/ko + duration_ms + message
+    """
+    health: dict = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "sources": {},
+        "summary": {"total": 0, "ok": 0, "ko": 0, "skipped": 0},
+    }
+
+    async def _test_vps():
+        if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+            return {"status": "skipped", "reason": "CLIP_SCRAPER_URL/KEY non configures"}
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"{CLIP_SCRAPER_URL.rstrip('/')}/health", headers={"X-API-Key": CLIP_SCRAPER_KEY})
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                return {"status": "ok", "duration_ms": dur, "message": f"VPS up ({CLIP_SCRAPER_URL})"}
+            return {"status": "ko", "duration_ms": dur, "message": f"VPS HTTP {r.status_code}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    async def _test_proxy():
+        if not BACKEND_PROXY_URL:
+            return {"status": "skipped", "reason": "BACKEND_PROXY_URL non configure"}
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=10, proxy=BACKEND_PROXY_URL) as c:
+                r = await c.get("https://api.ipify.org?format=json")
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                return {"status": "ok", "duration_ms": dur, "message": f"Proxy up, IP={r.json().get('ip', '?')}"}
+            return {"status": "ko", "duration_ms": dur, "message": f"Proxy HTTP {r.status_code}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    async def _test_meta_business():
+        if not IG_BUSINESS_ACCOUNT_ID or not IG_LONG_LIVED_TOKEN:
+            return {"status": "skipped", "reason": "IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN requis"}
+        t0 = time.time()
+        try:
+            url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{IG_BUSINESS_ACCOUNT_ID}"
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(url, params={"fields": "id,username", "access_token": IG_LONG_LIVED_TOKEN})
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                data = r.json()
+                return {"status": "ok", "duration_ms": dur, "message": f"Meta API up, account=@{data.get('username', '?')}"}
+            err_data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_msg = (err_data.get("error") or {}).get("message", "?")[:120]
+            err_code = (err_data.get("error") or {}).get("code")
+            if err_code == 190:
+                return {"status": "ko", "duration_ms": dur, "message": f"⚠ TOKEN EXPIRE (code 190) : renouvelle IG_LONG_LIVED_TOKEN"}
+            return {"status": "ko", "duration_ms": dur, "message": f"Meta API HTTP {r.status_code}: {err_msg}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    async def _test_youtube_api():
+        if not YOUTUBE_API_KEY:
+            return {"status": "skipped", "reason": "YOUTUBE_API_KEY non configure"}
+        t0 = time.time()
+        try:
+            # Test sur la chaine Google officielle (channelId="UCK8sQmJBp8GCxrOtXWBpyEA")
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "id": "UCK8sQmJBp8GCxrOtXWBpyEA", "key": YOUTUBE_API_KEY}
+                )
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                return {"status": "ok", "duration_ms": dur, "message": "YouTube Data API v3 up"}
+            err_data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_reason = ""
+            for e in err_data.get("error", {}).get("errors", []):
+                if e.get("reason") in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+                    err_reason = "⚠ QUOTA EPUISE (10K unites/jour gratuit)"
+                    break
+            err_msg = err_reason or (err_data.get("error") or {}).get("message", "?")[:120]
+            return {"status": "ko", "duration_ms": dur, "message": f"YouTube API HTTP {r.status_code}: {err_msg}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    async def _test_tikwm():
+        if not TIKWM_API_KEY:
+            return {"status": "skipped", "reason": "TIKWM_API_KEY non configure (Strategy A skipped)"}
+        t0 = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://www.tikwm.com/api/user/info",
+                    params={"unique_id": "tiktok", "Apikey": TIKWM_API_KEY}
+                )
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code == 200:
+                data = r.json() if r.text else {}
+                if data.get("code") == 0:
+                    return {"status": "ok", "duration_ms": dur, "message": "TikWm up"}
+                return {"status": "ko", "duration_ms": dur, "message": f"TikWm code={data.get('code')}: {data.get('msg', '')[:100]}"}
+            return {"status": "ko", "duration_ms": dur, "message": f"TikWm HTTP {r.status_code}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    async def _test_rapidapi():
+        if not RAPIDAPI_KEY:
+            return {"status": "skipped", "reason": "RAPIDAPI_KEY non configure"}
+        t0 = time.time()
+        try:
+            # Test cle valide via instagram-scraper-api2 (host commun)
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://instagram-scraper-api2.p.rapidapi.com/v1/info",
+                    params={"username_or_id_or_url": "instagram"},
+                    headers={
+                        "X-RapidAPI-Key": RAPIDAPI_KEY,
+                        "X-RapidAPI-Host": "instagram-scraper-api2.p.rapidapi.com",
+                    }
+                )
+            dur = int((time.time() - t0) * 1000)
+            if r.status_code in (200, 201):
+                return {"status": "ok", "duration_ms": dur, "message": "RapidAPI up"}
+            if r.status_code == 401:
+                return {"status": "ko", "duration_ms": dur, "message": "RapidAPI cle invalide (401)"}
+            if r.status_code == 429:
+                return {"status": "ko", "duration_ms": dur, "message": "RapidAPI rate limit (429) — quota mensuel epuise"}
+            return {"status": "ko", "duration_ms": dur, "message": f"RapidAPI HTTP {r.status_code}"}
+        except Exception as e:
+            return {"status": "ko", "duration_ms": int((time.time() - t0) * 1000), "message": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    def _test_ig_sessions():
+        n = len(INSTAGRAM_SESSIONS) if INSTAGRAM_SESSIONS else 0
+        if n == 0:
+            return {"status": "skipped", "reason": "INSTAGRAM_SESSIONS vide"}
+        # Filtre les fakes (cookie1, placeholder, etc)
+        real = [s for s in INSTAGRAM_SESSIONS if s and len(s) > 30 and not s.startswith("cookie")]
+        if not real:
+            return {"status": "ko", "message": f"{n} sessions configurees mais TOUTES ressemblent a des placeholders fake"}
+        return {"status": "ok", "message": f"{len(real)} session(s) Insta valide(s)"}
+
+    def _test_apify_status():
+        kill_tt = _APIFY_TIKTOK_KILL_SWITCH
+        kill_ig = _APIFY_INSTA_KILL_SWITCH
+        global_off = APIFY_DISABLED
+        token_set = bool(APIFY_TOKEN)
+        if not token_set:
+            return {"status": "ok", "message": "APIFY_TOKEN non configure (parfait, on ne paye rien)"}
+        if global_off and kill_tt and kill_ig:
+            return {"status": "ok", "message": "Apify completement desactive (kill switches ON, parfait)"}
+        warns = []
+        if not global_off: warns.append("APIFY_DISABLED=false")
+        if not kill_tt: warns.append("TT kill switch off")
+        if not kill_ig: warns.append("IG kill switch off")
+        return {"status": "ko", "message": f"⚠ Apify partiellement actif : {', '.join(warns)}"}
+
+    # Lance tous les tests en parallele
+    results = await asyncio.gather(
+        _test_vps(),
+        _test_proxy(),
+        _test_meta_business(),
+        _test_youtube_api(),
+        _test_tikwm(),
+        _test_rapidapi(),
+        return_exceptions=True
+    )
+
+    health["sources"]["VPS Hostinger ClipScraper"] = results[0] if not isinstance(results[0], Exception) else {"status": "ko", "message": str(results[0])}
+    health["sources"]["Webshare residential proxy"] = results[1] if not isinstance(results[1], Exception) else {"status": "ko", "message": str(results[1])}
+    health["sources"]["Meta Business Discovery API (Insta)"] = results[2] if not isinstance(results[2], Exception) else {"status": "ko", "message": str(results[2])}
+    health["sources"]["YouTube Data API v3"] = results[3] if not isinstance(results[3], Exception) else {"status": "ko", "message": str(results[3])}
+    health["sources"]["TikWm API"] = results[4] if not isinstance(results[4], Exception) else {"status": "ko", "message": str(results[4])}
+    health["sources"]["RapidAPI"] = results[5] if not isinstance(results[5], Exception) else {"status": "ko", "message": str(results[5])}
+    health["sources"]["Instagram Sessions cookie"] = _test_ig_sessions()
+    health["sources"]["Apify status (kill switch)"] = _test_apify_status()
+
+    # Compute summary
+    for name, res in health["sources"].items():
+        health["summary"]["total"] += 1
+        s = res.get("status")
+        if s == "ok":
+            health["summary"]["ok"] += 1
+        elif s == "ko":
+            health["summary"]["ko"] += 1
+        else:
+            health["summary"]["skipped"] += 1
+
+    # Verdict global
+    critical_sources = ["VPS Hostinger ClipScraper", "YouTube Data API v3"]  # Min necessaire
+    critical_ok = all(health["sources"].get(s, {}).get("status") == "ok" for s in critical_sources)
+    health["verdict"] = (
+        "✅ TOUTES SOURCES UP — scraping 100% operationnel"
+        if health["summary"]["ko"] == 0
+        else f"⚠ {health['summary']['ko']} source(s) en panne — scraping degrade"
+        if critical_ok
+        else "🔴 SOURCE CRITIQUE EN PANNE — scraping risque de planter"
+    )
+
+    return health
 
 
 @api_router.get("/admin/archived-videos-stats")

@@ -1558,6 +1558,130 @@ function ApifyAlarmBanner() {
   );
 }
 
+function ScrapingHealthCheckSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runCheck = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await adminFetch("/admin/scraping-health-check", { method: "GET" });
+      if (res.ok) {
+        const d = await res.json();
+        setData(d);
+      } else {
+        const e = await res.json().catch(() => ({}));
+        setError(e.detail || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      setError(`Erreur réseau : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = data?.verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : data?.verdict?.startsWith("🔴") ? "text-red-400 border-red-500/40 bg-red-500/5"
+    : "text-amber-400 border-amber-500/40 bg-amber-500/5";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🏥 Scraping Health Check
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Test toutes les sources (VPS, proxy, Meta API, YouTube API, TikWm, RapidAPI, sessions Insta) en parallèle
+          </p>
+        </div>
+        <button
+          onClick={runCheck}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] border border-[#00E5FF]/40 text-sm font-semibold transition-all disabled:opacity-50 flex items-center gap-2"
+        >
+          {loading
+            ? <><div className="w-3 h-3 border border-[#00E5FF] border-t-transparent rounded-full animate-spin" /> Test en cours…</>
+            : "▶ Lancer le test"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">
+          ❌ {error}
+        </div>
+      )}
+
+      {data && (
+        <>
+          {/* Verdict global */}
+          <div className={`border rounded-lg p-3 text-sm font-semibold ${verdictColor}`}>
+            {data.verdict}
+          </div>
+
+          {/* Summary counters */}
+          <div className="grid grid-cols-4 gap-2">
+            <div className="bg-white/5 rounded-lg p-2 text-center">
+              <p className="text-white/50 text-[10px]">Total</p>
+              <p className="text-white font-mono font-bold text-lg">{data.summary?.total || 0}</p>
+            </div>
+            <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
+              <p className="text-emerald-400/70 text-[10px]">OK</p>
+              <p className="text-emerald-400 font-mono font-bold text-lg">{data.summary?.ok || 0}</p>
+            </div>
+            <div className="bg-red-500/10 rounded-lg p-2 text-center">
+              <p className="text-red-400/70 text-[10px]">KO</p>
+              <p className="text-red-400 font-mono font-bold text-lg">{data.summary?.ko || 0}</p>
+            </div>
+            <div className="bg-white/5 rounded-lg p-2 text-center">
+              <p className="text-white/50 text-[10px]">Skipped</p>
+              <p className="text-white/60 font-mono font-bold text-lg">{data.summary?.skipped || 0}</p>
+            </div>
+          </div>
+
+          {/* Détails par source */}
+          <div className="space-y-1.5 mt-3">
+            {Object.entries(data.sources || {}).map(([name, src]) => {
+              const statusColors = {
+                ok: { dot: "bg-emerald-400", text: "text-emerald-400", border: "border-emerald-500/20" },
+                ko: { dot: "bg-red-400", text: "text-red-400", border: "border-red-500/30" },
+                skipped: { dot: "bg-white/30", text: "text-white/40", border: "border-white/10" },
+              };
+              const c = statusColors[src.status] || statusColors.skipped;
+              return (
+                <div key={name} className={`flex items-center gap-3 py-2 px-3 bg-white/3 border ${c.border} rounded-lg`}>
+                  <div className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-xs font-medium truncate">{name}</p>
+                    <p className={`text-[11px] truncate ${c.text}`}>
+                      {src.message || src.reason || (src.status === "ok" ? "OK" : src.status === "ko" ? "Erreur" : "Non testé")}
+                    </p>
+                  </div>
+                  {typeof src.duration_ms === "number" && (
+                    <span className="text-white/30 text-[10px] font-mono flex-shrink-0">{src.duration_ms}ms</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="text-[10px] text-white/30 italic mt-2">
+            Testé le {new Date(data.checked_at).toLocaleString("fr-FR")}
+          </p>
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-6 text-white/30 text-sm">
+          Clique sur "Lancer le test" pour vérifier l'état de toutes les sources de scraping
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SiteHealthSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1705,6 +1829,9 @@ function SiteHealthSection() {
           </div>
         </div>
       )}
+
+      {/* Health check global de toutes les sources de scraping */}
+      <ScrapingHealthCheckSection />
 
       {/* Test scraping autonome */}
       <InstaHealthSection />
