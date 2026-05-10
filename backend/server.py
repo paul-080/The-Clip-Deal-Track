@@ -8178,19 +8178,18 @@ async def _scrape_one_account_into_campaign(
         if not vid.get("platform_video_id"):
             continue
         pub_dt = _parse_utc(vid.get("published_at"))
-        # ── FILTRE STRICT : on n'insere QUE les videos publiees APRES cutoff (= tracking_start_date)
-        # Avant : if pub_dt and cutoff -> les videos sans pub_dt passaient au travers
-        # Maintenant : si cutoff defini, on EXIGE pub_dt valide ET >= cutoff
-        if cutoff:
-            if not pub_dt:
-                # Pas de date de publication -> on ne peut pas garantir que c'est apres cutoff
-                # On REFUSE par securite (mieux vaut perdre une video que tracker du vieux)
-                skipped_pre_cutoff += 1
-                logger.debug(f"Skip video {vid.get('platform_video_id')} de @{uname} : published_at manquant")
-                continue
-            if pub_dt < cutoff:
-                skipped_pre_cutoff += 1
-                continue
+        # ── FILTRE PUBLISHED_AT >= CUTOFF
+        # Si la video a une date de publication CONNUE et qu'elle est avant cutoff -> SKIP
+        # Si la video N'A PAS de date de publication -> on lui met la date de DECOUVERTE
+        # (now()) plus bas dans set_fields. Comme ca on track le clip a partir de maintenant
+        # sans inventer une date passee. La video sera au-dessus du cutoff (now > tracking_start)
+        # donc affichee dans /top-clips et /tracked-videos.
+        if cutoff and pub_dt and pub_dt < cutoff:
+            skipped_pre_cutoff += 1
+            continue
+        # Fallback published_at si manquant : date de decouverte = maintenant
+        if not pub_dt:
+            vid["published_at"] = now_iso  # set en haut de la fonction = datetime.now(utc).isoformat()
 
         existing = existing_videos_map.get(vid["platform_video_id"], {})
 
@@ -11243,17 +11242,31 @@ async def get_campaign_views_chart(
     # Construit map date -> total_views
     snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots if s.get("date")}
 
+    # Liste triee des dates ayant un snapshot pour pouvoir trouver le snapshot precedent
+    sorted_snap_dates = sorted(snap_by_date.keys())
+
     # Pour chaque jour de la fenetre : delta = today_total - yesterday_total
-    # Si pas de snapshot pour un jour : 0 (PAS d'extrapolation, PAS d'invention)
+    # Si pas de snapshot pour le jour J : 0
+    # Si snapshot pour J mais pas J-1 : on cherche le snapshot PRECEDENT le plus proche.
+    #   Si aucun precedent (= 1er scrape de la campagne) : on assume tracking a 0 et delta = total_views.
+    # Comme ca, le 1er jour de scraping affiche bien les vues collectees (pas 0).
     timeline = []
     current = start
     while current <= end:
         day = current.strftime("%Y-%m-%d")
-        prev = (current - timedelta(days=1)).strftime("%Y-%m-%d")
-        # Delta = total_au_jour_J - total_au_jour_J-1
-        # Si l'un des deux manque -> 0 (pas de donnee fiable)
-        if day in snap_by_date and prev in snap_by_date:
-            delta = max(0, snap_by_date[day] - snap_by_date[prev])
+        if day in snap_by_date:
+            today_total = snap_by_date[day]
+            # Trouve le snapshot le plus recent AVANT day
+            prev_total = 0
+            prev_found = False
+            for d in reversed(sorted_snap_dates):
+                if d < day:
+                    prev_total = snap_by_date[d]
+                    prev_found = True
+                    break
+            # Si pas de snapshot precedent -> 1er scrape, delta = total
+            # Si precedent -> delta = today - prev
+            delta = max(0, today_total - prev_total)
         else:
             delta = 0
         timeline.append({"date": day, "views": int(delta)})
@@ -11267,7 +11280,7 @@ async def get_campaign_views_chart(
         "period_end": end.isoformat(),
         "offset": offset,
         "days": days,
-        "note": "Vues GAGNEES par jour (delta entre snapshots). 0 = pas de snapshot pour cette date (pas d'invention).",
+        "note": "Vues GAGNEES par jour (delta entre snapshots). 1er jour de scrape = total_views collectees.",
     }
 
 
@@ -11293,14 +11306,21 @@ async def get_my_views_chart(
     ).sort("date", 1).to_list(2000)
 
     snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots if s.get("date")}
+    sorted_snap_dates = sorted(snap_by_date.keys())
 
     timeline = []
     current = start
     while current <= end:
         day = current.strftime("%Y-%m-%d")
-        prev = (current - timedelta(days=1)).strftime("%Y-%m-%d")
-        if day in snap_by_date and prev in snap_by_date:
-            delta = max(0, snap_by_date[day] - snap_by_date[prev])
+        if day in snap_by_date:
+            today_total = snap_by_date[day]
+            # Snapshot precedent le plus proche
+            prev_total = 0
+            for d in reversed(sorted_snap_dates):
+                if d < day:
+                    prev_total = snap_by_date[d]
+                    break
+            delta = max(0, today_total - prev_total)
         else:
             delta = 0
         timeline.append({"date": day, "views": int(delta)})
