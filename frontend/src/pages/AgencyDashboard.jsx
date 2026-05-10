@@ -2678,7 +2678,7 @@ function CampaignDashboard({ campaigns }) {
                         {viewsOffset > 0
                           ? "Aucune donnée pour cette période passée"
                           : isHourly
-                            ? "Pas encore de données — le premier scrape s'effectuera à 07:30 Paris"
+                            ? "Pas encore de données — le premier scrape s'effectuera à 08h00 Paris"
                             : "Aucune donnée — les vues s'accumulent au fur et à mesure du tracking"}
                       </p>
                   }
@@ -4540,7 +4540,7 @@ function SettingsPage() {
       features: [
         "3 campagnes actives",
         "100 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 2× / jour (07:30 + 15:30)",
+        "Tracking vues 2× / jour (08h00 + 20h00 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",
@@ -4549,11 +4549,11 @@ function SettingsPage() {
       ]
     },
     {
-      id: "plan_unlimited", name: "Business", price: "749€/mois",
+      id: "plan_unlimited", name: "Business", price: "750€/mois",
       features: [
         "Campagnes illimitées",
         "400 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 4× / jour (07:30, 12:00, 15:30, 22:00)",
+        "Tracking vues 2× / jour (08h00 + 20h00 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",
@@ -4755,7 +4755,7 @@ function SettingsPage() {
                   <p className="text-[#00E5FF] font-semibold text-sm">🎁 Essai gratuit — plan Business activé</p>
                   <p className="text-white/60 text-xs mt-0.5">
                     {subStatus.trial_days_remaining > 0
-                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 749€/mois`
+                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 750€/mois`
                       : "Dernier jour — choisis un plan ci-dessous pour continuer"}
                   </p>
                   {subStatus.usage && subStatus.limits && (

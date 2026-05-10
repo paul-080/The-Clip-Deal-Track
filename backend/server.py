@@ -8592,7 +8592,7 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
 # Affichés aux agences/clippeurs sur la campagne. Modifiables ici en 1 endroit.
 # (Conserve pour rétro-compatibilité avec endpoints publics qui exposent ces horaires.
 #  Le NOUVEAU scheduler stagger par campagne ne les utilise plus directement.)
-SCRAPE_SCHEDULE_PARIS = [(7, 30), (12, 0), (15, 30), (22, 0)]
+SCRAPE_SCHEDULE_PARIS = [(8, 0), (20, 0)]  # 2x/jour : matin 8h + soir 20h Paris (12h interval)
 PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else timezone.utc
 
 
@@ -12745,8 +12745,8 @@ SUBSCRIPTION_PLANS = {
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
                        "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 2, "click_only": False, "view_only": True},
-    "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
-                       "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 4, "click_only": False, "view_only": True},
+    "plan_unlimited": {"name": "Business",   "amount": 75000,  "label": "750€/mois",
+                       "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 2, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
                        "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": None,
                        "click_only": False, "view_only": False, "is_custom": True},
@@ -12768,7 +12768,7 @@ SUBSCRIPTION_PLANS = {
 PLAN_LIMITS = {
     "plan_small":           {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 2, "click_only": False, "view_only": True},
-    "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 4, "click_only": False, "view_only": True},
+    "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 2, "click_only": False, "view_only": True},
     "plan_custom":          {"campaigns": None, "tracked_accounts": None,  "tracking_per_day": 4, "click_only": False, "view_only": False},
     "plan_small_click":     {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 0, "click_only": True,  "view_only": False},
     "plan_medium_click":    {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
