@@ -8178,9 +8178,19 @@ async def _scrape_one_account_into_campaign(
         if not vid.get("platform_video_id"):
             continue
         pub_dt = _parse_utc(vid.get("published_at"))
-        if pub_dt and cutoff and pub_dt < cutoff:
-            skipped_pre_cutoff += 1
-            continue
+        # ── FILTRE STRICT : on n'insere QUE les videos publiees APRES cutoff (= tracking_start_date)
+        # Avant : if pub_dt and cutoff -> les videos sans pub_dt passaient au travers
+        # Maintenant : si cutoff defini, on EXIGE pub_dt valide ET >= cutoff
+        if cutoff:
+            if not pub_dt:
+                # Pas de date de publication -> on ne peut pas garantir que c'est apres cutoff
+                # On REFUSE par securite (mieux vaut perdre une video que tracker du vieux)
+                skipped_pre_cutoff += 1
+                logger.debug(f"Skip video {vid.get('platform_video_id')} de @{uname} : published_at manquant")
+                continue
+            if pub_dt < cutoff:
+                skipped_pre_cutoff += 1
+                continue
 
         existing = existing_videos_map.get(vid["platform_video_id"], {})
 
@@ -11330,6 +11340,10 @@ async def get_campaign_top_clips(
     a la campagne. Sinon on affichait des videos orphelines (compte retire mais
     videos restees en DB avec le campaign_id), ce qui donnait l'impression de
     fausses donnees dans Clip Winner.
+
+    ANTI-VIEILLES-VIDEOS : on ne retourne QUE les videos publiees APRES
+    tracking_start_date (= date de creation de la campagne par defaut). Sinon
+    une nouvelle campagne affichait les vieilles videos historiques du compte.
     """
     from datetime import timedelta
     PERIOD_DAYS = {"24h": 1, "7d": 7, "30d": 30}
@@ -11343,14 +11357,28 @@ async def get_campaign_top_clips(
         # Aucun compte assigne -> aucun clip a montrer (meme s'il reste des videos en DB)
         return {"clips": []}
 
+    # ── ANTI-VIEILLES-VIDEOS : recupere tracking_start_date pour filtrer published_at
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "tracking_start_date": 1, "created_at": 1}
+    )
+    tracking_start = (campaign or {}).get("tracking_start_date") or (campaign or {}).get("created_at")
+
     query: dict = {
         "campaign_id": campaign_id,
         "views": {"$gt": 0},
         "account_id": {"$in": active_account_ids},
     }
+
+    # Determine la borne basse de published_at : max(tracking_start, period cutoff)
+    pub_cutoffs: list = []
+    if tracking_start:
+        pub_cutoffs.append(tracking_start)
     if period in PERIOD_DAYS:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=PERIOD_DAYS[period])).isoformat()
-        query["published_at"] = {"$gte": cutoff}
+        period_cutoff = (datetime.now(timezone.utc) - timedelta(days=PERIOD_DAYS[period])).isoformat()
+        pub_cutoffs.append(period_cutoff)
+    if pub_cutoffs:
+        query["published_at"] = {"$gte": max(pub_cutoffs)}
     raw = await db.tracked_videos.find(
         query,
         {"_id": 0}
@@ -11391,17 +11419,28 @@ async def get_campaign_top_clips(
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
     """All tracked videos for a campaign (agency view).
-    ANTI-FANTOMES : ne retourne que les videos des comptes ENCORE assignes a la campagne."""
+    ANTI-FANTOMES : ne retourne que les videos des comptes ENCORE assignes a la campagne.
+    ANTI-VIEILLES-VIDEOS : ne retourne que les videos publiees APRES tracking_start_date.
+    """
     active_assignments = await db.campaign_social_accounts.find(
         {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
     ).to_list(2000)
     active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
     if not active_account_ids:
         return {"videos": []}
-    videos = await db.tracked_videos.find(
-        {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}},
-        {"_id": 0}
-    ).sort("published_at", -1).to_list(500)
+
+    # Recupere tracking_start_date pour filtrer les vieilles videos
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "tracking_start_date": 1, "created_at": 1}
+    )
+    tracking_start = (campaign or {}).get("tracking_start_date") or (campaign or {}).get("created_at")
+
+    query: dict = {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}}
+    if tracking_start:
+        query["published_at"] = {"$gte": tracking_start}
+
+    videos = await db.tracked_videos.find(query, {"_id": 0}).sort("published_at", -1).to_list(500)
     return {"videos": videos}
 
 @api_router.post("/campaigns/{campaign_id}/refresh-tracking")
@@ -15505,6 +15544,67 @@ async def admin_diagnostic_campaign_videos(
         "breakdown_by_account": breakdown,
         "top5_videos_currently_shown": top5,
         "orphan_account_ids": orphan_account_ids,
+    }
+
+
+@api_router.post("/admin/campaigns/{campaign_id}/cleanup-pre-tracking-videos")
+async def admin_cleanup_pre_tracking_videos(
+    campaign_id: str,
+    body: dict = None,
+    _: bool = Depends(verify_admin_code)
+):
+    """🗑️ CLEANUP : supprime les videos publiees AVANT tracking_start_date d'une campagne.
+    Utile quand une nouvelle campagne affiche des vieilles videos historiques du compte.
+    Body { confirm: true } requis.
+    """
+    body = body or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation requise — body must contain confirm: true"
+        )
+
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "tracking_start_date": 1, "created_at": 1, "name": 1}
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
+    if not tracking_start:
+        raise HTTPException(status_code=400, detail="La campagne n'a ni tracking_start_date ni created_at")
+
+    # Trouve les videos AVANT tracking_start (ou sans date)
+    pre_tracking_query = {
+        "campaign_id": campaign_id,
+        "$or": [
+            {"published_at": {"$lt": tracking_start}},
+            {"published_at": None},
+            {"published_at": {"$exists": False}},
+        ]
+    }
+
+    pre_count = await db.tracked_videos.count_documents(pre_tracking_query)
+    pre_video_ids: list = []
+    async for v in db.tracked_videos.find(pre_tracking_query, {"_id": 0, "video_id": 1}):
+        if v.get("video_id"):
+            pre_video_ids.append(v["video_id"])
+
+    delete_result = await db.tracked_videos.delete_many(pre_tracking_query)
+    snap_deleted = 0
+    if pre_video_ids:
+        snap_result = await db.video_views_snapshots.delete_many({"video_id": {"$in": pre_video_ids}})
+        snap_deleted = snap_result.deleted_count
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "tracking_start_date": tracking_start,
+        "pre_tracking_videos_found": pre_count,
+        "videos_deleted": delete_result.deleted_count,
+        "snapshots_deleted": snap_deleted,
     }
 
 
