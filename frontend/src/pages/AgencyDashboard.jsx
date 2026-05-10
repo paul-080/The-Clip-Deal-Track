@@ -1139,7 +1139,7 @@ function CampaignDashboard({ campaigns }) {
   const [clickStatsLoading, setClickStatsLoading] = useState(false);
   const [viewsTimeline, setViewsTimeline] = useState(null);
   const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
-  const [viewsPeriod, setViewsPeriod] = useState("30");
+  const [viewsPeriod, setViewsPeriod] = useState("7");
   const [viewsOffset, setViewsOffset] = useState(0);
   const [period, setPeriod] = useState("30d");
   const [customFrom, setCustomFrom] = useState("");
@@ -2631,7 +2631,7 @@ function CampaignDashboard({ campaigns }) {
           {/* KPI row — synchronisé avec la période ET l'offset du graphique ci-dessous */}
           {(() => {
             // Fenêtre identique à celle du graph (backend) : [end - days*offset - days, end - days*offset]
-            const days = parseInt(viewsPeriod) || 30;
+            const days = parseInt(viewsPeriod) || 7;
             const now = Date.now();
             const periodMs = days * 24 * 60 * 60 * 1000;
             const end = new Date(now - periodMs * viewsOffset);
@@ -2648,7 +2648,7 @@ function CampaignDashboard({ campaigns }) {
             const pEngagement = pViews > 0 ? ((pLikes + pComments) / pViews * 100).toFixed(1) : "0.0";
             const pAvgViews = periodVideos.length > 0 ? Math.round(pViews / periodVideos.length) : 0;
             const periodLabels = { "1": "24h", "7": "7j", "30": "30j", "90": "90j", "365": "1 an" };
-            const baseLbl = periodLabels[viewsPeriod] || "30j";
+            const baseLbl = periodLabels[viewsPeriod] || "7j";
             const lbl = viewsOffset > 0 ? `${baseLbl} · -${viewsOffset}` : baseLbl;
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -2717,18 +2717,38 @@ function CampaignDashboard({ campaigns }) {
             </div>
             {(() => {
               const isHourly = viewsTimeline?.granularity === "hourly";
-              const days = parseInt(viewsTimeline?.days || viewsPeriod) || 30;
-              const tlData = (viewsTimeline?.timeline || []).map(d => ({
+              const days = parseInt(viewsTimeline?.days || viewsPeriod) || 7;
+              let tlData = (viewsTimeline?.timeline || []).map(d => ({
                 ...d,
                 label: d.label || (isHourly
                   ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
                   : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
               }));
-              const hasData = tlData.some(d => d.views > 0 || d.total_views > 0);
-              // En mode horaire 24h on a 4 points (Business) ou 1 (Starter/Pro)
-              // Sur 7j/30j on a beaucoup de points (28-120) → on cache les dots
+              // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
+              if (tlData.length === 0) {
+                const now = new Date();
+                if (isHourly) {
+                  for (let i = 23; i >= 0; i--) {
+                    const d = new Date(now.getTime() - i * 3600000);
+                    tlData.push({
+                      date: d.toISOString(),
+                      label: d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }),
+                      views: 0, total_views: 0,
+                    });
+                  }
+                } else {
+                  for (let i = days - 1; i >= 0; i--) {
+                    const d = new Date(now.getTime() - i * 86400000);
+                    tlData.push({
+                      date: d.toISOString().slice(0, 10),
+                      label: d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+                      views: 0, total_views: 0,
+                    });
+                  }
+                }
+              }
               const showDots = isHourly && days <= 1;
-              return hasData ? (
+              return (
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                     <defs>
@@ -2747,19 +2767,6 @@ function CampaignDashboard({ campaigns }) {
                     <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={showDots ? { fill: "#FF007F", r: 4 } : false} />
                   </AreaChart>
                 </ResponsiveContainer>
-              ) : (
-                <div className="h-48 flex items-center justify-center">
-                  {viewsTimelineLoading
-                    ? <div className="w-6 h-6 border-2 border-[#FF007F]/30 border-t-[#FF007F] rounded-full animate-spin" />
-                    : <p className="text-white/20 text-sm text-center px-4">
-                        {viewsOffset > 0
-                          ? "Aucune donnée pour cette période passée"
-                          : isHourly
-                            ? "Pas encore de données — le premier scrape s'effectuera à 08h00 Paris"
-                            : "Aucune donnée — les vues s'accumulent au fur et à mesure du tracking"}
-                      </p>
-                  }
-                </div>
               );
             })()}
           </div>

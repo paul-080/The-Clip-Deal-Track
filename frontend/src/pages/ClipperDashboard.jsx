@@ -1912,7 +1912,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
   const [clickStats, setClickStats] = useState(null);
   const [clickPeriod, setClickPeriod] = useState("30d");
   const [viewsTimeline, setViewsTimeline] = useState(null);
-  const [viewsPeriod, setViewsPeriod] = useState("30");
+  const [viewsPeriod, setViewsPeriod] = useState("7");
   const [viewsLoading, setViewsLoading] = useState(false);
   const [myVideos, setMyVideos] = useState([]);
   const [topClips, setTopClips] = useState([]);
@@ -2473,12 +2473,24 @@ function CampaignDashboard({ campaigns, clipperStats }) {
           </CardHeader>
           <CardContent className="pt-0">
             {(() => {
-              const tlData = (viewsTimeline?.timeline || []).map(d => ({
+              const days = parseInt(viewsPeriod) || 7;
+              let tlData = (viewsTimeline?.timeline || []).map(d => ({
                 ...d,
                 label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
               }));
-              const hasData = tlData.some(d => d.views > 0);
-              return hasData ? (
+              // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
+              if (tlData.length === 0) {
+                const now = new Date();
+                for (let i = days - 1; i >= 0; i--) {
+                  const d = new Date(now.getTime() - i * 86400000);
+                  tlData.push({
+                    date: d.toISOString().slice(0, 10),
+                    label: d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+                    views: 0, total_views: 0,
+                  });
+                }
+              }
+              return (
                 <ResponsiveContainer width="100%" height={180}>
                   <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                     <defs>
@@ -2500,13 +2512,6 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                     <Area type="monotone" dataKey="views" stroke="#00E5FF" strokeWidth={2} fill="url(#myViewsGrad)" dot={false} />
                   </AreaChart>
                 </ResponsiveContainer>
-              ) : (
-                <div className="h-36 flex items-center justify-center">
-                  {viewsLoading
-                    ? <div className="w-6 h-6 border-2 border-[#00E5FF]/30 border-t-[#00E5FF] rounded-full animate-spin" />
-                    : <p className="text-white/20 text-sm">Aucune vue encore — les données apparaissent après le prochain tracking (toutes les 6h)</p>
-                  }
-                </div>
               );
             })()}
           </CardContent>
