@@ -1624,18 +1624,7 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                         >
                           <BarChart2 className="w-3 h-3" />
                         </button>
-                        {/* Scrape now */}
-                        <button
-                          onClick={() => handleScrapeNow(account.account_id)}
-                          disabled={isScraping}
-                          title="Scraper maintenant"
-                          className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#00E5FF] hover:bg-[#00E5FF]/10 transition-colors disabled:opacity-40"
-                        >
-                          {isScraping
-                            ? <div className="w-2.5 h-2.5 border border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
-                            : <TrendingUp className="w-3 h-3" />
-                          }
-                        </button>
+                        {/* Scraping manuel : RESERVE ADMIN — le clippeur n'a pas la main, le scraping est automatique selon l'abonnement de l'agence */}
                         {/* Add video manually (all platforms) */}
                         <button
                           onClick={() => {
@@ -1716,14 +1705,9 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
 
                     {videos.length === 0 ? (
                       <div className="flex items-center gap-3 py-2">
-                        <p className="text-white/30 text-xs flex-1">Aucune vidéo trackée</p>
-                        <button
-                          onClick={() => handleScrapeNow(account.account_id)}
-                          disabled={isScraping}
-                          className="text-[#00E5FF] text-xs hover:underline disabled:opacity-50"
-                        >
-                          {isScraping ? "Scraping…" : "Lancer le scraping"}
-                        </button>
+                        <p className="text-white/30 text-xs flex-1">
+                          Aucune vidéo trackée pour l'instant — le scraping automatique passera selon le rythme de l'abonnement de l'agence.
+                        </p>
                         <button
                           onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
                           className="text-[#FF007F] text-xs hover:underline"

@@ -9011,14 +9011,15 @@ async def reset_campaign_tracking_data(campaign_id: str, body: dict = None, user
     ATTENTION : action destructrice — l'historique des videos trackees est perdu.
     Confirmation requise via body['confirm'] = true.
     """
-    if user.get("role") not in ("agency", "manager", "admin"):
-        raise HTTPException(status_code=403, detail="Reserve agence/manager")
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Reserve a l'admin. Le reset / re-scrape complet d'une campagne ne peut etre declenche que par l'administrateur."
+        )
 
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
-    if user.get("role") == "agency" and campaign.get("agency_id") != user.get("user_id"):
-        raise HTTPException(status_code=403, detail="Cette campagne ne vous appartient pas")
 
     body = body or {}
     if not body.get("confirm"):
@@ -9108,20 +9109,20 @@ async def reset_campaign_tracking_data(campaign_id: str, body: dict = None, user
 
 @api_router.post("/campaigns/{campaign_id}/refresh-stats")
 async def refresh_campaign_stats(campaign_id: str, user: dict = Depends(get_current_user)):
-    """Permet a l'agence/manager de forcer un scrape immediat de sa campagne.
+    """Force un scrape immediat de la campagne. RESERVE ADMIN UNIQUEMENT.
+    Les agences / managers / clippeurs n'ont PAS acces au scraping a la demande :
+    le scraping suit les horaires fixes definis par leur abonnement (ex: 2x/jour Business).
     Rate-limit a 1 refresh par 5 minutes par campagne (anti-spam).
-    Tous les comptes sont rescrapes en background, vues mises a jour en 1-3 min.
     """
-    if user.get("role") not in ("agency", "manager", "admin"):
-        raise HTTPException(status_code=403, detail="Reserve agence/manager")
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Reserve a l'admin. Le scraping se fait automatiquement sur les horaires fixes definis par votre abonnement."
+        )
 
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
-
-    # Verifier ownership
-    if user.get("role") == "agency" and campaign.get("agency_id") != user.get("user_id"):
-        raise HTTPException(status_code=403, detail="Cette campagne ne vous appartient pas")
 
     # Rate limit
     last_refresh = _REFRESH_STATS_LAST.get(campaign_id, 0)
@@ -10551,12 +10552,20 @@ async def _background_scrape_account(account_id: str, user_id: str):
 
 @api_router.post("/social-accounts/{account_id}/scrape-now")
 async def scrape_account_now(account_id: str, user: dict = Depends(get_current_user)):
-    """Launch background scraping for a verified social account. Returns immediately."""
+    """Force un scrape immediat d'un compte social. RESERVE ADMIN UNIQUEMENT.
+    Les clippeurs et agences n'ont PAS acces au scraping a la demande.
+    Le scraping suit les horaires fixes definis par l'abonnement de l'agence."""
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Reserve a l'admin. Le scraping se fait automatiquement sur les horaires fixes."
+        )
+
     account = await db.social_accounts.find_one(
-        {"account_id": account_id, "user_id": user["user_id"], "status": "verified"}, {"_id": 0}
+        {"account_id": account_id, "status": "verified"}, {"_id": 0}
     )
     if not account:
-        raise HTTPException(status_code=404, detail="Compte introuvable ou non vérifié")
+        raise HTTPException(status_code=404, detail="Compte introuvable ou non verifie")
 
     # Mark as running immediately so frontend can poll
     await db.social_accounts.update_one(
@@ -10565,11 +10574,11 @@ async def scrape_account_now(account_id: str, user: dict = Depends(get_current_u
     )
 
     # Launch background task — returns immediately, no timeout on the HTTP request
-    asyncio.create_task(_background_scrape_account(account_id, user["user_id"]))
+    asyncio.create_task(_background_scrape_account(account_id, account.get("user_id")))
 
     return {
         "status": "started",
-        "message": "Scraping lancé en arrière-plan. Les vidéos apparaîtront dans quelques secondes.",
+        "message": "Scraping lance en arriere-plan (admin).",
     }
 
 
