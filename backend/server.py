@@ -14345,6 +14345,40 @@ async def admin_test_free_path(platform: str, username: str, request: Request, _
     }
 
     if platform == "instagram":
+        # 🌟 Etape 0 (NEW) : Business Discovery API officielle Meta (PRIORITY -2)
+        if IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN:
+            t0 = time.time()
+            try:
+                videos = await _fetch_instagram_via_business_discovery_account(username, max_videos=10)
+                report["steps"].append({
+                    "name": "🌟 0. Business Discovery API (PRIORITY -2, OFFICIEL META)",
+                    "ok": bool(videos),
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "result": f"{len(videos)} medias (vraies vues officielles)" if videos else "no medias / compte non Business/Creator",
+                    "source": "business_discovery",
+                    "fix_if_failed": "Le compte cible doit etre Business/Creator public. Si compte personnel, demande au clippeur de switcher en Creator (Insta -> Settings -> Account -> 'Switch to Professional Account' -> Creator).",
+                })
+                if videos:
+                    report["found_via"] = "business_discovery"
+                    report["videos_count"] = len(videos)
+                    report["sample_video"] = videos[0]
+                    return report
+            except Exception as e:
+                report["steps"].append({
+                    "name": "🌟 0. Business Discovery API",
+                    "ok": False,
+                    "duration_ms": int((time.time() - t0) * 1000),
+                    "error": str(e)[:300],
+                })
+        else:
+            report["steps"].append({
+                "name": "🌟 0. Business Discovery API",
+                "ok": False,
+                "skipped": True,
+                "reason": "IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN non configures",
+                "fix_if_failed": "Configure ces 2 vars Railway pour activer l'API officielle Meta",
+            })
+
         # Etape 1 : Mobile Clips API
         t0 = time.time()
         try:
