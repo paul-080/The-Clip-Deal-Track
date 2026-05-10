@@ -603,13 +603,63 @@ function CampaignDashboard({ campaigns }) {
       toast.error(`Cette campagne n'accepte que : ${allowed.join(", ")}`);
       return;
     }
+
+    // ── DETECTION BULK : si plusieurs URLs (séparés par newline / espace / virgule)
+    const inputRaw = trackAccountForm.username.trim();
+    const items = inputRaw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+    if (items.length > 1) {
+      setTrackingAccount(true);
+      try {
+        const body = {
+          platform: trackAccountForm.platform,
+          ...(trackAccountForm.user_id ? { user_id: trackAccountForm.user_id } : {}),
+          urls: items,
+        };
+        const res = await fetch(`${API}/campaigns/${campaignId}/add-accounts-bulk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const nbAdded = data.total_added || 0;
+          const nbSkipped = data.total_skipped || 0;
+          const nbErrors = data.total_errors || 0;
+          let msg = `✓ ${nbAdded} compte${nbAdded > 1 ? "s" : ""} ajouté${nbAdded > 1 ? "s" : ""}`;
+          if (nbSkipped > 0) msg += ` · ${nbSkipped} ignoré${nbSkipped > 1 ? "s" : ""}`;
+          if (nbErrors > 0) msg += ` · ${nbErrors} erreur${nbErrors > 1 ? "s" : ""}`;
+          if (data.limit_reached) msg += " ⚠ Limite plan atteinte";
+          toast.success(msg, { duration: 8000 });
+          if (Array.isArray(data.skipped) && data.skipped.length > 0) {
+            data.skipped.slice(0, 5).forEach(s => toast(`↷ ${s.username || s.url} : ${s.reason}`, { duration: 7000, icon: "⚠️" }));
+          }
+          if (Array.isArray(data.errors) && data.errors.length > 0) {
+            data.errors.slice(0, 3).forEach(e => toast.error(`✗ ${e.username || e.url} : ${e.error}`, { duration: 7000 }));
+          }
+          if (nbAdded > 0) {
+            setShowTrackAccountModal(false);
+            setTrackAccountForm({ user_id: "", platform: "tiktok", username: "" });
+            fetchAllAccounts();
+          }
+        } else {
+          toast.error(data.detail || "Erreur lors de l'ajout en masse");
+        }
+      } catch {
+        toast.error("Erreur réseau");
+      } finally {
+        setTrackingAccount(false);
+      }
+      return;
+    }
+
     setTrackingAccount(true);
     try {
-      const isUrl = trackAccountForm.username.trim().startsWith("http");
+      const isUrl = inputRaw.startsWith("http");
       const body = {
         platform: trackAccountForm.platform,
         ...(trackAccountForm.user_id ? { user_id: trackAccountForm.user_id } : {}),
-        ...(isUrl ? { account_url: trackAccountForm.username.trim() } : { username: trackAccountForm.username.trim() }),
+        ...(isUrl ? { account_url: inputRaw } : { username: inputRaw }),
       };
       const res = await fetch(`${API}/campaigns/${campaignId}/add-account`, {
         method: "POST",
@@ -1029,11 +1079,34 @@ function CampaignDashboard({ campaigns }) {
                 </div>
 
                 <div>
-                  <label className="text-xs text-white/50 block mb-1.5">@username ou URL du profil *</label>
-                  <input type="text" value={trackAccountForm.username}
-                    onChange={e => setTrackAccountForm(f => ({ ...f, username: e.target.value }))}
-                    placeholder="@username  ou  https://www.tiktok.com/@..."
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50" />
+                  {(() => {
+                    const items = (trackAccountForm.username || "").split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+                    const isBulk = items.length > 1;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs text-white/50">
+                            @username ou URL(s) du profil *
+                            {isBulk && <span className="ml-2 text-[#00E5FF] font-bold">📋 Mode bulk : {items.length} comptes</span>}
+                          </label>
+                          {isBulk && (
+                            <button type="button" onClick={() => setTrackAccountForm(f => ({ ...f, username: "" }))}
+                              className="text-[10px] text-white/40 hover:text-white/70 underline">vider</button>
+                          )}
+                        </div>
+                        <textarea value={trackAccountForm.username}
+                          onChange={e => setTrackAccountForm(f => ({ ...f, username: e.target.value }))}
+                          rows={isBulk ? Math.min(8, Math.max(3, items.length)) : 2}
+                          placeholder={"@username  ou  https://www.instagram.com/...\n\n💡 Astuce : colle plusieurs URLs (1 par ligne) pour ajouter en masse"}
+                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50 font-mono resize-y" />
+                        <p className="text-[10px] text-white/40 mt-1">
+                          {isBulk
+                            ? `📋 ${items.length} comptes seront ajoutés d'un coup au clic sur « Ajouter ».`
+                            : "Tu peux coller plusieurs URLs (une par ligne, ou séparées par espace/virgule) pour les ajouter en masse."}
+                        </p>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex gap-3 pt-2">
@@ -1041,9 +1114,14 @@ function CampaignDashboard({ campaigns }) {
                     className="flex-1 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
                     Annuler
                   </button>
-                  <button onClick={handleTrackAccount} disabled={trackingAccount}
+                  <button onClick={handleTrackAccount} disabled={trackingAccount || !trackAccountForm.username.trim()}
                     className="flex-1 py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black text-sm font-bold transition-all">
-                    {trackingAccount ? "Ajout…" : "✓ Ajouter le compte"}
+                    {(() => {
+                      const items = (trackAccountForm.username || "").split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+                      const isBulk = items.length > 1;
+                      if (trackingAccount) return isBulk ? "Ajout en masse…" : "Ajout…";
+                      return isBulk ? `✓ Ajouter ${items.length} comptes` : "✓ Ajouter le compte";
+                    })()}
                   </button>
                 </div>
               </div>

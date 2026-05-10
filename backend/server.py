@@ -9756,6 +9756,317 @@ async def track_account_for_clipper(campaign_id: str, body: dict, user: dict = D
 
     return {"account_id": account_id, "ok": True}
 
+
+@api_router.post("/campaigns/{campaign_id}/add-accounts-bulk")
+async def add_accounts_bulk(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
+    """
+    Ajout en masse de plusieurs comptes sociaux dans UNE campagne en un seul appel.
+    Body = {
+      "user_id": "optional - clippeur cible (sinon agence)",
+      "platform": "instagram|tiktok|youtube",
+      "urls": ["https://...", "https://...", ...]    OU    "usernames": ["@toto", "tata", ...]
+    }
+    Réponse = {
+      "added": [{ "url": "...", "username": "...", "account_id": "..." }, ...],
+      "skipped": [{ "url": "...", "reason": "..." }, ...],
+      "errors": [{ "url": "...", "error": "..." }, ...],
+      "total_processed": int,
+      "total_added": int,
+      "limit_reached": bool        # true si on a dû stopper par limite de plan
+    }
+    Toutes les vérifs (campagne, role, abo, limite plan, fraude, doublon) sont faites
+    sur chaque item. Les scrapes sont lancés en background avec le sémaphore global
+    (3 simultanés max) pour éviter de surcharger.
+    """
+    role = user.get("role")
+    if role not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
+
+    # Check abonnement (1 seule fois)
+    if role == "agency":
+        _check_agency_subscription(user)
+    else:
+        camp_for_check = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "agency_id": 1})
+        if camp_for_check:
+            agency_for_check = await db.users.find_one({"user_id": camp_for_check.get("agency_id")}, {"_id": 0})
+            if agency_for_check:
+                _check_agency_subscription(agency_for_check)
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if role == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+    if role == "manager":
+        m = await db.campaign_members.find_one({"campaign_id": campaign_id, "user_id": user["user_id"], "role": "manager"})
+        if not m:
+            raise HTTPException(status_code=403, detail="Vous n'êtes pas manager de cette campagne")
+
+    target_user_id = (body.get("user_id") or "").strip() or None
+    platform = (body.get("platform") or "").lower().strip()
+    raw_urls = body.get("urls") or body.get("usernames") or []
+    if isinstance(raw_urls, str):
+        # Si l'utilisateur colle un gros bloc de texte, on split sur newline / espace / virgule
+        import re as _re
+        raw_urls = [s.strip() for s in _re.split(r"[\s,;]+", raw_urls) if s.strip()]
+
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform requis")
+    if platform not in ("tiktok", "instagram", "youtube"):
+        raise HTTPException(status_code=400, detail="platform invalide")
+    if not isinstance(raw_urls, list) or len(raw_urls) == 0:
+        raise HTTPException(status_code=400, detail="Liste d'URLs vide")
+    if len(raw_urls) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 comptes par batch")
+
+    # Vérifie clippeur cible une fois si fourni
+    if target_user_id:
+        member = await db.campaign_members.find_one({
+            "campaign_id": campaign_id,
+            "user_id": target_user_id,
+            "role": "clipper",
+        })
+        if not member:
+            raise HTTPException(status_code=400, detail="Ce clippeur n'est pas membre de la campagne")
+
+    # Vérifie plateforme autorisée par la campagne
+    allowed = campaign.get("platforms") or []
+    if allowed and platform not in allowed:
+        raise HTTPException(status_code=400, detail=f"La campagne n'accepte que : {', '.join(allowed)}")
+
+    # Calcule la place restante sur le plan agence (1 fois pour tout le batch)
+    remaining_quota = None  # None = illimité
+    plan_name_for_msg = "?"
+    agency_user = user if role == "agency" else await db.users.find_one({"user_id": campaign.get("agency_id")}, {"_id": 0})
+    if agency_user:
+        limits_a = _get_plan_limits(agency_user)
+        plan_name_for_msg = SUBSCRIPTION_PLANS.get(_get_user_effective_plan(agency_user) or "plan_small", {}).get("name", "Starter")
+        if limits_a.get("tracked_accounts") is not None:
+            agency_id = agency_user["user_id"]
+            agency_camps = await db.campaigns.find(
+                {"agency_id": agency_id, "status": {"$ne": "deleted"}},
+                {"_id": 0, "campaign_id": 1}
+            ).to_list(500)
+            current_count = 0
+            if agency_camps:
+                current_count = await db.campaign_social_accounts.count_documents({
+                    "campaign_id": {"$in": [c["campaign_id"] for c in agency_camps]}
+                })
+            remaining_quota = max(0, int(limits_a["tracked_accounts"]) - int(current_count))
+
+    added: list = []
+    skipped: list = []
+    errors: list = []
+    new_account_ids: list = []  # pour trigger les scrapes en background à la fin
+    limit_reached = False
+
+    for raw in raw_urls:
+        raw_str = (raw if isinstance(raw, str) else str(raw or "")).strip()
+        if not raw_str:
+            continue
+
+        if remaining_quota is not None and remaining_quota <= 0:
+            skipped.append({
+                "url": raw_str,
+                "reason": f"Limite plan {plan_name_for_msg} atteinte ({limits_a['tracked_accounts']} comptes max). Passe à un plan supérieur."
+            })
+            limit_reached = True
+            continue
+
+        # Extract handle
+        try:
+            via_url = False
+            if raw_str.startswith("http") or "/" in raw_str:
+                username = extract_handle_from_url(raw_str, platform)
+                via_url = True
+            else:
+                username = raw_str
+            username = (username or "").strip().lstrip("@").strip("/")
+            if not username:
+                errors.append({"url": raw_str, "error": "Username/URL invalide"})
+                continue
+        except Exception as e:
+            errors.append({"url": raw_str, "error": f"Parse error: {str(e)[:120]}"})
+            continue
+
+        # Anti-fraude : compte déjà revendiqué par un autre user
+        try:
+            fraud_existing_other = await db.social_accounts.find_one({
+                "platform": platform,
+                "username": username,
+                "user_id": {"$ne": target_user_id},
+            })
+            if fraud_existing_other:
+                # Crée alerte fraude en background
+                try:
+                    other_user = await db.users.find_one(
+                        {"user_id": fraud_existing_other.get("user_id")},
+                        {"_id": 0, "email": 1, "display_name": 1, "name": 1}
+                    ) if fraud_existing_other.get("user_id") else None
+                    await db.fraud_alerts.insert_one({
+                        "alert_id": f"fraud_{uuid.uuid4().hex[:12]}",
+                        "type": "duplicate_account_cross_user",
+                        "severity": "high",
+                        "platform": platform,
+                        "username": username,
+                        "campaign_id": campaign_id,
+                        "campaign_name": campaign.get("name"),
+                        "agency_id": campaign.get("agency_id"),
+                        "existing_account_id": fraud_existing_other.get("account_id"),
+                        "existing_user_id": fraud_existing_other.get("user_id"),
+                        "existing_user_email": (other_user or {}).get("email") if other_user else "agency",
+                        "attempted_user_id": target_user_id,
+                        "added_by": user["user_id"],
+                        "added_by_role": role,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "pending",
+                        "details": f"Bulk-add : @{username} ({platform}) déjà revendiqué",
+                    })
+                except Exception as _e:
+                    logger.warning(f"bulk-add fraud alert failed: {_e}")
+                existing_label = (other_user or {}).get("display_name") or (other_user or {}).get("name") or (other_user or {}).get("email") or "un autre utilisateur" if other_user else "un autre utilisateur"
+                skipped.append({
+                    "url": raw_str,
+                    "username": username,
+                    "reason": f"⚠️ @{username} déjà revendiqué par {existing_label} — alerte fraude créée"
+                })
+                continue
+        except Exception as e:
+            errors.append({"url": raw_str, "error": f"Check fraude: {str(e)[:120]}"})
+            continue
+
+        # Doublon ou réuse
+        try:
+            existing = await db.social_accounts.find_one({
+                "user_id": target_user_id,
+                "platform": platform,
+                "username": username,
+            })
+            if existing:
+                account_id = existing["account_id"]
+                # Vérifie qu'il n'est pas déjà actif dans une autre campagne
+                other_assignments = await db.campaign_social_accounts.find({
+                    "account_id": account_id,
+                    "campaign_id": {"$ne": campaign_id},
+                }).to_list(20)
+                other_active = None
+                for csa in other_assignments:
+                    other_camp_id = csa.get("campaign_id")
+                    other_camp = await db.campaigns.find_one({"campaign_id": other_camp_id}, {"_id": 0, "name": 1, "status": 1})
+                    if not other_camp or other_camp.get("status") == "deleted":
+                        await db.campaign_social_accounts.delete_one({"campaign_id": other_camp_id, "account_id": account_id})
+                        continue
+                    other_active = (other_camp_id, other_camp.get("name", "?"))
+                    break
+                if other_active:
+                    skipped.append({
+                        "url": raw_str,
+                        "username": username,
+                        "reason": f"Déjà tracké dans la campagne « {other_active[1] } »"
+                    })
+                    continue
+                # Vérifie déjà assigné à CETTE campagne
+                already = await db.campaign_social_accounts.find_one({
+                    "account_id": account_id, "campaign_id": campaign_id,
+                })
+                if already:
+                    skipped.append({
+                        "url": raw_str,
+                        "username": username,
+                        "reason": f"@{username} déjà tracké dans cette campagne"
+                    })
+                    continue
+                # Réutilise le compte existant
+                is_new_account = False
+            else:
+                account_id = f"acc_{uuid.uuid4().hex[:12]}"
+                now_iso = datetime.now(timezone.utc).isoformat()
+                await db.social_accounts.insert_one({
+                    "account_id": account_id,
+                    "user_id": target_user_id,
+                    "platform": platform,
+                    "username": username,
+                    "status": "pending",
+                    "created_at": now_iso,
+                    "follower_count": None,
+                    "avatar_url": None,
+                    "display_name": None,
+                    "verified_at": None,
+                    "error_message": None,
+                    "last_tracked_at": None,
+                    "platform_channel_id": None,
+                    "added_by": user["user_id"],
+                    "added_by_role": role,
+                })
+                # Vérification + premier scrape lancés plus bas
+                asyncio.create_task(_verify_and_update_account(account_id, platform, username, via_url=via_url))
+                is_new_account = True
+
+            # Crée l'assignation campagne
+            await db.campaign_social_accounts.insert_one({
+                "id": f"csa_{uuid.uuid4().hex[:12]}",
+                "campaign_id": campaign_id,
+                "account_id": account_id,
+                "user_id": target_user_id,
+                "assigned_at": datetime.now(timezone.utc).isoformat(),
+                "assigned_by": user["user_id"],
+            })
+
+            added.append({
+                "url": raw_str,
+                "username": username,
+                "account_id": account_id,
+                "is_new": is_new_account,
+            })
+            new_account_ids.append(account_id)
+            if remaining_quota is not None:
+                remaining_quota -= 1
+
+        except Exception as e:
+            errors.append({"url": raw_str, "username": username, "error": f"Insert: {str(e)[:200]}"})
+            continue
+
+    # Trigger les scrapes en background pour les comptes ajoutés
+    # Le sémaphore _POST_CREATE_SCRAPE_SEM (3) protège contre la surcharge
+    campaign_tracking_start = _parse_utc(campaign.get("tracking_start_date"))
+    cutoff = campaign_tracking_start if campaign_tracking_start else datetime.now(timezone.utc)
+    days_back = 30
+    if campaign_tracking_start:
+        days_back = max(2, int((datetime.now(timezone.utc) - campaign_tracking_start).total_seconds() / 86400) + 2)
+        days_back = min(days_back, 365)
+
+    async def _scrape_one_in_background(account_id_to_scrape: str):
+        async with _POST_CREATE_SCRAPE_SEM:
+            try:
+                acc_doc = await db.social_accounts.find_one({"account_id": account_id_to_scrape}, {"_id": 0})
+                if acc_doc:
+                    await _scrape_one_account_into_campaign(
+                        acc_doc, campaign, cutoff, since_days=days_back, wait_verification=True
+                    )
+            except Exception as e:
+                logger.error(f"Bulk-add post-create scrape failed for {account_id_to_scrape}: {e}")
+                await db.social_accounts.update_one(
+                    {"account_id": account_id_to_scrape},
+                    {"$set": {"last_scrape_error": str(e)[:500]}}
+                )
+
+    for aid in new_account_ids:
+        asyncio.create_task(_scrape_one_in_background(aid))
+
+    return {
+        "ok": True,
+        "added": added,
+        "skipped": skipped,
+        "errors": errors,
+        "total_processed": len(raw_urls),
+        "total_added": len(added),
+        "total_skipped": len(skipped),
+        "total_errors": len(errors),
+        "limit_reached": limit_reached,
+        "remaining_quota_after": remaining_quota,
+    }
+
+
 @api_router.post("/campaigns/{campaign_id}/social-accounts/{account_id}")
 async def assign_account_to_campaign(campaign_id: str, account_id: str, user: dict = Depends(get_current_user)):
     # Vérifier que le clipper est accepté (pas pending)
