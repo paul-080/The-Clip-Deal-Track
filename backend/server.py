@@ -738,11 +738,15 @@ def _get_instagram_session() -> str:
     cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
     _instagram_session_index += 1
     return cookie
-# SECURITY/COST : permet de desactiver completement Apify (jamais appele meme en dernier recours)
-APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
+# SECURITY/COST : Apify est DESACTIVE par defaut partout. C'est un signal d'alarme :
+# si Apify est appele en routine, c'est que la cascade gratuite (VPS / TikWm / Meta API
+# / yt-dlp) est cassee. On ne veut JAMAIS payer Apify pour scraper. Pour reactiver
+# explicitement (debug uniquement), set APIFY_DISABLED=false sur Railway.
+APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'true').strip().lower() in ('true', '1', 'yes'))
+# Kill switches dedies par plateforme — actifs par defaut (force OFF meme si APIFY_DISABLED=false)
+_APIFY_TIKTOK_KILL_SWITCH = (os.environ.get('APIFY_TIKTOK_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
 # Budget circuit breaker : nb max d'appels Apify/jour par plateforme (anti-explosion budget)
-# Insta : 200/jour par defaut (videoPlayCount via Apify, ~$0.52/jour MAX = $15.60/mois MAX, dans budget Starter $29)
-# TikTok : 50/jour (VPS marche bien, Apify rare en backup)
+# Si jamais Apify est reactive, ces budgets limitent les degats.
 APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '200'))
 APIFY_TIKTOK_DAILY_BUDGET = int(os.environ.get('APIFY_TIKTOK_DAILY_BUDGET', '50'))
 
@@ -5912,8 +5916,17 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 return combined
             # Don't raise yet - try Apify as last resort below
 
-    # DERNIER RECOURS : Apify TikTok (avec circuit breaker budget journalier)
-    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
+    # DERNIER RECOURS : Apify TikTok — DESACTIVE PAR DEFAUT (kill switch dedie)
+    # On ne veut JAMAIS d'Apify en routine pour TikTok. La cascade gratuite (VPS,
+    # TikWm, mobile API, yt-dlp, RapidAPI) doit suffire. Si Apify se declenche,
+    # c'est que quelque chose est casse en amont — on log un signal d'alarme.
+    if _APIFY_TIKTOK_KILL_SWITCH:
+        logger.warning(
+            f"⚠️ ALERTE : Apify TikTok aurait ete appele pour @{username} mais BLOQUE par kill switch. "
+            f"La cascade gratuite (VPS/TikWm/mobile/yt-dlp/RapidAPI) a TOUTE echoue. A diagnostiquer !"
+        )
+        await _log_scrape("apify_blocked", "tiktok", username, False, 0, "Apify TikTok bloque par kill switch (signal alarme)")
+    elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
             apify_videos = await _fetch_tiktok_videos_apify(username)
@@ -7241,9 +7254,14 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
             logger.warning(f"yt-dlp TikTok failed for {url[-30:]}: {e}")
 
     # Strategy 4 (DERNIER RECOURS) : Apify TikTok scraper pour video individuelle
-    # Coute ~0.0003€/video = 0.30€/1000 videos. Justifie pour garantir le tracking individuel.
-    # SEULEMENT si toutes les sources gratuites ont echoue + budget journalier OK
-    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
+    # DESACTIVE PAR DEFAUT (kill switch dedie). On ne paye JAMAIS Apify en routine.
+    # Si on arrive ici sans Apify, on remonte une erreur claire au lieu de scraper.
+    if _APIFY_TIKTOK_KILL_SWITCH:
+        logger.warning(
+            f"⚠️ ALERTE : Apify TikTok aurait ete appele pour video individuelle {url[-30:]} mais BLOQUE par kill switch. "
+            f"Toutes les sources gratuites ont echoue — a diagnostiquer (VPS ? TikWm ? yt-dlp ?)."
+        )
+    elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         logger.info(f"_fetch_single_tiktok_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {url[-30:]}")
         for actor_id in ("clockworks~tiktok-scraper", "apify~tiktok-scraper"):
             try:
