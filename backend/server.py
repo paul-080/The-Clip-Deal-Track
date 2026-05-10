@@ -8018,11 +8018,14 @@ async def _scrape_one_account_into_campaign(
     try:
         existing_docs = await db.tracked_videos.find(
             {"account_id": acc_id},
-            {"_id": 0, "platform_video_id": 1, "views": 1, "likes": 1, "comments": 1}
+            {"_id": 0, "platform_video_id": 1, "views": 1, "likes": 1, "comments": 1,
+             "tracking_active": 1, "first_tracked_at": 1, "archived_at": 1, "archived_reason": 1}
         ).to_list(500)
         existing_videos_map = {d["platform_video_id"]: d for d in existing_docs}
     except Exception:
         pass
+
+    auto_archived_count = 0  # NEW : compteur des videos auto-archivees ce scrape
 
     for vid in videos:
         if not vid.get("platform_video_id"):
@@ -8032,11 +8035,42 @@ async def _scrape_one_account_into_campaign(
             skipped_pre_cutoff += 1
             continue
 
-        # MAX ONLY : views/likes/comments ne diminuent JAMAIS entre 2 scrapes
         existing = existing_videos_map.get(vid["platform_video_id"], {})
+
+        # ── ARCHIVAGE INTELLIGENT : skip videos archivees (=plus assez de croissance) ──
+        # Une video archivee : on ne la rescrape plus pour economiser les calls API.
+        # Reactivation possible manuellement via /admin/reactivate-archived-videos
+        if existing.get("tracking_active") is False:
+            continue  # video archivee, on skip
+
+        # MAX ONLY : views/likes/comments ne diminuent JAMAIS entre 2 scrapes
         new_views = max(int(vid.get("views", 0) or 0), int(existing.get("views") or 0))
         new_likes = max(int(vid.get("likes", 0) or 0), int(existing.get("likes") or 0))
         new_comments = max(int(vid.get("comments", 0) or 0), int(existing.get("comments") or 0))
+
+        # ── DETECTION AUTO-ARCHIVAGE : video > 24h trackee ET <100 vues sur 48h ──
+        should_archive = False
+        archive_reason = None
+        first_tracked = _parse_utc(existing.get("first_tracked_at"))
+        if first_tracked:
+            age_hours = (datetime.now(timezone.utc) - first_tracked).total_seconds() / 3600
+            if age_hours >= 24:
+                # Recupere les vues d'il y a ~48h via video_views_snapshots
+                try:
+                    cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
+                    snap_48h = await db.video_views_snapshots.find_one(
+                        {"video_id": existing.get("video_id") or "",
+                         "date": {"$lte": cutoff_48h}},
+                        sort=[("date", -1)]
+                    )
+                    if snap_48h:
+                        old_views_48h = int(snap_48h.get("views") or 0)
+                        growth_48h = new_views - old_views_48h
+                        if growth_48h < 100:
+                            should_archive = True
+                            archive_reason = f"low_growth_48h: +{growth_48h} vues sur 48h (< 100)"
+                except Exception as ae:
+                    logger.debug(f"Archive check failed for video: {ae}")
 
         earnings = (new_views / 1000) * rpm
         set_fields = {
@@ -8057,16 +8091,38 @@ async def _scrape_one_account_into_campaign(
             "manually_added": False,
             "simulated": False,
         }
+        # Si on archive cette video : marque tracking_active=False
+        if should_archive:
+            set_fields["tracking_active"] = False
+            set_fields["archived_at"] = now_iso
+            set_fields["archived_reason"] = archive_reason
+            auto_archived_count += 1
+            logger.info(f"📦 AUTO-ARCHIVE {plat}/@{uname} video {vid['platform_video_id']} : {archive_reason}")
+
+        # set_on_insert : champs initialises uniquement a la PREMIERE creation
+        set_on_insert = {
+            "video_id": f"vid_{uuid.uuid4().hex[:12]}",
+            "created_at": now_iso,
+            "first_tracked_at": now_iso,  # date du PREMIER tracking (jamais modifiee)
+            "tracking_active": True,       # default : actif
+        }
         try:
             await db.tracked_videos.update_one(
                 {"account_id": acc_id, "platform_video_id": vid["platform_video_id"]},
-                {"$set": set_fields,
-                 "$setOnInsert": {"video_id": f"vid_{uuid.uuid4().hex[:12]}", "created_at": now_iso}},
+                {"$set": set_fields, "$setOnInsert": set_on_insert},
                 upsert=True
             )
             inserted += 1
         except Exception as e:
             logger.warning(f"Insert tracked_video failed: {e}")
+
+    # Log scraping_history avec count des archivages
+    if auto_archived_count > 0:
+        try:
+            await _log_scrape("auto_archive", plat, uname, True, auto_archived_count,
+                              f"{auto_archived_count} videos auto-archivees (croissance < 100 vues sur 48h)")
+        except Exception:
+            pass
 
     # Si fetched > 0 mais inserted = 0 et tout filtré par cutoff : warning
     warning = None
@@ -14584,6 +14640,65 @@ async def admin_recent_scrapes(request: Request, limit: int = 50, platform: Opti
         "apify_count": apify_count,
         "free_path_count": free_count,
         "apify_pct": round((apify_count / len(items) * 100), 1) if items else 0,
+    }
+
+
+@api_router.post("/admin/reactivate-archived-videos")
+async def admin_reactivate_archived_videos(request: Request, body: dict = None, _: bool = Depends(verify_admin_code)):
+    """Reactive les videos auto-archivees (tracking_active=False).
+    Body optionnel : { "campaign_id": "X" } pour cibler une campagne specifique.
+    Sinon : reactive TOUTES les videos archivees du systeme.
+    """
+    body = body or {}
+    query = {"tracking_active": False}
+    if body.get("campaign_id"):
+        query["campaign_id"] = body["campaign_id"]
+    if body.get("account_id"):
+        query["account_id"] = body["account_id"]
+
+    res = await db.tracked_videos.update_many(
+        query,
+        {"$set": {"tracking_active": True, "reactivated_at": datetime.now(timezone.utc).isoformat()},
+         "$unset": {"archived_at": "", "archived_reason": ""}}
+    )
+
+    return {
+        "ok": True,
+        "reactivated_count": res.modified_count,
+        "message": f"{res.modified_count} videos reactivees, elles seront re-scrapees au prochain cycle.",
+    }
+
+
+@api_router.get("/admin/archived-videos-stats")
+async def admin_archived_videos_stats(request: Request, _: bool = Depends(verify_admin_code)):
+    """Stats sur les videos auto-archivees : combien, par campagne, par raison."""
+    total_archived = await db.tracked_videos.count_documents({"tracking_active": False})
+    total_active = await db.tracked_videos.count_documents({"tracking_active": {"$ne": False}})
+
+    # Stats par raison
+    pipeline = [
+        {"$match": {"tracking_active": False}},
+        {"$group": {"_id": "$archived_reason", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    by_reason = await db.tracked_videos.aggregate(pipeline).to_list(20)
+
+    # Top campagnes avec videos archivees
+    pipeline2 = [
+        {"$match": {"tracking_active": False}},
+        {"$group": {"_id": "$campaign_id", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10},
+    ]
+    by_campaign = await db.tracked_videos.aggregate(pipeline2).to_list(10)
+
+    return {
+        "total_archived": total_archived,
+        "total_active": total_active,
+        "archive_rate_pct": round((total_archived / max(1, total_archived + total_active)) * 100, 1),
+        "by_reason": by_reason,
+        "by_campaign_top10": by_campaign,
+        "note": "Les videos auto-archivees sont celles qui ont pris < 100 vues sur 48h apres 24h de tracking. Reactivable via /admin/reactivate-archived-videos",
     }
 
 
