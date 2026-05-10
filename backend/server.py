@@ -11176,10 +11176,30 @@ async def get_campaign_top_clips(
     user: dict = Depends(get_current_user)
 ):
     """Top N videos by views for this campaign — visible to all roles.
-    period: filtre les vidéos par date de publication (depuis quand publiées)."""
+    period: filtre les vidéos par date de publication (depuis quand publiées).
+
+    ANTI-FANTOMES : on ne retourne QUE les videos dont le compte est ENCORE assigne
+    a la campagne. Sinon on affichait des videos orphelines (compte retire mais
+    videos restees en DB avec le campaign_id), ce qui donnait l'impression de
+    fausses donnees dans Clip Winner.
+    """
     from datetime import timedelta
     PERIOD_DAYS = {"24h": 1, "7d": 7, "30d": 30}
-    query: dict = {"campaign_id": campaign_id, "views": {"$gt": 0}}
+
+    # ── ANTI-FANTOMES : recupere les account_ids ENCORE assignes a cette campagne
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+    if not active_account_ids:
+        # Aucun compte assigne -> aucun clip a montrer (meme s'il reste des videos en DB)
+        return {"clips": []}
+
+    query: dict = {
+        "campaign_id": campaign_id,
+        "views": {"$gt": 0},
+        "account_id": {"$in": active_account_ids},
+    }
     if period in PERIOD_DAYS:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=PERIOD_DAYS[period])).isoformat()
         query["published_at"] = {"$gte": cutoff}
@@ -11222,8 +11242,18 @@ async def get_campaign_top_clips(
 
 @api_router.get("/campaigns/{campaign_id}/tracked-videos")
 async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get_current_user)):
-    """All tracked videos for a campaign (agency view)"""
-    videos = await db.tracked_videos.find({"campaign_id": campaign_id}, {"_id": 0}).sort("published_at", -1).to_list(500)
+    """All tracked videos for a campaign (agency view).
+    ANTI-FANTOMES : ne retourne que les videos des comptes ENCORE assignes a la campagne."""
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+    if not active_account_ids:
+        return {"videos": []}
+    videos = await db.tracked_videos.find(
+        {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}},
+        {"_id": 0}
+    ).sort("published_at", -1).to_list(500)
     return {"videos": videos}
 
 @api_router.post("/campaigns/{campaign_id}/refresh-tracking")
@@ -15024,6 +15054,142 @@ async def admin_archived_videos_stats(request: Request, _: bool = Depends(verify
         "by_reason": by_reason,
         "by_campaign_top10": by_campaign,
         "note": "Les videos auto-archivees sont celles qui ont pris < 100 vues sur 48h apres 24h de tracking. Reactivable via /admin/reactivate-archived-videos",
+    }
+
+
+@api_router.get("/admin/campaigns/{campaign_id}/diagnostic-videos")
+async def admin_diagnostic_campaign_videos(
+    campaign_id: str,
+    _: bool = Depends(verify_admin_code)
+):
+    """🔎 DIAGNOSTIC : analyse les videos en DB pour une campagne specifique.
+    Permet de detecter les videos fantomes (compte retire de la campagne mais videos restees).
+    Utilise quand l'agence dit 'je vois des videos dans Clip Winner alors que rien n'est tracke'.
+    """
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "name": 1, "agency_id": 1, "created_at": 1})
+    if not campaign:
+        return {"error": "Campagne introuvable", "campaign_id": campaign_id}
+
+    # 1. Compte total de videos en DB pour cette campagne
+    total_videos = await db.tracked_videos.count_documents({"campaign_id": campaign_id})
+
+    # 2. account_ids ENCORE assignes (campaign_social_accounts)
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1, "user_id": 1, "assigned_at": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+
+    # 3. Videos par account_id
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {
+            "_id": "$account_id",
+            "count": {"$sum": 1},
+            "total_views": {"$sum": "$views"},
+            "max_views": {"$max": "$views"},
+        }},
+        {"$sort": {"total_views": -1}},
+    ]
+    videos_by_account = await db.tracked_videos.aggregate(pipeline).to_list(500)
+
+    # 4. Pour chaque account_id, on regarde s'il est ENCORE assigne et on enrichit
+    breakdown = []
+    orphan_video_count = 0
+    orphan_account_ids: list = []
+    for row in videos_by_account:
+        aid = row["_id"]
+        is_assigned = aid in active_account_ids
+        acc = await db.social_accounts.find_one({"account_id": aid}, {"_id": 0, "username": 1, "platform": 1, "user_id": 1, "status": 1})
+        breakdown.append({
+            "account_id": aid,
+            "username": (acc or {}).get("username"),
+            "platform": (acc or {}).get("platform"),
+            "status": (acc or {}).get("status"),
+            "is_still_assigned": is_assigned,
+            "video_count": row["count"],
+            "total_views": row["total_views"],
+            "max_views_video": row["max_views"],
+            "is_orphan": not is_assigned,
+        })
+        if not is_assigned:
+            orphan_video_count += row["count"]
+            orphan_account_ids.append(aid)
+
+    # 5. Top 5 videos par vues (pour voir ce que Clip Winner affiche actuellement)
+    top5 = await db.tracked_videos.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "video_id": 1, "title": 1, "views": 1, "url": 1, "account_id": 1, "user_id": 1, "published_at": 1}
+    ).sort("views", -1).to_list(5)
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "campaign_created_at": campaign.get("created_at"),
+        "summary": {
+            "total_videos_in_db": total_videos,
+            "currently_assigned_accounts": len(active_account_ids),
+            "accounts_with_videos_in_db": len(videos_by_account),
+            "orphan_video_count": orphan_video_count,
+            "orphan_account_count": len(orphan_account_ids),
+        },
+        "diagnosis": (
+            "✓ Pas de fantomes detectes" if orphan_video_count == 0
+            else f"⚠ {orphan_video_count} videos fantomes provenant de {len(orphan_account_ids)} comptes retires de la campagne. "
+                 f"Utilise POST /admin/campaigns/{campaign_id}/cleanup-orphan-videos pour les supprimer."
+        ),
+        "breakdown_by_account": breakdown,
+        "top5_videos_currently_shown": top5,
+        "orphan_account_ids": orphan_account_ids,
+    }
+
+
+@api_router.post("/admin/campaigns/{campaign_id}/cleanup-orphan-videos")
+async def admin_cleanup_orphan_videos(
+    campaign_id: str,
+    body: dict = None,
+    _: bool = Depends(verify_admin_code)
+):
+    """🗑️ CLEANUP : supprime les videos fantomes d'une campagne (videos dont le compte n'est
+    plus assigne a la campagne). Body { confirm: true } requis.
+    """
+    body = body or {}
+    if not body.get("confirm"):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation requise — body must contain confirm: true"
+        )
+
+    # Recupere les account_ids ENCORE assignes
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+
+    # Trouve les videos fantomes
+    orphan_query = {"campaign_id": campaign_id}
+    if active_account_ids:
+        orphan_query["account_id"] = {"$nin": active_account_ids}
+    # Si aucun compte assigne, TOUTES les videos sont fantomes
+
+    orphan_count = await db.tracked_videos.count_documents(orphan_query)
+    orphan_video_ids = [v["video_id"] async for v in db.tracked_videos.find(orphan_query, {"_id": 0, "video_id": 1}) if v.get("video_id")]
+
+    # Delete videos
+    delete_result = await db.tracked_videos.delete_many(orphan_query)
+
+    # Delete snapshots associes
+    snap_deleted = 0
+    if orphan_video_ids:
+        snap_result = await db.video_views_snapshots.delete_many({"video_id": {"$in": orphan_video_ids}})
+        snap_deleted = snap_result.deleted_count
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "orphan_videos_found": orphan_count,
+        "videos_deleted": delete_result.deleted_count,
+        "snapshots_deleted": snap_deleted,
+        "active_accounts_remaining": len(active_account_ids),
     }
 
 
