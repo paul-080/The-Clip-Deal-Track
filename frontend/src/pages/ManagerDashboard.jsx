@@ -595,7 +595,7 @@ function CampaignDashboard({ campaigns }) {
   const handleTrackAccount = async () => {
     // user_id est OPTIONNEL : si vide, gains a l'agence
     if (!trackAccountForm.platform || !trackAccountForm.username.trim()) {
-      toast.error("Sélectionne une plateforme et entre un @username ou une URL");
+      toast.error("Sélectionne une plateforme et colle l'URL complète du profil");
       return;
     }
     const allowed = (campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms : null;
@@ -607,6 +607,16 @@ function CampaignDashboard({ campaigns }) {
     // ── DETECTION BULK : si plusieurs URLs (séparés par newline / espace / virgule)
     const inputRaw = trackAccountForm.username.trim();
     const items = inputRaw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+
+    // ── VALIDATION : chaque item doit etre une URL complete (commence par http)
+    const invalidItems = items.filter(s => !s.toLowerCase().startsWith("http"));
+    if (invalidItems.length > 0) {
+      toast.error(
+        `❌ URL invalide : « ${invalidItems[0]} ». Colle l'URL COMPLÈTE du profil (ex: https://www.instagram.com/username), pas juste le @username.`,
+        { duration: 8000 }
+      );
+      return;
+    }
     if (items.length > 1) {
       setTrackingAccount(true);
       try {
@@ -1082,12 +1092,19 @@ function CampaignDashboard({ campaigns }) {
                   {(() => {
                     const items = (trackAccountForm.username || "").split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
                     const isBulk = items.length > 1;
+                    const invalidItems = items.filter(s => !s.toLowerCase().startsWith("http"));
+                    const hasInvalid = invalidItems.length > 0;
+                    const platformExample = trackAccountForm.platform === "instagram"
+                      ? "https://www.instagram.com/username"
+                      : trackAccountForm.platform === "tiktok"
+                        ? "https://www.tiktok.com/@username"
+                        : "https://www.youtube.com/@username";
                     return (
                       <>
                         <div className="flex items-center justify-between mb-1.5">
                           <label className="text-xs text-white/50">
-                            @username ou URL(s) du profil *
-                            {isBulk && <span className="ml-2 text-[#00E5FF] font-bold">📋 Mode bulk : {items.length} comptes</span>}
+                            URL(s) complète(s) du profil *
+                            {isBulk && <span className="ml-2 text-[#00E5FF] font-bold">📋 Mode bulk : {items.length} URL{items.length > 1 ? "s" : ""}</span>}
                           </label>
                           {isBulk && (
                             <button type="button" onClick={() => setTrackAccountForm(f => ({ ...f, username: "" }))}
@@ -1097,13 +1114,19 @@ function CampaignDashboard({ campaigns }) {
                         <textarea value={trackAccountForm.username}
                           onChange={e => setTrackAccountForm(f => ({ ...f, username: e.target.value }))}
                           rows={isBulk ? Math.min(8, Math.max(3, items.length)) : 2}
-                          placeholder={"@username  ou  https://www.instagram.com/...\n\n💡 Astuce : colle plusieurs URLs (1 par ligne) pour ajouter en masse"}
-                          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/50 font-mono resize-y" />
-                        <p className="text-[10px] text-white/40 mt-1">
-                          {isBulk
-                            ? `📋 ${items.length} comptes seront ajoutés d'un coup au clic sur « Ajouter ».`
-                            : "Tu peux coller plusieurs URLs (une par ligne, ou séparées par espace/virgule) pour les ajouter en masse."}
-                        </p>
+                          placeholder={`${platformExample}\n\n💡 Colle plusieurs URLs (1 par ligne) pour ajouter en masse`}
+                          className={`w-full bg-white/5 border rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/20 focus:outline-none font-mono resize-y ${hasInvalid ? "border-red-500/60 focus:border-red-500" : "border-white/10 focus:border-[#00E5FF]/50"}`} />
+                        {hasInvalid ? (
+                          <p className="text-[11px] text-red-400 mt-1.5 font-medium">
+                            ❌ {invalidItems.length} entrée{invalidItems.length > 1 ? "s" : ""} invalide{invalidItems.length > 1 ? "s" : ""} : il faut l'URL COMPLÈTE (ex: <span className="font-mono">{platformExample}</span>), pas juste le @username.
+                          </p>
+                        ) : (
+                          <p className="text-[10px] text-white/40 mt-1">
+                            {isBulk
+                              ? `✓ ${items.length} URLs valides — seront ajoutées d'un coup.`
+                              : "Colle l'URL complète du profil. Tu peux en coller plusieurs (1 par ligne) pour ajouter en masse."}
+                          </p>
+                        )}
                       </>
                     );
                   })()}
@@ -1114,15 +1137,21 @@ function CampaignDashboard({ campaigns }) {
                     className="flex-1 py-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-sm font-medium transition-all">
                     Annuler
                   </button>
-                  <button onClick={handleTrackAccount} disabled={trackingAccount || !trackAccountForm.username.trim()}
-                    className="flex-1 py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black text-sm font-bold transition-all">
-                    {(() => {
-                      const items = (trackAccountForm.username || "").split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
-                      const isBulk = items.length > 1;
-                      if (trackingAccount) return isBulk ? "Ajout en masse…" : "Ajout…";
-                      return isBulk ? `✓ Ajouter ${items.length} comptes` : "✓ Ajouter le compte";
-                    })()}
-                  </button>
+                  {(() => {
+                    const items = (trackAccountForm.username || "").split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+                    const isBulk = items.length > 1;
+                    const hasInvalid = items.some(s => !s.toLowerCase().startsWith("http"));
+                    return (
+                      <button onClick={handleTrackAccount}
+                        disabled={trackingAccount || !trackAccountForm.username.trim() || hasInvalid}
+                        title={hasInvalid ? "Colle l'URL COMPLÈTE du profil (https://...)" : ""}
+                        className="flex-1 py-2.5 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 disabled:cursor-not-allowed text-black text-sm font-bold transition-all">
+                        {trackingAccount
+                          ? (isBulk ? "Ajout en masse…" : "Ajout…")
+                          : (isBulk ? `✓ Ajouter ${items.length} comptes` : "✓ Ajouter le compte")}
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

@@ -9873,17 +9873,22 @@ async def add_accounts_bulk(campaign_id: str, body: dict, user: dict = Depends(g
             limit_reached = True
             continue
 
+        # ── VALIDATION : URL complete obligatoire (commence par http)
+        # Le mode @username pur ne marche pas de maniere fiable -> on force l'URL
+        if not raw_str.lower().startswith("http"):
+            errors.append({
+                "url": raw_str,
+                "error": "URL complète obligatoire (https://...). @username seul refusé."
+            })
+            continue
+
         # Extract handle
         try:
-            via_url = False
-            if raw_str.startswith("http") or "/" in raw_str:
-                username = extract_handle_from_url(raw_str, platform)
-                via_url = True
-            else:
-                username = raw_str
+            via_url = True
+            username = extract_handle_from_url(raw_str, platform)
             username = (username or "").strip().lstrip("@").strip("/")
             if not username:
-                errors.append({"url": raw_str, "error": "Username/URL invalide"})
+                errors.append({"url": raw_str, "error": "Impossible d'extraire le handle de cette URL"})
                 continue
         except Exception as e:
             errors.append({"url": raw_str, "error": f"Parse error: {str(e)[:120]}"})
