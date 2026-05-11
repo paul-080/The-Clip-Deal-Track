@@ -6103,7 +6103,24 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     if combined:
         await _log_scrape("tikwm_partial", "tiktok", username, True, len(combined))
         return combined
-    raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify)")
+    # Cascade TOTALEMENT morte sur TikTok -> alerte admin
+    try:
+        await db.fraud_alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "type": "scraping_cascade_dead_tiktok",
+            "severity": "critical",
+            "status": "pending",
+            "platform": "tiktok",
+            "username": username,
+            "reason": "TOUTES les sources TikTok ont échoué (VPS, TikWm 403/blocked, Mobile API, Playwright, RapidAPI, yt-dlp). Apify TikTok bloqué par kill switch.",
+            "details": "Vérifie : (1) BACKEND_PROXY_URL valide pour TikWm/Mobile, (2) Clé TIKWM_API_KEY pas rate-limited, (3) VPS Hostinger UP. Ou désactive APIFY_TIKTOK_FORCE_OFF temporairement.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "resolved": False,
+        })
+    except Exception:
+        pass
+    raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify bloque)")
 
 
 _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
@@ -7141,7 +7158,24 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             logger.warning(f"Apify Instagram failed for @{username}: {e}")
             await _log_scrape("apify", "instagram", username, False, 0, str(e))
 
-    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — toutes les sources ont echoue (ClipScraper VPS, session, RapidAPI, instaloader, Playwright, Apify bloque)")
+    logger.error(f"🚨 IMPOSSIBLE de scraper Instagram @{username} — TOUTES les sources ont échoué")
+    # Alerte CRITIQUE admin : cascade totalement morte
+    try:
+        await db.fraud_alerts.insert_one({
+            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+            "type": "scraping_cascade_dead_instagram",
+            "severity": "critical",
+            "status": "pending",
+            "platform": "instagram",
+            "username": username,
+            "reason": "TOUTES les sources Insta ont échoué (Business Discovery, clips_graphql, VPS, yt-dlp, HTML public, sessions privées, RapidAPI, instaloader, Playwright, Apify bloqué par kill switch). Action requise : vérifier proxy / cookies / token Meta.",
+            "details": "Vérifie : (1) BACKEND_PROXY_URL valide, (2) INSTAGRAM_SESSIONS pas expiré, (3) IG_LONG_LIVED_TOKEN pas expiré, (4) VPS Hostinger UP. Ou désactive APIFY_INSTA_FORCE_OFF temporairement.",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "resolved": False,
+        })
+    except Exception:
+        pass
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
@@ -15754,6 +15788,156 @@ async def admin_reactivate_archived_videos(request: Request, body: dict = None, 
         "reactivated_count": res.modified_count,
         "message": f"{res.modified_count} videos reactivees, elles seront re-scrapees au prochain cycle.",
     }
+
+
+@api_router.get("/admin/test-proxy-vps-deep")
+async def admin_test_proxy_vps_deep(
+    request: Request,
+    _: bool = Depends(verify_admin_code)
+):
+    """🔬 TEST APPROFONDI du proxy Webshare et du VPS Hostinger.
+    Pour savoir EXACTEMENT pourquoi tu vois '429 / 403 / 502' :
+    - Test sans proxy (IP Railway directe)
+    - Test avec proxy (verifie format URL, residentiel vs datacenter)
+    - Test VPS health endpoint
+    - Test VPS scrape sur un compte public (instagram + tiktok)
+    - Test instagram.com via proxy direct
+    - Test tikwm.com via proxy
+    """
+    report: dict = {"tested_at": datetime.now(timezone.utc).isoformat(), "tests": {}}
+
+    # Test 1 : Sans proxy (verifie que httpx marche basic)
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get("https://api.ipify.org?format=json")
+        if r.status_code == 200:
+            report["tests"]["1. IP Railway directe"] = {"ok": True, "info": f"IP cloud = {r.json().get('ip')}"}
+        else:
+            report["tests"]["1. IP Railway directe"] = {"ok": False, "reason": f"HTTP {r.status_code}"}
+    except Exception as e:
+        report["tests"]["1. IP Railway directe"] = {"ok": False, "reason": str(e)[:200]}
+
+    # Test 2 : Avec proxy
+    if BACKEND_PROXY_URL:
+        try:
+            async with httpx.AsyncClient(timeout=15, proxy=BACKEND_PROXY_URL) as c:
+                r = await c.get("https://api.ipify.org?format=json")
+            if r.status_code == 200:
+                ip_proxy = r.json().get('ip')
+                report["tests"]["2. Proxy Webshare"] = {
+                    "ok": True,
+                    "info": f"IP residentielle = {ip_proxy}",
+                    "format_proxy": BACKEND_PROXY_URL.split('@')[-1] if '@' in BACKEND_PROXY_URL else "format direct",
+                }
+            else:
+                report["tests"]["2. Proxy Webshare"] = {"ok": False, "reason": f"Proxy HTTP {r.status_code}"}
+        except httpx.ConnectError as e:
+            report["tests"]["2. Proxy Webshare"] = {"ok": False, "reason": f"⚠ CONNEXION REFUSEE — proxy expire ou format URL faux: {str(e)[:200]}"}
+        except httpx.ProxyError as e:
+            report["tests"]["2. Proxy Webshare"] = {"ok": False, "reason": f"⚠ ERREUR PROXY — credentials/format: {str(e)[:200]}"}
+        except Exception as e:
+            report["tests"]["2. Proxy Webshare"] = {"ok": False, "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+    else:
+        report["tests"]["2. Proxy Webshare"] = {"ok": False, "reason": "BACKEND_PROXY_URL non configure"}
+
+    # Test 3 : VPS health
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"{CLIP_SCRAPER_URL.rstrip('/')}/health", headers={"X-API-Key": CLIP_SCRAPER_KEY})
+            if r.status_code == 200:
+                report["tests"]["3. VPS Hostinger /health"] = {"ok": True, "info": f"VPS UP ({CLIP_SCRAPER_URL})"}
+            else:
+                report["tests"]["3. VPS Hostinger /health"] = {"ok": False, "reason": f"⚠ VPS down ou auth invalide : HTTP {r.status_code} — {r.text[:150]}"}
+        except Exception as e:
+            report["tests"]["3. VPS Hostinger /health"] = {"ok": False, "reason": f"⚠ VPS injoignable : {type(e).__name__}: {str(e)[:200]}"}
+    else:
+        report["tests"]["3. VPS Hostinger /health"] = {"ok": False, "reason": "CLIP_SCRAPER_URL/KEY non configure"}
+
+    # Test 4 : VPS scrape live (Insta @instagram)
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(
+                    f"{CLIP_SCRAPER_URL.rstrip('/')}/v1/instagram/instagram",
+                    params={"max_videos": 3},
+                    headers={"X-API-Key": CLIP_SCRAPER_KEY},
+                )
+            if r.status_code == 200:
+                data = r.json() or {}
+                vids = data.get("videos") or []
+                report["tests"]["4. VPS scrape @instagram"] = {"ok": bool(vids), "info": f"{len(vids)} videos retournees"}
+            else:
+                report["tests"]["4. VPS scrape @instagram"] = {"ok": False, "reason": f"HTTP {r.status_code} — {r.text[:200]}"}
+        except Exception as e:
+            report["tests"]["4. VPS scrape @instagram"] = {"ok": False, "reason": str(e)[:200]}
+
+    # Test 5 : Instagram.com via proxy (test si IG nous bloque pas)
+    if BACKEND_PROXY_URL:
+        try:
+            async with httpx.AsyncClient(timeout=15, proxy=BACKEND_PROXY_URL, follow_redirects=True) as c:
+                r = await c.get("https://www.instagram.com/instagram/",
+                                headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"})
+            if r.status_code == 200:
+                has_meta = 'edge_owner_to_timeline_media' in r.text or 'window._sharedData' in r.text
+                report["tests"]["5. Instagram.com via proxy"] = {
+                    "ok": True,
+                    "info": f"HTTP 200, body len={len(r.text)}, has_meta={has_meta}",
+                }
+            elif r.status_code == 429:
+                report["tests"]["5. Instagram.com via proxy"] = {"ok": False, "reason": "⚠ 429 — IP proxy aussi bannie par Insta (proxy probablement partagé/datacenter)"}
+            elif r.status_code in (301, 302):
+                report["tests"]["5. Instagram.com via proxy"] = {"ok": False, "reason": f"Redirect vers login {r.headers.get('Location', '?')[:100]}"}
+            else:
+                report["tests"]["5. Instagram.com via proxy"] = {"ok": False, "reason": f"HTTP {r.status_code}"}
+        except Exception as e:
+            report["tests"]["5. Instagram.com via proxy"] = {"ok": False, "reason": str(e)[:200]}
+
+    # Test 6 : TikWm via proxy
+    if BACKEND_PROXY_URL:
+        try:
+            async with httpx.AsyncClient(timeout=15, proxy=BACKEND_PROXY_URL) as c:
+                params = {"unique_id": "tiktok", "count": 1, "cursor": 0}
+                if TIKWM_API_KEY:
+                    params["key"] = TIKWM_API_KEY
+                r = await c.get("https://www.tikwm.com/api/user/posts", params=params)
+            if r.status_code == 200:
+                d = r.json()
+                code = d.get("code")
+                report["tests"]["6. TikWm via proxy"] = {
+                    "ok": code == 0,
+                    "info": f"HTTP 200, code={code}, msg={d.get('msg', '')[:100]}",
+                }
+            elif r.status_code == 403:
+                report["tests"]["6. TikWm via proxy"] = {"ok": False, "reason": "⚠ 403 — cle TIKWM_API_KEY rate-limited OU IP proxy bannie"}
+            else:
+                report["tests"]["6. TikWm via proxy"] = {"ok": False, "reason": f"HTTP {r.status_code}"}
+        except Exception as e:
+            report["tests"]["6. TikWm via proxy"] = {"ok": False, "reason": str(e)[:200]}
+
+    # Verdict
+    n_ok = sum(1 for t in report["tests"].values() if t.get("ok"))
+    n_total = len(report["tests"])
+    if n_ok == n_total:
+        report["verdict"] = f"✅ TOUT MARCHE ({n_ok}/{n_total}) — le scraping doit fonctionner"
+    elif n_ok == 0:
+        report["verdict"] = f"🔴 RIEN NE MARCHE ({n_ok}/{n_total}) — problème de config majeur"
+    else:
+        report["verdict"] = f"⚠ {n_ok}/{n_total} sources OK — examen détaillé requis"
+
+    # Actions concretes
+    actions = []
+    if not report["tests"].get("2. Proxy Webshare", {}).get("ok"):
+        actions.append("🔴 PROXY WEBSHARE EN PANNE — vérifie sur webshare.io que ton abonnement est actif + récupère le format exact 'http://user:pass@p.webshare.io:80'")
+    if not report["tests"].get("3. VPS Hostinger /health", {}).get("ok"):
+        actions.append("🔴 VPS HOSTINGER EN PANNE — SSH sur srv1619447.hstgr.cloud, vérifie `docker ps` et `docker logs clipscraper`")
+    if not report["tests"].get("5. Instagram.com via proxy", {}).get("ok"):
+        actions.append("🟡 INSTAGRAM bloque ton proxy — passe à un proxy résidentiel premium ou utilise Meta Business Discovery API")
+    if not report["tests"].get("6. TikWm via proxy", {}).get("ok"):
+        actions.append("🟡 TIKWM ne marche pas — la clé est rate-limited, attends 24h OU change de clé sur tikwm.com")
+    report["actions"] = actions or ["✅ Aucune action requise"]
+
+    return report
 
 
 @api_router.get("/admin/mega-diagnostic")

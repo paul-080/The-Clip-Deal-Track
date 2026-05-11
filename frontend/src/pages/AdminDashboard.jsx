@@ -1558,6 +1558,89 @@ function ApifyAlarmBanner() {
   );
 }
 
+function ProxyVpsDeepTestSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runTest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await adminFetch("/admin/test-proxy-vps-deep", { method: "GET" });
+      if (res.ok) {
+        const d = await res.json();
+        setData(d);
+      } else {
+        setError(`HTTP ${res.status}`);
+      }
+    } catch (e) {
+      setError(`Erreur : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = data?.verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : data?.verdict?.startsWith("🔴") ? "text-red-400 border-red-500/40 bg-red-500/5"
+    : "text-amber-400 border-amber-500/40 bg-amber-500/5";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🔬 Test proxy Webshare + VPS Hostinger — DIAGNOSTIC ROOT CAUSE
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Test chaque composant en isolation : IP cloud, IP via proxy, VPS /health, VPS scrape, Insta via proxy, TikWm via proxy.
+          </p>
+        </div>
+        <button
+          onClick={runTest}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-orange-500/15 hover:bg-orange-500/25 text-orange-400 border border-orange-500/40 text-sm font-bold transition-all disabled:opacity-50"
+        >
+          {loading ? <>⏳ Test…</> : "🔬 Test approfondi"}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+
+      {data && (
+        <>
+          <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor}`}>{data.verdict}</div>
+
+          {data.actions && data.actions.length > 0 && (
+            <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
+              <p className="text-white/60 text-xs font-semibold">📋 Actions à faire :</p>
+              {data.actions.map((a, i) => (
+                <p key={i} className="text-white text-xs leading-relaxed">{a}</p>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            {Object.entries(data.tests || {}).map(([name, t]) => (
+              <div key={name} className={`p-2 rounded-lg border flex items-center gap-3 ${t.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
+                <span className={`w-2 h-2 rounded-full ${t.ok ? "bg-emerald-400" : "bg-red-400"} flex-shrink-0`} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-xs font-semibold ${t.ok ? "text-emerald-400" : "text-red-400"}`}>{name}</p>
+                  <p className="text-white/50 text-[11px] truncate">{t.info || t.reason}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-4 text-white/30 text-xs">Clique sur "Test approfondi" pour savoir EXACTEMENT pourquoi le scraping marche pas</div>
+      )}
+    </div>
+  );
+}
+
 function MegaDiagnosticSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1979,6 +2062,9 @@ function SiteHealthSection() {
 
       {/* 🚨 MEGA DIAGNOSTIC : EN HAUT DE PAGE car le user dit "rien ne marche" */}
       <MegaDiagnosticSection />
+
+      {/* 🔬 TEST APPROFONDI proxy + VPS — pour identifier la cause exacte du 'rien ne marche' */}
+      <ProxyVpsDeepTestSection />
 
       {/* Health check global de toutes les sources de scraping */}
       <ScrapingHealthCheckSection />
