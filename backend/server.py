@@ -2383,14 +2383,36 @@ async def discover_campaigns(
         cid = m["campaign_id"]
         clipper_count_map[cid] = clipper_count_map.get(cid, 0) + 1
 
-    # Batch 4: total_views per campaign — Mongo aggregation au lieu de charger 50k docs en RAM
-    pipeline = [
-        {"$match": {"campaign_id": {"$in": campaign_ids}}},
-        {"$group": {"_id": "$campaign_id", "total_views": {"$sum": {"$ifNull": ["$views", 0]}}}}
-    ]
+    # Batch 4: total_views per campaign FILTRE anti-fantomes + anti-vieilles
+    # Pour eviter d'afficher des chiffres gonfles dans le marketplace public
     try:
-        agg_result = await db.tracked_videos.aggregate(pipeline).to_list(len(campaign_ids))
-        views_map = {r["_id"]: r["total_views"] for r in agg_result}
+        # Recupere tracking_start_date par campagne
+        camp_starts = {c["campaign_id"]: (c.get("tracking_start_date") or c.get("created_at")) for c in campaigns}
+        # Recupere les account_ids actifs par campagne
+        all_assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": {"$in": campaign_ids}},
+            {"_id": 0, "campaign_id": 1, "account_id": 1}
+        ).to_list(20000)
+        active_accs_per_camp: dict = {}
+        for a in all_assignments:
+            if a.get("account_id"):
+                active_accs_per_camp.setdefault(a["campaign_id"], []).append(a["account_id"])
+        # Aggregate filtre PAR CAMPAGNE (1 query au lieu de N)
+        views_map: dict = {}
+        for cid in campaign_ids:
+            active_ids = active_accs_per_camp.get(cid)
+            if not active_ids:
+                views_map[cid] = 0
+                continue
+            match_disc: dict = {"campaign_id": cid, "account_id": {"$in": active_ids}}
+            t_start = camp_starts.get(cid)
+            if t_start:
+                match_disc["published_at"] = {"$gte": t_start}
+            agg_disc = await db.tracked_videos.aggregate([
+                {"$match": match_disc},
+                {"$group": {"_id": None, "total_views": {"$sum": {"$ifNull": ["$views", 0]}}}}
+            ]).to_list(1)
+            views_map[cid] = agg_disc[0]["total_views"] if agg_disc else 0
     except Exception as e:
         logger.warning(f"discover views aggregation error: {e}")
         views_map = {}
@@ -3051,15 +3073,40 @@ async def get_join_info(token: str):
 
 @api_router.get("/campaigns/public-stats/{token}")
 async def get_public_stats(token: str):
-    """Stats publiques pour le client — SANS authentification requise."""
+    """Stats publiques pour le CLIENT (annonceur) — SANS authentification.
+    ANTI-FANTOMES + ANTI-VIEILLES : filtre les videos d'anciens comptes retires
+    et les videos publiees avant le debut de la campagne. Sinon le client voit
+    des chiffres gonfles par des donnees historiques pas liees a sa campagne."""
     campaign = await db.campaigns.find_one({"token_client": token}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Lien client invalide")
     campaign_id = campaign["campaign_id"]
+    tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
 
-    # Totaux depuis tracked_videos
-    pipeline = [
-        {"$match": {"campaign_id": campaign_id}},
+    # Filtres anti-fantomes
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+
+    if not active_account_ids:
+        return {
+            "campaign_name":  campaign.get("name"),
+            "total_views": 0, "total_likes": 0, "total_comments": 0,
+            "total_videos": 0, "engagement": 0.0, "avg_views": 0,
+            "timeline": [], "top_videos": [], "platforms": {},
+        }
+
+    match_filter: dict = {
+        "campaign_id": campaign_id,
+        "account_id": {"$in": active_account_ids},
+    }
+    if tracking_start:
+        match_filter["published_at"] = {"$gte": tracking_start}
+
+    # Totaux depuis tracked_videos FILTRES
+    agg = await db.tracked_videos.aggregate([
+        {"$match": match_filter},
         {"$group": {
             "_id": None,
             "total_views":    {"$sum": "$views"},
@@ -3067,8 +3114,7 @@ async def get_public_stats(token: str):
             "total_comments": {"$sum": "$comments"},
             "total_videos":   {"$sum": 1},
         }}
-    ]
-    agg = await db.tracked_videos.aggregate(pipeline).to_list(1)
+    ]).to_list(1)
     total_views    = agg[0]["total_views"]    if agg else 0
     total_likes    = agg[0]["total_likes"]    if agg else 0
     total_comments = agg[0]["total_comments"] if agg else 0
@@ -3076,18 +3122,18 @@ async def get_public_stats(token: str):
     engagement     = round((total_likes + total_comments) / total_views * 100, 1) if total_views > 0 else 0.0
     avg_views      = round(total_views / total_videos) if total_videos > 0 else 0
 
-    # Top vidéos
+    # Top vidéos FILTREES
     top_videos = await db.tracked_videos.find(
-        {"campaign_id": campaign_id},
+        match_filter,
         {"_id": 0, "url": 1, "title": 1, "views": 1, "likes": 1, "comments": 1,
          "platform": 1, "thumbnail_url": 1, "published_at": 1}
     ).sort("views", -1).to_list(50)
 
-    # Timeline vues sur 30 derniers jours — par jour de PUBLICATION (pas de scraping)
+    # Timeline vues sur 30 derniers jours — par jour de PUBLICATION (filtre)
     from collections import defaultdict
     views_by_day: dict = defaultdict(int)
     all_vids = await db.tracked_videos.find(
-        {"campaign_id": campaign_id},
+        match_filter,
         {"_id": 0, "published_at": 1, "views": 1}
     ).to_list(1000)
     for v in all_vids:
@@ -3096,9 +3142,9 @@ async def get_public_stats(token: str):
             views_by_day[day] += v.get("views", 0)
     timeline = [{"date": d, "views": views_by_day[d]} for d in sorted(views_by_day)[-30:]]
 
-    # Stats par plateforme
+    # Stats par plateforme FILTREES
     platform_agg = await db.tracked_videos.aggregate([
-        {"$match": {"campaign_id": campaign_id}},
+        {"$match": match_filter},
         {"$group": {"_id": "$platform", "views": {"$sum": "$views"}, "count": {"$sum": 1}}}
     ]).to_list(10)
 
@@ -11698,11 +11744,29 @@ async def get_my_views_chart(
 
 @api_router.get("/campaigns/{campaign_id}/my-videos")
 async def get_my_campaign_videos(campaign_id: str, user: dict = Depends(get_current_user)):
-    """Clipper's own tracked videos for a specific campaign, sorted by views desc."""
-    videos = await db.tracked_videos.find(
-        {"campaign_id": campaign_id, "user_id": user["user_id"]},
-        {"_id": 0}
-    ).sort("views", -1).to_list(200)
+    """Clipper's own tracked videos for a specific campaign, sorted by views desc.
+    ANTI-FANTOMES : filtre par account_id encore assigne (cas compte clippeur retire)
+    ANTI-VIEILLES : filtre published_at >= tracking_start_date (vieilles videos avant campagne)
+    """
+    uid = user["user_id"]
+    # Comptes assignes a cette campagne pour CE clippeur
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id, "user_id": uid},
+        {"_id": 0, "account_id": 1}
+    ).to_list(200)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+    if not active_account_ids:
+        return {"videos": []}
+    # tracking_start_date
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "tracking_start_date": 1, "created_at": 1}
+    )
+    tracking_start = (campaign or {}).get("tracking_start_date") or (campaign or {}).get("created_at")
+    query: dict = {"campaign_id": campaign_id, "user_id": uid, "account_id": {"$in": active_account_ids}}
+    if tracking_start:
+        query["published_at"] = {"$gte": tracking_start}
+    videos = await db.tracked_videos.find(query, {"_id": 0}).sort("views", -1).to_list(200)
     return {"videos": videos}
 
 @api_router.get("/campaigns/{campaign_id}/top-clips")
