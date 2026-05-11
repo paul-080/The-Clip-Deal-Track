@@ -6316,6 +6316,167 @@ _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').stri
 APIFY_INSTA_EMERGENCY_FALLBACK = (os.environ.get('APIFY_INSTA_EMERGENCY_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# APIFY-STYLE INSTAGRAM CLIENT — duplique la methode reverse-engineered
+# Warmup session : GET instagram.com pour recuperer csrftoken + mid + www-claim
+# Sticky session : 1 cookie + 1 proxy + 1 csrftoken pendant toute la duree de vie
+# Delai gaussien µ=6 σ=2 entre requetes (jitter humain)
+# Pool de cookies + rotation sur 429/checkpoint/login_required
+# Sources : instagrapi, scrapfly, apify fingerprint-suite
+# ══════════════════════════════════════════════════════════════════════════
+
+import random as _rnd_global
+
+_INSTA_CLIENT_SESSIONS: dict = {}  # cookie -> {"client": curl_cffi.Session, "csrf": ..., "www_claim": ..., "proxy": ..., "warmed_at": ts}
+_INSTA_CLIENT_SESSION_TTL = 600  # 10 min puis re-warmup
+_INSTA_CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+async def _instagram_warmup_session(cookie: str, proxy: Optional[str]) -> Optional[dict]:
+    """Warmup une session Insta Apify-style : GET instagram.com pour csrftoken + www-claim.
+    Retourne dict {"client", "csrf", "www_claim", "proxy"} ou None si echec."""
+    try:
+        from curl_cffi import requests as _curl_req
+    except ImportError:
+        return None
+
+    loop = asyncio.get_event_loop()
+
+    def _do_warmup():
+        try:
+            kw = {"impersonate": "chrome131", "timeout": 20}
+            if proxy:
+                kw["proxies"] = {"http": proxy, "https": proxy}
+            s = _curl_req.Session(**kw)
+            if cookie:
+                s.cookies.set("sessionid", cookie, domain=".instagram.com")
+            headers = {
+                "User-Agent": _INSTA_CHROME_UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            r = s.get("https://www.instagram.com/", headers=headers)
+            if r.status_code != 200:
+                return None
+            csrf = s.cookies.get("csrftoken") or ""
+            www_claim = r.headers.get("x-ig-set-www-claim") or "0"
+            return {"client": s, "csrf": csrf, "www_claim": www_claim, "proxy": proxy, "warmed_at": time.time()}
+        except Exception:
+            return None
+
+    return await loop.run_in_executor(_thread_pool, _do_warmup)
+
+
+async def _get_or_warmup_insta_session(cookie: str) -> Optional[dict]:
+    """Retourne une session warmup-ee (avec sticky proxy + csrftoken).
+    Re-warmup si TTL expire (10 min)."""
+    now_ts = time.time()
+    cached = _INSTA_CLIENT_SESSIONS.get(cookie or "anon")
+    if cached and (now_ts - cached.get("warmed_at", 0)) < _INSTA_CLIENT_SESSION_TTL:
+        return cached
+    # Pick a sticky proxy (1 proxy par cookie)
+    proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+    sess = await _instagram_warmup_session(cookie, proxy)
+    if sess:
+        _INSTA_CLIENT_SESSIONS[cookie or "anon"] = sess
+    return sess
+
+
+def _insta_api_headers(sess: dict, username: Optional[str] = None) -> dict:
+    """Construit les headers EXACTS d'Apify pour appel API Insta."""
+    h = {
+        "User-Agent": _INSTA_CHROME_UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "X-IG-App-ID": "936619743392459",  # web app id
+        "X-ASBD-ID": "129477",
+        "X-IG-WWW-Claim": sess.get("www_claim", "0"),
+        "X-CSRFToken": sess.get("csrf", ""),
+        "X-Requested-With": "XMLHttpRequest",
+        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Origin": "https://www.instagram.com",
+    }
+    if username:
+        h["Referer"] = f"https://www.instagram.com/{username}/"
+    return h
+
+
+async def _insta_apify_style_profile(username: str) -> Optional[dict]:
+    """Apify-style : warmup + sticky session + delai gaussien + headers complets.
+    Tente jusqu'a N=min(5, len(cookies)) sessions differentes.
+    Retourne le JSON profile ou None."""
+    cookies = INSTAGRAM_SESSIONS or [None]
+    n_tries = min(5, max(1, len(cookies)))
+    loop = asyncio.get_event_loop()
+
+    for attempt in range(n_tries):
+        cookie = cookies[attempt % len(cookies)] if cookies and cookies[0] else None
+        # Skip cookies marques bad
+        if cookie and _INSTAGRAM_SESSION_BAD_UNTIL.get(cookie, 0) > time.time():
+            continue
+        sess = await _get_or_warmup_insta_session(cookie or "")
+        if not sess:
+            if cookie:
+                _mark_instagram_session_bad(cookie, duration_sec=60)
+            continue
+
+        # Delai gaussien µ=6 σ=2 (jitter humain)
+        delay = max(2.0, _rnd_global.gauss(6.0, 2.0))
+        await asyncio.sleep(delay)
+
+        def _do_profile():
+            try:
+                url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+                r = sess["client"].get(url, headers=_insta_api_headers(sess, username))
+                return r
+            except Exception as e:
+                return e
+
+        r = await loop.run_in_executor(_thread_pool, _do_profile)
+        if isinstance(r, Exception):
+            logger.debug(f"[APIFY-STYLE] exception @{username}: {r}")
+            continue
+        if r.status_code == 200:
+            try:
+                data = r.json()
+                if data.get("data", {}).get("user"):
+                    if cookie:
+                        _mark_instagram_session_good(cookie)
+                    logger.info(f"[APIFY-STYLE] SUCCESS @{username} (attempt {attempt+1}, cookie={cookie[:10] if cookie else 'anon'}...)")
+                    return data
+            except Exception:
+                pass
+        elif r.status_code in (401, 403):
+            if cookie:
+                _mark_instagram_session_bad(cookie, duration_sec=7200)  # cookie banni 2h
+            # Invalide la session cache
+            _INSTA_CLIENT_SESSIONS.pop(cookie or "anon", None)
+            logger.warning(f"[APIFY-STYLE] {r.status_code} @{username} → cookie marque bad 2h")
+        elif r.status_code == 429:
+            if cookie:
+                _mark_instagram_session_bad(cookie, duration_sec=300)  # 5 min
+            _INSTA_CLIENT_SESSIONS.pop(cookie or "anon", None)
+            retry_after = r.headers.get("Retry-After", "?")
+            logger.warning(f"[APIFY-STYLE] 429 @{username} → cookie 5min, Retry-After={retry_after}")
+        else:
+            logger.debug(f"[APIFY-STYLE] HTTP {r.status_code} @{username}")
+
+    return None
+
+
 async def _fetch_instagram_via_business_discovery_account(username: str, max_videos: int = 50) -> Optional[list]:
     """🌟 STRATEGIE OFFICIELLE META : Business Discovery API pour scraper un profil
     Instagram entier. Utilise IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN.
