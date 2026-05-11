@@ -1567,13 +1567,9 @@ function ProxyVpsDeepTestSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await adminFetch("/admin/test-proxy-vps-deep", { method: "GET" });
-      if (res.ok) {
-        const d = await res.json();
-        setData(d);
-      } else {
-        setError(`HTTP ${res.status}`);
-      }
+      // adminFetch retourne deja le JSON parse (pas un Response)
+      const d = await adminFetch("/admin/test-proxy-vps-deep", { method: "GET" });
+      setData(d);
     } catch (e) {
       setError(`Erreur : ${e.message}`);
     } finally {
@@ -1650,14 +1646,9 @@ function MegaDiagnosticSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await adminFetch("/admin/mega-diagnostic", { method: "GET" });
-      if (res.ok) {
-        const d = await res.json();
-        setData(d);
-      } else {
-        const e = await res.json().catch(() => ({}));
-        setError(e.detail || `HTTP ${res.status}`);
-      }
+      // adminFetch retourne deja le JSON parse
+      const d = await adminFetch("/admin/mega-diagnostic", { method: "GET" });
+      setData(d);
     } catch (e) {
       setError(`Erreur réseau : ${e.message}`);
     } finally {
@@ -1797,14 +1788,9 @@ function ScrapingHealthCheckSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await adminFetch("/admin/scraping-health-check", { method: "GET" });
-      if (res.ok) {
-        const d = await res.json();
-        setData(d);
-      } else {
-        const e = await res.json().catch(() => ({}));
-        setError(e.detail || `HTTP ${res.status}`);
-      }
+      // adminFetch retourne deja le JSON parse (pas un Response)
+      const d = await adminFetch("/admin/scraping-health-check", { method: "GET" });
+      setData(d);
     } catch (e) {
       setError(`Erreur réseau : ${e.message}`);
     } finally {
