@@ -1558,6 +1558,153 @@ function ApifyAlarmBanner() {
   );
 }
 
+function MegaDiagnosticSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runDiag = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await adminFetch("/admin/mega-diagnostic", { method: "GET" });
+      if (res.ok) {
+        const d = await res.json();
+        setData(d);
+      } else {
+        const e = await res.json().catch(() => ({}));
+        setError(e.detail || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      setError(`Erreur réseau : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = data?.verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : data?.verdict?.startsWith("🔴") ? "text-red-400 border-red-500/40 bg-red-500/5"
+    : "text-amber-400 border-amber-500/40 bg-amber-500/5";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🚨 MEGA DIAGNOSTIC — pourquoi le scraping marche pas ?
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Test TOUT en 30 sec : env vars + sources + scrape réel + analyse historique. Donne actions concrètes.
+          </p>
+        </div>
+        <button
+          onClick={runDiag}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/40 text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2"
+        >
+          {loading
+            ? <><div className="w-3 h-3 border border-red-400 border-t-transparent rounded-full animate-spin" /> Diagnostic en cours…</>
+            : "🔍 Lancer le mega-diagnostic"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>
+      )}
+
+      {data && (
+        <>
+          {/* Verdict global */}
+          <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor}`}>
+            {data.verdict}
+          </div>
+
+          {/* Actions à faire */}
+          {data.actions_a_faire && data.actions_a_faire.length > 0 && (
+            <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
+              <p className="text-white/60 text-xs font-semibold">📋 Actions à faire :</p>
+              {data.actions_a_faire.map((a, i) => (
+                <p key={i} className="text-white text-xs leading-relaxed">{a}</p>
+              ))}
+            </div>
+          )}
+
+          {/* Sources test */}
+          <div className="grid grid-cols-2 gap-2">
+            {Object.entries(data.sources || {}).map(([name, src]) => (
+              <div key={name} className={`p-2 rounded-lg border ${src.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
+                <p className={`text-xs font-semibold ${src.ok ? "text-emerald-400" : "text-red-400"}`}>
+                  {src.ok ? "✅" : "🔴"} {name}
+                </p>
+                <p className="text-white/50 text-[10px] truncate">{src.info || src.reason}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Live scrape test */}
+          <div className="grid grid-cols-2 gap-2">
+            {Object.entries(data.live_scrape_test || {}).map(([platform, res]) => (
+              <div key={platform} className={`p-2 rounded-lg border ${res.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
+                <p className={`text-xs font-semibold ${res.ok ? "text-emerald-400" : "text-red-400"}`}>
+                  {res.ok ? "✅" : "🔴"} Test {platform} {res.account_tested}
+                </p>
+                <p className="text-white/50 text-[10px]">
+                  {res.ok ? `${res.videos_found} vidéos trouvées` : (res.error || "échec")}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Env vars */}
+          <details className="bg-white/3 rounded-lg p-2">
+            <summary className="text-white/60 text-xs cursor-pointer">📦 Env vars Railway (cliquer pour ouvrir)</summary>
+            <div className="mt-2 space-y-1">
+              {Object.entries(data.env_vars || {}).map(([name, info]) => (
+                <div key={name} className="flex items-center gap-2 text-[11px]">
+                  <span className={`w-2 h-2 rounded-full ${info.configured ? "bg-emerald-400" : "bg-red-400"}`} />
+                  <span className="text-white/70 font-mono w-48">{name}</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] ${info.criticite === "CRITIQUE" ? "bg-red-500/15 text-red-400" : info.criticite === "IMPORTANT" ? "bg-amber-500/15 text-amber-400" : "bg-white/10 text-white/50"}`}>
+                    {info.criticite}
+                  </span>
+                  <span className="text-white/40 truncate flex-1">{info.note}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+
+          {/* Analyse 50 derniers scrapes */}
+          {data.recent_scrapes_analysis?.by_source && (
+            <details className="bg-white/3 rounded-lg p-2">
+              <summary className="text-white/60 text-xs cursor-pointer">
+                📊 Analyse {data.recent_scrapes_analysis.total_recent} derniers scrapes
+              </summary>
+              <div className="mt-2 space-y-1">
+                {Object.entries(data.recent_scrapes_analysis.by_source).map(([src, stats]) => (
+                  <div key={src} className="flex items-center gap-2 text-[11px]">
+                    <span className="text-white/70 font-mono w-40">{src}</span>
+                    <span className="text-emerald-400">✅ {stats.ok}</span>
+                    <span className="text-red-400">🔴 {stats.ko}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          <p className="text-[10px] text-white/30 italic">
+            Testé le {new Date(data.tested_at).toLocaleString("fr-FR")}
+          </p>
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-6 text-white/30 text-sm">
+          Clique sur "Lancer le mega-diagnostic" pour savoir EXACTEMENT pourquoi le scraping marche pas.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScrapingHealthCheckSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1829,6 +1976,9 @@ function SiteHealthSection() {
           </div>
         </div>
       )}
+
+      {/* 🚨 MEGA DIAGNOSTIC : EN HAUT DE PAGE car le user dit "rien ne marche" */}
+      <MegaDiagnosticSection />
 
       {/* Health check global de toutes les sources de scraping */}
       <ScrapingHealthCheckSection />
