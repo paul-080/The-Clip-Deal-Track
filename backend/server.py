@@ -108,8 +108,68 @@ RAPIDAPI_KEY = os.environ.get('RAPIDAPI_KEY', '').strip()
 APIFY_TOKEN = os.environ.get('APIFY_TOKEN', '').strip()
 CLIP_SCRAPER_URL = os.environ.get('CLIP_SCRAPER_URL', '').strip().rstrip('/')
 CLIP_SCRAPER_KEY = os.environ.get('CLIP_SCRAPER_KEY', '').strip()
-# Proxy outbound pour bypasser blocages Insta/TikTok depuis Railway (format: http://user:pass@host:port)
-BACKEND_PROXY_URL = os.environ.get('BACKEND_PROXY_URL', '').strip() or None
+# Proxy outbound pour bypasser blocages Insta/TikTok depuis Railway
+# Supporte SOIT 1 proxy unique (format: http://user:pass@host:port)
+# SOIT plusieurs proxies separes par virgule ou newline (rotation intelligente)
+# Exemple multi : "http://u:p@host1:80,http://u:p@host2:80,http://u:p@host3:80"
+_BACKEND_PROXY_RAW = os.environ.get('BACKEND_PROXY_URL', '').strip()
+
+def _parse_proxy_list(raw: str) -> list:
+    """Parse une liste de proxies separes par virgule ou newline."""
+    if not raw:
+        return []
+    import re as _re_p
+    items = [s.strip() for s in _re_p.split(r'[,\n]+', raw) if s.strip()]
+    return items
+
+BACKEND_PROXY_LIST = _parse_proxy_list(_BACKEND_PROXY_RAW)
+# BACKEND_PROXY_URL = premier proxy de la liste (compat ascendante avec le code existant)
+BACKEND_PROXY_URL = BACKEND_PROXY_LIST[0] if BACKEND_PROXY_LIST else None
+
+# Rotation intelligente : index round-robin + tracking proxies bad (429/403)
+_PROXY_INDEX = [0]  # mutable pour partage entre coroutines
+_PROXY_BAD_UNTIL: dict = {}  # proxy -> timestamp jusqu'a quand bad
+_PROXY_BAD_DURATION_SEC = 300  # 5 minutes quarantine sur 429/403
+_PROXY_FAILURE_COUNT: dict = {}  # proxy -> nb echecs
+
+def _mark_proxy_bad(proxy_url: str, duration_sec: int = None):
+    """Marque un proxy comme bad pendant N seconds."""
+    if not proxy_url:
+        return
+    duration = duration_sec or _PROXY_BAD_DURATION_SEC
+    _PROXY_FAILURE_COUNT[proxy_url] = _PROXY_FAILURE_COUNT.get(proxy_url, 0) + 1
+    if _PROXY_FAILURE_COUNT[proxy_url] >= 3:
+        duration = min(duration * 4, 3600)  # max 1h
+    _PROXY_BAD_UNTIL[proxy_url] = time.time() + duration
+    # Trunque pour ne pas log le user:pass
+    safe = proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url
+    logger.warning(f"Proxy marque bad pour {duration//60}min : {safe}")
+
+def _mark_proxy_good(proxy_url: str):
+    """Reset compteur d'echecs sur succes."""
+    if proxy_url and proxy_url in _PROXY_FAILURE_COUNT:
+        _PROXY_FAILURE_COUNT[proxy_url] = 0
+
+def _get_next_proxy() -> Optional[str]:
+    """Retourne le prochain proxy disponible (round-robin + skip bad).
+    Si tous bad, retourne celui le moins recemment marque.
+    Si aucun configure, retourne None."""
+    if not BACKEND_PROXY_LIST:
+        return None
+    if len(BACKEND_PROXY_LIST) == 1:
+        # 1 seul proxy : retourne meme s'il est bad (mieux que rien)
+        return BACKEND_PROXY_LIST[0]
+    now_ts = time.time()
+    n = len(BACKEND_PROXY_LIST)
+    for _ in range(n):
+        idx = _PROXY_INDEX[0] % n
+        _PROXY_INDEX[0] += 1
+        proxy = BACKEND_PROXY_LIST[idx]
+        bad_until = _PROXY_BAD_UNTIL.get(proxy, 0)
+        if bad_until <= now_ts:
+            return proxy
+    # Tous bad : retourne celui qui sera dispo le plus tot
+    return min(BACKEND_PROXY_LIST, key=lambda p: _PROXY_BAD_UNTIL.get(p, 0))
 
 
 async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int = 30) -> list:
@@ -3612,15 +3672,27 @@ _POST_CREATE_SCRAPE_SEM = asyncio.Semaphore(3)
 # Limite a 5 = compromis entre rapidite UX et risque ban IP
 _VERIFY_ACCOUNT_SEM = asyncio.Semaphore(5)
 
-# ── RATE LIMIT INSTAGRAM (anti-429) - VERSION AGGRESSIVE ──
-# Le user a 1 SEUL cookie INSTAGRAM_SESSIONS. Avec semaphore=3 + delay 1.5s
-# on bourrinait 1 cookie -> 429 systematique. Maintenant :
-# - Semaphore = 1 (1 seul compte Insta scrape a la fois, vraiment)
-# - Delay 5s entre appels (au lieu de 1.5s) pour respirer
-# - Cookie bad apres 1 seul 429 (avant : 3 echecs consecutifs)
-_INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(1)
-_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = 5.0
+# ── RATE LIMIT INSTAGRAM (anti-429) ──
+# Adapte dynamiquement au nombre de proxies dispo :
+# - 1 proxy → semaphore=1, delay 5s (anti-429 sur 1 IP)
+# - 5+ proxies → semaphore=5, delay 1s (chaque scrape utilise un proxy different)
+# - 20+ proxies → semaphore=8, delay 0.5s (rotation rapide)
+def _compute_insta_concurrency():
+    n_proxies = len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0
+    if n_proxies >= 20:
+        return 8, 0.5
+    elif n_proxies >= 5:
+        return 5, 1.0
+    elif n_proxies >= 2:
+        return 3, 2.0
+    else:
+        return 1, 5.0
+
+_insta_sem_size, _insta_delay = _compute_insta_concurrency()
+_INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(_insta_sem_size)
+_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = _insta_delay
 _INSTAGRAM_LAST_CALL_TS = [0.0]
+logger.info(f"Insta rate limit configure : {_insta_sem_size} parallele + {_insta_delay}s delay (proxies={len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0})")
 
 # ── LOCK GLOBAL run_video_tracking ──
 # Empeche 2 runs simultanes du scheduler (si tick precedent dure > 5min).
@@ -4369,11 +4441,11 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
         cursor = int(page_data.get("cursor") or 0)
         return items, has_more, cursor
 
-    # CRITIQUE : utiliser BACKEND_PROXY_URL si configure
-    # TikWm bloque les IP cloud Railway sans proxy residentiel -> retourne code=-1
+    # CRITIQUE : utiliser proxy rotation si plusieurs proxies dispos
+    _tikwm_proxy = _get_next_proxy()
     _tikwm_client_args = {"timeout": 30, "follow_redirects": True}
-    if BACKEND_PROXY_URL:
-        _tikwm_client_args["proxy"] = BACKEND_PROXY_URL
+    if _tikwm_proxy:
+        _tikwm_client_args["proxy"] = _tikwm_proxy
     async with httpx.AsyncClient(**_tikwm_client_args) as c:
 
         # ── Strategy A: GET with API key (registered key from tikwm.com) ─────
@@ -5627,11 +5699,11 @@ async def _fetch_tiktok_mobile_api(user_id: str, username: str) -> list:
         "api19-normal-c-useast1a.tiktokv.com",
         "api2-19-h2.musical.ly",
     ]
-    # CRITIQUE : utiliser BACKEND_PROXY_URL si configure
-    # Mobile API TikTok bloque les IP cloud Railway sans proxy residentiel
+    # CRITIQUE : utiliser proxy rotation
+    _tt_mobile_proxy = _get_next_proxy()
     _tt_mobile_args = {"timeout": 20, "follow_redirects": True}
-    if BACKEND_PROXY_URL:
-        _tt_mobile_args["proxy"] = BACKEND_PROXY_URL
+    if _tt_mobile_proxy:
+        _tt_mobile_args["proxy"] = _tt_mobile_proxy
     for api_host in api_hosts:
         cursor = 0
         for page in range(8):
@@ -15804,7 +15876,13 @@ async def admin_test_proxy_vps_deep(
     - Test instagram.com via proxy direct
     - Test tikwm.com via proxy
     """
-    report: dict = {"tested_at": datetime.now(timezone.utc).isoformat(), "tests": {}}
+    report: dict = {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "tests": {},
+        "proxy_pool_size": len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0,
+        "insta_sem_size": _insta_sem_size,
+        "insta_delay_sec": _insta_delay,
+    }
 
     # Test 1 : Sans proxy (verifie que httpx marche basic)
     try:
