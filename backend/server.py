@@ -730,14 +730,49 @@ def _build_instagram_cookie_header(session: str) -> str:
     return f"sessionid={session}; ds_user_id={ds_uid}"
 
 
+# ── ROTATION INTELLIGENTE COOKIES INSTAGRAM ──
+# Si un cookie retourne 429 ou est bloque, on le marque "bad" pendant 1h pour
+# eviter de le re-utiliser et perdre la moitie de nos appels.
+_INSTAGRAM_SESSION_BAD_UNTIL: dict = {}  # cookie -> timestamp jusqu'a quand bad
+_INSTAGRAM_SESSION_BAD_DURATION_SEC = 3600  # 1 heure
+_INSTAGRAM_SESSION_FAILURE_COUNT: dict = {}  # cookie -> nb echecs consecutifs
+
+def _mark_instagram_session_bad(cookie: str, duration_sec: int = None):
+    """Marque un cookie comme bad (429/banni) pendant N seconds.
+    Apres 3 echecs consecutifs, on double la duree (jusqu'a 24h max)."""
+    if not cookie:
+        return
+    duration = duration_sec or _INSTAGRAM_SESSION_BAD_DURATION_SEC
+    _INSTAGRAM_SESSION_FAILURE_COUNT[cookie] = _INSTAGRAM_SESSION_FAILURE_COUNT.get(cookie, 0) + 1
+    # Exponential backoff sur echecs consecutifs
+    if _INSTAGRAM_SESSION_FAILURE_COUNT[cookie] >= 3:
+        duration = min(duration * 4, 86400)  # max 24h
+    _INSTAGRAM_SESSION_BAD_UNTIL[cookie] = time.time() + duration
+    logger.warning(f"Instagram session marquee bad pour {duration//60}min (echecs={_INSTAGRAM_SESSION_FAILURE_COUNT[cookie]})")
+
+def _mark_instagram_session_good(cookie: str):
+    """Reset le compteur d'echecs apres un succes."""
+    if cookie and cookie in _INSTAGRAM_SESSION_FAILURE_COUNT:
+        _INSTAGRAM_SESSION_FAILURE_COUNT[cookie] = 0
+
 def _get_instagram_session() -> str:
-    """Round-robin rotation entre les cookies Instagram configurés."""
+    """Round-robin INTELLIGENT : skip les cookies marques bad recemment.
+    Si tous les cookies sont bad : on retourne le moins recemment marque."""
     global _instagram_session_index
     if not INSTAGRAM_SESSIONS:
         return ''
-    cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
-    _instagram_session_index += 1
-    return cookie
+    now_ts = time.time()
+    # Cherche un cookie valide dans l'ordre round-robin
+    for _ in range(len(INSTAGRAM_SESSIONS)):
+        cookie = INSTAGRAM_SESSIONS[_instagram_session_index % len(INSTAGRAM_SESSIONS)]
+        _instagram_session_index += 1
+        bad_until = _INSTAGRAM_SESSION_BAD_UNTIL.get(cookie, 0)
+        if bad_until <= now_ts:
+            return cookie
+    # Tous les cookies sont bad -> on prend celui qui sera disponible le plus tot
+    best = min(INSTAGRAM_SESSIONS, key=lambda c: _INSTAGRAM_SESSION_BAD_UNTIL.get(c, 0))
+    logger.warning(f"⚠ Tous les cookies Insta sont bad — on tente quand meme {best[:20]}...")
+    return best
 # SECURITY/COST : Apify est DESACTIVE par defaut partout. C'est un signal d'alarme :
 # si Apify est appele en routine, c'est que la cascade gratuite (VPS / TikWm / Meta API
 # / yt-dlp) est cassee. On ne veut JAMAIS payer Apify pour scraper. Pour reactiver
@@ -3536,6 +3571,11 @@ _INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(3)
 _INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = 1.5
 _INSTAGRAM_LAST_CALL_TS = [0.0]  # mutable pour partage entre coroutines
 
+# ── LOCK GLOBAL run_video_tracking ──
+# Empeche 2 runs simultanes du scheduler (si tick precedent dure > 5min).
+# Sans ce lock : meme campagne scrapee 2x en meme temps -> doublons + double rate limit.
+_TRACKING_RUN_LOCK = asyncio.Lock()
+
 async def _instagram_rate_limit_wait():
     """Garantit delay minimum entre 2 appels Instagram pour eviter 429.
     Combine semaphore global (max 3 simultanes) + sleep 1.5s entre appels successifs."""
@@ -4278,7 +4318,12 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
         cursor = int(page_data.get("cursor") or 0)
         return items, has_more, cursor
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+    # CRITIQUE : utiliser BACKEND_PROXY_URL si configure
+    # TikWm bloque les IP cloud Railway sans proxy residentiel -> retourne code=-1
+    _tikwm_client_args = {"timeout": 30, "follow_redirects": True}
+    if BACKEND_PROXY_URL:
+        _tikwm_client_args["proxy"] = BACKEND_PROXY_URL
+    async with httpx.AsyncClient(**_tikwm_client_args) as c:
 
         # ── Strategy A: GET with API key (registered key from tikwm.com) ─────
         if TIKWM_API_KEY:
@@ -5514,11 +5559,16 @@ async def _fetch_tiktok_mobile_api(user_id: str, username: str) -> list:
         "api19-normal-c-useast1a.tiktokv.com",
         "api2-19-h2.musical.ly",
     ]
+    # CRITIQUE : utiliser BACKEND_PROXY_URL si configure
+    # Mobile API TikTok bloque les IP cloud Railway sans proxy residentiel
+    _tt_mobile_args = {"timeout": 20, "follow_redirects": True}
+    if BACKEND_PROXY_URL:
+        _tt_mobile_args["proxy"] = BACKEND_PROXY_URL
     for api_host in api_hosts:
         cursor = 0
         for page in range(8):
             try:
-                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+                async with httpx.AsyncClient(**_tt_mobile_args) as c:
                     r = await c.get(
                         f"https://{api_host}/aweme/v1/aweme/post/",
                         params={
@@ -5806,25 +5856,37 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         logger.info(f"TikWm fetched {len(tikwm_videos)} videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
-    # If TikWm found many videos avec au moins 1 avec vues > 0 = API key vraiment OK
-    # Sans cette verif, on retourne tot meme si toutes les videos ont views=0 (block IP partiel)
-    if len(tikwm_videos) >= 10 and any((v.get("views") or 0) > 0 for v in tikwm_videos):
+    # Seuil abaisse 10 -> 3 : si TikWm a >= 3 videos avec vues, c'est OK (compte petit/moyen)
+    # + Log scrape pour la source TikWm (manquait avant - logging visibility audit)
+    if len(tikwm_videos) >= 3 and any((v.get("views") or 0) > 0 for v in tikwm_videos):
+        await _log_scrape("tikwm", "tiktok", username, True, len(tikwm_videos))
         return tikwm_videos
-    # Strategy 2: TikTok mobile API (requires numeric user_id)
+    if tikwm_videos:
+        await _log_scrape("tikwm", "tiktok", username, False, len(tikwm_videos), "partial (< 3 videos avec vues > 0)")
+    else:
+        await _log_scrape("tikwm", "tiktok", username, False, 0, "0 videos returned (proxy/IP banned ?)")
+    # Strategy 2: TikTok mobile API (parser numeric_id ou sec_uid)
     mobile_videos = []
-    if numeric_id and not numeric_id.startswith("MS4"):
+    # Accepter sec_uid aussi : mobile API peut marcher avec format hybride user_id|sec_uid
+    # AVANT : skippait toujours si startswith "MS4" -> beaucoup de comptes loupes
+    if numeric_id:
         try:
             mobile_videos = await _fetch_tiktok_mobile_api(numeric_id, username)
             if mobile_videos:
                 logger.info(f"TikTok mobile API fetched {len(mobile_videos)} videos for @{username}")
+                await _log_scrape("tiktok_mobile", "tiktok", username, True, len(mobile_videos))
+            else:
+                await _log_scrape("tiktok_mobile", "tiktok", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"TikTok mobile API failed for @{username}: {e}")
+            await _log_scrape("tiktok_mobile", "tiktok", username, False, 0, str(e)[:200])
     # Merge TikWm + mobile results (deduplicate by platform_video_id)
     merged: dict = {}
     for v in (tikwm_videos + mobile_videos):
         merged[v["platform_video_id"]] = v
     combined = list(merged.values())
-    if len(combined) >= 10:
+    # Seuil abaisse 10 -> 3 ici aussi
+    if len(combined) >= 3 and any((v.get("views") or 0) > 0 for v in combined):
         return combined
     # Fallback: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
@@ -5872,7 +5934,11 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 "playlistend": 200,
                 "ignoreerrors": True,
                 "no_warnings": True,
+                "socket_timeout": 30,
             }
+            # CRITIQUE : ajouter le proxy si configure (Railway IP bannie par TikTok)
+            if BACKEND_PROXY_URL:
+                base_opts["proxy"] = BACKEND_PROXY_URL
             strategies = [
                 # Strategy A: desktop UA + referer
                 {**base_opts, "http_headers": {
@@ -5924,10 +5990,20 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                     logger.warning(f"yt-dlp TikTok strategy failed for @{username}: {strat_e}")
                     continue
             raise ValueError(f"TikTok bloque les requêtes depuis ce serveur pour @{username}. Le scraping TikTok est inaccessible depuis les serveurs cloud en raison des protections anti-bot de TikTok.")
+        # Wrap dans asyncio.wait_for pour eviter hang indefini (yt-dlp peut bloquer sur DNS)
         try:
-            return await loop.run_in_executor(_thread_pool, _ytdlp_videos)
+            return await asyncio.wait_for(
+                loop.run_in_executor(_thread_pool, _ytdlp_videos),
+                timeout=90  # max 90s pour yt-dlp TikTok
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"yt-dlp TikTok TIMEOUT (90s) pour @{username}")
+            await _log_scrape("ytdlp", "tiktok", username, False, 0, "timeout 90s")
+            if combined:
+                return combined
         except Exception as e:
             logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
+            await _log_scrape("ytdlp", "tiktok", username, False, 0, str(e)[:200])
             if combined:
                 return combined
             # Don't raise yet - try Apify as last resort below
@@ -7199,6 +7275,9 @@ async def _fetch_youtube_videos_via_ytdlp(channel_id: str, since_days: int = 30)
             "no_warnings": True,
             "socket_timeout": 30,
         }
+        # CRITIQUE : ajouter le proxy pour bypasser blocage IP cloud Railway
+        if BACKEND_PROXY_URL:
+            opts["proxy"] = BACKEND_PROXY_URL
         for url in urls:
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -8837,11 +8916,14 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         except Exception as e:
             logger.warning(f"Failed to update budget/snapshot for {campaign_id}: {e}")
 
-        # ── STAGGERED : update next_scrape_at = now + interval (selon plan) ──
+        # ── HORAIRES FIXES : next_scrape_at = prochain creneau 8h/20h Paris ──
+        # AVANT (bug) : next_at = now + interval_h -> 2eme cycle pas a 8h/20h pile
+        # MAINTENANT : utilise _compute_next_scrape_at qui retourne le prochain
+        # creneau fixe (8h ou 20h Paris) selon SCRAPE_SCHEDULE_PARIS.
         try:
             interval_h = int(campaign.get("_scrape_interval_h") or 6)
             now_iso = datetime.now(timezone.utc).isoformat()
-            next_at = datetime.now(timezone.utc) + timedelta(hours=interval_h)
+            next_at = _compute_next_scrape_at(campaign_id, interval_h, datetime.now(timezone.utc))
             await db.campaigns.update_one(
                 {"campaign_id": campaign_id},
                 {"$set": {
@@ -9153,19 +9235,20 @@ async def track_videos_loop():
     """Scheduler HORAIRES FIXES : tick toutes les 5 min, scrape les campagnes DUES
     a leur prochain horaire fixe (8h ou 20h Paris).
 
-    Tick a 5 min (au lieu de 30 min) pour que les campagnes scrapent tres
-    pres de 8h00:00 / 20h00:00 (au pire 8h05).
-
-    Le rate limit Instagram est gere par un semaphore global cote
-    _scrape_one_account_into_campaign (max 3 comptes Insta en parallele +
-    delay 1.5s entre comptes -> evite le 429).
+    Lock global _TRACKING_RUN_LOCK : si le tick precedent n'est pas encore termine
+    (ex: 50+ campagnes prennent > 5 min), le suivant skip pour eviter 2 runs en
+    parallele (qui causeraient doublons + double rate limit Insta).
     """
     TICK_MINUTES = 5
     while True:
-        try:
-            await run_video_tracking()
-        except Exception as e:
-            logger.error(f"Video tracking loop error: {e}")
+        if _TRACKING_RUN_LOCK.locked():
+            logger.warning("Skip tick scheduler : un run precedent est encore en cours")
+        else:
+            async with _TRACKING_RUN_LOCK:
+                try:
+                    await run_video_tracking()
+                except Exception as e:
+                    logger.error(f"Video tracking loop error: {type(e).__name__}: {e}", exc_info=True)
         sleep_seconds = TICK_MINUTES * 60
         logger.info(f"Next scrape tick dans {TICK_MINUTES}min (horaires fixes 8h/20h Paris)")
         await asyncio.sleep(sleep_seconds)
