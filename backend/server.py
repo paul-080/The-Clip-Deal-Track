@@ -8660,9 +8660,18 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         try:
             agg = await db.tracked_videos.aggregate([
                 {"$match": {"campaign_id": campaign_id}},
-                {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+                {"$group": {
+                    "_id": None,
+                    "total_views": {"$sum": "$views"},
+                    "total_likes": {"$sum": "$likes"},
+                    "total_comments": {"$sum": "$comments"},
+                    "video_count": {"$sum": 1},
+                }}
             ]).to_list(1)
             total_campaign_views = agg[0]["total_views"] if agg else 0
+            total_campaign_likes = agg[0]["total_likes"] if agg else 0
+            total_campaign_comments = agg[0]["total_comments"] if agg else 0
+            total_campaign_videos = agg[0]["video_count"] if agg else 0
             budget_used = round((total_campaign_views / 1000) * rpm, 2)
             # Build update : si budget épuisé et campagne pas illimitée, auto-pause
             update_set: dict = {"budget_used": budget_used}
@@ -8678,7 +8687,7 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 {"campaign_id": campaign_id},
                 {"$set": update_set}
             )
-            # Daily snapshot for chart
+            # Daily snapshot for chart + KPI
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             await db.views_snapshots.update_one(
                 {"campaign_id": campaign_id, "date": today_str},
@@ -8686,6 +8695,9 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     "campaign_id": campaign_id,
                     "date": today_str,
                     "total_views": total_campaign_views,
+                    "total_likes": total_campaign_likes,
+                    "total_comments": total_campaign_comments,
+                    "total_videos": total_campaign_videos,
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }},
                 upsert=True
@@ -8705,6 +8717,9 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "hour": now_paris.hour,
                         "minute": now_paris.minute,
                         "total_views": total_campaign_views,
+                        "total_likes": total_campaign_likes,
+                        "total_comments": total_campaign_comments,
+                        "total_videos": total_campaign_videos,
                     }},
                     upsert=True
                 )
@@ -11215,6 +11230,135 @@ def _hourly_chart_from_snapshots(snapshots, start, end, prev_total):
     return timeline
 
 
+@api_router.get("/campaigns/{campaign_id}/kpi-stats")
+async def get_campaign_kpi_stats(
+    campaign_id: str,
+    days: int = 7,
+    offset: int = 0,
+    user: dict = Depends(get_current_user)
+):
+    """🎯 KPI stats SYNCHRONISEES avec la courbe (memes donnees, memes regles).
+
+    Calcule les 6 KPI affichees dans les cases du dashboard agence :
+    - views : delta total_views sur la periode (vues GAGNEES, pas total absolu)
+    - likes : delta total_likes sur la periode
+    - comments : delta total_comments sur la periode
+    - engagement_pct : (likes + comments) / views x 100
+    - active_videos_count : nb de videos en tracking (non archivees)
+    - avg_views_per_video : views / active_videos_count
+    - earnings : views / 1000 x rpm
+
+    Logique IDENTIQUE a la courbe /views-chart :
+    delta = total_au_jour_J - total_au_jour_J-(days)
+
+    Si pas de snapshot avant la periode (campagne neuve) : on assume tracking
+    demarre a 0 -> delta = total au jour_J. C'est honnete (pas d'invention).
+    """
+    from datetime import timedelta
+    start, end = _compute_chart_window(days, offset)
+
+    # Recupere les snapshots quotidiens dans la fenetre + le 1er avant pour le delta
+    snapshots = await db.views_snapshots.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "date": 1, "total_views": 1, "total_likes": 1, "total_comments": 1, "total_videos": 1}
+    ).sort("date", 1).to_list(2000)
+
+    if not snapshots:
+        # Pas encore de snapshot -> retourne tout a 0 (honnete)
+        return {
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "days": days,
+            "offset": offset,
+            "views": 0, "likes": 0, "comments": 0,
+            "engagement_pct": 0.0,
+            "active_videos_count": 0,
+            "avg_views_per_video": 0,
+            "earnings": 0.0,
+            "note": "Aucun snapshot — la campagne n'a pas encore ete scrapee.",
+        }
+
+    end_date_str = end.strftime("%Y-%m-%d")
+    start_date_str = start.strftime("%Y-%m-%d")
+
+    # Snapshot le plus recent ≤ end
+    end_snap = None
+    for s in reversed(snapshots):
+        if s["date"] <= end_date_str:
+            end_snap = s
+            break
+
+    # Snapshot le plus recent < start (= debut de la fenetre)
+    start_snap = None
+    for s in reversed(snapshots):
+        if s["date"] < start_date_str:
+            start_snap = s
+            break
+
+    if not end_snap:
+        return {
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "days": days,
+            "offset": offset,
+            "views": 0, "likes": 0, "comments": 0,
+            "engagement_pct": 0.0,
+            "active_videos_count": 0,
+            "avg_views_per_video": 0,
+            "earnings": 0.0,
+            "note": "Pas de donnees pour la periode demandee.",
+        }
+
+    end_views = int(end_snap.get("total_views") or 0)
+    end_likes = int(end_snap.get("total_likes") or 0)
+    end_comments = int(end_snap.get("total_comments") or 0)
+
+    # Si on a un snapshot avant la fenetre : delta normal
+    # Sinon : campagne neuve, le total au jour J = vues gagnees depuis le debut
+    if start_snap:
+        start_views = int(start_snap.get("total_views") or 0)
+        start_likes = int(start_snap.get("total_likes") or 0)
+        start_comments = int(start_snap.get("total_comments") or 0)
+    else:
+        start_views = 0
+        start_likes = 0
+        start_comments = 0
+
+    period_views = max(0, end_views - start_views)
+    period_likes = max(0, end_likes - start_likes)
+    period_comments = max(0, end_comments - start_comments)
+
+    # Compte les videos actives (non archivees) pour la moyenne
+    active_videos_count = await db.tracked_videos.count_documents({
+        "campaign_id": campaign_id,
+        "tracking_active": {"$ne": False},
+    })
+
+    engagement_pct = round(((period_likes + period_comments) / period_views * 100), 1) if period_views > 0 else 0.0
+    avg_views = int(period_views / active_videos_count) if active_videos_count > 0 else 0
+
+    # Gains : rpm de la campagne x views / 1000
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "rpm": 1})
+    rpm = float((campaign or {}).get("rpm") or 0)
+    earnings = round((period_views / 1000) * rpm, 2)
+
+    return {
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "days": days,
+        "offset": offset,
+        "views": period_views,
+        "likes": period_likes,
+        "comments": period_comments,
+        "engagement_pct": engagement_pct,
+        "active_videos_count": active_videos_count,
+        "avg_views_per_video": avg_views,
+        "earnings": earnings,
+        "source": "daily_snapshots_delta",
+        "note": "Delta entre snapshot debut/fin de periode. Synchronise avec la courbe.",
+    }
+
+
 @api_router.get("/campaigns/{campaign_id}/views-chart")
 async def get_campaign_views_chart(
     campaign_id: str,
@@ -11226,11 +11370,53 @@ async def get_campaign_views_chart(
     Graphique des vues GAGNEES par jour, base UNIQUEMENT sur les snapshots quotidiens
     reels (views_snapshots). Pas d'invention : si pas de snapshot pour un jour, la
     valeur est 0 (donc avant que le tracking soit en place, courbe a plat = honnete).
+
+    GRANULARITE HORAIRE (plan Business 2 scrapes/jour) :
+    Si days=1 ET la campagne a 2 scrapes/jour -> on retourne les snapshots
+    HORAIRES (8h00 + 20h00 Paris) au lieu de daily. Comme ca la courbe 24h
+    montre 2 points reels = ce qui a ete collecte a chaque scrape de la journee.
     """
     from datetime import timedelta
     start, end = _compute_chart_window(days, offset)
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
+
+    # ── GRANULARITE HORAIRE pour Business 24h ──
+    # Si days=1 et la campagne a >= 2 scrapes/jour, on retourne les snapshots horaires.
+    if days == 1:
+        # Lookup le plan agence pour savoir si elle a 2 scrapes/jour
+        campaign_doc = await db.campaigns.find_one(
+            {"campaign_id": campaign_id},
+            {"_id": 0, "agency_id": 1, "_scrape_interval_h": 1}
+        )
+        if campaign_doc:
+            interval_h = int((campaign_doc or {}).get("_scrape_interval_h") or 24)
+            # Business plan = 2 scrapes/jour = interval 12h. Si interval <= 12h on est en mode multi-scrape
+            if interval_h <= 12:
+                # Retourne les snapshots horaires des dernieres 24h
+                hourly_snaps = await db.views_snapshots_hourly.find(
+                    {"campaign_id": campaign_id, "scraped_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
+                    {"_id": 0}
+                ).sort("scraped_at", 1).to_list(50)
+                if hourly_snaps:
+                    # Recupere le snapshot HORAIRE le plus recent AVANT start (pour le 1er delta)
+                    prev_snap = await db.views_snapshots_hourly.find_one(
+                        {"campaign_id": campaign_id, "scraped_at": {"$lt": start.isoformat()}},
+                        {"_id": 0, "total_views": 1},
+                        sort=[("scraped_at", -1)]
+                    )
+                    prev_total = int((prev_snap or {}).get("total_views") or 0)
+                    timeline = _hourly_chart_from_snapshots(hourly_snaps, start, end, prev_total)
+                    return {
+                        "timeline": timeline,
+                        "source": "hourly_snapshots_delta",
+                        "granularity": "hourly",
+                        "period_start": start.isoformat(),
+                        "period_end": end.isoformat(),
+                        "offset": offset,
+                        "days": days,
+                        "note": "Plan Business : 2 scrapes/jour -> 2 points horaires (08h + 20h Paris)",
+                    }
 
     # Recupere TOUS les snapshots quotidiens de la campagne (pas que la fenetre
     # car on a besoin du snapshot J-1 pour calculer le delta du J=start)

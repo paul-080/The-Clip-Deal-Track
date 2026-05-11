@@ -1141,6 +1141,9 @@ function CampaignDashboard({ campaigns }) {
   const [viewsTimelineLoading, setViewsTimelineLoading] = useState(false);
   const [viewsPeriod, setViewsPeriod] = useState("7");
   const [viewsOffset, setViewsOffset] = useState(0);
+  // KPI stats synchronisees avec la courbe (delta sur la periode)
+  const [kpiStats, setKpiStats] = useState(null);
+  const [kpiStatsLoading, setKpiStatsLoading] = useState(false);
   const [period, setPeriod] = useState("30d");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -1189,6 +1192,16 @@ function CampaignDashboard({ campaigns }) {
       if (res.ok) setViewsTimeline(await res.json());
     } catch {}
     finally { setViewsTimelineLoading(false); }
+  };
+
+  // 🎯 KPI stats SYNCHRONISEES avec la courbe (delta snapshots sur la periode)
+  const fetchKpiStats = async (d = viewsPeriod, off = viewsOffset) => {
+    setKpiStatsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/kpi-stats?days=${d}&offset=${off}`, { credentials: "include" });
+      if (res.ok) setKpiStats(await res.json());
+    } catch {}
+    finally { setKpiStatsLoading(false); }
   };
 
   const fetchPeriodStats = async (p = periodSel, off = periodOffset) => {
@@ -1326,6 +1339,8 @@ function CampaignDashboard({ campaigns }) {
   useEffect(() => {
     if (campaign?.payment_model === "views" || campaign?.payment_model === "both") {
       fetchViewsTimeline(viewsPeriod, viewsOffset);
+      // Fetch les KPI synchronisees avec la meme periode/offset
+      fetchKpiStats(viewsPeriod, viewsOffset);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaign?.campaign_id, campaign?.payment_model, viewsPeriod, viewsOffset]);
@@ -2568,28 +2583,19 @@ function CampaignDashboard({ campaigns }) {
             );
           })()}
 
-          {/* KPI row — synchronisé avec la période ET l'offset du graphique ci-dessous */}
+          {/* KPI row — SYNCHRONISE avec la courbe (delta snapshots sur la periode) */}
+          {/* Toutes les 6 cases calculees backend via /kpi-stats : memes regles que la courbe. */}
           {(() => {
-            // Fenêtre identique à celle du graph (backend) : [end - days*offset - days, end - days*offset]
-            const days = parseInt(viewsPeriod) || 7;
-            const now = Date.now();
-            const periodMs = days * 24 * 60 * 60 * 1000;
-            const end = new Date(now - periodMs * viewsOffset);
-            const start = new Date(end.getTime() - periodMs);
-            const periodVideos = (allVideos || []).filter(v => {
-              if (!v.published_at) return false;
-              const pub = new Date(v.published_at);
-              return pub >= start && pub <= end;
-            });
-            const pViews = periodVideos.reduce((s, v) => s + (v.views || 0), 0);
-            const pLikes = periodVideos.reduce((s, v) => s + (v.likes || 0), 0);
-            const pComments = periodVideos.reduce((s, v) => s + (v.comments || 0), 0);
-            const pEarnings = periodVideos.reduce((s, v) => s + (v.earnings || 0), 0);
-            const pEngagement = pViews > 0 ? ((pLikes + pComments) / pViews * 100).toFixed(1) : "0.0";
-            const pAvgViews = periodVideos.length > 0 ? Math.round(pViews / periodVideos.length) : 0;
             const periodLabels = { "1": "24h", "7": "7j", "30": "30j", "90": "90j", "365": "1 an" };
             const baseLbl = periodLabels[viewsPeriod] || "7j";
             const lbl = viewsOffset > 0 ? `${baseLbl} · -${viewsOffset}` : baseLbl;
+            const k = kpiStats || {};
+            const pViews = k.views || 0;
+            const pLikes = k.likes || 0;
+            const pComments = k.comments || 0;
+            const pEngagement = (k.engagement_pct ?? 0).toFixed(1);
+            const pAvgViews = k.avg_views_per_video || 0;
+            const pEarnings = k.earnings || 0;
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
@@ -2602,7 +2608,9 @@ function CampaignDashboard({ campaigns }) {
                 ].map((kpi) => (
                   <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
                     <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
-                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>
+                      {kpiStatsLoading && !kpiStats ? <span className="text-white/30">…</span> : kpi.value}
+                    </p>
                   </div>
                 ))}
               </div>
