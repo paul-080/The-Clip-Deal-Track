@@ -11604,12 +11604,12 @@ async def get_campaign_views_chart(
     # Si days=1 et la campagne a >= 2 scrapes/jour, on retourne les snapshots horaires.
     if days == 1:
         # Lookup le plan agence pour savoir si elle a 2 scrapes/jour
-        campaign_doc = await db.campaigns.find_one(
+        campaign_doc_chk = await db.campaigns.find_one(
             {"campaign_id": campaign_id},
-            {"_id": 0, "agency_id": 1, "_scrape_interval_h": 1}
+            {"_id": 0, "agency_id": 1, "_scrape_interval_h": 1, "tracking_start_date": 1, "created_at": 1}
         )
-        if campaign_doc:
-            interval_h = int((campaign_doc or {}).get("_scrape_interval_h") or 24)
+        if campaign_doc_chk:
+            interval_h = int((campaign_doc_chk or {}).get("_scrape_interval_h") or 24)
             # Business plan = 2 scrapes/jour = interval 12h. Si interval <= 12h on est en mode multi-scrape
             if interval_h <= 12:
                 # Retourne les snapshots horaires des dernieres 24h
@@ -11625,16 +11625,42 @@ async def get_campaign_views_chart(
                         sort=[("scraped_at", -1)]
                     )
                     prev_total = int((prev_snap or {}).get("total_views") or 0)
+                    # ── PLAFONNEMENT ANTI-GONFLE ──
+                    # Calcule le total live filtre pour borner les snapshots historiques
+                    tracking_start_h = campaign_doc_chk.get("tracking_start_date") or campaign_doc_chk.get("created_at")
+                    active_assignments_h = await db.campaign_social_accounts.find(
+                        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+                    ).to_list(2000)
+                    active_account_ids_h = [a["account_id"] for a in active_assignments_h if a.get("account_id")]
+                    live_total_h = 0
+                    if active_account_ids_h:
+                        live_match_h: dict = {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids_h}}
+                        if tracking_start_h:
+                            live_match_h["published_at"] = {"$gte": tracking_start_h}
+                        live_agg_h = await db.tracked_videos.aggregate([
+                            {"$match": live_match_h},
+                            {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+                        ]).to_list(1)
+                        live_total_h = int(live_agg_h[0]["total_views"]) if live_agg_h else 0
+                    # Plafonne chaque snapshot par live_total_h pour eviter chiffres gonfles
+                    if live_total_h > 0:
+                        for s in hourly_snaps:
+                            s["total_views"] = min(int(s.get("total_views") or 0), live_total_h)
+                        # Plafonne aussi prev_total
+                        prev_total = min(prev_total, live_total_h)
+                        # Pour le DERNIER snapshot (= le plus recent), on remplace par le live exact
+                        if hourly_snaps:
+                            hourly_snaps[-1]["total_views"] = live_total_h
                     timeline = _hourly_chart_from_snapshots(hourly_snaps, start, end, prev_total)
                     return {
                         "timeline": timeline,
-                        "source": "hourly_snapshots_delta",
+                        "source": "hourly_snapshots_delta_capped_live",
                         "granularity": "hourly",
                         "period_start": start.isoformat(),
                         "period_end": end.isoformat(),
                         "offset": offset,
                         "days": days,
-                        "note": "Plan Business : 2 scrapes/jour -> 2 points horaires (08h + 20h Paris)",
+                        "note": "Plan Business : 2 scrapes/jour -> 2 points horaires (08h + 20h Paris), plafonne par total live filtre.",
                     }
 
     # ── CALCUL LIVE du total_views ACTUEL (filtre anti-fantomes + anti-vieilles) ──
