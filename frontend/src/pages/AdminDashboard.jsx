@@ -1558,6 +1558,136 @@ function ApifyAlarmBanner() {
   );
 }
 
+function InstaStressTestSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runStressTest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      const d = await adminFetch("/admin/insta-stress-test-30?n_iterations=30", { method: "GET" });
+      setData(d);
+    } catch (e) {
+      setError(`Erreur : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = data?.verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : data?.verdict?.startsWith("🟡") ? "text-amber-400 border-amber-500/40 bg-amber-500/5"
+    : data?.verdict?.startsWith("🟠") ? "text-orange-400 border-orange-500/40 bg-orange-500/5"
+    : "text-red-400 border-red-500/40 bg-red-500/5";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🔥 Stress Test Instagram (30 scrapes consécutifs)
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Lance 30 scrapes Insta sur 5 comptes Business publics différents. Donne un taux de succès réel sur production.
+          </p>
+        </div>
+        <button
+          onClick={runStressTest}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 text-purple-400 border border-purple-500/40 text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2"
+        >
+          {loading
+            ? <><div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin" /> Stress test… (peut prendre 2-5 min)</>
+            : "🔥 Lancer stress test 30x"}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+
+      {data && (
+        <>
+          <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor}`}>
+            {data.verdict}
+          </div>
+
+          <div className="grid grid-cols-5 gap-2">
+            <div className="bg-white/5 rounded-lg p-2 text-center">
+              <p className="text-white/50 text-[10px]">Total</p>
+              <p className="text-white font-mono font-bold text-lg">{data.n_iterations}</p>
+            </div>
+            <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
+              <p className="text-emerald-400/70 text-[10px]">Succès</p>
+              <p className="text-emerald-400 font-mono font-bold text-lg">{data.success_count}</p>
+            </div>
+            <div className="bg-red-500/10 rounded-lg p-2 text-center">
+              <p className="text-red-400/70 text-[10px]">Échecs</p>
+              <p className="text-red-400 font-mono font-bold text-lg">{data.fail_count}</p>
+            </div>
+            <div className="bg-cyan-500/10 rounded-lg p-2 text-center">
+              <p className="text-cyan-400/70 text-[10px]">Taux</p>
+              <p className="text-cyan-400 font-mono font-bold text-lg">{data.success_rate_pct}%</p>
+            </div>
+            <div className="bg-white/5 rounded-lg p-2 text-center">
+              <p className="text-white/50 text-[10px]">Durée</p>
+              <p className="text-white font-mono font-bold text-lg">{data.total_duration_sec}s</p>
+            </div>
+          </div>
+
+          {/* Par compte */}
+          <div className="bg-white/3 rounded-lg p-2">
+            <p className="text-white/60 text-xs font-semibold mb-2">Détail par compte :</p>
+            <div className="space-y-1">
+              {Object.entries(data.by_account || {}).map(([acc, stats]) => (
+                <div key={acc} className="flex items-center gap-2 text-[11px]">
+                  <span className={`w-2 h-2 rounded-full ${stats.success_rate >= 80 ? "bg-emerald-400" : stats.success_rate >= 50 ? "bg-amber-400" : "bg-red-400"}`} />
+                  <span className="text-white/80 font-mono w-32">@{acc}</span>
+                  <span className="text-white/50 w-16">{stats.success_rate}%</span>
+                  <span className="text-white/40">{stats.ok}/{stats.tries} OK · ~{stats.avg_videos} vidéos/réussite</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Config détectée */}
+          <div className="bg-white/3 rounded-lg p-2 text-[11px] grid grid-cols-2 gap-2">
+            <p className="text-white/60">Proxies : <span className="text-white font-mono">{data.config.proxy_pool_size}</span></p>
+            <p className="text-white/60">Sémaphore : <span className="text-white font-mono">{data.config.insta_sem_size} parallèles · {data.config.insta_delay_sec}s delay</span></p>
+            <p className="text-white/60">Cookies Insta : <span className="text-white font-mono">{data.config.instagram_sessions_count}</span></p>
+            <p className="text-white/60">Meta Business : <span className={data.config.ig_business_configured ? "text-emerald-400" : "text-amber-400"}>{data.config.ig_business_configured ? "✓ configuré" : "✗ pas configuré"}</span></p>
+          </div>
+
+          {/* Détail itérations (collapse) */}
+          <details className="bg-white/3 rounded-lg p-2">
+            <summary className="text-white/60 text-xs cursor-pointer">📜 Détail des {data.n_iterations} itérations</summary>
+            <div className="mt-2 max-h-64 overflow-y-auto space-y-0.5">
+              {data.results.map((r) => (
+                <div key={r.iteration} className="flex items-center gap-2 text-[10px] font-mono">
+                  <span className="text-white/30 w-8">#{r.iteration}</span>
+                  <span className="text-white/60 w-24">@{r.username}</span>
+                  <span className={r.ok ? "text-emerald-400 w-8" : "text-red-400 w-8"}>{r.ok ? "✓" : "✗"}</span>
+                  <span className="text-white/40 w-24">{r.video_count || 0} vidéos</span>
+                  <span className="text-white/40">{r.duration_ms}ms</span>
+                  {r.error && <span className="text-red-400/70 truncate flex-1">{r.error.slice(0, 50)}</span>}
+                </div>
+              ))}
+            </div>
+          </details>
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-4 text-white/30 text-xs">
+          Clique sur "Lancer stress test 30x" pour mesurer la fiabilité réelle d'Instagram.
+          <br />
+          Si taux ≥ 90% → production-ready. Sinon je te dis quoi ajouter.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProxyVpsDeepTestSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2048,6 +2178,9 @@ function SiteHealthSection() {
 
       {/* 🚨 MEGA DIAGNOSTIC : EN HAUT DE PAGE car le user dit "rien ne marche" */}
       <MegaDiagnosticSection />
+
+      {/* 🔥 STRESS TEST INSTA 30x : verifier taux de succes reel */}
+      <InstaStressTestSection />
 
       {/* 🔬 TEST APPROFONDI proxy + VPS — pour identifier la cause exacte du 'rien ne marche' */}
       <ProxyVpsDeepTestSection />

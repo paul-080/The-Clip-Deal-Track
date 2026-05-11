@@ -9409,10 +9409,23 @@ async def _alert_critical(alert_type: str, severity: str, message: str, platform
 # trop populaires (@instagram, @tiktok) qui peuvent etre special-cases par les
 # plateformes (rate-limit different, anti-scraping renforce).
 WATCHDOG_TEST_ACCOUNTS = {
-    "instagram": os.environ.get("WATCHDOG_TEST_INSTA", "natgeo"),  # National Geographic — gros mais public, pas official
-    "tiktok": os.environ.get("WATCHDOG_TEST_TIKTOK", "khaby.lame"),  # Khaby Lame — top public
-    "youtube": os.environ.get("WATCHDOG_TEST_YOUTUBE", "UCBR8-60-B28hp2BmDPdntcQ"),  # YouTube channel id officiel
+    # Comptes test "lambda" : Business public moyennement populaire (10k-500k followers)
+    # Evite les comptes officiels (@instagram, @natgeo) que Insta cible specifiquement
+    # avec un rate limit + anti-scraping renforce.
+    "instagram": os.environ.get("WATCHDOG_TEST_INSTA", "garyvee"),  # Gary Vaynerchuk : Business large public, scrapable
+    "tiktok": os.environ.get("WATCHDOG_TEST_TIKTOK", "khaby.lame"),
+    "youtube": os.environ.get("WATCHDOG_TEST_YOUTUBE", "UCBR8-60-B28hp2BmDPdntcQ"),
 }
+
+# Liste de comptes Insta "rotation test" : si garyvee echoue, on essaye d'autres
+# (Business public moyennement gros, peu cible). Utile pour stress test.
+INSTA_TEST_ACCOUNTS_FALLBACK = [
+    "garyvee",      # Gary V, businessman, scrapable
+    "9gag",         # Compte humour public Business
+    "champagnepapi", # Drake, scrapable
+    "leomessi",     # Messi, large mais ouvert
+    "natgeo",       # National Geographic (gros mais souvent OK)
+]
 
 _WATCHDOG_FAILURES: dict = {"instagram": 0, "tiktok": 0, "youtube": 0}
 _WATCHDOG_LAST_CHECK: dict = {}
@@ -15924,6 +15937,100 @@ async def admin_reactivate_archived_videos(request: Request, body: dict = None, 
         "ok": True,
         "reactivated_count": res.modified_count,
         "message": f"{res.modified_count} videos reactivees, elles seront re-scrapees au prochain cycle.",
+    }
+
+
+@api_router.get("/admin/insta-stress-test-30")
+async def admin_insta_stress_test_30(
+    request: Request,
+    n_iterations: int = 30,
+    _: bool = Depends(verify_admin_code)
+):
+    """🔥 STRESS TEST INSTAGRAM : lance N=30 scrapes consecutifs sur des comptes
+    Business publics moyennement populaires, et retourne le taux de succes.
+
+    Plus c'est proche de 100%, plus le scraping est fiable en prod.
+    Si >= 80% : production-ready.
+    Si < 80% : il manque encore des proxies / cookies / Meta config.
+    """
+    n_iterations = max(5, min(int(n_iterations), 50))  # entre 5 et 50
+
+    results: list = []
+    test_accounts = INSTA_TEST_ACCOUNTS_FALLBACK[:]
+    n_accounts = len(test_accounts)
+
+    start_total = time.time()
+    for i in range(n_iterations):
+        username = test_accounts[i % n_accounts]
+        t0 = time.time()
+        try:
+            videos = await _fetch_instagram_videos_async(username, since_days=7)
+            duration_ms = int((time.time() - t0) * 1000)
+            ok = bool(videos and len(videos) > 0)
+            results.append({
+                "iteration": i + 1,
+                "username": username,
+                "ok": ok,
+                "video_count": len(videos) if videos else 0,
+                "duration_ms": duration_ms,
+            })
+        except Exception as e:
+            duration_ms = int((time.time() - t0) * 1000)
+            results.append({
+                "iteration": i + 1,
+                "username": username,
+                "ok": False,
+                "error": str(e)[:200],
+                "duration_ms": duration_ms,
+            })
+
+    total_duration_ms = int((time.time() - start_total) * 1000)
+    n_ok = sum(1 for r in results if r["ok"])
+    n_total = len(results)
+    success_rate = round((n_ok / n_total) * 100, 1) if n_total > 0 else 0.0
+
+    # Verdict
+    if success_rate >= 90:
+        verdict = f"✅ EXCELLENT : {success_rate}% de succes ({n_ok}/{n_total}) — production-ready"
+    elif success_rate >= 70:
+        verdict = f"🟡 BON : {success_rate}% — utilisable mais ajouter cookies/Meta pour 90%+"
+    elif success_rate >= 50:
+        verdict = f"🟠 MOYEN : {success_rate}% — il manque proxies ou cookies pour fiabiliser"
+    else:
+        verdict = f"🔴 CRITIQUE : {success_rate}% — proxies/cookies/Meta a fixer URGEMMENT"
+
+    # Stats par compte
+    by_account: dict = {}
+    for r in results:
+        u = r["username"]
+        if u not in by_account:
+            by_account[u] = {"tries": 0, "ok": 0, "avg_videos": 0, "total_videos": 0}
+        by_account[u]["tries"] += 1
+        if r["ok"]:
+            by_account[u]["ok"] += 1
+            by_account[u]["total_videos"] += r.get("video_count", 0)
+    for u in by_account:
+        by_account[u]["success_rate"] = round((by_account[u]["ok"] / by_account[u]["tries"]) * 100, 1)
+        by_account[u]["avg_videos"] = round(by_account[u]["total_videos"] / max(1, by_account[u]["ok"]), 1)
+
+    return {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "n_iterations": n_total,
+        "success_count": n_ok,
+        "fail_count": n_total - n_ok,
+        "success_rate_pct": success_rate,
+        "total_duration_sec": round(total_duration_ms / 1000, 1),
+        "avg_per_iteration_ms": round(total_duration_ms / n_total) if n_total > 0 else 0,
+        "verdict": verdict,
+        "by_account": by_account,
+        "results": results,
+        "config": {
+            "proxy_pool_size": len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0,
+            "insta_sem_size": _insta_sem_size,
+            "insta_delay_sec": _insta_delay,
+            "ig_business_configured": bool(IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN),
+            "instagram_sessions_count": len(INSTAGRAM_SESSIONS) if INSTAGRAM_SESSIONS else 0,
+        },
     }
 
 
