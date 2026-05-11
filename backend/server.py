@@ -731,22 +731,24 @@ def _build_instagram_cookie_header(session: str) -> str:
 
 
 # ── ROTATION INTELLIGENTE COOKIES INSTAGRAM ──
-# Si un cookie retourne 429 ou est bloque, on le marque "bad" pendant 1h pour
-# eviter de le re-utiliser et perdre la moitie de nos appels.
+# Si un cookie retourne 429 ou est bloque, on le marque "bad" pour eviter
+# de le re-utiliser pendant qu'Instagram le surveille.
+# DUREE COURTE (5 min) car beaucoup de cas le rate limit IG est temporaire.
+# Si 3 echecs consecutifs : on monte a 30 min puis 2h.
 _INSTAGRAM_SESSION_BAD_UNTIL: dict = {}  # cookie -> timestamp jusqu'a quand bad
-_INSTAGRAM_SESSION_BAD_DURATION_SEC = 3600  # 1 heure
+_INSTAGRAM_SESSION_BAD_DURATION_SEC = 300  # 5 minutes (au lieu de 1h)
 _INSTAGRAM_SESSION_FAILURE_COUNT: dict = {}  # cookie -> nb echecs consecutifs
 
 def _mark_instagram_session_bad(cookie: str, duration_sec: int = None):
     """Marque un cookie comme bad (429/banni) pendant N seconds.
-    Apres 3 echecs consecutifs, on double la duree (jusqu'a 24h max)."""
+    Apres 3 echecs consecutifs, on monte a 30 min puis 2h max."""
     if not cookie:
         return
     duration = duration_sec or _INSTAGRAM_SESSION_BAD_DURATION_SEC
     _INSTAGRAM_SESSION_FAILURE_COUNT[cookie] = _INSTAGRAM_SESSION_FAILURE_COUNT.get(cookie, 0) + 1
-    # Exponential backoff sur echecs consecutifs
+    # Backoff sur echecs consecutifs (sans depasser 2h)
     if _INSTAGRAM_SESSION_FAILURE_COUNT[cookie] >= 3:
-        duration = min(duration * 4, 86400)  # max 24h
+        duration = min(duration * 6, 7200)  # max 2h
     _INSTAGRAM_SESSION_BAD_UNTIL[cookie] = time.time() + duration
     logger.warning(f"Instagram session marquee bad pour {duration//60}min (echecs={_INSTAGRAM_SESSION_FAILURE_COUNT[cookie]})")
 
@@ -3610,12 +3612,15 @@ _POST_CREATE_SCRAPE_SEM = asyncio.Semaphore(3)
 # Limite a 5 = compromis entre rapidite UX et risque ban IP
 _VERIFY_ACCOUNT_SEM = asyncio.Semaphore(5)
 
-# ── RATE LIMIT INSTAGRAM (anti-429) ──
-# Max 3 comptes Instagram scrappes en parallele (sinon Insta nous bloque vite)
-# + Delay 1.5s entre chaque appel pour respirer
-_INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(3)
-_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = 1.5
-_INSTAGRAM_LAST_CALL_TS = [0.0]  # mutable pour partage entre coroutines
+# ── RATE LIMIT INSTAGRAM (anti-429) - VERSION AGGRESSIVE ──
+# Le user a 1 SEUL cookie INSTAGRAM_SESSIONS. Avec semaphore=3 + delay 1.5s
+# on bourrinait 1 cookie -> 429 systematique. Maintenant :
+# - Semaphore = 1 (1 seul compte Insta scrape a la fois, vraiment)
+# - Delay 5s entre appels (au lieu de 1.5s) pour respirer
+# - Cookie bad apres 1 seul 429 (avant : 3 echecs consecutifs)
+_INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(1)
+_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = 5.0
+_INSTAGRAM_LAST_CALL_TS = [0.0]
 
 # ── LOCK GLOBAL run_video_tracking ──
 # Empeche 2 runs simultanes du scheduler (si tick precedent dure > 5min).
@@ -4382,6 +4387,16 @@ async def _fetch_tiktok_tikwm(username: str) -> list:
                         headers=TIKWM_HEADERS,
                     )
                     logger.info(f"TikWm A (key) page {page_num} @{username}: HTTP {r.status_code}")
+                    if r.status_code == 403:
+                        # TikWm 403 = cle API rate-limited OU IP bannie. Pas la peine de retenter A.
+                        logger.warning(f"TikWm 403 Forbidden pour @{username} : cle API rate-limited ou IP bannie -> skip Strategy A")
+                        break
+                    if r.status_code == 429:
+                        # 429 = rate limit, on attend puis on retente
+                        retry_after = int(r.headers.get("Retry-After") or "30")
+                        logger.warning(f"TikWm 429 pour @{username}, sleep {min(retry_after, 60)}s")
+                        await asyncio.sleep(min(retry_after, 60))
+                        continue
                     if r.status_code != 200:
                         break
                     items, has_more, next_cursor = _parse_page(r.json())
@@ -4695,11 +4710,18 @@ async def _scrape_instagram_api(username: str) -> dict:
         # Instagram returns 200 with empty user when not found (when authenticated)
         if not data.get("data", {}).get("user"):
             raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+        _mark_instagram_session_good(session)
         return data
     elif r.status_code in (404, 400):
         raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
     elif r.status_code == 401:
+        _mark_instagram_session_bad(session, duration_sec=7200)  # 2h, session probablement expiree
         raise ValueError(f"Instagram session expirée — mettre à jour INSTAGRAM_SESSION_ID")
+    elif r.status_code == 429:
+        _mark_instagram_session_bad(session)  # marque cookie bad 5 min
+        # Lit Retry-After si dispo
+        retry_after = r.headers.get("Retry-After", "")
+        raise ValueError(f"Instagram API erreur 429 pour @{username} (cookie bad pour 5min) Retry-After={retry_after}")
     else:
         raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
 
@@ -6782,16 +6804,27 @@ async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_vid
 async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
     """
     Fetch Instagram videos/reels.
-    NOUVELLE strategie : Apify Reel Scraper EN PRIORITE pour avoir videoPlayCount (= 92k UI potentiel)
-    Sources gratuites en fallback si Apify atteint le budget journalier.
+    Strategie : sources gratuites en priorite, Apify desactive par defaut.
 
-    1. (NEW) Apify Reel Scraper (videoPlayCount, $0.078/scrape compte 30 reels)
-    2. ClipScraper VPS (gratuit fallback)
-    3. Feed privé Instagram (cookie session)
-    4. RapidAPI instagram-scraper-api2
-    5. instaloader / Playwright
+    1. Meta Business Discovery API (officiel, gratuit, vraies vues)
+    2. Mobile Clips API + GraphQL enrichissement
+    3. ClipScraper VPS
+    4. yt-dlp + HTML public
+    5. Feed prive Instagram (cookie session)
+    6. RapidAPI / instaloader / Playwright
     """
     username = username.lstrip("@")
+
+    # ── COURT-CIRCUIT 429 : si TOUS les cookies sont marques bad ET le VPS est down,
+    # on saute aux strategies qui ne tapent PAS sur instagram.com pour eviter d'aggraver.
+    # On garde Business Discovery API (Meta = officiel, pas affecte par les 429 instagram.com)
+    now_ts = time.time()
+    all_cookies_bad = (
+        INSTAGRAM_SESSIONS and len(INSTAGRAM_SESSIONS) > 0
+        and all(_INSTAGRAM_SESSION_BAD_UNTIL.get(c, 0) > now_ts for c in INSTAGRAM_SESSIONS)
+    )
+    if all_cookies_bad:
+        logger.warning(f"[IG SHORT-CIRCUIT] @{username} : tous les cookies sont bad -> on essaye Meta API + VPS uniquement (pas instagram.com)")
 
     # Calcule max_videos dynamiquement selon since_days (couvre les comptes qui postent souvent)
     # since_days = 30 -> max_videos = 90 (3 par jour estime)
@@ -6913,10 +6946,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     #   - VPS clipscraper a echoue (VPS down)
     #   - yt-dlp fallback aussi a echoue (Insta vraiment HS)
     # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
-    # Apify Insta DESACTIVE PAR DEFAUT — l'utilisateur veut que le free path marche
-    # Pour reactiver explicitement (cas exceptionnel) : APIFY_FOR_INSTA_ACCOUNT=true
+    # Apify Insta DESACTIVE PAR DEFAUT — kill switch _APIFY_INSTA_KILL_SWITCH (env APIFY_INSTA_FORCE_OFF, default 'true')
+    # MEME si APIFY_FOR_INSTA_ACCOUNT=true et APIFY_TOKEN set, le kill switch bloque.
+    # Triple barriere : kill switch + APIFY_DISABLED + APIFY_FOR_INSTA_ACCOUNT + budget
     APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
-    if APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+    if (not _APIFY_INSTA_KILL_SWITCH) and APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
@@ -6925,6 +6959,9 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                 return apify_videos
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
+    elif _APIFY_INSTA_KILL_SWITCH:
+        # On log pour visibilite mais on ne fait RIEN (Apify Insta bloque)
+        await _log_scrape("apify_blocked", "instagram", username, False, 0, "Apify Insta bloque par kill switch (signal alarme)")
 
     # NOTE : Priorite 1 (VPS ClipScraper standalone) etait un DOUBLON de Priority 0
     # (VPS + GraphQL enrichissement, ligne ~6707). Supprimee pour eviter code mort.
@@ -7084,8 +7121,13 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
-    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — avec circuit breaker budget journalier
-    if APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
+    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — DESACTIVE PAR DEFAUT (kill switch)
+    # Bug identifie dans les logs : Apify apparaissait MALGRE le kill switch ailleurs.
+    # FIX : on check d'abord _APIFY_INSTA_KILL_SWITCH ici aussi.
+    if _APIFY_INSTA_KILL_SWITCH:
+        logger.warning(f"⚠️ ALERTE Insta @{username} : cascade gratuite a tout echoue MAIS Apify bloque par kill switch (signal alarme)")
+        await _log_scrape("apify_blocked", "instagram", username, False, 0, "kill switch ON (signal alarme cascade gratuite KO)")
+    elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
             videos = await _fetch_instagram_videos_apify(username)
@@ -7099,7 +7141,7 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             logger.warning(f"Apify Instagram failed for @{username}: {e}")
             await _log_scrape("apify", "instagram", username, False, 0, str(e))
 
-    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — toutes les sources ont echoue (ClipScraper VPS, session, RapidAPI, instaloader, Playwright, Apify)")
+    logger.error(f"Impossible de récupérer les vidéos Instagram @{username} — toutes les sources ont echoue (ClipScraper VPS, session, RapidAPI, instaloader, Playwright, Apify bloque)")
     return []
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
