@@ -4710,20 +4710,10 @@ async def _verify_tiktok_apify(username: str) -> dict:
 
 
 async def _verify_tiktok(username: str) -> dict:
-    """Verify TikTok account. Primary: Apify (residential proxies). Fallbacks: TikWm, Playwright, yt-dlp."""
+    """Verify TikTok account. Primary: TikWm/VPS gratuits. Apify en DERNIER recours (kill switch ON par defaut)."""
     username = username.lstrip("@")
-    # Primary: Apify — most reliable from cloud
-    if APIFY_TOKEN and not APIFY_DISABLED:
-        try:
-            return await _verify_tiktok_apify(username)
-        except ValueError as e:
-            msg = str(e).lower()
-            if "introuvable" in msg or "not found" in msg:
-                raise
-            logger.warning(f"Apify TikTok verify failed for @{username}: {e}")
-        except Exception as e:
-            logger.warning(f"Apify TikTok verify exception for @{username}: {e}")
-    # Fallback 1: TikWm API
+    # ── PRIORITY GRATUITE : TikWm + VPS d'abord (au lieu d'Apify primary)
+    # Apify TikTok bloque par defaut (kill switch). Si user veut, set APIFY_TIKTOK_FORCE_OFF=false.
     try:
         return await _verify_tiktok_tikwm(username)
     except ValueError as e:
@@ -4741,11 +4731,13 @@ async def _verify_tiktok(username: str) -> dict:
             return _parse_tiktok_scraped(scraped)
         except Exception as e:
             logger.warning(f"Playwright TikTok verify failed for @{username}: {e}")
-    # Last resort: yt-dlp
+    # Fallback yt-dlp avec proxy
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
         def _ytdlp_verify():
             opts = {"quiet": True, "skip_download": True, "extract_flat": True, "playlistend": 1}
+            if BACKEND_PROXY_URL:
+                opts["proxy"] = BACKEND_PROXY_URL
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
             if not info:
@@ -4756,7 +4748,20 @@ async def _verify_tiktok(username: str) -> dict:
                 "follower_count": info.get("channel_follower_count"),
                 "platform_channel_id": None,
             }
-        return await loop.run_in_executor(_thread_pool, _ytdlp_verify)
+        try:
+            return await loop.run_in_executor(_thread_pool, _ytdlp_verify)
+        except Exception as e:
+            logger.warning(f"yt-dlp TikTok verify failed for @{username}: {e}")
+    # DERNIER RECOURS : Apify TikTok — BLOQUE PAR DEFAUT (kill switch)
+    if _APIFY_TIKTOK_KILL_SWITCH:
+        logger.warning(f"⚠️ ALERTE _verify_tiktok @{username} : toutes les sources gratuites ont echoue, Apify TikTok bloque par kill switch")
+        await _log_scrape("apify_blocked", "tiktok", username, False, 0, "verify_tiktok : kill switch ON")
+        raise ValueError(f"Impossible de vérifier TikTok @{username} — toutes les sources gratuites ont échoué")
+    elif APIFY_TOKEN and not APIFY_DISABLED:
+        try:
+            return await _verify_tiktok_apify(username)
+        except Exception as e:
+            logger.warning(f"Apify TikTok verify last-resort failed for @{username}: {e}")
     raise ValueError(f"Impossible de vérifier TikTok @{username}")
 
 
@@ -17133,8 +17138,11 @@ async def admin_scraping_health_all(request: Request, _: bool = Depends(verify_a
         tt_sources.append({"name": "TikWm API", "ok": False, "skipped": True,
                            "fix_if_failed": "Set TIKWM_API_KEY (acheter cle sur tikwm.com, ~$3/mois)"})
 
-    # 3. Apify TikTok
-    if APIFY_TOKEN and not APIFY_DISABLED:
+    # 3. Apify TikTok — bloque par kill switch sauf si APIFY_TIKTOK_FORCE_OFF=false
+    if _APIFY_TIKTOK_KILL_SWITCH:
+        tt_sources.append({"name": "Apify TikTok", "ok": False, "skipped": True,
+                           "fix_if_failed": "BLOQUE par kill switch (APIFY_TIKTOK_FORCE_OFF=true). Pour activer : set APIFY_TIKTOK_FORCE_OFF=false"})
+    elif APIFY_TOKEN and not APIFY_DISABLED:
         t0 = time.time()
         try:
             videos = await _fetch_tiktok_videos_apify(tt_account)
