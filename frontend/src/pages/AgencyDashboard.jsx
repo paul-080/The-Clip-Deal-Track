@@ -3109,16 +3109,26 @@ function CampaignDashboard({ campaigns }) {
                           </span>
                         </div>
                         <div className="min-w-0">
-                          <p className="text-white text-sm truncate leading-tight">
+                          <p className={`text-sm truncate leading-tight ${video.tracking_active === false ? "text-white/50" : "text-white"}`}>
                             {video.title || `Vidéo ${video.platform}`}
                           </p>
-                          {clipperName ? (
-                            <p className="text-white/30 text-xs truncate mt-0.5">{clipperName}</p>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 mt-0.5 font-medium">
-                              💰 Gains agence
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {clipperName ? (
+                              <p className="text-white/30 text-xs truncate">{clipperName}</p>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-[#f0c040]/15 text-[#f0c040] border border-[#f0c040]/25 font-medium">
+                                💰 Gains agence
+                              </span>
+                            )}
+                            {video.tracking_active === false && (
+                              <span
+                                className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium"
+                                title={video.archived_reason || "Tracking arrêté (croissance < 50 vues sur 48h)"}
+                              >
+                                📦 Archivée
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
 

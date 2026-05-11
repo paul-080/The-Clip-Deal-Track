@@ -8204,7 +8204,10 @@ async def _scrape_one_account_into_campaign(
         new_likes = max(int(vid.get("likes", 0) or 0), int(existing.get("likes") or 0))
         new_comments = max(int(vid.get("comments", 0) or 0), int(existing.get("comments") or 0))
 
-        # ── DETECTION AUTO-ARCHIVAGE : video > 24h trackee ET <100 vues sur 48h ──
+        # ── DETECTION AUTO-ARCHIVAGE : video > 24h trackee ET < 50 vues sur 48h ──
+        # Seuil baisse de 100 -> 50 vues (regle metier paul) :
+        # une video qui prend < 50 vues sur 48h glissantes apres 24h de tracking
+        # est consideree comme "morte" et arretee. Reactivable manuellement.
         should_archive = False
         archive_reason = None
         first_tracked = _parse_utc(existing.get("first_tracked_at"))
@@ -8222,9 +8225,9 @@ async def _scrape_one_account_into_campaign(
                     if snap_48h:
                         old_views_48h = int(snap_48h.get("views") or 0)
                         growth_48h = new_views - old_views_48h
-                        if growth_48h < 100:
+                        if growth_48h < 50:
                             should_archive = True
-                            archive_reason = f"low_growth_48h: +{growth_48h} vues sur 48h (< 100)"
+                            archive_reason = f"low_growth_48h: +{growth_48h} vues sur 48h (< 50)"
                 except Exception as ae:
                     logger.debug(f"Archive check failed for video: {ae}")
 
@@ -8276,7 +8279,7 @@ async def _scrape_one_account_into_campaign(
     if auto_archived_count > 0:
         try:
             await _log_scrape("auto_archive", plat, uname, True, auto_archived_count,
-                              f"{auto_archived_count} videos auto-archivees (croissance < 100 vues sur 48h)")
+                              f"{auto_archived_count} videos auto-archivees (croissance < 50 vues sur 48h)")
         except Exception:
             pass
 
@@ -15663,7 +15666,7 @@ async def admin_archived_videos_stats(request: Request, _: bool = Depends(verify
         "archive_rate_pct": round((total_archived / max(1, total_archived + total_active)) * 100, 1),
         "by_reason": by_reason,
         "by_campaign_top10": by_campaign,
-        "note": "Les videos auto-archivees sont celles qui ont pris < 100 vues sur 48h apres 24h de tracking. Reactivable via /admin/reactivate-archived-videos",
+        "note": "Les videos auto-archivees sont celles qui ont pris < 50 vues sur 48h apres 24h de tracking. Reactivable via /admin/reactivate-archived-videos",
     }
 
 
