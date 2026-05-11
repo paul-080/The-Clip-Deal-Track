@@ -3692,7 +3692,17 @@ _insta_sem_size, _insta_delay = _compute_insta_concurrency()
 _INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(_insta_sem_size)
 _INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = _insta_delay
 _INSTAGRAM_LAST_CALL_TS = [0.0]
-logger.info(f"Insta rate limit configure : {_insta_sem_size} parallele + {_insta_delay}s delay (proxies={len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0})")
+_n_proxies_log = len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0
+logger.info(f"Insta rate limit configure : {_insta_sem_size} parallele + {_insta_delay}s delay (proxies={_n_proxies_log})")
+# Si on a >= 5 proxies, on log un message ULTRA VISIBLE pour confirmer
+if _n_proxies_log >= 5:
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"  🎉 SUCCESS : {_n_proxies_log} PROXIES DETECTES !")
+    logger.info(f"  Scraping Insta tournera a PLEINE VITESSE.")
+    logger.info(f"  ({_insta_sem_size} comptes en parallele, {_insta_delay}s delay)")
+    logger.info(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+elif _n_proxies_log == 1:
+    logger.warning(f"⚠️ 1 SEUL proxy detecte — separe tes proxies par virgule dans BACKEND_PROXY_URL pour rotation")
 
 # ── LOCK GLOBAL run_video_tracking ──
 # Empeche 2 runs simultanes du scheduler (si tick precedent dure > 5min).
