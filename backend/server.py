@@ -15714,6 +15714,199 @@ async def admin_reactivate_archived_videos(request: Request, body: dict = None, 
     }
 
 
+@api_router.get("/admin/mega-diagnostic")
+async def admin_mega_diagnostic(
+    request: Request,
+    test_account_instagram: str = "instagram",
+    test_account_tiktok: str = "tiktok",
+    _: bool = Depends(verify_admin_code)
+):
+    """🚨 MEGA DIAGNOSTIC : un seul appel qui TEST TOUT en 30 secondes et dit
+    en francais clair ce qui marche, ce qui ne marche pas, et comment fixer.
+
+    Tests reels :
+    1. Liste TOUTES les env vars configurees/manquantes avec criticite
+    2. Ping VPS Hostinger ClipScraper
+    3. Test proxy Webshare (IP retournee)
+    4. Test Meta Business Discovery (validite token)
+    5. Test YouTube Data API (quota)
+    6. Test scrape REEL Insta @instagram (compte officiel Meta)
+    7. Test scrape REEL TikTok @tiktok (compte officiel TikTok)
+    8. Analyse les 50 derniers scrapes en DB -> taux succes/echec par source
+
+    Retourne un rapport JSON avec verdict global + actions concretes a faire.
+    """
+    rapport: dict = {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "env_vars": {},
+        "sources": {},
+        "live_scrape_test": {},
+        "recent_scrapes_analysis": {},
+        "verdict": "",
+        "actions_a_faire": [],
+    }
+
+    # ───── 1. Env vars status ─────
+    critical_vars = {
+        "BACKEND_PROXY_URL": ("CRITIQUE", "Sans ca, Railway IP est bannie par TikTok/Insta. Configurer un proxy residentiel (Webshare, BrightData, etc)"),
+        "CLIP_SCRAPER_URL": ("CRITIQUE", "URL de ton VPS Hostinger ClipScraper (ex: https://srv1619447.hstgr.cloud)"),
+        "CLIP_SCRAPER_KEY": ("CRITIQUE", "Cle d'auth de ton VPS"),
+        "YOUTUBE_API_KEY": ("IMPORTANT", "Sans = pas de YouTube tracking. Free 10k unites/jour via Google Cloud Console"),
+        "IG_BUSINESS_ACCOUNT_ID": ("IMPORTANT", "Pour vues unifiees Insta via Meta Business Discovery API"),
+        "IG_LONG_LIVED_TOKEN": ("IMPORTANT", "Token Meta longue duree (expire tous les 60j)"),
+        "TIKWM_API_KEY": ("OPTIONNEL", "Strategy A TikWm. Marche sans aussi (Strategy B-E)"),
+        "INSTAGRAM_SESSIONS": ("OPTIONNEL", "Cookies Insta pour API privee. Sans = HTML public + GraphQL only"),
+        "RAPIDAPI_KEY": ("OPTIONNEL", "Fallback Insta/TikTok"),
+        "APIFY_TOKEN": ("OPTIONNEL", "Apify est DESACTIVE par defaut (kill switch). Garde a false."),
+    }
+    for var_name, (criticite, note) in critical_vars.items():
+        val = os.environ.get(var_name, "")
+        rapport["env_vars"][var_name] = {
+            "configured": bool(val),
+            "criticite": criticite,
+            "note": note,
+        }
+
+    # ───── 2. Sources test (parallele) ─────
+    async def _test_vps_live():
+        if not CLIP_SCRAPER_URL or not CLIP_SCRAPER_KEY:
+            return {"ok": False, "reason": "Non configure (CLIP_SCRAPER_URL ou KEY manquant)"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(f"{CLIP_SCRAPER_URL.rstrip('/')}/health", headers={"X-API-Key": CLIP_SCRAPER_KEY})
+            if r.status_code == 200:
+                return {"ok": True, "info": f"VPS repond OK ({CLIP_SCRAPER_URL})"}
+            return {"ok": False, "reason": f"VPS HTTP {r.status_code}: {r.text[:200]}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"VPS injoignable: {type(e).__name__}: {str(e)[:200]}"}
+
+    async def _test_proxy_live():
+        if not BACKEND_PROXY_URL:
+            return {"ok": False, "reason": "BACKEND_PROXY_URL non configure"}
+        try:
+            async with httpx.AsyncClient(timeout=10, proxy=BACKEND_PROXY_URL) as c:
+                r = await c.get("https://api.ipify.org?format=json")
+            if r.status_code == 200:
+                ip_data = r.json()
+                return {"ok": True, "info": f"Proxy OK, IP = {ip_data.get('ip', '?')}"}
+            return {"ok": False, "reason": f"Proxy HTTP {r.status_code}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"Proxy injoignable: {type(e).__name__}: {str(e)[:200]}"}
+
+    async def _test_meta_live():
+        if not IG_BUSINESS_ACCOUNT_ID or not IG_LONG_LIVED_TOKEN:
+            return {"ok": False, "reason": "IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN manquants"}
+        try:
+            url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{IG_BUSINESS_ACCOUNT_ID}"
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(url, params={"fields": "id,username", "access_token": IG_LONG_LIVED_TOKEN})
+            if r.status_code == 200:
+                return {"ok": True, "info": f"Meta API OK, account @{r.json().get('username', '?')}"}
+            err_d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_code = (err_d.get("error") or {}).get("code")
+            if err_code == 190:
+                return {"ok": False, "reason": "⚠ TOKEN EXPIRE (code 190) — RENOUVELLE IG_LONG_LIVED_TOKEN sur Facebook Developer"}
+            return {"ok": False, "reason": f"Meta HTTP {r.status_code}: {(err_d.get('error') or {}).get('message', '?')[:150]}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"Meta error: {type(e).__name__}: {str(e)[:200]}"}
+
+    async def _test_youtube_live():
+        if not YOUTUBE_API_KEY:
+            return {"ok": False, "reason": "YOUTUBE_API_KEY manquant"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "snippet", "id": "UCK8sQmJBp8GCxrOtXWBpyEA", "key": YOUTUBE_API_KEY}
+                )
+            if r.status_code == 200:
+                return {"ok": True, "info": "YouTube Data API OK"}
+            err_d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            for e in err_d.get("error", {}).get("errors", []):
+                if e.get("reason") in ("quotaExceeded", "dailyLimitExceeded"):
+                    return {"ok": False, "reason": "⚠ QUOTA YouTube EPUISE (10K/jour) — attends demain ou augmente quota Google Cloud"}
+            return {"ok": False, "reason": f"YT HTTP {r.status_code}: {err_d.get('error', {}).get('message', '?')[:150]}"}
+        except Exception as e:
+            return {"ok": False, "reason": f"YT error: {type(e).__name__}: {str(e)[:200]}"}
+
+    src_results = await asyncio.gather(
+        _test_vps_live(), _test_proxy_live(), _test_meta_live(), _test_youtube_live(),
+        return_exceptions=True
+    )
+    rapport["sources"]["VPS Hostinger"] = src_results[0] if not isinstance(src_results[0], Exception) else {"ok": False, "reason": str(src_results[0])}
+    rapport["sources"]["Webshare Proxy"] = src_results[1] if not isinstance(src_results[1], Exception) else {"ok": False, "reason": str(src_results[1])}
+    rapport["sources"]["Meta Business Discovery"] = src_results[2] if not isinstance(src_results[2], Exception) else {"ok": False, "reason": str(src_results[2])}
+    rapport["sources"]["YouTube Data API"] = src_results[3] if not isinstance(src_results[3], Exception) else {"ok": False, "reason": str(src_results[3])}
+
+    # ───── 3. Live scrape test (un compte connu) ─────
+    try:
+        ig_test = await _fetch_instagram_videos_async(test_account_instagram, since_days=30)
+        rapport["live_scrape_test"]["instagram"] = {
+            "account_tested": f"@{test_account_instagram}",
+            "videos_found": len(ig_test) if ig_test else 0,
+            "ok": bool(ig_test),
+        }
+    except Exception as e:
+        rapport["live_scrape_test"]["instagram"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+    try:
+        tt_test = await _fetch_tiktok_videos_async(test_account_tiktok, since_days=30)
+        rapport["live_scrape_test"]["tiktok"] = {
+            "account_tested": f"@{test_account_tiktok}",
+            "videos_found": len(tt_test) if tt_test else 0,
+            "ok": bool(tt_test),
+        }
+    except Exception as e:
+        rapport["live_scrape_test"]["tiktok"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+    # ───── 4. Analyse historique des 50 derniers scrapes ─────
+    try:
+        recent = await db.scraping_history.find({}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+        by_source: dict = {}
+        for s in recent:
+            src = s.get("source", "?")
+            if src not in by_source:
+                by_source[src] = {"ok": 0, "ko": 0}
+            if s.get("success"):
+                by_source[src]["ok"] += 1
+            else:
+                by_source[src]["ko"] += 1
+        rapport["recent_scrapes_analysis"]["total_recent"] = len(recent)
+        rapport["recent_scrapes_analysis"]["by_source"] = by_source
+    except Exception as e:
+        rapport["recent_scrapes_analysis"]["error"] = str(e)[:200]
+
+    # ───── 5. Verdict + actions ─────
+    actions = []
+    if not rapport["sources"]["Webshare Proxy"].get("ok"):
+        actions.append("🔴 CONFIGURE BACKEND_PROXY_URL sur Railway (cause #1 du 'rien ne marche'). Achete un proxy residentiel Webshare ou autre, format: http://user:pass@host:port")
+    if not rapport["sources"]["VPS Hostinger"].get("ok"):
+        actions.append("🔴 Verifie que ton VPS Hostinger ClipScraper est UP : SSH sur srv1619447.hstgr.cloud + redemarre le container Docker ClipScraper")
+    if not rapport["sources"]["Meta Business Discovery"].get("ok"):
+        reason = rapport["sources"]["Meta Business Discovery"].get("reason", "")
+        if "190" in reason or "EXPIRE" in reason.upper():
+            actions.append("🟡 IG_LONG_LIVED_TOKEN EXPIRE — va sur https://developers.facebook.com/tools/explorer/ pour generer un nouveau token longue duree (60j)")
+    if not rapport["sources"]["YouTube Data API"].get("ok"):
+        reason = rapport["sources"]["YouTube Data API"].get("reason", "")
+        if "QUOTA" in reason.upper():
+            actions.append("🟡 QUOTA YouTube epuise — attends demain (reset a minuit Pacific) ou augmente quota sur Google Cloud Console")
+        else:
+            actions.append("🟡 Configure YOUTUBE_API_KEY sur Railway (Google Cloud Console > YouTube Data API v3 > Credentials)")
+
+    ig_ok = rapport["live_scrape_test"].get("instagram", {}).get("ok")
+    tt_ok = rapport["live_scrape_test"].get("tiktok", {}).get("ok")
+    if not ig_ok and not tt_ok:
+        verdict = "🔴 GRAVE : aucun scraping ne marche actuellement"
+    elif not ig_ok or not tt_ok:
+        verdict = "🟡 PARTIEL : une plateforme ne marche pas"
+    else:
+        verdict = "✅ OK : Instagram + TikTok scrapent correctement"
+    rapport["verdict"] = verdict
+    rapport["actions_a_faire"] = actions or ["✅ Aucune action requise, tout est OK"]
+
+    return rapport
+
+
 @api_router.get("/admin/scraping-health-check")
 async def admin_scraping_health_check(
     request: Request,
