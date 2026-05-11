@@ -8660,9 +8660,30 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         except Exception as e:
             logger.warning(f"Manual videos re-fetch error for {campaign_id}: {e}")
         # Update budget_used and store daily snapshot
+        # ── FILTRE STRICT pour le snapshot : on ne compte QUE les videos VRAIMENT trackees
+        # AVANT : SUM(views) toutes les videos du campaign_id -> incluait fantomes/archivees/pre-tracking
+        # MAINTENANT : on filtre par account_id encore assigne ET published_at >= tracking_start
+        # Resultat : snapshot coherent avec ce qui est affiche dans /tracked-videos
         try:
+            # Recupere les account_ids encore assignes a cette campagne
+            _active_assignments_snap = await db.campaign_social_accounts.find(
+                {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+            ).to_list(2000)
+            _active_account_ids_snap = [a["account_id"] for a in _active_assignments_snap if a.get("account_id")]
+            # Recupere tracking_start_date
+            _tracking_start_snap = campaign.get("tracking_start_date") or campaign.get("created_at")
+
+            _match_filter: dict = {"campaign_id": campaign_id}
+            if _active_account_ids_snap:
+                _match_filter["account_id"] = {"$in": _active_account_ids_snap}
+            else:
+                # Aucun compte assigne -> snapshot a 0 (pas de fantomes)
+                _match_filter["account_id"] = "__no_account__"
+            if _tracking_start_snap:
+                _match_filter["published_at"] = {"$gte": _tracking_start_snap}
+
             agg = await db.tracked_videos.aggregate([
-                {"$match": {"campaign_id": campaign_id}},
+                {"$match": _match_filter},
                 {"$group": {
                     "_id": None,
                     "total_views": {"$sum": "$views"},
@@ -8728,12 +8749,19 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 )
             except Exception as he:
                 logger.debug(f"Hourly snapshot failed: {he}")
-            # Per-user daily snapshot (for clipper personal chart)
+            # Per-user daily snapshot (for clipper personal chart) - meme filtre strict
             user_ids_in_campaign = list({a["user_id"] for a in assignments if a.get("user_id")})
             for uid in user_ids_in_campaign:
                 try:
+                    _user_match: dict = {"campaign_id": campaign_id, "user_id": uid}
+                    if _active_account_ids_snap:
+                        _user_match["account_id"] = {"$in": _active_account_ids_snap}
+                    else:
+                        _user_match["account_id"] = "__no_account__"
+                    if _tracking_start_snap:
+                        _user_match["published_at"] = {"$gte": _tracking_start_snap}
                     u_agg = await db.tracked_videos.aggregate([
-                        {"$match": {"campaign_id": campaign_id, "user_id": uid}},
+                        {"$match": _user_match},
                         {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
                     ]).to_list(1)
                     u_total = u_agg[0]["total_views"] if u_agg else 0
@@ -11240,109 +11268,111 @@ async def get_campaign_kpi_stats(
     offset: int = 0,
     user: dict = Depends(get_current_user)
 ):
-    """🎯 KPI stats SYNCHRONISEES avec la courbe (memes donnees, memes regles).
+    """🎯 KPI stats SYNCHRONISEES avec la courbe + ANTI-FANTOMES.
 
-    Calcule les 6 KPI affichees dans les cases du dashboard agence :
-    - views : delta total_views sur la periode (vues GAGNEES, pas total absolu)
-    - likes : delta total_likes sur la periode
-    - comments : delta total_comments sur la periode
+    Calcule les 6 KPI sur la periode :
+    - views : delta total_views (vues GAGNEES sur la periode)
+    - likes / comments : delta sur la periode
     - engagement_pct : (likes + comments) / views x 100
-    - active_videos_count : nb de videos en tracking (non archivees)
+    - active_videos_count : nb videos VRAIMENT trackees (account assigne + apres tracking_start)
     - avg_views_per_video : views / active_videos_count
     - earnings : views / 1000 x rpm
 
-    Logique IDENTIQUE a la courbe /views-chart :
-    delta = total_au_jour_J - total_au_jour_J-(days)
-
-    Si pas de snapshot avant la periode (campagne neuve) : on assume tracking
-    demarre a 0 -> delta = total au jour_J. C'est honnete (pas d'invention).
+    Calcul LIVE (pas via snapshots historiques potentiellement gonfles) :
+    - total END = aggregate live sur tracked_videos AVEC filtres :
+      * account_id encore assigne (anti-fantomes)
+      * published_at >= tracking_start_date (anti-vieilles-videos)
+    - total START = snapshot le plus ancien dispo, MAIS borne par total END (max=END)
+      pour eviter delta negatif quand les snapshots passes etaient gonfles.
+    - Si pas de snapshot avant : assume 0 -> delta = total live (campagne neuve).
     """
     from datetime import timedelta
     start, end = _compute_chart_window(days, offset)
 
-    # Recupere les snapshots quotidiens dans la fenetre + le 1er avant pour le delta
-    snapshots = await db.views_snapshots.find(
+    # 1. Lookup campagne + filtres anti-fantomes/anti-vieilles
+    campaign = await db.campaigns.find_one(
         {"campaign_id": campaign_id},
-        {"_id": 0, "date": 1, "total_views": 1, "total_likes": 1, "total_comments": 1, "total_videos": 1}
-    ).sort("date", 1).to_list(2000)
-
-    if not snapshots:
-        # Pas encore de snapshot -> retourne tout a 0 (honnete)
+        {"_id": 0, "rpm": 1, "tracking_start_date": 1, "created_at": 1}
+    )
+    if not campaign:
         return {
-            "period_start": start.isoformat(),
-            "period_end": end.isoformat(),
-            "days": days,
-            "offset": offset,
-            "views": 0, "likes": 0, "comments": 0,
-            "engagement_pct": 0.0,
-            "active_videos_count": 0,
-            "avg_views_per_video": 0,
-            "earnings": 0.0,
-            "note": "Aucun snapshot — la campagne n'a pas encore ete scrapee.",
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "days": days, "offset": offset,
+            "views": 0, "likes": 0, "comments": 0, "engagement_pct": 0.0,
+            "active_videos_count": 0, "avg_views_per_video": 0, "earnings": 0.0,
+            "note": "Campagne introuvable",
+        }
+    rpm = float(campaign.get("rpm") or 0)
+    tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
+
+    # 2. Recupere les account_ids ENCORE assignes (anti-fantomes)
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+
+    if not active_account_ids:
+        return {
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "days": days, "offset": offset,
+            "views": 0, "likes": 0, "comments": 0, "engagement_pct": 0.0,
+            "active_videos_count": 0, "avg_views_per_video": 0, "earnings": 0.0,
+            "note": "Aucun compte assigne a la campagne",
         }
 
-    end_date_str = end.strftime("%Y-%m-%d")
+    # 3. Calcul LIVE du total END (= valeurs actuelles filtrees correctement)
+    live_match: dict = {
+        "campaign_id": campaign_id,
+        "account_id": {"$in": active_account_ids},
+    }
+    if tracking_start:
+        live_match["published_at"] = {"$gte": tracking_start}
+
+    live_agg = await db.tracked_videos.aggregate([
+        {"$match": live_match},
+        {"$group": {
+            "_id": None,
+            "total_views": {"$sum": "$views"},
+            "total_likes": {"$sum": "$likes"},
+            "total_comments": {"$sum": "$comments"},
+            "video_count": {"$sum": 1},
+        }}
+    ]).to_list(1)
+    end_views = int(live_agg[0]["total_views"]) if live_agg else 0
+    end_likes = int(live_agg[0]["total_likes"]) if live_agg else 0
+    end_comments = int(live_agg[0]["total_comments"]) if live_agg else 0
+    total_videos = int(live_agg[0]["video_count"]) if live_agg else 0
+
+    # 4. Calcul START via snapshot (le plus recent AVANT start de la fenetre)
+    # Borne : start_views ne peut pas etre superieur a end_views (anti-snapshot-gonfle)
+    start_views = 0
+    start_likes = 0
+    start_comments = 0
+
     start_date_str = start.strftime("%Y-%m-%d")
-
-    # Snapshot le plus recent ≤ end
-    end_snap = None
-    for s in reversed(snapshots):
-        if s["date"] <= end_date_str:
-            end_snap = s
-            break
-
-    # Snapshot le plus recent < start (= debut de la fenetre)
-    start_snap = None
-    for s in reversed(snapshots):
-        if s["date"] < start_date_str:
-            start_snap = s
-            break
-
-    if not end_snap:
-        return {
-            "period_start": start.isoformat(),
-            "period_end": end.isoformat(),
-            "days": days,
-            "offset": offset,
-            "views": 0, "likes": 0, "comments": 0,
-            "engagement_pct": 0.0,
-            "active_videos_count": 0,
-            "avg_views_per_video": 0,
-            "earnings": 0.0,
-            "note": "Pas de donnees pour la periode demandee.",
-        }
-
-    end_views = int(end_snap.get("total_views") or 0)
-    end_likes = int(end_snap.get("total_likes") or 0)
-    end_comments = int(end_snap.get("total_comments") or 0)
-
-    # Si on a un snapshot avant la fenetre : delta normal
-    # Sinon : campagne neuve, le total au jour J = vues gagnees depuis le debut
+    start_snap = await db.views_snapshots.find_one(
+        {"campaign_id": campaign_id, "date": {"$lt": start_date_str}},
+        {"_id": 0, "total_views": 1, "total_likes": 1, "total_comments": 1},
+        sort=[("date", -1)]
+    )
     if start_snap:
-        start_views = int(start_snap.get("total_views") or 0)
-        start_likes = int(start_snap.get("total_likes") or 0)
-        start_comments = int(start_snap.get("total_comments") or 0)
-    else:
-        start_views = 0
-        start_likes = 0
-        start_comments = 0
+        # Borne par END pour eviter delta negatif (anti-snapshot-historique-gonfle)
+        start_views = min(int(start_snap.get("total_views") or 0), end_views)
+        start_likes = min(int(start_snap.get("total_likes") or 0), end_likes)
+        start_comments = min(int(start_snap.get("total_comments") or 0), end_comments)
 
     period_views = max(0, end_views - start_views)
     period_likes = max(0, end_likes - start_likes)
     period_comments = max(0, end_comments - start_comments)
 
-    # Compte les videos actives (non archivees) pour la moyenne
+    # 5. Compte videos actives (non archivees) pour la moyenne
     active_videos_count = await db.tracked_videos.count_documents({
-        "campaign_id": campaign_id,
+        **live_match,
         "tracking_active": {"$ne": False},
     })
 
     engagement_pct = round(((period_likes + period_comments) / period_views * 100), 1) if period_views > 0 else 0.0
     avg_views = int(period_views / active_videos_count) if active_videos_count > 0 else 0
-
-    # Gains : rpm de la campagne x views / 1000
-    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "rpm": 1})
-    rpm = float((campaign or {}).get("rpm") or 0)
     earnings = round((period_views / 1000) * rpm, 2)
 
     return {
@@ -11355,10 +11385,11 @@ async def get_campaign_kpi_stats(
         "comments": period_comments,
         "engagement_pct": engagement_pct,
         "active_videos_count": active_videos_count,
+        "total_videos_in_period": total_videos,
         "avg_views_per_video": avg_views,
         "earnings": earnings,
-        "source": "daily_snapshots_delta",
-        "note": "Delta entre snapshot debut/fin de periode. Synchronise avec la courbe.",
+        "source": "live_aggregate_filtered",
+        "note": "Calcul live avec filtres anti-fantomes (compte assigne + published_at >= tracking_start). Synchronise avec /tracked-videos.",
     }
 
 
