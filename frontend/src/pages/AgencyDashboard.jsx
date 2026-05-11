@@ -3263,8 +3263,26 @@ function CampaignDashboard({ campaigns }) {
                                     )}
                                   </div>
                                   <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
-                                  {acc.status !== "verified" && (
-                                    <span className="text-[9px] text-amber-400/70 flex-shrink-0">{acc.status}</span>
+                                  {acc.status === "deleted" && (
+                                    <span
+                                      className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold flex-shrink-0 border border-red-500/40"
+                                      title={acc.deleted_reason || acc.error_message || "Compte introuvable / supprimé"}
+                                    >
+                                      🗑 Introuvable
+                                    </span>
+                                  )}
+                                  {acc.status === "error" && (
+                                    <span
+                                      className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold flex-shrink-0 border border-amber-500/40"
+                                      title={acc.error_message || "Erreur de scraping"}
+                                    >
+                                      ⚠ Erreur
+                                    </span>
+                                  )}
+                                  {acc.status === "pending" && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-bold flex-shrink-0 border border-cyan-500/40">
+                                      ⏳ Vérification…
+                                    </span>
                                   )}
                                 </a>
                                 <div className="flex items-center gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity">

@@ -5615,19 +5615,24 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
         verified_ok = True
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
+        err_msg = str(e).lower()
+        is_definitely_not_found = any(kw in err_msg for kw in ["introuvable", "not found", "n'existe pas", "does not exist", "404"])
 
         # TikTok: NEVER use HTTP fallback — cloud IPs are blocked by TikTok/Cloudflare
         # and the response (200 + JS challenge) cannot reliably confirm account existence.
         if platform == "tiktok":
+            # Si l'erreur dit explicitement "introuvable" -> marque DELETED (compte n'existe pas)
+            # Sinon error (inaccessible temporairement)
+            new_status = "deleted" if is_definitely_not_found else "error"
             await db.social_accounts.update_one(
                 {"account_id": account_id},
                 {"$set": {
-                    "status": "error",
+                    "status": new_status,
                     "error_message": (
-                        f"Compte TikTok @{username} introuvable ou inaccessible. "
-                        "TikTok bloque la vérification automatique depuis les serveurs cloud. "
-                        "Vérifiez que le pseudo est exact et que le compte est public, puis réessayez."
-                    )
+                        f"Compte TikTok @{username} introuvable. Vérifiez l'URL." if is_definitely_not_found
+                        else f"Compte TikTok @{username} inaccessible. TikTok bloque la vérification depuis cloud. Réessayez plus tard."
+                    ),
+                    **({"deleted_at": datetime.now(timezone.utc).isoformat(), "deleted_reason": "Verification a l'ajout : introuvable"} if is_definitely_not_found else {}),
                 }}
             )
             return
@@ -8773,9 +8778,31 @@ async def _scrape_one_account_into_campaign(
 
     # Cas 1 : aucune vidéo et erreur explicite
     if not videos and last_err and last_err != "aucune vidéo retournée":
+        # DETECTION COMPTE SUPPRIME : si l'erreur indique "introuvable" / "not found" / "404"
+        # → on incremente un compteur. Apres 3 echecs consecutifs sur ce motif, on marque
+        # le compte comme DELETED (status special pour l'UI).
+        err_lower = last_err.lower()
+        is_not_found = any(kw in err_lower for kw in ["introuvable", "not found", "404", "does not exist", "n'existe pas"])
+        update_fields = {
+            "last_scrape_error": last_err,
+            "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if is_not_found:
+            # Incrémente le compteur de "not found"
+            current_count = int(account.get("not_found_count") or 0) + 1
+            update_fields["not_found_count"] = current_count
+            if current_count >= 3:
+                # 3 echecs consecutifs sur "introuvable" -> compte supprime
+                update_fields["status"] = "deleted"
+                update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
+                update_fields["deleted_reason"] = f"Compte introuvable sur {plat} (3 echecs consecutifs)"
+                logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : {current_count} echecs 'introuvable' consecutifs")
+        else:
+            # Erreur autre que "not found" : reset le compteur
+            update_fields["not_found_count"] = 0
         await db.social_accounts.update_one(
             {"account_id": acc_id},
-            {"$set": {"last_scrape_error": last_err, "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat()}}
+            {"$set": update_fields}
         )
         return {**base_result, "ok": False, "error": last_err, "fetched": 0}
 
