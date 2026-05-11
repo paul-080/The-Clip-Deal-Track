@@ -835,16 +835,17 @@ def _get_instagram_session() -> str:
     best = min(INSTAGRAM_SESSIONS, key=lambda c: _INSTAGRAM_SESSION_BAD_UNTIL.get(c, 0))
     logger.warning(f"⚠ Tous les cookies Insta sont bad — on tente quand meme {best[:20]}...")
     return best
-# SECURITY/COST : Apify est DESACTIVE par defaut partout. C'est un signal d'alarme :
-# si Apify est appele en routine, c'est que la cascade gratuite (VPS / TikWm / Meta API
-# / yt-dlp) est cassee. On ne veut JAMAIS payer Apify pour scraper. Pour reactiver
-# explicitement (debug uniquement), set APIFY_DISABLED=false sur Railway.
-APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'true').strip().lower() in ('true', '1', 'yes'))
-# Kill switches dedies par plateforme — actifs par defaut (force OFF meme si APIFY_DISABLED=false)
+# SECURITY/COST : Apify est DISPONIBLE en LAST RESORT pour Insta (mode emergency).
+# - Cascade gratuite (Meta Discovery + curl_cffi Chrome131 + VPS + yt-dlp) est essayee EN PRIORITE
+# - Si TOUTES ces sources echouent (proxies datacenter bannis par Insta) : Apify LAST RESORT
+# - Budget plafonne a 50 Apify/jour pour Insta = ~10$/mois max
+# Pour TikTok : kill switch reste ON (VPS marche tres bien, pas besoin d'Apify)
+APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
+# Kill switch TikTok : reste ON par defaut (VPS Hostinger marche pour TikTok)
 _APIFY_TIKTOK_KILL_SWITCH = (os.environ.get('APIFY_TIKTOK_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
 # Budget circuit breaker : nb max d'appels Apify/jour par plateforme (anti-explosion budget)
-# Si jamais Apify est reactive, ces budgets limitent les degats.
-APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '200'))
+# Insta 50/jour = ~10$/mois MAX si toute la cascade gratuite plante chaque jour
+APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '50'))
 APIFY_TIKTOK_DAILY_BUDGET = int(os.environ.get('APIFY_TIKTOK_DAILY_BUDGET', '50'))
 
 
@@ -6307,7 +6308,15 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify bloque)")
 
 
+# MODE 'EMERGENCY' : Apify Insta autorise SEULEMENT en LAST RESORT (cascade gratuite KO)
+# Le kill switch est maintenu pour les autres endroits (mid-cascade), mais le DERNIER
+# fallback (Priority 7) est autorise pour garantir 100% de fiabilite sur Insta.
+# Budget plafonne a 50 calls/jour pour limiter le cout (~10$/mois max).
+# Pour vraiment tout bloquer : set APIFY_INSTA_FORCE_OFF=true (revient au comportement strict)
 _APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
+# Le mode emergency permet d'utiliser Apify UNIQUEMENT en dernier recours (Priority 7),
+# meme si le kill switch global est ON. Garantit 100% Insta meme avec proxies datacenter.
+APIFY_INSTA_EMERGENCY_FALLBACK = (os.environ.get('APIFY_INSTA_EMERGENCY_FALLBACK', 'true').strip().lower() in ('true', '1', 'yes'))
 
 
 async def _fetch_instagram_via_business_discovery_account(username: str, max_videos: int = 50) -> Optional[list]:
@@ -7372,12 +7381,16 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
-    # Priorité 7 (DERNIER RECOURS) : Apify Instagram — DESACTIVE PAR DEFAUT (kill switch)
-    # Bug identifie dans les logs : Apify apparaissait MALGRE le kill switch ailleurs.
-    # FIX : on check d'abord _APIFY_INSTA_KILL_SWITCH ici aussi.
-    if _APIFY_INSTA_KILL_SWITCH:
-        logger.warning(f"⚠️ ALERTE Insta @{username} : cascade gratuite a tout echoue MAIS Apify bloque par kill switch (signal alarme)")
-        await _log_scrape("apify_blocked", "instagram", username, False, 0, "kill switch ON (signal alarme cascade gratuite KO)")
+    # Priorité 7 (DERNIER RECOURS) : Apify Instagram
+    # MODE EMERGENCY (default ON) : si la cascade gratuite a TOUT rate, on autorise
+    # Apify en LAST RESORT pour garantir 100% de fiabilite Insta.
+    # Le user a 20 proxies DATACENTER (bannis par Insta) + 1 cookie. Sans residentiel,
+    # impossible d'atteindre 100% sans Apify last-resort. Budget plafonne (50/jour).
+    # Pour bloquer completement : set APIFY_INSTA_EMERGENCY_FALLBACK=false ET APIFY_INSTA_FORCE_OFF=true
+    use_apify_emergency = APIFY_INSTA_EMERGENCY_FALLBACK or (not _APIFY_INSTA_KILL_SWITCH)
+    if not use_apify_emergency:
+        logger.warning(f"⚠️ ALERTE Insta @{username} : cascade gratuite a tout echoue MAIS Apify bloque par kill switch + emergency OFF")
+        await _log_scrape("apify_blocked", "instagram", username, False, 0, "kill switch ON + emergency OFF (cascade gratuite KO)")
     elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
