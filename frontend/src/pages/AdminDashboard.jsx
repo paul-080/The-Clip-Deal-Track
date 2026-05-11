@@ -1558,6 +1558,151 @@ function ApifyAlarmBanner() {
   );
 }
 
+function MultiPlatformStressTestSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runStressTest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      // 40 iterations sur 3 plateformes = ~10-15 min
+      const d = await adminFetch("/admin/stress-test-all-platforms?n_iterations=40", { method: "GET" });
+      setData(d);
+    } catch (e) {
+      setError(`Erreur : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = (verdict) =>
+    verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : verdict?.startsWith("🟡") ? "text-amber-400 border-amber-500/40 bg-amber-500/5"
+    : verdict?.startsWith("🟠") ? "text-orange-400 border-orange-500/40 bg-orange-500/5"
+    : "text-red-400 border-red-500/40 bg-red-500/5";
+
+  const renderPlatformPanel = (platformData, platformName, icon, color) => {
+    if (!platformData) return null;
+    return (
+      <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-2">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-lg">{icon}</span>
+          <h4 className="text-white font-semibold text-sm">{platformName}</h4>
+        </div>
+        <div className={`border rounded p-2 text-xs font-bold ${verdictColor(platformData.verdict)}`}>
+          {platformData.verdict}
+        </div>
+        <div className="grid grid-cols-4 gap-1.5 text-center">
+          <div className="bg-white/5 rounded p-1">
+            <p className="text-white/40 text-[9px]">Total</p>
+            <p className="text-white font-mono font-bold text-sm">{platformData.n_iterations}</p>
+          </div>
+          <div className="bg-emerald-500/10 rounded p-1">
+            <p className="text-emerald-400/60 text-[9px]">OK</p>
+            <p className="text-emerald-400 font-mono font-bold text-sm">{platformData.success_count}</p>
+          </div>
+          <div className="bg-red-500/10 rounded p-1">
+            <p className="text-red-400/60 text-[9px]">KO</p>
+            <p className="text-red-400 font-mono font-bold text-sm">{platformData.fail_count}</p>
+          </div>
+          <div className="bg-cyan-500/10 rounded p-1">
+            <p className="text-cyan-400/60 text-[9px]">%</p>
+            <p className="text-cyan-400 font-mono font-bold text-sm">{platformData.success_rate_pct}%</p>
+          </div>
+        </div>
+        <div className="text-[10px] space-y-0.5">
+          {Object.entries(platformData.by_account || {}).map(([acc, s]) => (
+            <div key={acc} className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${s.success_rate >= 80 ? "bg-emerald-400" : s.success_rate >= 50 ? "bg-amber-400" : "bg-red-400"}`} />
+              <span className="text-white/60 font-mono truncate">{acc}</span>
+              <span className={s.success_rate >= 80 ? "text-emerald-400" : "text-red-400"}>{s.success_rate}%</span>
+            </div>
+          ))}
+        </div>
+        <details className="bg-white/3 rounded p-1">
+          <summary className="text-white/40 text-[10px] cursor-pointer">📜 {platformData.n_iterations} itérations</summary>
+          <div className="mt-1 max-h-40 overflow-y-auto space-y-0.5">
+            {platformData.results.map((r) => (
+              <div key={r.iteration} className="flex gap-1.5 text-[9px] font-mono">
+                <span className="text-white/30 w-6">#{r.iteration}</span>
+                <span className={r.ok ? "text-emerald-400" : "text-red-400"}>{r.ok ? "✓" : "✗"}</span>
+                <span className="text-white/60 truncate flex-1">@{r.username} · {r.video_count || 0}vid · {r.duration_ms}ms</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      </div>
+    );
+  };
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🔥 STRESS TEST 3 PLATEFORMES (40 scrapes chacune)
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Lance 40 scrapes consécutifs sur Instagram + TikTok + YouTube (120 tests total). Mesure la fiabilité réelle. Durée : 5-15 min.
+          </p>
+        </div>
+        <button
+          onClick={runStressTest}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 text-purple-400 border border-purple-500/40 text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-2"
+        >
+          {loading
+            ? <><div className="w-3 h-3 border border-purple-400 border-t-transparent rounded-full animate-spin" /> Stress test… (5-15 min)</>
+            : "🔥 Lancer 120 tests (40×3)"}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+
+      {data && (
+        <>
+          <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor(data.global_verdict)}`}>
+            {data.global_verdict}
+          </div>
+
+          <div className="bg-white/3 rounded-lg p-2 grid grid-cols-2 gap-2 text-[11px]">
+            <p className="text-white/60">Moyenne : <span className="text-white font-mono font-bold">{data.avg_success_rate_pct}%</span></p>
+            <p className="text-white/60">Pire plateforme : <span className="text-white font-mono font-bold">{data.min_success_rate_pct}%</span></p>
+            <p className="text-white/60">Durée totale : <span className="text-white font-mono">{data.total_duration_sec}s</span></p>
+            <p className="text-white/60">Iterations/plateforme : <span className="text-white font-mono">{data.n_iterations_per_platform}</span></p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {renderPlatformPanel(data.instagram, "Instagram", "📸", "purple")}
+            {renderPlatformPanel(data.tiktok, "TikTok", "🎵", "cyan")}
+            {renderPlatformPanel(data.youtube, "YouTube", "▶️", "red")}
+          </div>
+
+          <div className="bg-white/3 rounded-lg p-2 text-[11px] grid grid-cols-3 gap-2">
+            <p className="text-white/60">Proxies : <span className="text-white font-mono">{data.config.proxy_pool_size}</span></p>
+            <p className="text-white/60">Cookies Insta : <span className="text-white font-mono">{data.config.instagram_sessions_count}</span></p>
+            <p className="text-white/60">VPS : <span className={data.config.vps_configured ? "text-emerald-400" : "text-red-400"}>{data.config.vps_configured ? "✓" : "✗"}</span></p>
+            <p className="text-white/60">YT API : <span className={data.config.youtube_api_configured ? "text-emerald-400" : "text-red-400"}>{data.config.youtube_api_configured ? "✓" : "✗"}</span></p>
+            <p className="text-white/60">TikWm : <span className={data.config.tikwm_api_configured ? "text-emerald-400" : "text-red-400"}>{data.config.tikwm_api_configured ? "✓" : "✗"}</span></p>
+            <p className="text-white/60">Meta Business : <span className={data.config.ig_business_configured ? "text-emerald-400" : "text-amber-400"}>{data.config.ig_business_configured ? "✓" : "✗"}</span></p>
+          </div>
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-4 text-white/30 text-xs">
+          Clique pour lancer 40 scrapes consécutifs sur chaque plateforme.
+          <br />
+          Résultat : taux de fiabilité réel + recommandations.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InstaStressTestSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2179,8 +2324,8 @@ function SiteHealthSection() {
       {/* 🚨 MEGA DIAGNOSTIC : EN HAUT DE PAGE car le user dit "rien ne marche" */}
       <MegaDiagnosticSection />
 
-      {/* 🔥 STRESS TEST INSTA 30x : verifier taux de succes reel */}
-      <InstaStressTestSection />
+      {/* 🔥 STRESS TEST 3 PLATEFORMES 40x chacune */}
+      <MultiPlatformStressTestSection />
 
       {/* 🔬 TEST APPROFONDI proxy + VPS — pour identifier la cause exacte du 'rien ne marche' */}
       <ProxyVpsDeepTestSection />

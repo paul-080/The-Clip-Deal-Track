@@ -9417,14 +9417,31 @@ WATCHDOG_TEST_ACCOUNTS = {
     "youtube": os.environ.get("WATCHDOG_TEST_YOUTUBE", "UCBR8-60-B28hp2BmDPdntcQ"),
 }
 
-# Liste de comptes Insta "rotation test" : si garyvee echoue, on essaye d'autres
-# (Business public moyennement gros, peu cible). Utile pour stress test.
+# Liste de comptes Insta "rotation test" : Business public moyennement gros, peu cibles.
 INSTA_TEST_ACCOUNTS_FALLBACK = [
     "garyvee",      # Gary V, businessman, scrapable
     "9gag",         # Compte humour public Business
     "champagnepapi", # Drake, scrapable
     "leomessi",     # Messi, large mais ouvert
     "natgeo",       # National Geographic (gros mais souvent OK)
+]
+
+# Comptes TikTok test : public et populaires mais scrapables
+TIKTOK_TEST_ACCOUNTS_FALLBACK = [
+    "khaby.lame",        # Top public mondial
+    "charlidamelio",     # Charli D'Amelio
+    "addisonre",         # Addison Rae
+    "willsmith",         # Will Smith
+    "zachking",          # Zach King
+]
+
+# Channel IDs YouTube test
+YOUTUBE_TEST_CHANNELS_FALLBACK = [
+    "UCBR8-60-B28hp2BmDPdntcQ",  # YouTube officiel
+    "UC-lHJZR3Gqxm24_Vd_AJ5Yw",  # PewDiePie
+    "UCq-Fj5jknLsUf-MWSy4_brA",  # T-Series
+    "UCpEhnqL0y41EpW2TvWAHD7Q",  # SET India
+    "UCX6OQ3DkcsbYNE6H8uQQuVA",  # MrBeast
 ]
 
 _WATCHDOG_FAILURES: dict = {"instagram": 0, "tiktok": 0, "youtube": 0}
@@ -15937,6 +15954,136 @@ async def admin_reactivate_archived_videos(request: Request, body: dict = None, 
         "ok": True,
         "reactivated_count": res.modified_count,
         "message": f"{res.modified_count} videos reactivees, elles seront re-scrapees au prochain cycle.",
+    }
+
+
+@api_router.get("/admin/stress-test-all-platforms")
+async def admin_stress_test_all_platforms(
+    request: Request,
+    n_iterations: int = 40,
+    _: bool = Depends(verify_admin_code)
+):
+    """🔥 STRESS TEST 3 PLATEFORMES : Instagram + TikTok + YouTube, N=40 scrapes
+    consecutifs sur chacune. Mesure le taux de succes reel en prod.
+
+    Retourne un rapport detaille par plateforme avec verdict global.
+    Duree estimee : 5-15 min selon la cascade.
+    """
+    n_iterations = max(5, min(int(n_iterations), 100))
+
+    async def _stress_one_platform(platform: str, accounts: list, fetch_fn) -> dict:
+        """Lance n_iterations scrapes sur la plateforme avec rotation des comptes."""
+        results: list = []
+        n_accounts = len(accounts)
+        start = time.time()
+        for i in range(n_iterations):
+            username = accounts[i % n_accounts]
+            t0 = time.time()
+            try:
+                videos = await fetch_fn(username)
+                duration_ms = int((time.time() - t0) * 1000)
+                ok = bool(videos and len(videos) > 0)
+                results.append({
+                    "iteration": i + 1,
+                    "username": username,
+                    "ok": ok,
+                    "video_count": len(videos) if videos else 0,
+                    "duration_ms": duration_ms,
+                })
+            except Exception as e:
+                duration_ms = int((time.time() - t0) * 1000)
+                results.append({
+                    "iteration": i + 1,
+                    "username": username,
+                    "ok": False,
+                    "error": str(e)[:200],
+                    "duration_ms": duration_ms,
+                })
+        total_duration_sec = round(time.time() - start, 1)
+        n_ok = sum(1 for r in results if r["ok"])
+        n_total = len(results)
+        success_rate = round((n_ok / n_total) * 100, 1) if n_total > 0 else 0.0
+        # Par compte
+        by_account: dict = {}
+        for r in results:
+            u = r["username"]
+            if u not in by_account:
+                by_account[u] = {"tries": 0, "ok": 0, "total_videos": 0}
+            by_account[u]["tries"] += 1
+            if r["ok"]:
+                by_account[u]["ok"] += 1
+                by_account[u]["total_videos"] += r.get("video_count", 0)
+        for u in by_account:
+            by_account[u]["success_rate"] = round((by_account[u]["ok"] / by_account[u]["tries"]) * 100, 1)
+            by_account[u]["avg_videos"] = round(by_account[u]["total_videos"] / max(1, by_account[u]["ok"]), 1)
+        # Verdict
+        if success_rate >= 90:
+            verdict = f"✅ EXCELLENT : {success_rate}% ({n_ok}/{n_total})"
+        elif success_rate >= 70:
+            verdict = f"🟡 BON : {success_rate}% ({n_ok}/{n_total})"
+        elif success_rate >= 50:
+            verdict = f"🟠 MOYEN : {success_rate}% ({n_ok}/{n_total})"
+        else:
+            verdict = f"🔴 CRITIQUE : {success_rate}% ({n_ok}/{n_total})"
+        return {
+            "platform": platform,
+            "n_iterations": n_total,
+            "success_count": n_ok,
+            "fail_count": n_total - n_ok,
+            "success_rate_pct": success_rate,
+            "verdict": verdict,
+            "total_duration_sec": total_duration_sec,
+            "by_account": by_account,
+            "results": results,
+        }
+
+    # Wrappers pour chaque plateforme
+    async def _fetch_ig(u):
+        return await _fetch_instagram_videos_async(u, since_days=7)
+    async def _fetch_tt(u):
+        return await _fetch_tiktok_videos_async(u, since_days=7, user_id=None)
+    async def _fetch_yt(u):
+        return await _fetch_youtube_videos(u, since_days=7)
+
+    start_total = time.time()
+    insta_result = await _stress_one_platform("instagram", INSTA_TEST_ACCOUNTS_FALLBACK, _fetch_ig)
+    tiktok_result = await _stress_one_platform("tiktok", TIKTOK_TEST_ACCOUNTS_FALLBACK, _fetch_tt)
+    youtube_result = await _stress_one_platform("youtube", YOUTUBE_TEST_CHANNELS_FALLBACK, _fetch_yt)
+    total_duration_sec = round(time.time() - start_total, 1)
+
+    # Verdict global : pire des 3
+    rates = [insta_result["success_rate_pct"], tiktok_result["success_rate_pct"], youtube_result["success_rate_pct"]]
+    min_rate = min(rates)
+    avg_rate = round(sum(rates) / 3, 1)
+    if min_rate >= 90:
+        global_verdict = f"✅ TOUT MARCHE : moyenne {avg_rate}%, pire = {min_rate}% — production-ready"
+    elif min_rate >= 70:
+        global_verdict = f"🟡 BON ENSEMBLE : moyenne {avg_rate}%, pire = {min_rate}% — utilisable"
+    elif min_rate >= 50:
+        global_verdict = f"🟠 1+ PLATEFORME FRAGILE : moyenne {avg_rate}%, pire = {min_rate}%"
+    else:
+        global_verdict = f"🔴 1+ PLATEFORME EN PANNE : moyenne {avg_rate}%, pire = {min_rate}%"
+
+    return {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "n_iterations_per_platform": n_iterations,
+        "total_duration_sec": total_duration_sec,
+        "global_verdict": global_verdict,
+        "avg_success_rate_pct": avg_rate,
+        "min_success_rate_pct": min_rate,
+        "instagram": insta_result,
+        "tiktok": tiktok_result,
+        "youtube": youtube_result,
+        "config": {
+            "proxy_pool_size": len(BACKEND_PROXY_LIST) if BACKEND_PROXY_LIST else 0,
+            "insta_sem_size": _insta_sem_size,
+            "insta_delay_sec": _insta_delay,
+            "ig_business_configured": bool(IG_BUSINESS_ACCOUNT_ID and IG_LONG_LIVED_TOKEN),
+            "instagram_sessions_count": len(INSTAGRAM_SESSIONS) if INSTAGRAM_SESSIONS else 0,
+            "vps_configured": bool(CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY),
+            "youtube_api_configured": bool(YOUTUBE_API_KEY),
+            "tikwm_api_configured": bool(TIKWM_API_KEY),
+        },
     }
 
 
