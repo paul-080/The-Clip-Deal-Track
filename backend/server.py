@@ -11637,40 +11637,71 @@ async def get_campaign_views_chart(
                         "note": "Plan Business : 2 scrapes/jour -> 2 points horaires (08h + 20h Paris)",
                     }
 
-    # Recupere TOUS les snapshots quotidiens de la campagne (pas que la fenetre
-    # car on a besoin du snapshot J-1 pour calculer le delta du J=start)
+    # ── CALCUL LIVE du total_views ACTUEL (filtre anti-fantomes + anti-vieilles) ──
+    # Sert de BORNE pour les snapshots passes potentiellement gonfles.
+    # Si un snapshot ancien = 3M vues mais le total live filtre = 10k, on plafonne
+    # le snapshot a 10k (-> delta correct au lieu de chiffres aberrants).
+    campaign_doc = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "tracking_start_date": 1, "created_at": 1}
+    )
+    tracking_start = (campaign_doc or {}).get("tracking_start_date") or (campaign_doc or {}).get("created_at")
+
+    active_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in active_assignments if a.get("account_id")]
+
+    live_total_views = 0
+    if active_account_ids:
+        live_match: dict = {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}}
+        if tracking_start:
+            live_match["published_at"] = {"$gte": tracking_start}
+        live_agg = await db.tracked_videos.aggregate([
+            {"$match": live_match},
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+        ]).to_list(1)
+        live_total_views = int(live_agg[0]["total_views"]) if live_agg else 0
+
+    # Recupere TOUS les snapshots quotidiens (pour avoir le J-1 du 1er jour)
     snapshots = await db.views_snapshots.find(
         {"campaign_id": campaign_id},
         {"_id": 0, "date": 1, "total_views": 1}
     ).sort("date", 1).to_list(2000)
 
-    # Construit map date -> total_views
-    snap_by_date = {s["date"]: int(s.get("total_views") or 0) for s in snapshots if s.get("date")}
+    # Construit map date -> total_views, MAIS borne par live_total_views
+    # (anti-snapshot-gonfle : si le snapshot du 10 mai = 3M mais live = 10k, on plafonne)
+    snap_by_date = {}
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for s in snapshots:
+        if not s.get("date"):
+            continue
+        raw_total = int(s.get("total_views") or 0)
+        # Pour le snapshot d'AUJOURD'HUI : on utilise live_total_views (plus precis et filtre)
+        if s["date"] == today_str:
+            snap_by_date[s["date"]] = live_total_views
+        else:
+            # Pour les snapshots passes : on les plafonne par live_total_views
+            snap_by_date[s["date"]] = min(raw_total, live_total_views) if live_total_views > 0 else raw_total
 
-    # Liste triee des dates ayant un snapshot pour pouvoir trouver le snapshot precedent
+    # Si aucun snapshot aujourd'hui mais on a un total live > 0 : on l'ajoute
+    if today_str not in snap_by_date and live_total_views > 0:
+        snap_by_date[today_str] = live_total_views
+
     sorted_snap_dates = sorted(snap_by_date.keys())
 
-    # Pour chaque jour de la fenetre : delta = today_total - yesterday_total
-    # Si pas de snapshot pour le jour J : 0
-    # Si snapshot pour J mais pas J-1 : on cherche le snapshot PRECEDENT le plus proche.
-    #   Si aucun precedent (= 1er scrape de la campagne) : on assume tracking a 0 et delta = total_views.
-    # Comme ca, le 1er jour de scraping affiche bien les vues collectees (pas 0).
+    # Pour chaque jour : delta = today_total - prev_total. Si pas de prev -> 1er scrape, delta = total.
     timeline = []
     current = start
     while current <= end:
         day = current.strftime("%Y-%m-%d")
         if day in snap_by_date:
             today_total = snap_by_date[day]
-            # Trouve le snapshot le plus recent AVANT day
             prev_total = 0
-            prev_found = False
             for d in reversed(sorted_snap_dates):
                 if d < day:
                     prev_total = snap_by_date[d]
-                    prev_found = True
                     break
-            # Si pas de snapshot precedent -> 1er scrape, delta = total
-            # Si precedent -> delta = today - prev
             delta = max(0, today_total - prev_total)
         else:
             delta = 0
@@ -11679,13 +11710,13 @@ async def get_campaign_views_chart(
 
     return {
         "timeline": timeline,
-        "source": "daily_snapshots_delta",
+        "source": "daily_snapshots_delta_capped_live",
         "granularity": "daily",
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "offset": offset,
         "days": days,
-        "note": "Vues GAGNEES par jour (delta entre snapshots). 1er jour de scrape = total_views collectees.",
+        "note": "Vues GAGNEES par jour (delta snapshots, plafonne par total live filtre anti-fantomes).",
     }
 
 
