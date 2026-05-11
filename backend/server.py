@@ -3529,6 +3529,22 @@ _POST_CREATE_SCRAPE_SEM = asyncio.Semaphore(3)
 # Limite a 5 = compromis entre rapidite UX et risque ban IP
 _VERIFY_ACCOUNT_SEM = asyncio.Semaphore(5)
 
+# ── RATE LIMIT INSTAGRAM (anti-429) ──
+# Max 3 comptes Instagram scrappes en parallele (sinon Insta nous bloque vite)
+# + Delay 1.5s entre chaque appel pour respirer
+_INSTAGRAM_SCRAPE_SEM = asyncio.Semaphore(3)
+_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC = 1.5
+_INSTAGRAM_LAST_CALL_TS = [0.0]  # mutable pour partage entre coroutines
+
+async def _instagram_rate_limit_wait():
+    """Garantit delay minimum entre 2 appels Instagram pour eviter 429.
+    Combine semaphore global (max 3 simultanes) + sleep 1.5s entre appels successifs."""
+    now = time.time()
+    elapsed = now - _INSTAGRAM_LAST_CALL_TS[0]
+    if elapsed < _INSTAGRAM_DELAY_BETWEEN_CALLS_SEC:
+        await asyncio.sleep(_INSTAGRAM_DELAY_BETWEEN_CALLS_SEC - elapsed)
+    _INSTAGRAM_LAST_CALL_TS[0] = time.time()
+
 # Max appels concurrents a la Mobile Clips API d'Instagram (anti-ban)
 # Insta detecte facilement >10/sec depuis meme IP/proxy
 _INSTA_CLIPS_API_SEM = asyncio.Semaphore(8)
@@ -8120,18 +8136,32 @@ async def _scrape_one_account_into_campaign(
             logger.warning(f"Re-verify {plat}/@{uname} a échoué : {e}")
 
     # Fetch avec retry (3 tentatives, backoff 5s puis 15s)
+    # Pour Instagram : rate limit GLOBAL (max 3 paralleles + delay 1.5s entre appels)
+    # pour eviter le 429 Too Many Requests qu'on voit en prod.
     videos = []
     last_err = None
+    async def _fetch_with_rate_limit():
+        if plat == "instagram":
+            async with _INSTAGRAM_SCRAPE_SEM:
+                await _instagram_rate_limit_wait()
+                return await fetch_videos(plat, uname, account, since_days=since_days)
+        return await fetch_videos(plat, uname, account, since_days=since_days)
+
     for attempt in range(3):
         try:
-            videos = await fetch_videos(plat, uname, account, since_days=since_days)
+            videos = await _fetch_with_rate_limit()
             if videos:
                 break
-            # 0 vidéos sans exception : essaie encore (peut être rate-limit silencieux)
             last_err = "aucune vidéo retournée"
         except Exception as e:
             last_err = str(e)[:300]
             logger.warning(f"Scrape attempt {attempt+1}/3 failed for {plat}/@{uname}: {e}")
+            # Backoff EXPONENTIEL sur 429 : 30s, 90s puis 300s (5 min)
+            if "429" in last_err or "rate" in last_err.lower() or "too many" in last_err.lower():
+                wait = 30 if attempt == 0 else (90 if attempt == 1 else 300)
+                logger.info(f"Rate limit detecte pour {plat}/@{uname}, backoff {wait}s")
+                await asyncio.sleep(wait)
+                continue
         if attempt < 2:
             await asyncio.sleep(5 if attempt == 0 else 15)
 
@@ -8901,20 +8931,43 @@ def _scrape_interval_hours(tracking_per_day: int) -> int:
 
 
 def _compute_next_scrape_at(campaign_id: str, interval_hours: int, last_scraped_at: Optional[datetime] = None) -> datetime:
-    """Calcule le prochain scrape pour une campagne.
+    """Calcule le prochain scrape pour une campagne — HORAIRES FIXES Paris.
+
+    Plus de STAGGERED hash-based : toutes les campagnes scrapent aux MEMES horaires
+    fixes definis dans SCRAPE_SCHEDULE_PARIS (= [8h, 20h] Paris par defaut).
+
     - PREMIER SCRAPE (jamais scrape) : IMMEDIAT (1 minute) pour que les nouvelles
-      campagnes/comptes soient tracker des le prochain tick. L'offset stable
-      s'appliquera SEULEMENT aux scrapes suivants.
-    - SCRAPES SUIVANTS : last_scraped_at + interval (offset deja respecte
-      naturellement par la position du dernier scrape sur l'epoch).
+      campagnes/comptes soient trackes des le prochain tick.
+    - SCRAPES SUIVANTS : prochain horaire fixe selon le plan
+      * Business (interval <= 12h) : prochain de [8h, 20h]
+      * Pro (interval <= 24h)       : prochain 8h ou 20h aussi (2/jour)
+      * Starter (interval = 24h)    : prochain 8h SEULEMENT (1/jour)
     """
     now = datetime.now(timezone.utc)
-    if last_scraped_at:
-        return last_scraped_at + timedelta(hours=interval_hours)
-    # Premier scrape : immediat (au prochain tick = max 30min)
-    # Apres ce premier scrape, le cycle staggered s'enclenche naturellement
-    # car last_scraped_at sera fixe a ce moment-la et next = last + interval
-    return now + timedelta(minutes=1)
+    if not last_scraped_at:
+        # Premier scrape : immediat (au prochain tick = max quelques min)
+        return now + timedelta(minutes=1)
+    # Scrapes suivants : prochain horaire fixe Paris
+    # Pour 1 scrape/jour : on ne prend QUE le 1er horaire (8h)
+    # Pour 2+ scrapes/jour : on prend tous les horaires
+    if interval_hours >= 24:
+        schedule = [SCRAPE_SCHEDULE_PARIS[0]]  # 8h uniquement
+    else:
+        schedule = SCRAPE_SCHEDULE_PARIS  # tous (8h + 20h)
+    now_paris = now.astimezone(PARIS_TZ)
+    candidates = []
+    # Aujourd'hui (apres now)
+    for h, m in schedule:
+        cand = now_paris.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand > now_paris:
+            candidates.append(cand)
+    # Demain (si rien aujourd'hui)
+    tomorrow = now_paris + timedelta(days=1)
+    for h, m in schedule:
+        cand = tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
+        candidates.append(cand)
+    next_paris = min(candidates)
+    return next_paris.astimezone(timezone.utc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -9097,21 +9150,24 @@ async def watchdog_loop():
 
 
 async def track_videos_loop():
-    """STAGGERED scheduler : tick toutes les 30 min, scrape les campagnes DUES.
-    Chaque campagne a son propre next_scrape_at calcule depuis un offset stable
-    (hash du campaign_id). Resultat : la charge de scraping est repartie sur 24h
-    au lieu de 4 pics, ce qui reduit drastiquement le risque de ban IP par les
-    plateformes (Insta surtout).
+    """Scheduler HORAIRES FIXES : tick toutes les 5 min, scrape les campagnes DUES
+    a leur prochain horaire fixe (8h ou 20h Paris).
+
+    Tick a 5 min (au lieu de 30 min) pour que les campagnes scrapent tres
+    pres de 8h00:00 / 20h00:00 (au pire 8h05).
+
+    Le rate limit Instagram est gere par un semaphore global cote
+    _scrape_one_account_into_campaign (max 3 comptes Insta en parallele +
+    delay 1.5s entre comptes -> evite le 429).
     """
-    TICK_MINUTES = 30
+    TICK_MINUTES = 5
     while True:
         try:
             await run_video_tracking()
         except Exception as e:
             logger.error(f"Video tracking loop error: {e}")
-        # Tick fixe : 30 min entre chaque check
         sleep_seconds = TICK_MINUTES * 60
-        logger.info(f"Next scrape tick dans {TICK_MINUTES}min (staggered scheduler)")
+        logger.info(f"Next scrape tick dans {TICK_MINUTES}min (horaires fixes 8h/20h Paris)")
         await asyncio.sleep(sleep_seconds)
 
 
