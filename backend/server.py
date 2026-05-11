@@ -4768,49 +4768,146 @@ async def _verify_tiktok(username: str) -> dict:
 async def _scrape_instagram_api(username: str) -> dict:
     """
     Call Instagram's internal web API to fetch profile info.
-    When INSTAGRAM_SESSION_ID is set, uses authenticated session (works from cloud IPs).
-    Without session, only works from residential IPs (blocked on Railway).
+    APIFY-STYLE : utilise curl_cffi avec impersonate Chrome (TLS fingerprinting reel)
+    + headers complets + rotation proxy + retry sur autre proxy si 429.
+    Endpoint anonyme (X-IG-App-ID public, sans cookie obligatoire).
+
+    Note : sans proxy residentiel, Instagram peut quand meme bloquer (datacenter IPs
+    sont blacklistees). Mais on tente le maximum avec techniques Apify.
     """
     username = username.lstrip("@")
+    url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
+
+    # Headers BROWSER COMPLETS (technique Apify : pretend etre Chrome 131)
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "X-IG-App-ID": "936619743392459",
-        "X-ASBD-ID": "198387",
+        "Accept-Language": "en-US,en;q=0.9,fr;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "X-IG-App-ID": "936619743392459",  # PUBLIC, pas besoin d'auth
+        "X-ASBD-ID": "129477",
         "X-IG-WWW-Claim": "0",
-        "Origin": "https://www.instagram.com",
-        "Referer": f"https://www.instagram.com/{username}/",
+        "X-Requested-With": "XMLHttpRequest",
+        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site",
+        "Origin": "https://www.instagram.com",
+        "Referer": f"https://www.instagram.com/{username}/",
+        "Connection": "keep-alive",
     }
-    # Inject session cookie — required from cloud/datacenter IPs (rotation)
-    session = _get_instagram_session()
-    if session:
-        headers["Cookie"] = _build_instagram_cookie_header(session)
-    url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}"
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        r = await c.get(url, headers=headers)
-    if r.status_code == 200:
-        data = r.json()
-        # Instagram returns 200 with empty user when not found (when authenticated)
-        if not data.get("data", {}).get("user"):
+
+    # Cookie : optionnel (l'endpoint marche sans, mais cookie ajoute fiabilite)
+    session_cookie = _get_instagram_session() if INSTAGRAM_SESSIONS else None
+    if session_cookie:
+        headers["Cookie"] = _build_instagram_cookie_header(session_cookie)
+
+    # Tentatives avec PROXY DIFFERENT a chaque essai (jusqu'a min(5, n_proxies))
+    n_attempts = min(5, max(1, len(BACKEND_PROXY_LIST) or 1))
+    last_err = None
+    used_curl_cffi = False
+
+    # Essai 1 : curl_cffi avec impersonate Chrome (TLS fingerprinting reel)
+    try:
+        from curl_cffi import requests as _curl_requests
+        used_curl_cffi = True
+        loop = asyncio.get_event_loop()
+        for attempt in range(n_attempts):
+            current_proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+
+            def _do_curl():
+                kwargs = {"headers": headers, "timeout": 20, "impersonate": "chrome131"}
+                if current_proxy:
+                    kwargs["proxies"] = {"http": current_proxy, "https": current_proxy}
+                try:
+                    return _curl_requests.get(url, **kwargs)
+                except Exception as ex:
+                    return ex
+
+            r = await loop.run_in_executor(_thread_pool, _do_curl)
+            if isinstance(r, Exception):
+                last_err = f"curl_cffi exception: {r}"
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy, duration_sec=60)
+                continue
+
+            if r.status_code == 200:
+                if current_proxy:
+                    _mark_proxy_good(current_proxy)
+                if session_cookie:
+                    _mark_instagram_session_good(session_cookie)
+                try:
+                    data = r.json()
+                    if not data.get("data", {}).get("user"):
+                        raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+                    return data
+                except ValueError:
+                    raise
+                except Exception:
+                    last_err = "JSON parse failed"
+                    continue
+            elif r.status_code in (404, 400):
+                raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+            elif r.status_code == 401:
+                if session_cookie:
+                    _mark_instagram_session_bad(session_cookie, duration_sec=7200)
+                last_err = "Session 401 expired"
+                if attempt < n_attempts - 1:
+                    continue
+                raise ValueError(f"Instagram session expirée — mettre à jour INSTAGRAM_SESSION_ID")
+            elif r.status_code == 429:
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy, duration_sec=300)
+                retry_after = r.headers.get("Retry-After", "")
+                last_err = f"429 (Retry-After={retry_after})"
+                # Pas de cookie bad immediat - peut etre juste IP banni
+                logger.debug(f"_scrape_instagram_api 429 attempt {attempt+1}/{n_attempts} @{username} via proxy={current_proxy[-30:] if current_proxy else 'none'}")
+                if attempt < n_attempts - 1:
+                    await asyncio.sleep(0.5)  # micro-pause entre tentatives
+                    continue
+                # Apres N essais : marque cookie bad seulement si on a essaye TOUS les proxies
+                if session_cookie:
+                    _mark_instagram_session_bad(session_cookie)
+                raise ValueError(f"Instagram API erreur 429 pour @{username} apres {n_attempts} essais (Retry-After={retry_after})")
+            elif r.status_code in (301, 302, 303):
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy)
+                last_err = f"Redirect {r.status_code} (login)"
+                if attempt < n_attempts - 1:
+                    continue
+                raise ValueError(f"Instagram redirect (login) — IP/cookie banni")
+            else:
+                last_err = f"HTTP {r.status_code}"
+                if attempt < n_attempts - 1:
+                    continue
+                raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
+    except ImportError:
+        # curl_cffi pas dispo, fallback httpx classique
+        pass
+    except ValueError:
+        raise
+
+    # Fallback httpx si curl_cffi pas dispo
+    if not used_curl_cffi:
+        current_proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+        kw = {"timeout": 20, "follow_redirects": True}
+        if current_proxy:
+            kw["proxy"] = current_proxy
+        async with httpx.AsyncClient(**kw) as c:
+            r = await c.get(url, headers=headers)
+        if r.status_code == 200:
+            data = r.json()
+            if not data.get("data", {}).get("user"):
+                raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+            return data
+        elif r.status_code in (404, 400):
             raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
-        _mark_instagram_session_good(session)
-        return data
-    elif r.status_code in (404, 400):
-        raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
-    elif r.status_code == 401:
-        _mark_instagram_session_bad(session, duration_sec=7200)  # 2h, session probablement expiree
-        raise ValueError(f"Instagram session expirée — mettre à jour INSTAGRAM_SESSION_ID")
-    elif r.status_code == 429:
-        _mark_instagram_session_bad(session)  # marque cookie bad 5 min
-        # Lit Retry-After si dispo
-        retry_after = r.headers.get("Retry-After", "")
-        raise ValueError(f"Instagram API erreur 429 pour @{username} (cookie bad pour 5min) Retry-After={retry_after}")
-    else:
-        raise ValueError(f"Instagram API erreur {r.status_code} pour @{username}")
+        else:
+            raise ValueError(f"Instagram API erreur {r.status_code} pour @{username} (httpx fallback)")
+
+    raise ValueError(f"_scrape_instagram_api echec apres {n_attempts} essais @{username} : {last_err}")
 
 
 def _parse_apify_item(item: dict, username: str) -> dict | None:
