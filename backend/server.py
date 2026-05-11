@@ -13475,6 +13475,9 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
             total_views += v.get("views", 0)
 
     # ── Source 2 : comptes assignés à la campagne ──────────────────────────
+    # FIX : ajout campaign_id au filtre tracked_videos. Sans ca, si un compte etait
+    # assigne a une autre campagne avant, ses videos d'AUTRES campagnes etaient
+    # comptees dans les earnings de cette campagne -> paiement gonfle.
     assignments = await db.campaign_social_accounts.find(
         {"campaign_id": campaign_id, "user_id": user_id},
         {"_id": 0, "account_id": 1}
@@ -13482,7 +13485,7 @@ async def _calc_earnings_for_member(campaign_id: str, user_id: str, rpm: float) 
     account_ids = [a["account_id"] for a in assignments]
     if account_ids:
         acc_vids = await db.tracked_videos.find(
-            {"account_id": {"$in": account_ids}},
+            {"campaign_id": campaign_id, "account_id": {"$in": account_ids}},
             {"_id": 0, "platform_video_id": 1, "views": 1, "published_at": 1, "manually_added": 1}
         ).to_list(10000)
         for v in acc_vids:
