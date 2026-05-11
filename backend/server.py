@@ -6520,19 +6520,27 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
 
     # Helper qui essaye avec ou sans proxy, retourne (status, json_data, error)
     # Protege par semaphore global pour limiter calls concurrents Insta (anti-ban)
+    # ROTATION PROXY : utilise _get_next_proxy() au lieu de BACKEND_PROXY_URL fixe
     async def _post_clips_page(body: str, with_proxy: bool) -> tuple:
         async with _INSTA_CLIPS_API_SEM:
             kw = {"timeout": 20, "headers": headers_clips}
-            if with_proxy and BACKEND_PROXY_URL:
-                kw["proxy"] = BACKEND_PROXY_URL
+            current_proxy = None
+            if with_proxy:
+                current_proxy = _get_next_proxy()
+                if current_proxy:
+                    kw["proxy"] = current_proxy
             try:
                 async with httpx.AsyncClient(**kw) as c:
                     r = await c.post("https://i.instagram.com/api/v1/clips/user/", content=body)
                 if r.status_code == 200:
+                    if current_proxy:
+                        _mark_proxy_good(current_proxy)
                     try:
                         return r.status_code, r.json(), None
                     except Exception as je:
                         return r.status_code, None, f"JSON parse: {je}"
+                elif r.status_code in (429, 403) and current_proxy:
+                    _mark_proxy_bad(current_proxy)
                 return r.status_code, None, f"HTTP {r.status_code}: {r.text[:120]}"
             except Exception as e:
                 return None, None, f"{type(e).__name__}: {str(e)[:150]}"
@@ -6632,49 +6640,91 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
 
 async def _fetch_instagram_via_public_html(username: str, max_videos: int = 30) -> Optional[list]:
     """FREE PATH ULTIME : scrape la page profil public d'Instagram via HTML.
-    Marche depuis IPs cloud SI Insta n'a pas bloque l'IP. Utilise des
-    User-Agents varies, pas besoin de proxy ni de session.
+    Avec ROTATION PROXY : essaye jusqu'a 5 proxies differents avant d'abandonner.
+    User-Agents aussi varies a chaque tentative. Cookies optionnels.
 
-    Strategy : GET https://www.instagram.com/{user}/?__a=1 (deprecate mais
-    encore actif pour certains comptes) puis fallback sur la page HTML
-    avec extraction du JSON embed.
+    Marche bien pour les comptes PUBLIC (perso) qui ne sont pas Business/Creator.
     """
     import re as _re_pub
     import json as _json_pub
     username = username.lstrip("@")
 
-    # User-Agents varies pour eviter detection pattern
+    # User-Agents varies a chaque tentative
     user_agents = [
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
     ]
     import random as _rnd
-    ua = _rnd.choice(user_agents)
-    headers = {
-        "User-Agent": ua,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-    }
-    # Session cookie si dispo
-    sess = _get_instagram_session()
-    if sess:
-        headers["Cookie"] = _build_instagram_cookie_header(sess)
 
-    client_kwargs = {"timeout": 20, "headers": headers, "follow_redirects": True}
-    if BACKEND_PROXY_URL:
-        client_kwargs["proxy"] = BACKEND_PROXY_URL
-
+    # ROTATION : essaye jusqu'a 5 fois avec proxies + UA differents
+    n_attempts = min(5, max(1, len(BACKEND_PROXY_LIST) or 1))
     profile_url = f"https://www.instagram.com/{username}/"
-    try:
-        async with httpx.AsyncClient(**client_kwargs) as c:
-            r = await c.get(profile_url)
-        if r.status_code != 200:
-            logger.debug(f"Insta public HTML HTTP {r.status_code} for @{username}")
-            return None
 
-        body = r.text
+    for attempt in range(n_attempts):
+        ua = _rnd.choice(user_agents)
+        headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
+        }
+        # Cookie session uniquement sur la 1ere tentative (sinon on grille un cookie pour rien)
+        if attempt == 0:
+            sess = _get_instagram_session()
+            if sess:
+                headers["Cookie"] = _build_instagram_cookie_header(sess)
+        # Proxy DIFFERENT a chaque tentative
+        current_proxy = _get_next_proxy()
+        client_kwargs = {"timeout": 20, "headers": headers, "follow_redirects": True}
+        if current_proxy:
+            client_kwargs["proxy"] = current_proxy
+
+        try:
+            async with httpx.AsyncClient(**client_kwargs) as c:
+                r = await c.get(profile_url)
+            if r.status_code == 200:
+                if current_proxy:
+                    _mark_proxy_good(current_proxy)
+                body = r.text
+                break  # OK, on traite le body
+            elif r.status_code in (429, 403):
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy)
+                logger.debug(f"Insta HTML {r.status_code} attempt {attempt+1}/{n_attempts} @{username} — try another proxy")
+                if attempt < n_attempts - 1:
+                    await asyncio.sleep(1.0)  # courte pause entre proxies
+                    continue
+                return None
+            elif r.status_code in (301, 302):
+                # Redirect to login = IP/proxy bannie
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy)
+                logger.debug(f"Insta HTML redirect to login attempt {attempt+1}/{n_attempts} @{username}")
+                if attempt < n_attempts - 1:
+                    continue
+                return None
+            else:
+                logger.debug(f"Insta HTML HTTP {r.status_code} attempt {attempt+1} @{username}")
+                if attempt < n_attempts - 1:
+                    continue
+                return None
+        except Exception as exc:
+            logger.debug(f"Insta HTML exception attempt {attempt+1} @{username}: {type(exc).__name__}: {exc}")
+            if current_proxy:
+                _mark_proxy_bad(current_proxy, duration_sec=60)  # 1 min sur erreur reseau
+            if attempt < n_attempts - 1:
+                continue
+            return None
+    else:
+        # for...else : pas atteint le break -> tous les attempts ont fail
+        return None
+
+    # Body recupere avec succes, on parse
+    try:
+        # body est deja set par le break dans la boucle ci-dessus
         # Cherche le JSON embed avec data du profil
         # Pattern courant : "edge_owner_to_timeline_media":{...}
         m = _re_pub.search(r'"edge_owner_to_timeline_media":\s*\{[^{}]*"edges":\s*(\[(?:[^[\]]|\[[^[\]]*\])*\])', body)
