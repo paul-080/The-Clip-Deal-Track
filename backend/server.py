@@ -305,8 +305,9 @@ async def _extract_owner_username_from_url(url: str) -> Optional[str]:
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
         client_kwargs = {"timeout": 10, "headers": headers, "follow_redirects": True}
-        if BACKEND_PROXY_URL:
-            client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
+        proxy_url = _get_next_proxy()
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
         async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get(f"https://www.instagram.com/p/{shortcode}/embed/captioned/")
         if r.status_code == 200:
@@ -349,15 +350,16 @@ async def _fetch_tiktok_via_curl_cffi(url: str) -> Optional[dict]:
     try:
         from curl_cffi import requests as _curl_requests
         loop = asyncio.get_event_loop()
-        def _do_get():
+        proxy_for_tt = _get_next_proxy()
+        def _do_get(_proxy=proxy_for_tt):
             kw = {
                 "headers": headers,
                 "timeout": 25,
                 "impersonate": "chrome131",
                 "allow_redirects": True,
             }
-            if BACKEND_PROXY_URL:
-                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+            if _proxy:
+                kw["proxies"] = {"http": _proxy, "https": _proxy}
             try:
                 r = _curl_requests.get(url, **kw)
                 return r.status_code, r.text
@@ -503,8 +505,9 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
             }
             try:
                 client_kwargs = {"timeout": 15}
-                if BACKEND_PROXY_URL:
-                    client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
+                proxy_url = _get_next_proxy()  # rotation sur les 50 proxies au lieu d'utiliser toujours le 1er
+                if proxy_url:
+                    client_kwargs["proxy"] = proxy_url  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
                 async with httpx.AsyncClient(**client_kwargs) as c:
                     r = await c.post(
                         "https://www.instagram.com/api/graphql",
@@ -520,7 +523,11 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
                         data = parsed
                         logger.info(f"GraphQL httpx SUCCESS for {shortcode} via doc_id={doc_id} (cookies={'YES' if use_cookies else 'NO'})")
                         break
+                elif r.status_code == 429 and proxy_url:
+                    _mark_proxy_bad(proxy_url)
             except Exception as e:
+                if proxy_url:
+                    _mark_proxy_bad(proxy_url)
                 logger.debug(f"GraphQL httpx exception doc_id={doc_id}: {type(e).__name__}: {e}")
 
     # Methode 2 : curl_cffi en fallback (TLS Chrome) si httpx echoue
@@ -534,7 +541,8 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
                     "doc_id": doc_id,
                     "lsd": "AVqbxe3J_YA",
                 }
-                def _do_curl_post(fd=form_data):
+                proxy_url_curl = _get_next_proxy()  # rotation sur les 50 proxies
+                def _do_curl_post(fd=form_data, _proxy=proxy_url_curl):
                     kw = {
                         "headers": headers,
                         "cookies": cookies,
@@ -542,8 +550,8 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
                         "timeout": 20,
                         "impersonate": "chrome131",
                     }
-                    if BACKEND_PROXY_URL:
-                        kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+                    if _proxy:
+                        kw["proxies"] = {"http": _proxy, "https": _proxy}
                     try:
                         r = _curl_requests.post("https://www.instagram.com/api/graphql", **kw)
                         return r.status_code, r.text
@@ -635,10 +643,11 @@ async def _fetch_instagram_mobile_api(url: str) -> Optional[dict]:
     try:
         from curl_cffi import requests as _curl
         loop = asyncio.get_event_loop()
-        def _do_get():
+        proxy_for_mobile = _get_next_proxy()
+        def _do_get(_proxy=proxy_for_mobile):
             kw = {"headers": headers, "cookies": cookies, "timeout": 25, "impersonate": "chrome131"}
-            if BACKEND_PROXY_URL:
-                kw["proxies"] = {"http": BACKEND_PROXY_URL, "https": BACKEND_PROXY_URL}
+            if _proxy:
+                kw["proxies"] = {"http": _proxy, "https": _proxy}
             try:
                 r = _curl.get(f"https://i.instagram.com/api/v1/media/{media_id}/info/", **kw)
                 return r.status_code, r.text
@@ -4738,10 +4747,11 @@ async def _verify_tiktok(username: str) -> dict:
     # Fallback yt-dlp avec proxy
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
-        def _ytdlp_verify():
+        proxy_for_tt_verify = _get_next_proxy()
+        def _ytdlp_verify(_proxy=proxy_for_tt_verify):
             opts = {"quiet": True, "skip_download": True, "extract_flat": True, "playlistend": 1}
-            if BACKEND_PROXY_URL:
-                opts["proxy"] = BACKEND_PROXY_URL
+            if _proxy:
+                opts["proxy"] = _proxy
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
             if not info:
@@ -6272,7 +6282,8 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     # Fallback: yt-dlp (try multiple strategies for cloud-blocked environments)
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
-        def _ytdlp_videos():
+        proxy_for_ytdlp_tt = _get_next_proxy()
+        def _ytdlp_videos(_proxy=proxy_for_ytdlp_tt):
             # Strategy 1: standard with mobile-like headers
             base_opts = {
                 "quiet": True,
@@ -6283,9 +6294,9 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 "no_warnings": True,
                 "socket_timeout": 30,
             }
-            # CRITIQUE : ajouter le proxy si configure (Railway IP bannie par TikTok)
-            if BACKEND_PROXY_URL:
-                base_opts["proxy"] = BACKEND_PROXY_URL
+            # CRITIQUE : ajouter le proxy si configure (rotation sur les 50 proxies)
+            if _proxy:
+                base_opts["proxy"] = _proxy
             strategies = [
                 # Strategy A: desktop UA + referer
                 {**base_opts, "http_headers": {
@@ -6709,8 +6720,9 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
     }
 
     gql_kwargs = {"timeout": 20, "headers": headers_gql}
-    if BACKEND_PROXY_URL:
-        gql_kwargs["proxy"] = BACKEND_PROXY_URL
+    proxy_for_profile_gql = _get_next_proxy()
+    if proxy_for_profile_gql:
+        gql_kwargs["proxy"] = proxy_for_profile_gql
 
     gql_videos: list = []
     try:
@@ -6805,8 +6817,10 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
             },
             "follow_redirects": True,
         }
-        if use_proxy and BACKEND_PROXY_URL:
-            kwargs["proxy"] = BACKEND_PROXY_URL
+        if use_proxy:
+            _p = _get_next_proxy()
+            if _p:
+                kwargs["proxy"] = _p
         try:
             async with httpx.AsyncClient(**kwargs) as c:
                 r = await c.get(f"https://www.instagram.com/{username}/")
@@ -6835,8 +6849,10 @@ async def _fetch_instagram_account_via_graphql(username: str, max_videos: int = 
         Essaye 2 methodes : web_profile_info puis HTML meta extraction.
         """
         kwargs = {"timeout": 15, "headers": headers_uinfo}
-        if use_proxy and BACKEND_PROXY_URL:
-            kwargs["proxy"] = BACKEND_PROXY_URL
+        if use_proxy:
+            _p = _get_next_proxy()
+            if _p:
+                kwargs["proxy"] = _p
         # Methode 1 : web_profile_info
         try:
             async with httpx.AsyncClient(**kwargs) as c:
@@ -7172,7 +7188,8 @@ async def _fetch_instagram_via_ytdlp_profile(username: str, max_videos: int = 30
     profile_url = f"https://www.instagram.com/{username}/"
     loop = asyncio.get_event_loop()
 
-    def _ytdlp_extract():
+    proxy_for_ytdlp = _get_next_proxy()
+    def _ytdlp_extract(_proxy=proxy_for_ytdlp):
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -7192,9 +7209,9 @@ async def _fetch_instagram_via_ytdlp_profile(username: str, max_videos: int = 30
                 "Accept-Language": "en-US,en;q=0.9",
             },
         }
-        # Si proxy webshare configure, l'utilise
-        if BACKEND_PROXY_URL:
-            ydl_opts["proxy"] = BACKEND_PROXY_URL
+        # Si proxy webshare configure, l'utilise (rotation sur les 50 proxies)
+        if _proxy:
+            ydl_opts["proxy"] = _proxy
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(profile_url, download=False)
@@ -7902,7 +7919,8 @@ async def _fetch_youtube_videos_via_ytdlp(channel_id: str, since_days: int = 30)
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
     loop = asyncio.get_event_loop()
 
-    def _ytdlp_fetch():
+    proxy_for_yt_ytdlp = _get_next_proxy()
+    def _ytdlp_fetch(_proxy=proxy_for_yt_ytdlp):
         # URLs a tester : channel direct (UC...) puis handle (@...)
         urls = [
             f"https://www.youtube.com/channel/{channel_id}/videos",
@@ -7917,9 +7935,9 @@ async def _fetch_youtube_videos_via_ytdlp(channel_id: str, since_days: int = 30)
             "no_warnings": True,
             "socket_timeout": 30,
         }
-        # CRITIQUE : ajouter le proxy pour bypasser blocage IP cloud Railway
-        if BACKEND_PROXY_URL:
-            opts["proxy"] = BACKEND_PROXY_URL
+        # CRITIQUE : ajouter le proxy pour bypasser blocage IP cloud Railway (rotation 50 proxies)
+        if _proxy:
+            opts["proxy"] = _proxy
         for url in urls:
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -8091,14 +8109,15 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
     except Exception as e:
         logger.debug(f"TikWm failed: {e}")
 
-    # Strategy 3 : yt-dlp local (avec proxy backend si dispo)
+    # Strategy 3 : yt-dlp local (avec proxy backend si dispo, rotation 50 proxies)
     if YT_DLP_AVAILABLE:
         try:
             loop = asyncio.get_event_loop()
-            def _ytdlp_extract():
+            proxy_for_single_tt = _get_next_proxy()
+            def _ytdlp_extract(_proxy=proxy_for_single_tt):
                 opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
-                if BACKEND_PROXY_URL:
-                    opts["proxy"] = BACKEND_PROXY_URL
+                if _proxy:
+                    opts["proxy"] = _proxy
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
             info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
@@ -8509,8 +8528,9 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
         if session:
             cookies["sessionid"] = session
         client_kwargs = {"timeout": 15, "headers": headers, "cookies": cookies, "follow_redirects": True}
-        if BACKEND_PROXY_URL:
-            client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
+        proxy_for_media_info = _get_next_proxy()
+        if proxy_for_media_info:
+            client_kwargs["proxy"] = proxy_for_media_info
         async with httpx.AsyncClient(**client_kwargs) as c:
             r = await c.get(f"https://www.instagram.com/api/v1/media/{shortcode}/info/")
             if r.status_code == 200:
@@ -8603,14 +8623,15 @@ async def _fetch_single_instagram_video(url: str, account_username: Optional[str
                 "published_at": cs_result.get("published_at"),
             }
 
-    # Strategy 3: yt-dlp local Railway (avec proxy backend si configuré, sinon direct)
+    # Strategy 3: yt-dlp local Railway (avec proxy backend rotation 50 proxies, sinon direct)
     if YT_DLP_AVAILABLE:
         try:
             loop = asyncio.get_event_loop()
-            def _ytdlp_extract():
+            proxy_for_single_insta = _get_next_proxy()
+            def _ytdlp_extract(_proxy=proxy_for_single_insta):
                 opts = {"quiet": True, "skip_download": True, "no_warnings": True, "ignoreerrors": True}
-                if BACKEND_PROXY_URL:
-                    opts["proxy"] = BACKEND_PROXY_URL
+                if _proxy:
+                    opts["proxy"] = _proxy
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
             info = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
