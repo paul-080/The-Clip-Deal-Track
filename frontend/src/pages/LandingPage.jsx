@@ -794,7 +794,7 @@ export default function LandingPage() {
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Account manager dédié</li>
                 <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> SLA garanti</li>
               </ul>
-              <Button onClick={() => window.location.href = "mailto:contact@theclipdealtrack.com?subject=Plan%20Enterprise"} className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
+              <Button onClick={() => navigate("/contact-devis")} className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
                 Nous contacter
               </Button>
             </div>

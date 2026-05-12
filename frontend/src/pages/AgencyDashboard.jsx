@@ -5058,7 +5058,7 @@ function SettingsPage() {
                   </ul>
                   {plan.custom ? (
                     <Button
-                      onClick={() => window.location.href = "mailto:contact@theclipdealtrack.com?subject=Plan%20Enterprise"}
+                      onClick={() => window.location.href = "/contact-devis"}
                       className="w-full text-xs py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
                     >
                       Nous contacter

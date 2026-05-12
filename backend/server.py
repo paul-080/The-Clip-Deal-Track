@@ -14572,6 +14572,117 @@ async def start_trial(user: dict = Depends(get_current_user)):
     )
     return {"message": "Essai gratuit activé", "trial_started_at": now_iso}
 
+
+# ================= CONTACT (DEVIS ENTERPRISE) =================
+
+class ContactDevisRequest(BaseModel):
+    name: str
+    email: str
+    company: Optional[str] = None
+    phone: Optional[str] = None
+    message: str
+
+CONTACT_DEVIS_RECIPIENT = os.environ.get("CONTACT_DEVIS_RECIPIENT", "paul@ceblanque.com")
+
+
+@api_router.post("/contact/devis")
+async def contact_devis(req: ContactDevisRequest, request: Request):
+    """Envoi d'une demande de devis Enterprise par email a CONTACT_DEVIS_RECIPIENT.
+    Rate limit anti-spam : 5 envois max / IP / heure."""
+    ip = request.client.host if request.client else "unknown"
+    if _check_rate_limit(f"contact_devis:{ip}", 5, 3600):
+        raise HTTPException(status_code=429, detail="Trop de demandes — réessayez dans une heure.")
+
+    name = (req.name or "").strip()
+    email = (req.email or "").strip()
+    message = (req.message or "").strip()
+    if not name or not email or not message:
+        raise HTTPException(status_code=400, detail="Nom, email et message sont obligatoires.")
+    if len(name) > 200 or len(email) > 200 or len(message) > 5000:
+        raise HTTPException(status_code=400, detail="Un des champs est trop long.")
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Email invalide.")
+
+    company = (req.company or "").strip()[:200] or "—"
+    phone = (req.phone or "").strip()[:50] or "—"
+
+    import html as _html_local
+    html_body = f"""
+    <div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#fff;">
+      <h2 style="color:#0A0A0A;font-size:22px;margin-bottom:8px;">Nouvelle demande de devis Enterprise</h2>
+      <p style="color:#666;font-size:14px;">Via The Clip Deal Track</p>
+      <hr style="border:0;border-top:1px solid #eee;margin:20px 0;"/>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><td style="padding:8px 0;color:#999;width:120px;">Nom</td><td style="padding:8px 0;color:#000;font-weight:600;">{_html_local.escape(name)}</td></tr>
+        <tr><td style="padding:8px 0;color:#999;">Email</td><td style="padding:8px 0;color:#000;"><a href="mailto:{_html_local.escape(email)}">{_html_local.escape(email)}</a></td></tr>
+        <tr><td style="padding:8px 0;color:#999;">Entreprise</td><td style="padding:8px 0;color:#000;">{_html_local.escape(company)}</td></tr>
+        <tr><td style="padding:8px 0;color:#999;">Téléphone</td><td style="padding:8px 0;color:#000;">{_html_local.escape(phone)}</td></tr>
+      </table>
+      <hr style="border:0;border-top:1px solid #eee;margin:20px 0;"/>
+      <h3 style="color:#0A0A0A;font-size:16px;margin-bottom:8px;">Message</h3>
+      <div style="background:#fafafa;border-left:3px solid #00E5FF;padding:16px;color:#333;white-space:pre-wrap;">{_html_local.escape(message)}</div>
+      <p style="margin-top:32px;color:#999;font-size:12px;">IP: {_html_local.escape(ip)} — {datetime.now(timezone.utc).isoformat()}</p>
+    </div>
+    """
+
+    text_body = (
+        f"Nouvelle demande de devis Enterprise\n\n"
+        f"Nom: {name}\n"
+        f"Email: {email}\n"
+        f"Entreprise: {company}\n"
+        f"Telephone: {phone}\n\n"
+        f"Message:\n{message}\n\n"
+        f"IP: {ip}\n"
+    )
+
+    if not RESEND_API_KEY:
+        logger.error("RESEND_API_KEY non configure — devis non envoye")
+        raise HTTPException(status_code=503, detail="Service email indisponible. Réessayez plus tard.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": RESEND_FROM,
+                    "to": [CONTACT_DEVIS_RECIPIENT],
+                    "reply_to": email,
+                    "subject": f"[Devis Enterprise] {name} — {company if company != '—' else 'particulier'}",
+                    "html": html_body,
+                    "text": text_body,
+                },
+            )
+        if resp.status_code not in (200, 201):
+            logger.error(f"Resend error contact_devis: {resp.status_code} {resp.text[:200]}")
+            raise HTTPException(status_code=502, detail="Email non envoyé. Réessayez plus tard.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"contact_devis exception: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail="Erreur lors de l'envoi. Réessayez plus tard.")
+
+    try:
+        await db.contact_requests.insert_one({
+            "id": f"contact_{uuid.uuid4().hex[:12]}",
+            "type": "devis_enterprise",
+            "name": name,
+            "email": email,
+            "company": company,
+            "phone": phone,
+            "message": message,
+            "ip": ip,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        pass
+
+    return {"message": "Demande de devis envoyée. Nous vous recontactons sous 24h."}
+
+
 SUBSCRIPTION_PLANS = {
     # ===== Plans VUES UNIQUEMENT (tracking de vues, AUCUN tracking de clics) =====
     "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",

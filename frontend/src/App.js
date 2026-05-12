@@ -17,6 +17,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import ClaimPage from "./pages/ClaimPage";
 import TermsPage from "./pages/TermsPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
+import ContactDevis from "./pages/ContactDevis";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
@@ -406,6 +407,9 @@ const AppRouter = () => {
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/claim/agency/:token" element={<ClaimPage type="agency" />} />
       <Route path="/claim/clipper/:token" element={<ClaimPage type="clipper" />} />
+
+      {/* Contact devis Enterprise */}
+      <Route path="/contact-devis" element={<ContactDevis />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
