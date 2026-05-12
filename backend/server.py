@@ -140,9 +140,10 @@ def _is_rotating_proxy(proxy_url: str) -> bool:
 # Separation des pools : Static (illimite) en priorite, Rotating en fallback
 BACKEND_PROXY_STATIC = [p for p in BACKEND_PROXY_LIST if not _is_rotating_proxy(p)]
 BACKEND_PROXY_ROTATING = [p for p in BACKEND_PROXY_LIST if _is_rotating_proxy(p)]
-logger.info(
+print(
     f"Proxy pools: {len(BACKEND_PROXY_STATIC)} Static (illimite) + "
-    f"{len(BACKEND_PROXY_ROTATING)} Rotating (quota bandwidth limite)"
+    f"{len(BACKEND_PROXY_ROTATING)} Rotating (quota bandwidth limite)",
+    flush=True,
 )
 
 # Rotation intelligente : index round-robin + tracking proxies bad (429/403)
