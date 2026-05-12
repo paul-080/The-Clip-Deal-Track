@@ -9168,6 +9168,191 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
     finally:
         asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
+
+# ================= ACCOUNT EXISTENCE VERIFICATION =================
+# Verifie ACTIVEMENT si un compte existe sur la plateforme apres un echec de scraping.
+# Permet de distinguer "compte supprime" (status=deleted) vs "rate limit temporaire".
+
+async def _verify_insta_exists(username: str) -> Optional[bool]:
+    """Verifie via 2 sources independantes si un compte Insta existe.
+    Renvoie True (existe), False (supprime/inexistant), None (incertain).
+    """
+    username = username.lstrip("@")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+    kw = {"timeout": 12, "follow_redirects": True}
+    if proxy:
+        kw["proxy"] = proxy
+    # Source 1 : page web publique
+    sig1 = None  # True/False/None
+    try:
+        async with httpx.AsyncClient(**kw) as c:
+            r = await c.get(f"https://www.instagram.com/{username}/", headers=headers)
+        if r.status_code == 404:
+            sig1 = False
+        elif r.status_code == 200:
+            txt = r.text.lower()
+            if "sorry, this page isn't available" in txt or "la page que vous recherchez n'est pas disponible" in txt:
+                sig1 = False
+            elif f'"username":"{username.lower()}"' in r.text.lower() or f'"@{username.lower()}"' in r.text.lower():
+                sig1 = True
+    except Exception as e:
+        logger.debug(f"_verify_insta_exists web @{username}: {type(e).__name__}")
+
+    # Source 2 : API web_profile_info (cible la meme info mais via API JSON)
+    api_headers = {
+        **headers,
+        "X-IG-App-ID": "936619743392459",
+        "Origin": "https://www.instagram.com",
+        "Referer": f"https://www.instagram.com/{username}/",
+    }
+    sig2 = None
+    try:
+        async with httpx.AsyncClient(**kw) as c:
+            r = await c.get(
+                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+                headers=api_headers,
+            )
+        if r.status_code == 404:
+            sig2 = False
+        elif r.status_code == 200:
+            try:
+                data = r.json()
+                user = (data.get("data") or {}).get("user")
+                if user:
+                    sig2 = True
+                else:
+                    sig2 = False
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"_verify_insta_exists api @{username}: {type(e).__name__}")
+
+    # Combine : il faut au moins 1 signal pour conclure.
+    # Si les 2 sources sont False -> True deleted. Si au moins 1 dit True -> existe.
+    if sig1 is True or sig2 is True:
+        return True
+    if sig1 is False and sig2 is False:
+        return False
+    if sig1 is False or sig2 is False:
+        # Un seul signal "supprime" : pas assez sur (peut etre rate limit).
+        return None
+    return None
+
+
+async def _verify_tiktok_exists(username: str) -> Optional[bool]:
+    """Verifie via 2 sources si un compte TikTok existe."""
+    username = username.lstrip("@")
+    # Source 1 : TikWm user info (gratuit, IP residentielle cote serveur)
+    sig1 = None
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
+            r = await c.get(
+                "https://www.tikwm.com/api/user/info",
+                params={"unique_id": username},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+        if r.status_code == 200:
+            try:
+                data = r.json()
+                code = data.get("code")
+                msg = str(data.get("msg", "")).lower()
+                user_obj = (data.get("data") or {}).get("user")
+                if code == -1 or "not found" in msg or "doesn't exist" in msg or "user not found" in msg:
+                    sig1 = False
+                elif user_obj and user_obj.get("id"):
+                    sig1 = True
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"_verify_tiktok_exists tikwm @{username}: {type(e).__name__}")
+
+    # Source 2 : page publique TikTok
+    proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+    kw = {"timeout": 12, "follow_redirects": True}
+    if proxy:
+        kw["proxy"] = proxy
+    sig2 = None
+    try:
+        async with httpx.AsyncClient(**kw) as c:
+            r = await c.get(
+                f"https://www.tiktok.com/@{username}",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
+        if r.status_code == 404:
+            sig2 = False
+        elif r.status_code == 200:
+            txt = r.text.lower()
+            if "couldn't find this account" in txt or "compte introuvable" in txt or "nous n'avons pas trouvé" in txt:
+                sig2 = False
+            elif f'"uniqueid":"{username.lower()}"' in r.text.lower() or f'"unique_id":"{username.lower()}"' in r.text.lower():
+                sig2 = True
+            elif f"@{username.lower()}" in txt:
+                sig2 = True
+    except Exception as e:
+        logger.debug(f"_verify_tiktok_exists web @{username}: {type(e).__name__}")
+
+    if sig1 is True or sig2 is True:
+        return True
+    if sig1 is False and sig2 is False:
+        return False
+    return None
+
+
+async def _verify_youtube_exists(handle_or_channel: str) -> Optional[bool]:
+    """Verifie via YouTube Data API officielle si un channel existe.
+    Accepte un handle (avec ou sans @) ou un channel_id (UCxxx)."""
+    if not YOUTUBE_API_KEY:
+        return None
+    raw = (handle_or_channel or "").lstrip("@")
+    if not raw:
+        return False
+    # Channel ID direct
+    if raw.startswith("UC") and len(raw) >= 20:
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    "https://www.googleapis.com/youtube/v3/channels",
+                    params={"part": "id", "id": raw, "key": YOUTUBE_API_KEY},
+                )
+            if r.status_code == 200:
+                return len((r.json() or {}).get("items", [])) > 0
+        except Exception:
+            pass
+        return None
+    # Handle
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "id", "forHandle": raw, "key": YOUTUBE_API_KEY},
+            )
+        if r.status_code == 200:
+            return len((r.json() or {}).get("items", [])) > 0
+    except Exception:
+        pass
+    return None
+
+
+async def _verify_account_still_exists(platform: str, username: str) -> Optional[bool]:
+    """Dispatcher : verifie ACTIVEMENT si un compte existe sur sa plateforme.
+    Retourne True (existe), False (supprime/inexistant), None (incertain).
+    """
+    if not username:
+        return None
+    plat = (platform or "").lower()
+    if plat == "instagram":
+        return await _verify_insta_exists(username)
+    if plat == "tiktok":
+        return await _verify_tiktok_exists(username)
+    if plat == "youtube":
+        return await _verify_youtube_exists(username)
+    return None
+
+
 async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool = False):
     """Tourne le scrape pour les campagnes actives DUES (staggered scheduling).
 
@@ -9387,8 +9572,55 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "last_tracked_at": now_iso,
                         "consecutive_failures": new_failures,
                     }
-                    if new_failures >= 3:
-                        # Pause auto pendant 24h pour eviter de gaspiller des requetes
+
+                    # VERIFICATION ACTIVE D'EXISTENCE : au 1er echec, on hit la plateforme
+                    # directement pour distinguer "compte supprime" d'un "rate limit / 0 videos transitoire".
+                    # Cooldown 6h pour ne pas spammer si on a deja verifie recemment.
+                    if prev_failures == 0:
+                        last_check = account.get("last_existence_check_at")
+                        skip_check = False
+                        if last_check:
+                            try:
+                                last_dt = _parse_utc(last_check)
+                                if last_dt and (datetime.now(timezone.utc) - last_dt).total_seconds() < 6 * 3600:
+                                    skip_check = True
+                            except Exception:
+                                pass
+                        if not skip_check:
+                            try:
+                                # Pour YouTube on utilise channel_id si dispo, sinon username
+                                check_target = account.get("platform_channel_id") if platform == "youtube" else username
+                                exists = await asyncio.wait_for(
+                                    _verify_account_still_exists(platform, check_target or username),
+                                    timeout=30
+                                )
+                                update_fields["last_existence_check_at"] = now_iso
+                                update_fields["last_existence_check_result"] = (
+                                    "exists" if exists is True
+                                    else "deleted" if exists is False
+                                    else "uncertain"
+                                )
+                                if exists is False:
+                                    # COMPTE CONFIRMÉ SUPPRIMÉ : on arrête le tracking immediat
+                                    account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
+                                    update_fields["status"] = "deleted"
+                                    update_fields["deleted_at"] = now_iso
+                                    update_fields["deleted_type"] = "deleted_by_user" if account_was_verified else "never_existed"
+                                    update_fields["deleted_reason"] = (
+                                        f"Compte {platform} verifie supprime apres 1 echec de scraping "
+                                        f"({'avait deja ete scrape' if account_was_verified else 'jamais verifie'})"
+                                    )
+                                    update_fields["not_found_count"] = 99  # confirme
+                                    logger.warning(f"📛 {platform}/@{username} : compte VERIFIE supprime (verif active 2 sources). Tracking arrete.")
+                            except asyncio.TimeoutError:
+                                update_fields["last_existence_check_at"] = now_iso
+                                update_fields["last_existence_check_result"] = "timeout"
+                                logger.debug(f"Existence check TIMEOUT for {platform}/@{username}")
+                            except Exception as ex:
+                                logger.debug(f"Existence check error for {platform}/@{username}: {type(ex).__name__}: {ex}")
+
+                    # Si le compte n'est pas marque deleted par la verif, on applique l'auto-pause apres 3 echecs
+                    if update_fields.get("status") != "deleted" and new_failures >= 3:
                         pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=24)
                         update_fields["tracking_paused_until"] = pause_until_dt.isoformat()
                         logger.warning(f"⚠️ {platform}/@{username} : {new_failures} echecs consecutifs -> pause auto 24h jusqu'a {pause_until_dt.isoformat()}")
@@ -15160,6 +15392,53 @@ async def admin_resume_tracking(account_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Compte introuvable")
     acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0, "username": 1, "platform": 1})
     return {"ok": True, "account": acc, "message": "Tracking re-active pour ce compte"}
+
+
+@api_router.post("/admin/social-accounts/{account_id}/verify-existence")
+async def admin_verify_account_existence(account_id: str, request: Request):
+    """Verifie ACTIVEMENT si un compte existe encore sur sa plateforme.
+    Si False -> marque status=deleted. Si True -> reset le compteur d'echecs."""
+    await verify_admin_code(request)
+    acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+    if not acc:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    platform = acc.get("platform")
+    username = acc.get("username")
+    check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+    exists = await _verify_account_still_exists(platform, check_target or username)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_fields = {
+        "last_existence_check_at": now_iso,
+        "last_existence_check_result": "exists" if exists is True else "deleted" if exists is False else "uncertain",
+    }
+    if exists is False:
+        account_was_verified = bool(acc.get("verified_at")) or bool(acc.get("last_tracked_at"))
+        update_fields.update({
+            "status": "deleted",
+            "deleted_at": now_iso,
+            "deleted_type": "deleted_by_user" if account_was_verified else "never_existed",
+            "deleted_reason": f"Verification manuelle admin : compte {platform} confirme supprime",
+            "not_found_count": 99,
+        })
+    elif exists is True:
+        update_fields.update({
+            "consecutive_failures": 0,
+            "tracking_paused_until": None,
+            "not_found_count": 0,
+        })
+    await db.social_accounts.update_one({"account_id": account_id}, {"$set": update_fields})
+    return {
+        "ok": True,
+        "platform": platform,
+        "username": username,
+        "exists": exists,
+        "result": update_fields.get("last_existence_check_result"),
+        "action_taken": (
+            "Marque comme supprime" if exists is False
+            else "Compteurs d'echec reset" if exists is True
+            else "Aucune action (resultat incertain)"
+        ),
+    }
 
 @api_router.get("/debug/tikwm/{username}")
 async def debug_tikwm(username: str):
