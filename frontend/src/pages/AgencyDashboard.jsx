@@ -28,7 +28,7 @@ import {
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
   TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
   ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle, MousePointerClick, Calendar,
-  ThumbsUp, ThumbsDown, Share2, ChevronRight, BarChart2, X
+  ThumbsUp, ThumbsDown, Share2, ChevronRight, BarChart2, X, Building2
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
@@ -1192,6 +1192,9 @@ function CampaignDashboard({ campaigns }) {
   const [kickingMember, setKickingMember] = useState(null);
   const [strikingMember, setStrikingMember] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
+  // Modal de reattribution : { type: 'account'|'video', id, currentUserId } ou null
+  const [reassignDialog, setReassignDialog] = useState(null);
+  const [reassignLoading, setReassignLoading] = useState(false);
   const [expandedMembers, setExpandedMembers] = useState(new Set());
   const [allVideos, setAllVideos] = useState([]);
   const [videosLoading, setVideosLoading] = useState(false);
@@ -2164,49 +2167,45 @@ function CampaignDashboard({ campaigns }) {
     } catch { toast.error("Erreur réseau"); }
   };
 
-  const handleReassignAccount = async (accountId, currentUserId) => {
-    // Affiche un select via prompt simple
-    const members = activeMembers || [];
-    const options = ["", ...members.map(m => m.user_id)];
-    const labels = ["(Compte agence — gains agence)", ...members.map(m => m.user_info?.display_name || m.user_info?.name || m.user_id)];
-    const promptText = "Réattribuer ce compte à :\n" + options.map((o, i) => `${i}: ${labels[i]}${o === currentUserId ? " (actuel)" : ""}`).join("\n") + "\n\nNuméro :";
-    const choice = window.prompt(promptText, "0");
-    if (choice === null) return;
-    const idx = parseInt(choice, 10);
-    if (isNaN(idx) || idx < 0 || idx >= options.length) { toast.error("Choix invalide"); return; }
-    const newUserId = options[idx] || null;
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}/reassign`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ user_id: newUserId }),
-      });
-      if (res.ok) { toast.success("Compte réattribué"); fetchAllAccounts(); fetchAllVideos(); }
-      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
-    } catch { toast.error("Erreur réseau"); }
+  // Ouvre le modal de reattribution pour un compte
+  const handleReassignAccount = (accountId, currentUserId) => {
+    setReassignDialog({ type: "account", id: accountId, currentUserId: currentUserId || null });
   };
 
-  const handleReassignVideo = async (videoId, currentUserId) => {
-    const members = activeMembers || [];
-    const options = ["", ...members.map(m => m.user_id)];
-    const labels = ["(Vidéo agence — gains agence)", ...members.map(m => m.user_info?.display_name || m.user_info?.name || m.user_id)];
-    const promptText = "Réattribuer cette vidéo à :\n" + options.map((o, i) => `${i}: ${labels[i]}${o === currentUserId ? " (actuel)" : ""}`).join("\n") + "\n\nNuméro :";
-    const choice = window.prompt(promptText, "0");
-    if (choice === null) return;
-    const idx = parseInt(choice, 10);
-    if (isNaN(idx) || idx < 0 || idx >= options.length) { toast.error("Choix invalide"); return; }
-    const newUserId = options[idx] || null;
+  // Ouvre le modal de reattribution pour une video
+  const handleReassignVideo = (videoId, currentUserId) => {
+    setReassignDialog({ type: "video", id: videoId, currentUserId: currentUserId || null });
+  };
+
+  // Effectue l'appel API depuis le modal. newUserId peut etre null (= aucun clippeur, gains agence)
+  const submitReassign = async (newUserId) => {
+    if (!reassignDialog) return;
+    const { type, id } = reassignDialog;
+    setReassignLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos/${videoId}/reassign`, {
+      const url = type === "account"
+        ? `${API}/campaigns/${campaignId}/social-accounts/${id}/reassign`
+        : `${API}/campaigns/${campaignId}/tracked-videos/${id}/reassign`;
+      const res = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ user_id: newUserId }),
       });
-      if (res.ok) { toast.success("Vidéo réattribuée"); fetchAllVideos(); }
-      else { const e = await res.json(); toast.error(e.detail || "Erreur"); }
-    } catch { toast.error("Erreur réseau"); }
+      if (res.ok) {
+        toast.success(type === "account" ? "Compte réattribué" : "Vidéo réattribuée");
+        if (type === "account") { fetchAllAccounts(); fetchAllVideos(); }
+        else { fetchAllVideos(); }
+        setReassignDialog(null);
+      } else {
+        const e = await res.json().catch(() => ({}));
+        toast.error(e.detail || "Erreur lors de la réattribution");
+      }
+    } catch {
+      toast.error("Erreur réseau");
+    } finally {
+      setReassignLoading(false);
+    }
   };
 
   const handleRefreshHistoric = async (accountId) => {
@@ -4401,6 +4400,108 @@ function CampaignDashboard({ campaigns }) {
                 {deletingCampaign ? "Suppression…" : "Supprimer la campagne"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de reattribution compte/video a un clippeur (ou aucun) */}
+      {reassignDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => !reassignLoading && setReassignDialog(null)}
+        >
+          <div
+            className="bg-[#121212] border border-white/10 rounded-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+              <h3 className="text-white font-semibold text-base">
+                {reassignDialog.type === "account" ? "Attribuer ce compte à" : "Attribuer cette vidéo à"}
+              </h3>
+              <button
+                onClick={() => !reassignLoading && setReassignDialog(null)}
+                disabled={reassignLoading}
+                className="text-white/40 hover:text-white p-1 rounded-md hover:bg-white/5 disabled:opacity-30"
+                title="Fermer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-2 space-y-1">
+              {/* Option : aucun clippeur (gains agence) */}
+              <button
+                onClick={() => submitReassign(null)}
+                disabled={reassignLoading}
+                className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-colors disabled:opacity-50 ${
+                  reassignDialog.currentUserId === null
+                    ? "bg-[#FF007F]/15 border border-[#FF007F]/40"
+                    : "hover:bg-white/5 border border-transparent"
+                }`}
+              >
+                <div className="w-9 h-9 rounded-full bg-[#FF007F]/20 border border-[#FF007F]/40 flex items-center justify-center flex-shrink-0">
+                  <Building2 className="w-4 h-4 text-[#FF007F]" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-white text-sm font-medium">Aucun clippeur</div>
+                  <div className="text-white/40 text-xs">Compte agence — les gains vont à l'agence</div>
+                </div>
+                {reassignDialog.currentUserId === null && (
+                  <Check className="w-4 h-4 text-[#FF007F] flex-shrink-0" />
+                )}
+              </button>
+
+              {/* Separateur */}
+              {(activeMembers || []).length > 0 && (
+                <div className="px-4 py-1.5 text-white/30 text-[10px] uppercase tracking-wider font-semibold">
+                  Clippeurs membres ({(activeMembers || []).length})
+                </div>
+              )}
+
+              {/* Liste des clippeurs membres */}
+              {(activeMembers || []).length === 0 ? (
+                <div className="px-4 py-6 text-center text-white/40 text-sm">
+                  Aucun clippeur membre de cette campagne pour l'instant.
+                </div>
+              ) : (
+                (activeMembers || []).map((m) => {
+                  const name = m.user_info?.display_name || m.user_info?.name || m.user_id;
+                  const avatar = m.user_info?.picture || m.user_info?.avatar_url;
+                  const isCurrent = m.user_id === reassignDialog.currentUserId;
+                  return (
+                    <button
+                      key={m.user_id}
+                      onClick={() => submitReassign(m.user_id)}
+                      disabled={reassignLoading}
+                      className={`w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-colors disabled:opacity-50 ${
+                        isCurrent
+                          ? "bg-[#00E5FF]/15 border border-[#00E5FF]/40"
+                          : "hover:bg-white/5 border border-transparent"
+                      }`}
+                    >
+                      {avatar ? (
+                        <img src={avatar} alt={name} className="w-9 h-9 rounded-full object-cover flex-shrink-0" onError={(e) => e.target.style.display = 'none'} />
+                      ) : (
+                        <div className="w-9 h-9 rounded-full bg-[#00E5FF]/20 border border-[#00E5FF]/40 flex items-center justify-center flex-shrink-0">
+                          <span className="text-[#00E5FF] text-sm font-semibold">{(name || "?").charAt(0).toUpperCase()}</span>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-white text-sm font-medium truncate">{name}</div>
+                        <div className="text-white/40 text-xs truncate">{m.user_info?.email || m.user_id}</div>
+                      </div>
+                      {isCurrent && (
+                        <Check className="w-4 h-4 text-[#00E5FF] flex-shrink-0" />
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            {reassignLoading && (
+              <div className="px-6 py-3 border-t border-white/10 text-center text-white/50 text-xs">
+                Réattribution en cours…
+              </div>
+            )}
           </div>
         </div>
       )}
