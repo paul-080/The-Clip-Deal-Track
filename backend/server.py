@@ -4758,8 +4758,8 @@ async def _verify_tiktok(username: str) -> dict:
             logger.warning(f"yt-dlp TikTok verify failed for @{username}: {e}")
     # DERNIER RECOURS : Apify TikTok — BLOQUE PAR DEFAUT (kill switch)
     if _APIFY_TIKTOK_KILL_SWITCH:
-        logger.warning(f"⚠️ ALERTE _verify_tiktok @{username} : toutes les sources gratuites ont echoue, Apify TikTok bloque par kill switch")
-        await _log_scrape("apify_blocked", "tiktok", username, False, 0, "verify_tiktok : kill switch ON")
+        # Kill switch ON = comportement attendu, on ne log PAS en DB (sinon ca pollue le panel)
+        logger.info(f"_verify_tiktok @{username} : Apify TikTok skipped (kill switch ON)")
         raise ValueError(f"Impossible de vérifier TikTok @{username} — toutes les sources gratuites ont échoué")
     elif APIFY_TOKEN and not APIFY_DISABLED:
         try:
@@ -6360,11 +6360,11 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     # TikWm, mobile API, yt-dlp, RapidAPI) doit suffire. Si Apify se declenche,
     # c'est que quelque chose est casse en amont — on log un signal d'alarme.
     if _APIFY_TIKTOK_KILL_SWITCH:
+        # Kill switch ON = volontaire. On garde le warning textuel pour diagnostiquer la cascade KO,
+        # mais on ne pollue plus la table scraping_history (sinon le panel est noye d'apify_blocked).
         logger.warning(
-            f"⚠️ ALERTE : Apify TikTok aurait ete appele pour @{username} mais BLOQUE par kill switch. "
-            f"La cascade gratuite (VPS/TikWm/mobile/yt-dlp/RapidAPI) a TOUTE echoue. A diagnostiquer !"
+            f"⚠️ Apify TikTok skipped (kill switch) pour @{username} — cascade gratuite (VPS/TikWm/mobile/yt-dlp/RapidAPI) a tout rate"
         )
-        await _log_scrape("apify_blocked", "tiktok", username, False, 0, "Apify TikTok bloque par kill switch (signal alarme)")
     elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
@@ -7492,8 +7492,8 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
     elif _APIFY_INSTA_KILL_SWITCH:
-        # On log pour visibilite mais on ne fait RIEN (Apify Insta bloque)
-        await _log_scrape("apify_blocked", "instagram", username, False, 0, "Apify Insta bloque par kill switch (signal alarme)")
+        # Kill switch ON = volontaire. On ne pollue plus la table scraping_history (panel admin).
+        logger.debug(f"Apify Insta skipped (kill switch) pour @{username} en milieu de cascade")
 
     # NOTE : Priorite 1 (VPS ClipScraper standalone) etait un DOUBLON de Priority 0
     # (VPS + GraphQL enrichissement, ligne ~6707). Supprimee pour eviter code mort.
@@ -7661,8 +7661,9 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     # Pour bloquer completement : set APIFY_INSTA_EMERGENCY_FALLBACK=false ET APIFY_INSTA_FORCE_OFF=true
     use_apify_emergency = APIFY_INSTA_EMERGENCY_FALLBACK or (not _APIFY_INSTA_KILL_SWITCH)
     if not use_apify_emergency:
-        logger.warning(f"⚠️ ALERTE Insta @{username} : cascade gratuite a tout echoue MAIS Apify bloque par kill switch + emergency OFF")
-        await _log_scrape("apify_blocked", "instagram", username, False, 0, "kill switch ON + emergency OFF (cascade gratuite KO)")
+        # Kill switch ON + emergency OFF + cascade KO = la situation reelle, mais c'est attendu.
+        # On garde le warning logger pour diagnostic, mais on ne pollue plus la table scraping_history.
+        logger.warning(f"⚠️ Insta @{username} : cascade gratuite a tout rate, Apify bloque (kill switch + emergency OFF)")
     elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
@@ -9267,6 +9268,25 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
             platform = account["platform"]
             username = account["username"]
 
+            # ── DEAD ACCOUNT GUARD : skip si le compte est en pause auto apres 3 echecs ──
+            # Set par la logique plus bas. Permet d'eviter de gaspiller des requetes sur des
+            # comptes inexistants/bannis. Auto-reset apres 24h.
+            paused_until = account.get("tracking_paused_until")
+            if paused_until:
+                try:
+                    pu_dt = _parse_utc(paused_until)
+                    if pu_dt and pu_dt > datetime.now(timezone.utc):
+                        logger.info(f"Skip {platform}/@{username} — paused auto jusqu'a {paused_until} ({account.get('consecutive_failures', 0)} echecs consecutifs)")
+                        continue
+                    elif pu_dt:
+                        # Pause expiree, on retente et reset le flag
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {"tracking_paused_until": None}}
+                        )
+                except Exception:
+                    pass
+
             # ── Smart cache COMPTE : skip Apify si pas de growth récent ──
             # Campagnes au CLIC : tracking soft 24h (la facturation est au clic, vues = info)
             # Campagnes au VUE : tracking 6h actif, 12h stagnant, 24h mort
@@ -9360,12 +9380,30 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     videos = []
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
+                    # Incrémente le compteur d'echecs consecutifs. Si >= 3 -> pause 24h.
+                    prev_failures = int(account.get("consecutive_failures", 0) or 0)
+                    new_failures = prev_failures + 1
+                    update_fields = {
+                        "last_tracked_at": now_iso,
+                        "consecutive_failures": new_failures,
+                    }
+                    if new_failures >= 3:
+                        # Pause auto pendant 24h pour eviter de gaspiller des requetes
+                        pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=24)
+                        update_fields["tracking_paused_until"] = pause_until_dt.isoformat()
+                        logger.warning(f"⚠️ {platform}/@{username} : {new_failures} echecs consecutifs -> pause auto 24h jusqu'a {pause_until_dt.isoformat()}")
                     await db.social_accounts.update_one(
                         {"account_id": account_id},
-                        {"$set": {"last_tracked_at": now_iso}}
+                        {"$set": update_fields}
                     )
                     await asyncio.sleep(0.5)
                     continue
+                # Succes : reset le compteur d'echecs et la pause auto
+                if account.get("consecutive_failures") or account.get("tracking_paused_until"):
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {"consecutive_failures": 0, "tracking_paused_until": None}}
+                    )
 
                 # ── Smart cache : récupère les vidéos existantes pour comparer growth ──
                 existing_map = {}
@@ -15094,6 +15132,34 @@ async def admin_verify(request: Request):
     """Verify admin code — returns 200 if valid, 403 if not."""
     await verify_admin_code(request)
     return {"ok": True}
+
+
+@api_router.get("/admin/paused-accounts")
+async def admin_paused_accounts(request: Request):
+    """Liste les comptes en pause auto (>=3 echecs consecutifs)."""
+    await verify_admin_code(request)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    paused = await db.social_accounts.find(
+        {"tracking_paused_until": {"$gt": now_iso}},
+        {"_id": 0, "account_id": 1, "user_id": 1, "platform": 1, "username": 1,
+         "consecutive_failures": 1, "tracking_paused_until": 1, "last_tracked_at": 1,
+         "display_name": 1}
+    ).to_list(500)
+    return {"count": len(paused), "accounts": paused}
+
+
+@api_router.post("/admin/social-accounts/{account_id}/resume-tracking")
+async def admin_resume_tracking(account_id: str, request: Request):
+    """Re-active un compte en pause auto (reset consecutive_failures + tracking_paused_until)."""
+    await verify_admin_code(request)
+    result = await db.social_accounts.update_one(
+        {"account_id": account_id},
+        {"$set": {"consecutive_failures": 0, "tracking_paused_until": None}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0, "username": 1, "platform": 1})
+    return {"ok": True, "account": acc, "message": "Tracking re-active pour ce compte"}
 
 @api_router.get("/debug/tikwm/{username}")
 async def debug_tikwm(username: str):
