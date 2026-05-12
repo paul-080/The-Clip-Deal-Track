@@ -17044,6 +17044,119 @@ async def get_campaign_scrape_history(campaign_id: str, limit: int = 20, user: d
     }
 
 
+@api_router.get("/campaigns/{campaign_id}/last-scrape-details")
+async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Retourne le DETAIL par compte du dernier scrape lance pour la campagne.
+    Pour chaque compte de la campagne :
+    - status (ok, ko, skipped_paused, skipped_cold, deleted, never_tried)
+    - source utilisee (clipscraper, clips_graphql, tikwm, vps, etc.)
+    - nb videos recuperees
+    - message d'erreur si applicable
+    - last_tracked_at + last_scrape_error
+    """
+    role = user.get("role")
+    if role not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Acces reserve a l'agence/manager")
+
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "agency_id": 1, "last_scraped_at": 1, "next_scrape_at": 1, "name": 1, "tracking_per_day": 1}
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if role == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la votre")
+
+    # Tous les comptes assignes a cette campagne
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1, "user_id": 1}
+    ).to_list(2000)
+    account_ids = [a["account_id"] for a in assignments if a.get("account_id")]
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}}, {"_id": 0}
+    ).to_list(2000) if account_ids else []
+
+    # Pour le dernier scrape, on recupere l'historique du dernier scraping_history par (platform, username)
+    # Plus simple : on regarde directement last_tracked_at + last_scrape_error sur chaque compte
+    details = []
+    counters = {"ok": 0, "ko": 0, "skipped_paused": 0, "skipped_cold": 0, "deleted": 0, "never_tried": 0}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username")
+        last_tracked = acc.get("last_tracked_at")
+        last_err = acc.get("last_scrape_error")
+        consec_failures = int(acc.get("consecutive_failures") or 0)
+        paused_until = acc.get("tracking_paused_until")
+        status_acc = acc.get("status", "verified")
+
+        # Recupere le dernier scrape de scraping_history pour ce compte (pour la source)
+        last_scrape = await db.scraping_history.find_one(
+            {"platform": platform, "username": username},
+            {"_id": 0},
+            sort=[("timestamp", -1)]
+        )
+
+        # Determine status global
+        if status_acc == "deleted":
+            status = "deleted"
+            counters["deleted"] += 1
+        elif paused_until and paused_until > now_iso:
+            status = "skipped_paused"
+            counters["skipped_paused"] += 1
+        elif not last_tracked:
+            status = "never_tried"
+            counters["never_tried"] += 1
+        elif last_scrape and last_scrape.get("success"):
+            # Verifie que c'est recent (< 36h)
+            try:
+                ts_dt = _parse_utc(last_scrape.get("timestamp"))
+                if ts_dt and (datetime.now(timezone.utc) - ts_dt).total_seconds() < 36 * 3600:
+                    status = "ok"
+                    counters["ok"] += 1
+                else:
+                    status = "skipped_cold"
+                    counters["skipped_cold"] += 1
+            except Exception:
+                status = "ok"
+                counters["ok"] += 1
+        else:
+            status = "ko"
+            counters["ko"] += 1
+
+        details.append({
+            "account_id": acc.get("account_id"),
+            "platform": platform,
+            "username": username,
+            "display_name": acc.get("display_name") or username,
+            "status": status,
+            "last_tracked_at": last_tracked,
+            "last_scrape_error": (last_err[:300] if last_err else None),
+            "last_source": last_scrape.get("source") if last_scrape else None,
+            "last_videos_count": int(last_scrape.get("video_count") or 0) if last_scrape else 0,
+            "consecutive_failures": consec_failures,
+            "tracking_paused_until": paused_until,
+            "account_status": status_acc,
+            "deleted_type": acc.get("deleted_type"),
+            "last_existence_check_result": acc.get("last_existence_check_result"),
+        })
+
+    # Trie : ko et skipped en haut (pour visibilite des problemes), ok en bas
+    status_priority = {"ko": 0, "deleted": 1, "skipped_paused": 2, "never_tried": 3, "skipped_cold": 4, "ok": 5}
+    details.sort(key=lambda d: (status_priority.get(d["status"], 99), d.get("platform", ""), d.get("username", "")))
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "last_scraped_at": campaign.get("last_scraped_at"),
+        "next_scrape_at": campaign.get("next_scrape_at"),
+        "tracking_per_day": campaign.get("tracking_per_day") or 1,
+        "total_accounts": len(accounts),
+        "counters": counters,
+        "details": details,
+    }
+
+
 @api_router.get("/admin/recent-scrapes")
 async def admin_recent_scrapes(request: Request, limit: int = 50, platform: Optional[str] = None, _: bool = Depends(verify_admin_code)):
     """Liste les 50 derniers scrapes effectues avec leur source.

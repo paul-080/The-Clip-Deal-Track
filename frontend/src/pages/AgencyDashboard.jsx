@@ -48,6 +48,9 @@ const ACCENT_COLOR = "#FF007F";
 function ScrapeHistoryPanel({ campaignId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [detailsData, setDetailsData] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     if (!campaignId) return;
@@ -57,6 +60,20 @@ function ScrapeHistoryPanel({ campaignId }) {
       if (res.ok) setData(await res.json());
     } catch {} finally { setLoading(false); }
   }, [campaignId]);
+
+  const fetchDetails = useCallback(async () => {
+    if (!campaignId) return;
+    setDetailsLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/last-scrape-details`, { credentials: "include" });
+      if (res.ok) setDetailsData(await res.json());
+    } catch {} finally { setDetailsLoading(false); }
+  }, [campaignId]);
+
+  const openDetails = useCallback(async () => {
+    setShowDetails(true);
+    await fetchDetails();
+  }, [fetchDetails]);
 
   useEffect(() => {
     fetchHistory();
@@ -94,10 +111,16 @@ function ScrapeHistoryPanel({ campaignId }) {
             {" · "}Auto-refresh chaque minute
           </p>
         </div>
-        <button onClick={fetchHistory} disabled={loading}
-          className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 text-xs border border-white/10 disabled:opacity-40">
-          {loading ? "⏳" : "↻ Refresh"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={openDetails}
+            className="px-3 py-1.5 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] text-xs border border-[#00E5FF]/30 font-medium">
+            🔍 Voir détail par compte
+          </button>
+          <button onClick={fetchHistory} disabled={loading}
+            className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 text-xs border border-white/10 disabled:opacity-40">
+            {loading ? "⏳" : "↻ Refresh"}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
@@ -145,6 +168,106 @@ function ScrapeHistoryPanel({ campaignId }) {
       <p className="text-[10px] text-white/30 italic">
         💡 Le scrape est lancé 30 min avant l'heure pile (ex: 23h30 pour finir à minuit) pour respecter le rate limit.
       </p>
+
+      {/* Modal detail par compte du dernier scrape */}
+      {showDetails && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => setShowDetails(false)}
+        >
+          <div
+            className="bg-[#121212] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+              <div>
+                <h3 className="text-white font-semibold text-base">Détail du dernier scrape</h3>
+                <p className="text-white/40 text-xs mt-0.5">
+                  Statut par compte de la campagne · Dernier : {fmtParis(detailsData?.last_scraped_at)}
+                </p>
+              </div>
+              <button onClick={() => setShowDetails(false)} className="text-white/40 hover:text-white p-1 rounded-md hover:bg-white/5 text-lg">×</button>
+            </div>
+
+            {detailsLoading || !detailsData ? (
+              <div className="p-8 text-center text-white/40 text-sm">Chargement…</div>
+            ) : (
+              <>
+                {/* Compteurs en haut */}
+                <div className="px-6 py-4 border-b border-white/5 grid grid-cols-3 sm:grid-cols-6 gap-2 text-center">
+                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2">
+                    <p className="text-emerald-400 text-lg font-bold">{detailsData.counters?.ok || 0}</p>
+                    <p className="text-emerald-400/70 text-[10px]">OK</p>
+                  </div>
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-2">
+                    <p className="text-red-400 text-lg font-bold">{detailsData.counters?.ko || 0}</p>
+                    <p className="text-red-400/70 text-[10px]">KO</p>
+                  </div>
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">
+                    <p className="text-amber-400 text-lg font-bold">{detailsData.counters?.skipped_paused || 0}</p>
+                    <p className="text-amber-400/70 text-[10px]">Pause auto</p>
+                  </div>
+                  <div className="bg-zinc-500/10 border border-zinc-500/30 rounded-lg p-2">
+                    <p className="text-zinc-400 text-lg font-bold">{detailsData.counters?.deleted || 0}</p>
+                    <p className="text-zinc-400/70 text-[10px]">Supprimé</p>
+                  </div>
+                  <div className="bg-white/5 border border-white/10 rounded-lg p-2">
+                    <p className="text-white/70 text-lg font-bold">{detailsData.counters?.never_tried || 0}</p>
+                    <p className="text-white/40 text-[10px]">Jamais tenté</p>
+                  </div>
+                  <div className="bg-[#00E5FF]/10 border border-[#00E5FF]/30 rounded-lg p-2">
+                    <p className="text-[#00E5FF] text-lg font-bold">{detailsData.total_accounts || 0}</p>
+                    <p className="text-[#00E5FF]/70 text-[10px]">Total</p>
+                  </div>
+                </div>
+
+                {/* Liste des comptes */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+                  {(detailsData.details || []).length === 0 ? (
+                    <p className="text-center text-white/40 text-sm py-6">Aucun compte dans cette campagne.</p>
+                  ) : (
+                    (detailsData.details || []).map((d) => {
+                      const cfg = {
+                        ok: { bg: "bg-emerald-500/8", border: "border-emerald-500/25", text: "text-emerald-400", label: "✓ OK" },
+                        ko: { bg: "bg-red-500/8", border: "border-red-500/25", text: "text-red-400", label: "✗ Échec" },
+                        skipped_paused: { bg: "bg-amber-500/8", border: "border-amber-500/25", text: "text-amber-400", label: "⏸ Pause auto" },
+                        deleted: { bg: "bg-zinc-500/8", border: "border-zinc-500/25", text: "text-zinc-400", label: "🗑 Supprimé" },
+                        skipped_cold: { bg: "bg-white/3", border: "border-white/10", text: "text-white/50", label: "⏭ Skip (stagnant)" },
+                        never_tried: { bg: "bg-white/3", border: "border-white/10", text: "text-white/50", label: "○ Jamais tenté" },
+                      };
+                      const c = cfg[d.status] || cfg.never_tried;
+                      const platIcon = d.platform === "instagram" ? "📷" : d.platform === "tiktok" ? "🎵" : d.platform === "youtube" ? "▶" : "?";
+                      return (
+                        <div key={d.account_id} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${c.bg} ${c.border} text-xs`}>
+                          <span className="text-base flex-shrink-0">{platIcon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-white font-medium truncate">@{d.username}</div>
+                            <div className="text-white/40 text-[10px] truncate">
+                              {d.last_source ? `Source: ${d.last_source}` : "—"}
+                              {d.last_videos_count > 0 && <> · {d.last_videos_count} vid</>}
+                              {d.last_existence_check_result === "deleted" && <> · vérif: introuvable</>}
+                            </div>
+                            {d.last_scrape_error && d.status === "ko" && (
+                              <div className="text-red-400/60 text-[10px] truncate mt-0.5" title={d.last_scrape_error}>
+                                {d.last_scrape_error.slice(0, 100)}{d.last_scrape_error.length > 100 ? "…" : ""}
+                              </div>
+                            )}
+                          </div>
+                          <span className={`${c.text} text-[10px] font-semibold flex-shrink-0`}>{c.label}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="px-6 py-3 border-t border-white/5 text-[10px] text-white/30 italic">
+                  💡 Les comptes "Pause auto" (3 échecs consécutifs) sont retentés automatiquement après 24h. Les "Supprimés" sont vérifiés à 2 sources avant marquage.
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
