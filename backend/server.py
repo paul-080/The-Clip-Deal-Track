@@ -9641,51 +9641,52 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "consecutive_failures": new_failures,
                     }
 
-                    # VERIFICATION ACTIVE D'EXISTENCE : au 1er echec, on hit la plateforme
+                    # VERIFICATION ACTIVE D'EXISTENCE : a CHAQUE echec on hit la plateforme
                     # directement pour distinguer "compte supprime" d'un "rate limit / 0 videos transitoire".
                     # Cooldown 6h pour ne pas spammer si on a deja verifie recemment.
-                    if prev_failures == 0:
-                        last_check = account.get("last_existence_check_at")
-                        skip_check = False
-                        if last_check:
-                            try:
-                                last_dt = _parse_utc(last_check)
-                                if last_dt and (datetime.now(timezone.utc) - last_dt).total_seconds() < 6 * 3600:
-                                    skip_check = True
-                            except Exception:
-                                pass
-                        if not skip_check:
-                            try:
-                                # Pour YouTube on utilise channel_id si dispo, sinon username
-                                check_target = account.get("platform_channel_id") if platform == "youtube" else username
-                                exists = await asyncio.wait_for(
-                                    _verify_account_still_exists(platform, check_target or username),
-                                    timeout=30
+                    # NB: pas de gate sur prev_failures pour rattraper les comptes deja en echec
+                    # avant l'introduction de la verif active.
+                    last_check = account.get("last_existence_check_at")
+                    skip_check = False
+                    if last_check:
+                        try:
+                            last_dt = _parse_utc(last_check)
+                            if last_dt and (datetime.now(timezone.utc) - last_dt).total_seconds() < 6 * 3600:
+                                skip_check = True
+                        except Exception:
+                            pass
+                    if not skip_check:
+                        try:
+                            # Pour YouTube on utilise channel_id si dispo, sinon username
+                            check_target = account.get("platform_channel_id") if platform == "youtube" else username
+                            exists = await asyncio.wait_for(
+                                _verify_account_still_exists(platform, check_target or username),
+                                timeout=30
+                            )
+                            update_fields["last_existence_check_at"] = now_iso
+                            update_fields["last_existence_check_result"] = (
+                                "exists" if exists is True
+                                else "deleted" if exists is False
+                                else "uncertain"
+                            )
+                            if exists is False:
+                                # COMPTE CONFIRMÉ SUPPRIMÉ : on arrête le tracking immediat
+                                account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
+                                update_fields["status"] = "deleted"
+                                update_fields["deleted_at"] = now_iso
+                                update_fields["deleted_type"] = "deleted_by_user" if account_was_verified else "never_existed"
+                                update_fields["deleted_reason"] = (
+                                    f"Compte {platform} verifie supprime apres echec de scraping "
+                                    f"({new_failures} echecs - {'avait deja ete scrape' if account_was_verified else 'jamais verifie'})"
                                 )
-                                update_fields["last_existence_check_at"] = now_iso
-                                update_fields["last_existence_check_result"] = (
-                                    "exists" if exists is True
-                                    else "deleted" if exists is False
-                                    else "uncertain"
-                                )
-                                if exists is False:
-                                    # COMPTE CONFIRMÉ SUPPRIMÉ : on arrête le tracking immediat
-                                    account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
-                                    update_fields["status"] = "deleted"
-                                    update_fields["deleted_at"] = now_iso
-                                    update_fields["deleted_type"] = "deleted_by_user" if account_was_verified else "never_existed"
-                                    update_fields["deleted_reason"] = (
-                                        f"Compte {platform} verifie supprime apres 1 echec de scraping "
-                                        f"({'avait deja ete scrape' if account_was_verified else 'jamais verifie'})"
-                                    )
-                                    update_fields["not_found_count"] = 99  # confirme
-                                    logger.warning(f"📛 {platform}/@{username} : compte VERIFIE supprime (verif active 2 sources). Tracking arrete.")
-                            except asyncio.TimeoutError:
-                                update_fields["last_existence_check_at"] = now_iso
-                                update_fields["last_existence_check_result"] = "timeout"
-                                logger.debug(f"Existence check TIMEOUT for {platform}/@{username}")
-                            except Exception as ex:
-                                logger.debug(f"Existence check error for {platform}/@{username}: {type(ex).__name__}: {ex}")
+                                update_fields["not_found_count"] = 99  # confirme
+                                logger.warning(f"📛 {platform}/@{username} : compte VERIFIE supprime (verif active 2 sources). Tracking arrete.")
+                        except asyncio.TimeoutError:
+                            update_fields["last_existence_check_at"] = now_iso
+                            update_fields["last_existence_check_result"] = "timeout"
+                            logger.debug(f"Existence check TIMEOUT for {platform}/@{username}")
+                        except Exception as ex:
+                            logger.debug(f"Existence check error for {platform}/@{username}: {type(ex).__name__}: {ex}")
 
                     # Si le compte n'est pas marque deleted par la verif, on applique l'auto-pause apres 3 echecs
                     if update_fields.get("status") != "deleted" and new_failures >= 3:
@@ -15539,6 +15540,153 @@ async def admin_verify_account_existence(account_id: str, request: Request):
             else "Aucune action (resultat incertain)"
         ),
     }
+
+@api_router.get("/admin/suspect-accounts")
+async def admin_suspect_accounts(request: Request):
+    """Liste les comptes 'suspects' :
+    - Usernames corrompus (contiennent ?, =, &, %, etc.)
+    - Comptes en echec persistant (consecutive_failures >= 3) jamais verifies
+    - Comptes en pause auto depuis > 24h sans verif d'existence
+    """
+    await verify_admin_code(request)
+    import re as _re_susp
+    suspect_pattern = _re_susp.compile(r'[^a-zA-Z0-9._-]')
+
+    cursor = db.social_accounts.find(
+        {"status": {"$ne": "deleted"}},
+        {
+            "_id": 0,
+            "account_id": 1,
+            "platform": 1,
+            "username": 1,
+            "status": 1,
+            "consecutive_failures": 1,
+            "tracking_paused_until": 1,
+            "last_tracked_at": 1,
+            "last_existence_check_at": 1,
+            "last_existence_check_result": 1,
+            "user_id": 1,
+            "created_at": 1,
+        }
+    )
+    corrupted = []
+    persistent_failures = []
+    never_verified = []
+    async for acc in cursor:
+        username = (acc.get("username") or "").strip()
+        if not username:
+            continue
+        # Detection username corrompu
+        if suspect_pattern.search(username):
+            corrupted.append({**acc, "reason": "username contient caracteres invalides"})
+            continue
+        # Echecs persistants jamais verifies
+        consec = int(acc.get("consecutive_failures") or 0)
+        last_check = acc.get("last_existence_check_at")
+        if consec >= 3 and not last_check:
+            persistent_failures.append({**acc, "reason": f"{consec} echecs consecutifs sans verif d'existence"})
+        elif consec >= 1 and not last_check:
+            never_verified.append({**acc, "reason": f"{consec} echec(s) jamais verifies"})
+
+    return {
+        "corrupted_usernames": corrupted,
+        "persistent_failures": persistent_failures,
+        "never_verified": never_verified,
+        "totals": {
+            "corrupted": len(corrupted),
+            "persistent_failures": len(persistent_failures),
+            "never_verified": len(never_verified),
+        },
+    }
+
+
+@api_router.post("/admin/social-accounts/bulk-verify-pending")
+async def admin_bulk_verify_pending(request: Request, max_accounts: int = 100):
+    """Verifie ACTIVEMENT l'existence de tous les comptes en echec
+    qui n'ont JAMAIS ete verifies (last_existence_check_at = null) OU
+    dont la derniere verif date de > 24h.
+    Limite max_accounts pour eviter de saturer (default 100).
+    Marque automatiquement les comptes confirmes supprimes."""
+    await verify_admin_code(request)
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    query = {
+        "status": {"$ne": "deleted"},
+        "consecutive_failures": {"$gte": 1},
+        "$or": [
+            {"last_existence_check_at": {"$exists": False}},
+            {"last_existence_check_at": None},
+            {"last_existence_check_at": {"$lt": cutoff_24h}},
+        ],
+    }
+    cursor = db.social_accounts.find(query, {"_id": 0}).limit(max_accounts)
+    accounts = [a async for a in cursor]
+    logger.info(f"Bulk verify pending : {len(accounts)} comptes a verifier (max={max_accounts})")
+
+    results = {"exists": 0, "deleted": 0, "uncertain": 0, "errors": 0, "details": []}
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username") or ""
+        account_id = acc.get("account_id")
+        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            exists = await asyncio.wait_for(
+                _verify_account_still_exists(platform, check_target or username),
+                timeout=30
+            )
+            update_fields = {
+                "last_existence_check_at": now_iso,
+                "last_existence_check_result": (
+                    "exists" if exists is True
+                    else "deleted" if exists is False
+                    else "uncertain"
+                ),
+            }
+            if exists is False:
+                account_was_verified = bool(acc.get("verified_at")) or bool(acc.get("last_tracked_at"))
+                update_fields.update({
+                    "status": "deleted",
+                    "deleted_at": now_iso,
+                    "deleted_type": "deleted_by_user" if account_was_verified else "never_existed",
+                    "deleted_reason": f"Bulk verify : compte {platform} confirme supprime ({acc.get('consecutive_failures', 0)} echecs)",
+                    "not_found_count": 99,
+                })
+                results["deleted"] += 1
+            elif exists is True:
+                update_fields.update({
+                    "consecutive_failures": 0,
+                    "tracking_paused_until": None,
+                    "not_found_count": 0,
+                })
+                results["exists"] += 1
+            else:
+                results["uncertain"] += 1
+            await db.social_accounts.update_one({"account_id": account_id}, {"$set": update_fields})
+            results["details"].append({
+                "account_id": account_id,
+                "platform": platform,
+                "username": username,
+                "result": update_fields["last_existence_check_result"],
+            })
+        except Exception as ex:
+            results["errors"] += 1
+            results["details"].append({
+                "account_id": account_id,
+                "platform": platform,
+                "username": username,
+                "result": "error",
+                "error": f"{type(ex).__name__}: {ex}",
+            })
+        # Petit delay pour ne pas spam les plateformes (1s entre chaque verif)
+        await asyncio.sleep(1)
+
+    return {
+        "ok": True,
+        "checked": len(accounts),
+        "results": {k: v for k, v in results.items() if k != "details"},
+        "details": results["details"][:50],  # cap pour la response
+    }
+
 
 @api_router.get("/debug/tikwm/{username}")
 async def debug_tikwm(username: str):
