@@ -16586,6 +16586,119 @@ async def admin_stress_test_all_platforms(
     }
 
 
+@api_router.get("/admin/test-meta-business-discovery")
+async def admin_test_meta_business_discovery(
+    request: Request,
+    _: bool = Depends(verify_admin_code)
+):
+    """🌟 TEST META BUSINESS DISCOVERY : verifie pour CHAQUE compte Insta tracke
+    si Meta Business Discovery API marche (compte Business/Creator public) ou
+    si on doit tomber sur la cascade gratuite (compte perso).
+
+    Retourne :
+    - config_ok : IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN configures ?
+    - token_valid : test du token Meta (validite + expiration)
+    - account_count : nb total de comptes Insta dans la DB
+    - business_ready : nb de comptes que Meta API peut scraper (= Business/Creator)
+    - not_business : liste des comptes perso (a demander de switcher en Creator)
+    """
+    report: dict = {
+        "tested_at": datetime.now(timezone.utc).isoformat(),
+        "config": {
+            "ig_business_account_id_set": bool(IG_BUSINESS_ACCOUNT_ID),
+            "ig_long_lived_token_set": bool(IG_LONG_LIVED_TOKEN),
+        },
+    }
+
+    if not IG_BUSINESS_ACCOUNT_ID or not IG_LONG_LIVED_TOKEN:
+        report["config_ok"] = False
+        report["verdict"] = "🔴 Meta Business Discovery NON configure. Set IG_BUSINESS_ACCOUNT_ID + IG_LONG_LIVED_TOKEN sur Railway."
+        return report
+
+    report["config_ok"] = True
+
+    # Test 1 : validite du token
+    try:
+        url = f"https://graph.facebook.com/{META_GRAPH_VERSION}/{IG_BUSINESS_ACCOUNT_ID}"
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(url, params={"fields": "id,username", "access_token": IG_LONG_LIVED_TOKEN})
+        if r.status_code == 200:
+            data = r.json()
+            report["token_valid"] = True
+            report["business_account_username"] = data.get("username", "?")
+        else:
+            err = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            err_code = (err.get("error") or {}).get("code")
+            err_msg = (err.get("error") or {}).get("message", "?")
+            report["token_valid"] = False
+            if err_code == 190:
+                report["verdict"] = "🔴 TOKEN EXPIRE - renouvelle IG_LONG_LIVED_TOKEN sur developers.facebook.com"
+            else:
+                report["verdict"] = f"🔴 Token error code={err_code}: {err_msg[:150]}"
+            return report
+    except Exception as e:
+        report["token_valid"] = False
+        report["verdict"] = f"🔴 Test token failed: {type(e).__name__}: {str(e)[:200]}"
+        return report
+
+    # Test 2 : essaye Meta Business Discovery sur chaque compte Insta de la DB
+    insta_accounts = await db.social_accounts.find(
+        {"platform": "instagram", "status": {"$in": ["verified", "pending"]}},
+        {"_id": 0, "username": 1, "account_id": 1}
+    ).to_list(500)
+
+    business_ready: list = []
+    not_business: list = []
+    other_errors: list = []
+
+    for acc in insta_accounts[:100]:  # max 100 pour eviter de spammer
+        username = acc.get("username", "")
+        if not username:
+            continue
+        try:
+            test = await _fetch_instagram_via_business_discovery_account(username, max_videos=1)
+            if test is not None and len(test) > 0:
+                business_ready.append(username)
+            elif test is None:
+                # Renvoie None si le compte n'est pas business/creator
+                not_business.append(username)
+            else:
+                other_errors.append({"username": username, "error": "0 medias retournes"})
+        except Exception as e:
+            other_errors.append({"username": username, "error": str(e)[:100]})
+
+    report["account_count"] = len(insta_accounts)
+    report["tested_count"] = min(len(insta_accounts), 100)
+    report["business_ready_count"] = len(business_ready)
+    report["not_business_count"] = len(not_business)
+    report["other_errors_count"] = len(other_errors)
+    report["business_ready_pct"] = round(len(business_ready) / max(1, report["tested_count"]) * 100, 1)
+    report["business_ready_accounts"] = business_ready[:30]
+    report["not_business_accounts"] = not_business[:30]
+    report["other_errors_sample"] = other_errors[:10]
+
+    pct = report["business_ready_pct"]
+    if pct >= 80:
+        report["verdict"] = f"✅ EXCELLENT : {pct}% des comptes Insta sont Business/Creator. Tu auras 99% fiabilite Meta."
+    elif pct >= 50:
+        report["verdict"] = f"🟡 BON : {pct}% Business. Demande aux {len(not_business)} clippeurs avec compte perso de switcher en Creator."
+    elif pct >= 20:
+        report["verdict"] = f"🟠 FAIBLE : seulement {pct}% Business. La majorite ({len(not_business)}) sont perso → demande-leur de switcher en Creator (gratuit, 30 sec)."
+    else:
+        report["verdict"] = f"🔴 CRITIQUE : seulement {pct}% Business. Demande URGENT a tous tes clippeurs de switcher en Creator pour profiter de Meta API."
+
+    report["action_to_take"] = (
+        "Envoie ce message a tes clippeurs Marcus avec compte perso : "
+        "'Pour que tes vues soient trackees a 99% fiabilite par theclipdealtrack, "
+        "passe ton compte Instagram en mode Creator (gratuit, 30 sec). "
+        "Va sur ton profil → Menu (☰) → Settings → Account type and tools → "
+        "Switch to Professional Account → choisis Creator → Skip Facebook. "
+        "Aucun changement visible, mais tracking 10x plus fiable.'"
+    )
+
+    return report
+
+
 @api_router.get("/admin/insta-stress-test-30")
 async def admin_insta_stress_test_30(
     request: Request,

@@ -1558,6 +1558,134 @@ function ApifyAlarmBanner() {
   );
 }
 
+function MetaBusinessTestSection() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const runTest = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      const d = await adminFetch("/admin/test-meta-business-discovery", { method: "GET" });
+      setData(d);
+    } catch (e) {
+      setError(`Erreur : ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const verdictColor = (verdict) =>
+    verdict?.startsWith("✅") ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/5"
+    : verdict?.startsWith("🟡") ? "text-amber-400 border-amber-500/40 bg-amber-500/5"
+    : verdict?.startsWith("🟠") ? "text-orange-400 border-orange-500/40 bg-orange-500/5"
+    : "text-red-400 border-red-500/40 bg-red-500/5";
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🌟 Meta Business Discovery — Test des comptes Insta
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Vérifie quels comptes Insta sont Business/Creator (= 99% fiabilité) vs Personnel (= tombe sur fallback).
+          </p>
+        </div>
+        <button
+          onClick={runTest}
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-purple-500/15 hover:bg-purple-500/25 text-purple-400 border border-purple-500/40 text-sm font-bold transition-all disabled:opacity-50"
+        >
+          {loading ? <>⏳ Test (peut prendre 1-3 min)…</> : "🌟 Tester tous les comptes"}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+
+      {data && (
+        <>
+          <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor(data.verdict)}`}>
+            {data.verdict}
+          </div>
+
+          {/* Config Meta */}
+          <div className="bg-white/3 rounded-lg p-2 text-xs grid grid-cols-2 gap-2">
+            <p className="text-white/60">IG_BUSINESS_ACCOUNT_ID : <span className={data.config?.ig_business_account_id_set ? "text-emerald-400" : "text-red-400"}>{data.config?.ig_business_account_id_set ? "✓ Set" : "✗ Manquant"}</span></p>
+            <p className="text-white/60">IG_LONG_LIVED_TOKEN : <span className={data.config?.ig_long_lived_token_set ? "text-emerald-400" : "text-red-400"}>{data.config?.ig_long_lived_token_set ? "✓ Set" : "✗ Manquant"}</span></p>
+            {data.token_valid !== undefined && (
+              <p className="text-white/60 col-span-2">Token valide : <span className={data.token_valid ? "text-emerald-400" : "text-red-400"}>{data.token_valid ? "✓ OUI" : "✗ EXPIRE / INVALIDE"}</span>
+              {data.business_account_username && <span className="text-white/40 ml-2">(@{data.business_account_username})</span>}</p>
+            )}
+          </div>
+
+          {/* Stats */}
+          {data.account_count !== undefined && (
+            <>
+              <div className="grid grid-cols-4 gap-2">
+                <div className="bg-white/5 rounded-lg p-2 text-center">
+                  <p className="text-white/50 text-[10px]">Total</p>
+                  <p className="text-white font-mono font-bold text-lg">{data.tested_count}</p>
+                </div>
+                <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
+                  <p className="text-emerald-400/70 text-[10px]">Business</p>
+                  <p className="text-emerald-400 font-mono font-bold text-lg">{data.business_ready_count}</p>
+                </div>
+                <div className="bg-amber-500/10 rounded-lg p-2 text-center">
+                  <p className="text-amber-400/70 text-[10px]">Personnel</p>
+                  <p className="text-amber-400 font-mono font-bold text-lg">{data.not_business_count}</p>
+                </div>
+                <div className="bg-cyan-500/10 rounded-lg p-2 text-center">
+                  <p className="text-cyan-400/70 text-[10px]">% Business</p>
+                  <p className="text-cyan-400 font-mono font-bold text-lg">{data.business_ready_pct}%</p>
+                </div>
+              </div>
+
+              {/* Action à faire */}
+              {data.action_to_take && (
+                <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
+                  <p className="text-white/60 text-xs font-semibold">📋 Message à envoyer aux clippeurs perso :</p>
+                  <p className="text-white text-[11px] leading-relaxed italic">{data.action_to_take}</p>
+                </div>
+              )}
+
+              {/* Listes */}
+              <div className="grid grid-cols-2 gap-3">
+                <details className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2">
+                  <summary className="text-emerald-400 text-xs cursor-pointer font-semibold">✅ Business/Creator ({data.business_ready_count})</summary>
+                  <div className="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
+                    {(data.business_ready_accounts || []).map(u => (
+                      <p key={u} className="text-white/60 text-[10px] font-mono">@{u}</p>
+                    ))}
+                  </div>
+                </details>
+                <details className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-2">
+                  <summary className="text-amber-400 text-xs cursor-pointer font-semibold">⚠️ Comptes perso ({data.not_business_count})</summary>
+                  <div className="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
+                    {(data.not_business_accounts || []).map(u => (
+                      <p key={u} className="text-white/60 text-[10px] font-mono">@{u}</p>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {!data && !loading && !error && (
+        <div className="text-center py-4 text-white/30 text-xs">
+          Clique pour tester Meta Business Discovery sur tous tes comptes Insta.
+          <br />
+          Résultat : quels comptes sont à 99% fiabilité vs ceux à demander de switcher en Creator.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MultiPlatformStressTestSection() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2323,6 +2451,9 @@ function SiteHealthSection() {
 
       {/* 🚨 MEGA DIAGNOSTIC : EN HAUT DE PAGE car le user dit "rien ne marche" */}
       <MegaDiagnosticSection />
+
+      {/* 🌟 TEST META BUSINESS DISCOVERY (Insta 99%) */}
+      <MetaBusinessTestSection />
 
       {/* 🔥 STRESS TEST 3 PLATEFORMES 40x chacune */}
       <MultiPlatformStressTestSection />
