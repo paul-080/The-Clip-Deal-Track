@@ -178,15 +178,24 @@ async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int =
         raise ValueError("CLIP_SCRAPER_URL/KEY non configuré")
     if platform not in ("tiktok", "instagram", "youtube"):
         raise ValueError(f"Platform non supportée: {platform}")
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(
-            f"{CLIP_SCRAPER_URL}/v1/{platform}/{username.lstrip('@')}",
-            params={"max_videos": max_videos},
-            headers={"X-API-Key": CLIP_SCRAPER_KEY},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/{platform}/{username.lstrip('@')}",
+                params={"max_videos": max_videos},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as e:
+        raise ValueError(f"ClipScraper VPS injoignable: {type(e).__name__}")
+    except Exception as e:
+        raise ValueError(f"ClipScraper VPS erreur reseau: {type(e).__name__}: {str(e)[:80]}")
     if r.status_code != 200:
         raise ValueError(f"ClipScraper {platform} HTTP {r.status_code}: {r.text[:200]}")
-    return (r.json() or {}).get("videos", [])
+    try:
+        body = r.json() or {}
+    except Exception:
+        raise ValueError("ClipScraper: reponse invalide (JSON parse failed)")
+    return body.get("videos", [])
 
 
 async def _log_scrape(source: str, platform: str, username: str, success: bool, count: int = 0, error: str = None):
@@ -4884,23 +4893,48 @@ async def _scrape_instagram_api(username: str) -> dict:
     except ValueError:
         raise
 
-    # Fallback httpx si curl_cffi pas dispo
+    # Fallback httpx si curl_cffi pas dispo — meme logique de retry sur 429 que la branche curl_cffi
     if not used_curl_cffi:
-        current_proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
-        kw = {"timeout": 20, "follow_redirects": True}
-        if current_proxy:
-            kw["proxy"] = current_proxy
-        async with httpx.AsyncClient(**kw) as c:
-            r = await c.get(url, headers=headers)
-        if r.status_code == 200:
-            data = r.json()
-            if not data.get("data", {}).get("user"):
+        for attempt in range(n_attempts):
+            current_proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+            kw = {"timeout": 20, "follow_redirects": True}
+            if current_proxy:
+                kw["proxy"] = current_proxy
+            try:
+                async with httpx.AsyncClient(**kw) as c:
+                    r = await c.get(url, headers=headers)
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as net_err:
+                last_err = f"httpx network: {type(net_err).__name__}"
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy)
+                if attempt < n_attempts - 1:
+                    await asyncio.sleep(1.5)
+                    continue
+                raise ValueError(f"Instagram httpx injoignable: {last_err}")
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except Exception:
+                    raise ValueError(f"Instagram API: reponse invalide pour @{username}")
+                if not data.get("data", {}).get("user"):
+                    raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+                return data
+            elif r.status_code in (404, 400):
                 raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
-            return data
-        elif r.status_code in (404, 400):
-            raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
-        else:
-            raise ValueError(f"Instagram API erreur {r.status_code} pour @{username} (httpx fallback)")
+            elif r.status_code == 429:
+                if current_proxy:
+                    _mark_proxy_bad(current_proxy)
+                last_err = f"HTTP 429 (rate limited)"
+                if attempt < n_attempts - 1:
+                    await asyncio.sleep(3 + attempt * 2)  # 3s, 5s, 7s
+                    continue
+                raise ValueError(f"Instagram rate limited pour @{username} apres {n_attempts} essais")
+            else:
+                last_err = f"HTTP {r.status_code}"
+                if attempt < n_attempts - 1:
+                    await asyncio.sleep(1)
+                    continue
+                raise ValueError(f"Instagram API erreur {r.status_code} pour @{username} (httpx fallback)")
 
     raise ValueError(f"_scrape_instagram_api echec apres {n_attempts} essais @{username} : {last_err}")
 
@@ -7208,7 +7242,12 @@ async def _fetch_instagram_via_ytdlp_profile(username: str, max_videos: int = 30
         return result, None
 
     try:
-        out = await loop.run_in_executor(_thread_pool, _ytdlp_extract)
+        # Timeout global de 90s pour eviter qu'un yt-dlp qui hang sur DNS/proxy
+        # ne bloque indefiniment (thread pool executor n'est pas interruptible facilement).
+        out = await asyncio.wait_for(
+            loop.run_in_executor(_thread_pool, _ytdlp_extract),
+            timeout=90
+        )
         if isinstance(out, tuple):
             result, err = out
         else:
@@ -7220,6 +7259,9 @@ async def _fetch_instagram_via_ytdlp_profile(username: str, max_videos: int = 30
         else:
             logger.warning(f"yt-dlp Insta profile @{username} no result: {err}")
             return None
+    except asyncio.TimeoutError:
+        logger.warning(f"yt-dlp Insta profile @{username} TIMEOUT 90s")
+        return None
     except Exception as e:
         logger.warning(f"yt-dlp Insta profile @{username} exception: {type(e).__name__}: {e}")
         return None
@@ -7328,25 +7370,39 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     try:
         account_videos_clips = await _fetch_instagram_account_via_graphql(username, max_videos=dynamic_max)
         if account_videos_clips:
-            # Enrichit chaque video avec GraphQL direct (vraies vues UI) - SEULEMENT si proxy dispo
-            enriched_clips = []
-            enrich_failures = 0
-            for v in account_videos_clips[:dynamic_max]:
+            # PARALLELISATION : Enrichit en parallele (max 5 simultanes) avec cap a 30 videos
+            # Avant : sequentiel x 360 videos x 15s = 90 min worst case
+            # Apres : 30 videos / 5 parallel x 8s = ~50s max
+            ENRICH_CAP = 30
+            ENRICH_PARALLEL = 5
+            ENRICH_TIMEOUT = 8
+            enrich_failures_counter = [0]
+            enrich_sem = asyncio.Semaphore(ENRICH_PARALLEL)
+
+            async def _enrich_one(v):
                 sc = v.get("platform_video_id")
-                if sc and BACKEND_PROXY_URL:
+                if not sc or not BACKEND_PROXY_URL:
+                    return v
+                async with enrich_sem:
                     try:
                         url_v = f"https://www.instagram.com/p/{sc}/"
-                        gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=15)
+                        gd = await asyncio.wait_for(_fetch_instagram_graphql_direct(url_v), timeout=ENRICH_TIMEOUT)
                         if gd and int(gd.get("views") or 0) > int(v.get("views") or 0):
                             v["views"] = int(gd.get("views"))
                             v["likes"] = int(gd.get("likes") or v.get("likes") or 0)
                     except asyncio.TimeoutError:
-                        enrich_failures += 1
-                        logger.debug(f"GraphQL enrich timeout (15s) for {sc}")
+                        enrich_failures_counter[0] += 1
+                        logger.debug(f"GraphQL enrich timeout ({ENRICH_TIMEOUT}s) for {sc}")
                     except Exception as enrich_err:
-                        enrich_failures += 1
+                        enrich_failures_counter[0] += 1
                         logger.debug(f"GraphQL enrich failed for {sc}: {type(enrich_err).__name__}: {enrich_err}")
-                enriched_clips.append(v)
+                return v
+
+            videos_to_enrich = account_videos_clips[:ENRICH_CAP]
+            videos_extra = account_videos_clips[ENRICH_CAP:dynamic_max]
+            enriched_clips = list(await asyncio.gather(*[_enrich_one(v) for v in videos_to_enrich]))
+            enriched_clips.extend(videos_extra)
+            enrich_failures = enrich_failures_counter[0]
             # ANTI-BLOCAGE-IP : detecte si toutes les videos ont views=0 (= IP bannie partiellement)
             views_nonzero = sum(1 for v in enriched_clips if (v.get("views") or 0) > 0)
             if enriched_clips and views_nonzero == 0:
@@ -8820,9 +8876,11 @@ async def _scrape_one_account_into_campaign(
         except Exception as e:
             last_err = str(e)[:300]
             logger.warning(f"Scrape attempt {attempt+1}/3 failed for {plat}/@{uname}: {e}")
-            # Backoff EXPONENTIEL sur 429 : 30s, 90s puis 300s (5 min)
+            # Backoff EXPONENTIEL sur 429 : 15s, 45s puis 90s (total max 150s)
+            # Avant : 30/90/300s = 7min/compte -> bloquait le scheduler sur les comptes massivement rate-limites.
+            # Le scheduler global wrap fetch_videos dans wait_for(150s) donc inutile d'aller au-dela.
             if "429" in last_err or "rate" in last_err.lower() or "too many" in last_err.lower():
-                wait = 30 if attempt == 0 else (90 if attempt == 1 else 300)
+                wait = 15 if attempt == 0 else (45 if attempt == 1 else 90)
                 logger.info(f"Rate limit detecte pour {plat}/@{uname}, backoff {wait}s")
                 await asyncio.sleep(wait)
                 continue
@@ -9288,7 +9346,15 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     except Exception:
                         pass
                 try:
-                    videos = await fetch_videos(platform, username, account, since_days)
+                    # Timeout global de 150s par compte : evite qu'un service externe qui hang
+                    # ne bloque toute la campagne (et derriere, le scheduler global).
+                    videos = await asyncio.wait_for(
+                        fetch_videos(platform, username, account, since_days),
+                        timeout=150
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"fetch_videos TIMEOUT (150s) for {platform}/@{username} — skipped")
+                    videos = []
                 except Exception as fetch_err:
                     logger.warning(f"fetch_videos failed for {platform}/@{username}: {fetch_err}")
                     videos = []
