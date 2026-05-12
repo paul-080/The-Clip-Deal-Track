@@ -126,11 +126,33 @@ BACKEND_PROXY_LIST = _parse_proxy_list(_BACKEND_PROXY_RAW)
 # BACKEND_PROXY_URL = premier proxy de la liste (compat ascendante avec le code existant)
 BACKEND_PROXY_URL = BACKEND_PROXY_LIST[0] if BACKEND_PROXY_LIST else None
 
+
+def _is_rotating_proxy(proxy_url: str) -> bool:
+    """True si c'est un proxy Rotating Residential (Webshare p.webshare.io ou similaire).
+    Les Rotating partagent un quota de bandwidth (1 GB chez Paul) -> a economiser.
+    Les Static ont une bandwidth illimitee -> a privilegier.
+    """
+    if not proxy_url:
+        return False
+    return "p.webshare.io" in proxy_url.lower() or "residential-" in proxy_url.lower()
+
+
+# Separation des pools : Static (illimite) en priorite, Rotating en fallback
+BACKEND_PROXY_STATIC = [p for p in BACKEND_PROXY_LIST if not _is_rotating_proxy(p)]
+BACKEND_PROXY_ROTATING = [p for p in BACKEND_PROXY_LIST if _is_rotating_proxy(p)]
+logger.info(
+    f"Proxy pools: {len(BACKEND_PROXY_STATIC)} Static (illimite) + "
+    f"{len(BACKEND_PROXY_ROTATING)} Rotating (quota bandwidth limite)"
+)
+
 # Rotation intelligente : index round-robin + tracking proxies bad (429/403)
-_PROXY_INDEX = [0]  # mutable pour partage entre coroutines
+_PROXY_INDEX_STATIC = [0]
+_PROXY_INDEX_ROTATING = [0]
+_PROXY_INDEX = [0]  # legacy, conserve pour compat
 _PROXY_BAD_UNTIL: dict = {}  # proxy -> timestamp jusqu'a quand bad
 _PROXY_BAD_DURATION_SEC = 300  # 5 minutes quarantine sur 429/403
 _PROXY_FAILURE_COUNT: dict = {}  # proxy -> nb echecs
+_PROXY_USAGE_COUNT: dict = {"static": 0, "rotating": 0}  # stats utilisation par pool
 
 def _mark_proxy_bad(proxy_url: str, duration_sec: int = None):
     """Marque un proxy comme bad pendant N seconds."""
@@ -150,26 +172,50 @@ def _mark_proxy_good(proxy_url: str):
     if proxy_url and proxy_url in _PROXY_FAILURE_COUNT:
         _PROXY_FAILURE_COUNT[proxy_url] = 0
 
-def _get_next_proxy() -> Optional[str]:
-    """Retourne le prochain proxy disponible (round-robin + skip bad).
-    Si tous bad, retourne celui le moins recemment marque.
-    Si aucun configure, retourne None."""
+
+def _pick_proxy_from_pool(pool: list, index_holder: list) -> Optional[str]:
+    """Round-robin sur un pool donne, skip les proxies bad. None si pool vide."""
+    if not pool:
+        return None
+    if len(pool) == 1:
+        return pool[0]
+    now_ts = time.time()
+    n = len(pool)
+    for _ in range(n):
+        idx = index_holder[0] % n
+        index_holder[0] += 1
+        proxy = pool[idx]
+        if _PROXY_BAD_UNTIL.get(proxy, 0) <= now_ts:
+            return proxy
+    return None  # tous bad
+
+
+def _get_next_proxy(allow_rotating: bool = True) -> Optional[str]:
+    """Retourne le prochain proxy disponible.
+    PRIORITE : Static (bandwidth illimitee) d'abord, Rotating (1 GB partage) en fallback.
+    Si allow_rotating=False, n'utilise QUE les Static.
+    Si tous bad, retourne quand meme un Static (mieux que None).
+    Si aucun proxy configure, retourne None.
+    """
     if not BACKEND_PROXY_LIST:
         return None
-    if len(BACKEND_PROXY_LIST) == 1:
-        # 1 seul proxy : retourne meme s'il est bad (mieux que rien)
-        return BACKEND_PROXY_LIST[0]
-    now_ts = time.time()
-    n = len(BACKEND_PROXY_LIST)
-    for _ in range(n):
-        idx = _PROXY_INDEX[0] % n
-        _PROXY_INDEX[0] += 1
-        proxy = BACKEND_PROXY_LIST[idx]
-        bad_until = _PROXY_BAD_UNTIL.get(proxy, 0)
-        if bad_until <= now_ts:
-            return proxy
-    # Tous bad : retourne celui qui sera dispo le plus tot
-    return min(BACKEND_PROXY_LIST, key=lambda p: _PROXY_BAD_UNTIL.get(p, 0))
+    # 1. Priorite Static (illimite en bandwidth)
+    static_pick = _pick_proxy_from_pool(BACKEND_PROXY_STATIC, _PROXY_INDEX_STATIC)
+    if static_pick:
+        _PROXY_USAGE_COUNT["static"] += 1
+        return static_pick
+    # 2. Fallback Rotating (consomme du quota — utiliser seulement si Static rate-limited)
+    if allow_rotating:
+        rot_pick = _pick_proxy_from_pool(BACKEND_PROXY_ROTATING, _PROXY_INDEX_ROTATING)
+        if rot_pick:
+            _PROXY_USAGE_COUNT["rotating"] += 1
+            return rot_pick
+    # 3. Tous Static bad et Rotating epuises -> retourne le Static le moins recemment bad
+    if BACKEND_PROXY_STATIC:
+        return min(BACKEND_PROXY_STATIC, key=lambda p: _PROXY_BAD_UNTIL.get(p, 0))
+    if allow_rotating and BACKEND_PROXY_ROTATING:
+        return min(BACKEND_PROXY_ROTATING, key=lambda p: _PROXY_BAD_UNTIL.get(p, 0))
+    return None
 
 
 async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int = 30) -> list:
@@ -15413,6 +15459,38 @@ async def admin_resume_tracking(account_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Compte introuvable")
     acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0, "username": 1, "platform": 1})
     return {"ok": True, "account": acc, "message": "Tracking re-active pour ce compte"}
+
+
+@api_router.get("/admin/proxy-stats")
+async def admin_proxy_stats(request: Request):
+    """Stats d'utilisation des pools de proxies + etat des bad-list."""
+    await verify_admin_code(request)
+    now_ts = time.time()
+    static_bad = sum(1 for p in BACKEND_PROXY_STATIC if _PROXY_BAD_UNTIL.get(p, 0) > now_ts)
+    rotating_bad = sum(1 for p in BACKEND_PROXY_ROTATING if _PROXY_BAD_UNTIL.get(p, 0) > now_ts)
+    total_calls = _PROXY_USAGE_COUNT["static"] + _PROXY_USAGE_COUNT["rotating"]
+    return {
+        "pools": {
+            "static": {
+                "total": len(BACKEND_PROXY_STATIC),
+                "available": len(BACKEND_PROXY_STATIC) - static_bad,
+                "bad_quarantined": static_bad,
+                "bandwidth": "illimite (Static Residential)",
+            },
+            "rotating": {
+                "total": len(BACKEND_PROXY_ROTATING),
+                "available": len(BACKEND_PROXY_ROTATING) - rotating_bad,
+                "bad_quarantined": rotating_bad,
+                "bandwidth": "quota partage 1 GB/mois (Rotating Residential)",
+            },
+        },
+        "usage_counts_since_boot": {
+            "static_picks": _PROXY_USAGE_COUNT["static"],
+            "rotating_picks": _PROXY_USAGE_COUNT["rotating"],
+            "static_ratio": f"{(_PROXY_USAGE_COUNT['static'] / total_calls * 100):.1f}%" if total_calls else "n/a",
+        },
+        "policy": "Static prioritaire (illimite). Rotating en fallback uniquement si tous Static rate-limited.",
+    }
 
 
 @api_router.post("/admin/social-accounts/{account_id}/verify-existence")
