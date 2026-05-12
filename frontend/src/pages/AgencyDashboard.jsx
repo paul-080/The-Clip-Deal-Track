@@ -44,6 +44,111 @@ import SupportPage from "../components/SupportPage";
 
 const ACCENT_COLOR = "#FF007F";
 
+// ─── Historique des scrapings de la campagne ──────────────────────────────
+function ScrapeHistoryPanel({ campaignId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchHistory = useCallback(async () => {
+    if (!campaignId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/scrape-history?limit=20`, { credentials: "include" });
+      if (res.ok) setData(await res.json());
+    } catch {} finally { setLoading(false); }
+  }, [campaignId]);
+
+  useEffect(() => {
+    fetchHistory();
+    const interval = setInterval(fetchHistory, 60000); // refresh chaque minute
+    return () => clearInterval(interval);
+  }, [fetchHistory]);
+
+  if (!data) {
+    return loading ? (
+      <div className="bg-[#121212] border border-white/10 rounded-xl p-5 text-center text-white/40 text-sm">
+        Chargement de l'historique…
+      </div>
+    ) : null;
+  }
+
+  const fmtParis = (iso) => {
+    if (!iso) return "—";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Paris" });
+    } catch { return iso; }
+  };
+
+  const planLabels = { 1: "1×/jour (minuit)", 2: "2×/jour", 3: "3×/jour (9h + 16h + minuit)", 4: "4×/jour" };
+
+  return (
+    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+            🕒 Historique des scrapings
+          </h3>
+          <p className="text-white/40 text-xs mt-0.5">
+            Plan : <span className="text-white">{planLabels[data.tracking_per_day] || `${data.tracking_per_day}×/jour`}</span>
+            {" · "}Auto-refresh chaque minute
+          </p>
+        </div>
+        <button onClick={fetchHistory} disabled={loading}
+          className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 text-xs border border-white/10 disabled:opacity-40">
+          {loading ? "⏳" : "↻ Refresh"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="bg-white/3 rounded-lg p-2">
+          <p className="text-white/40 text-[10px]">Dernier scrape</p>
+          <p className="text-white font-mono">{fmtParis(data.last_scraped_at)}</p>
+        </div>
+        <div className="bg-white/3 rounded-lg p-2">
+          <p className="text-white/40 text-[10px]">Prochain scrape</p>
+          <p className="text-white font-mono">{fmtParis(data.next_scrape_at)}</p>
+        </div>
+      </div>
+
+      {data.sessions && data.sessions.length > 0 ? (
+        <div className="space-y-1.5 mt-2">
+          <p className="text-white/60 text-xs font-semibold">{data.total_sessions} session{data.total_sessions > 1 ? "s" : ""} récente{data.total_sessions > 1 ? "s" : ""}</p>
+          {data.sessions.map((s, i) => {
+            const okColor = s.success_rate_pct >= 90 ? "text-emerald-400"
+              : s.success_rate_pct >= 50 ? "text-amber-400"
+              : "text-red-400";
+            return (
+              <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/3 border border-white/8 text-xs">
+                <div className="text-white/60 font-mono w-32">{fmtParis(s.timestamp)}</div>
+                <div className="text-white/50">
+                  <span className="text-emerald-400">{s.accounts_ok} OK</span>
+                  {s.accounts_ko > 0 && <> · <span className="text-red-400">{s.accounts_ko} KO</span></>}
+                  {" · "}<span className={okColor}>{s.success_rate_pct}%</span>
+                </div>
+                <div className="text-white/60 font-mono flex-1">
+                  {s.videos_collected.toLocaleString("fr-FR")} vidéos
+                </div>
+                <div className="text-white/30 text-[10px] truncate">
+                  {(s.sources_used || []).join(", ")}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-center py-4 text-white/30 text-xs">
+          Aucun scrape effectué pour le moment. Le 1er scrape aura lieu au prochain créneau Paris.
+        </div>
+      )}
+
+      <p className="text-[10px] text-white/30 italic">
+        💡 Le scrape est lancé 30 min avant l'heure pile (ex: 23h30 pour finir à minuit) pour respecter le rate limit.
+      </p>
+    </div>
+  );
+}
+
 export default function AgencyDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -4010,14 +4115,16 @@ function CampaignDashboard({ campaigns }) {
       {activeTab === "scraping" && (
         <div className="space-y-4 max-w-4xl">
           <div className="bg-[#0d0d0d] border border-white/8 rounded-xl p-3 text-xs text-white/50">
-            ℹ️ Le scraping est <strong>automatique</strong> : il tourne 4 fois par jour aux horaires fixes affichés ci-dessous.
-            Les agences ne peuvent pas le déclencher manuellement — l'admin gère ça.
+            ℹ️ Le scraping est <strong>automatique</strong> selon ton abonnement. Les horaires sont fixes (Paris).
+            Tu peux pas le déclencher manuellement.
           </div>
           <ScrapeStatusPanel
             campaignId={campaignId}
             canForceScrape={user?.role === "admin" || sessionStorage.getItem("preview_mode") === "1"}
             onScrapeComplete={() => { fetchAllVideos(); fetchStats(); fetchAllAccounts(); }}
           />
+          {/* Historique des derniers scrapings de la campagne */}
+          <ScrapeHistoryPanel campaignId={campaignId} />
         </div>
       )}
 

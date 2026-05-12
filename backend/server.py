@@ -9090,11 +9090,11 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         last_scrape = _parse_utc(campaign.get("last_scraped_at"))
 
         if not next_scrape:
-            # Premier passage : assigne offset stable bases sur hash(campaign_id)
-            next_scrape = _compute_next_scrape_at(cid, interval_h, last_scrape)
+            # Premier passage : on calcule selon le plan tracking_per_day
+            next_scrape = _compute_next_scrape_at(cid, interval_h, last_scrape, tracking_per_day)
             await db.campaigns.update_one(
                 {"campaign_id": cid},
-                {"$set": {"next_scrape_at": next_scrape.isoformat(), "scrape_interval_hours": interval_h}}
+                {"$set": {"next_scrape_at": next_scrape.isoformat(), "scrape_interval_hours": interval_h, "tracking_per_day": tracking_per_day}}
             )
 
         if not force_all and next_scrape > now_track_run:
@@ -9102,6 +9102,7 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
             continue
 
         campaign["_scrape_interval_h"] = interval_h
+        campaign["_tracking_per_day"] = tracking_per_day
         filtered_campaigns.append(campaign)
 
     if not filtered_campaigns:
@@ -9517,14 +9518,16 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         # creneau fixe (8h ou 20h Paris) selon SCRAPE_SCHEDULE_PARIS.
         try:
             interval_h = int(campaign.get("_scrape_interval_h") or 6)
+            tracking_per_day = int(campaign.get("_tracking_per_day") or campaign.get("tracking_per_day") or 1)
             now_iso = datetime.now(timezone.utc).isoformat()
-            next_at = _compute_next_scrape_at(campaign_id, interval_h, datetime.now(timezone.utc))
+            next_at = _compute_next_scrape_at(campaign_id, interval_h, datetime.now(timezone.utc), tracking_per_day)
             await db.campaigns.update_one(
                 {"campaign_id": campaign_id},
                 {"$set": {
                     "last_scraped_at": now_iso,
                     "next_scrape_at": next_at.isoformat(),
                     "scrape_interval_hours": interval_h,
+                    "tracking_per_day": tracking_per_day,
                 }}
             )
         except Exception as e:
@@ -9557,7 +9560,20 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
 # Affichés aux agences/clippeurs sur la campagne. Modifiables ici en 1 endroit.
 # (Conserve pour rétro-compatibilité avec endpoints publics qui exposent ces horaires.
 #  Le NOUVEAU scheduler stagger par campagne ne les utilise plus directement.)
-SCRAPE_SCHEDULE_PARIS = [(8, 0), (20, 0)]  # 2x/jour : matin 8h + soir 20h Paris (12h interval)
+# Horaires de scrape par plan (Paris timezone)
+# IMPORTANT : on LANCE 30 min AVANT l'heure pile pour que le scrape FINISSE a l'heure pile.
+# Le scraping prend ~15-30 min pour 100-300 comptes avec rate limit Insta.
+#
+# Plan Starter / Pro (1 scrape/jour) : lance a 23h30, finit ~minuit
+# Plan Business (3 scrapes/jour)     : lance a 8h30/15h30/23h30, finit ~9h/16h/minuit
+SCRAPE_SCHEDULES_BY_PLAN = {
+    1: [(23, 30)],                            # 1/jour : minuit (lance 30 min avant)
+    2: [(8, 30), (23, 30)],                   # 2/jour : 9h + minuit (legacy/compat)
+    3: [(8, 30), (15, 30), (23, 30)],         # 3/jour : 9h, 16h, minuit (lance 30 min avant)
+    4: [(5, 30), (11, 30), (17, 30), (23, 30)],  # 4/jour (futur premium)
+}
+# Default scrape schedule (fallback si plan inconnu) = 1 scrape/jour
+SCRAPE_SCHEDULE_PARIS = SCRAPE_SCHEDULES_BY_PLAN[1]
 PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else timezone.utc
 
 
@@ -9601,36 +9617,36 @@ def _campaign_offset_minutes(campaign_id: str) -> int:
 def _scrape_interval_hours(tracking_per_day: int) -> int:
     """Intervalle entre 2 scrapes selon le plan agence."""
     if tracking_per_day >= 4:
-        return 6   # Business+ : 4x/jour
+        return 6   # Premium futur : 4x/jour
+    if tracking_per_day == 3:
+        return 8   # Business 750€ : 3x/jour (9h, 16h, 24h)
     if tracking_per_day == 2:
-        return 12  # Pro : 2x/jour
-    return 24      # Starter / click-only : 1x/jour
+        return 12  # Legacy : 2x/jour
+    return 24      # Starter / Pro 549€ : 1x/jour (a minuit)
 
 
-def _compute_next_scrape_at(campaign_id: str, interval_hours: int, last_scraped_at: Optional[datetime] = None) -> datetime:
-    """Calcule le prochain scrape pour une campagne — HORAIRES FIXES Paris.
+def _get_schedule_for_plan(tracking_per_day: int) -> list:
+    """Retourne la liste des horaires Paris pour ce plan."""
+    return SCRAPE_SCHEDULES_BY_PLAN.get(int(tracking_per_day or 1), SCRAPE_SCHEDULES_BY_PLAN[1])
 
-    Plus de STAGGERED hash-based : toutes les campagnes scrapent aux MEMES horaires
-    fixes definis dans SCRAPE_SCHEDULE_PARIS (= [8h, 20h] Paris par defaut).
 
-    - PREMIER SCRAPE (jamais scrape) : IMMEDIAT (1 minute) pour que les nouvelles
-      campagnes/comptes soient trackes des le prochain tick.
-    - SCRAPES SUIVANTS : prochain horaire fixe selon le plan
-      * Business (interval <= 12h) : prochain de [8h, 20h]
-      * Pro (interval <= 24h)       : prochain 8h ou 20h aussi (2/jour)
-      * Starter (interval = 24h)    : prochain 8h SEULEMENT (1/jour)
+def _compute_next_scrape_at(campaign_id: str, interval_hours: int, last_scraped_at: Optional[datetime] = None, tracking_per_day: int = 1) -> datetime:
+    """Calcule le prochain scrape pour une campagne — HORAIRES FIXES Paris selon le plan.
+
+    Plans :
+    - Starter (1/jour)  : 23h30 Paris (lance 30 min avant minuit pour finir a minuit)
+    - Pro     (1/jour)  : 23h30 Paris (idem)
+    - Business (3/jour) : 8h30 + 15h30 + 23h30 (lance 30 min avant 9h, 16h, 24h)
+
+    PREMIER SCRAPE (jamais scrape) : IMMEDIAT (1 minute apres ajout)
+    SCRAPES SUIVANTS : prochain horaire fixe selon le plan
     """
     now = datetime.now(timezone.utc)
     if not last_scraped_at:
         # Premier scrape : immediat (au prochain tick = max quelques min)
         return now + timedelta(minutes=1)
-    # Scrapes suivants : prochain horaire fixe Paris
-    # Pour 1 scrape/jour : on ne prend QUE le 1er horaire (8h)
-    # Pour 2+ scrapes/jour : on prend tous les horaires
-    if interval_hours >= 24:
-        schedule = [SCRAPE_SCHEDULE_PARIS[0]]  # 8h uniquement
-    else:
-        schedule = SCRAPE_SCHEDULE_PARIS  # tous (8h + 20h)
+    # Determine le bon schedule selon le plan
+    schedule = _get_schedule_for_plan(tracking_per_day)
     now_paris = now.astimezone(PARIS_TZ)
     candidates = []
     # Aujourd'hui (apres now)
@@ -14424,9 +14440,9 @@ SUBSCRIPTION_PLANS = {
     "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 2, "click_only": False, "view_only": True},
+                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_unlimited": {"name": "Business",   "amount": 75000,  "label": "750€/mois",
-                       "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 2, "click_only": False, "view_only": True},
+                       "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
                        "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": None,
                        "click_only": False, "view_only": False, "is_custom": True},
@@ -16237,6 +16253,103 @@ async def admin_test_free_path(platform: str, username: str, request: Request, _
         fixes.append("Configure YOUTUBE_API_KEY (gratuit Google Cloud)")
     report["fixes_required"] = fixes
     return report
+
+
+@api_router.get("/campaigns/{campaign_id}/scrape-history")
+async def get_campaign_scrape_history(campaign_id: str, limit: int = 20, user: dict = Depends(get_current_user)):
+    """🕒 Liste des derniers scrapings d'UNE campagne (vue agence/admin).
+    Retourne pour chaque scrape : timestamp, horaire Paris, sources utilisees,
+    nb comptes scrapes OK/KO, nb videos recuperees.
+
+    Utile dans l'onglet 'Scraping' de l'agence pour voir l'historique :
+    'Scrape du 12/05 23h45 : 17 comptes OK, 234 videos · Dernier a 12/05 minuit'
+    """
+    role = user.get("role")
+    if role not in ("agency", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Accès réservé à l'agence et au manager")
+
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "agency_id": 1, "last_scraped_at": 1, "next_scrape_at": 1,
+         "tracking_per_day": 1, "scrape_interval_hours": 1, "name": 1}
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    if role == "agency" and campaign.get("agency_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la vôtre")
+
+    # Récupère les account_ids assignés à cette campagne
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    account_ids = [a["account_id"] for a in assignments if a.get("account_id")]
+
+    # Récupère les usernames + platforms pour ces comptes (pour filtrer scraping_history)
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}},
+        {"_id": 0, "username": 1, "platform": 1}
+    ).to_list(2000) if account_ids else []
+    account_keys = {(a["platform"], a["username"]) for a in accounts}
+
+    # Récupère les N derniers scrapes pour les comptes de cette campagne
+    raw_scrapes = await db.scraping_history.find(
+        {}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(500)
+
+    # Filtre ceux qui correspondent aux comptes de cette campagne
+    campaign_scrapes = [
+        s for s in raw_scrapes
+        if (s.get("platform"), s.get("username")) in account_keys
+    ][:limit]
+
+    # Groupe par "session de scrape" (timestamp arrondi à 15 min)
+    from collections import defaultdict
+    sessions: dict = defaultdict(lambda: {"count": 0, "ok": 0, "ko": 0, "videos": 0, "sources": set(), "platforms": set()})
+    for s in campaign_scrapes:
+        ts = s.get("timestamp", "")
+        if not ts:
+            continue
+        # Arrondi à la 15 min près (clé de session)
+        session_key = ts[:15] + "0:00"  # ex: "2026-05-12T23:0" + "0:00" → "2026-05-12T23:00:00"
+        sessions[session_key]["count"] += 1
+        if s.get("success"):
+            sessions[session_key]["ok"] += 1
+        else:
+            sessions[session_key]["ko"] += 1
+        sessions[session_key]["videos"] += int(s.get("video_count") or 0)
+        if s.get("source"):
+            sessions[session_key]["sources"].add(s["source"])
+        if s.get("platform"):
+            sessions[session_key]["platforms"].add(s["platform"])
+
+    # Convertit en liste triée
+    sessions_list = []
+    for key in sorted(sessions.keys(), reverse=True)[:limit]:
+        sess = sessions[key]
+        sessions_list.append({
+            "timestamp": key,
+            "timestamp_paris": (datetime.fromisoformat(key.replace("Z", "+00:00"))
+                                 .astimezone(PARIS_TZ).isoformat() if key else ""),
+            "accounts_scraped": sess["count"],
+            "accounts_ok": sess["ok"],
+            "accounts_ko": sess["ko"],
+            "videos_collected": sess["videos"],
+            "sources_used": list(sess["sources"]),
+            "platforms": list(sess["platforms"]),
+            "success_rate_pct": round(sess["ok"] / sess["count"] * 100, 1) if sess["count"] > 0 else 0,
+        })
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "last_scraped_at": campaign.get("last_scraped_at"),
+        "next_scrape_at": campaign.get("next_scrape_at"),
+        "tracking_per_day": campaign.get("tracking_per_day") or 1,
+        "scrape_interval_hours": campaign.get("scrape_interval_hours") or 24,
+        "sessions": sessions_list,
+        "total_sessions": len(sessions_list),
+    }
 
 
 @api_router.get("/admin/recent-scrapes")
