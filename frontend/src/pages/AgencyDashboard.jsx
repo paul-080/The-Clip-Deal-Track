@@ -3368,18 +3368,26 @@ function CampaignDashboard({ campaigns }) {
                                     )}
                                   </div>
                                   <ExternalLink className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors flex-shrink-0" />
-                                  {acc.status === "deleted" && (
+                                  {acc.status === "deleted" && acc.deleted_type === "deleted_by_user" && (
                                     <span
                                       className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold flex-shrink-0 border border-red-500/40"
-                                      title={acc.deleted_reason || acc.error_message || "Compte introuvable / supprimé"}
+                                      title={acc.deleted_reason || "Compte supprimé par le clippeur"}
                                     >
-                                      🗑 Introuvable
+                                      🗑 Supprimé
+                                    </span>
+                                  )}
+                                  {acc.status === "deleted" && acc.deleted_type !== "deleted_by_user" && (
+                                    <span
+                                      className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-bold flex-shrink-0 border border-red-500/40"
+                                      title={acc.deleted_reason || "Compte introuvable (n'existe pas)"}
+                                    >
+                                      ❌ Introuvable
                                     </span>
                                   )}
                                   {acc.status === "error" && (
                                     <span
                                       className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold flex-shrink-0 border border-amber-500/40"
-                                      title={acc.error_message || "Erreur de scraping"}
+                                      title={acc.error_message || "Erreur temporaire (rate limit, VPS, etc.)"}
                                     >
                                       ⚠ Erreur
                                     </span>

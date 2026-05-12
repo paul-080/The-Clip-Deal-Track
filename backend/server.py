@@ -5718,26 +5718,58 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
                 )
             elif platform == "instagram":
                 # Instagram IPs are blocked from cloud — accept account without stats
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "status": "verified",
-                        "verified_at": datetime.now(timezone.utc).isoformat(),
-                        "error_message": None,
-                        "display_name": username,
-                        "follower_count": None,
-                        "avatar_url": None,
-                    }}
-                )
+                # SAUF si on a clairement detecte un 404/introuvable → status=deleted
+                if "introuvable" in error_reason.lower():
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "deleted",
+                            "deleted_at": datetime.now(timezone.utc).isoformat(),
+                            "deleted_type": "never_existed",
+                            "deleted_reason": error_reason,
+                            "error_message": error_reason,
+                        }}
+                    )
+                else:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "verified",
+                            "verified_at": datetime.now(timezone.utc).isoformat(),
+                            "error_message": None,
+                            "display_name": username,
+                            "follower_count": None,
+                            "avatar_url": None,
+                        }}
+                    )
             else:
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {"status": "error", "error_message": error_reason}}
-                )
+                # YouTube ou autre : status=deleted si introuvable, sinon error
+                if "introuvable" in error_reason.lower() or "404" in error_reason:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "deleted",
+                            "deleted_at": datetime.now(timezone.utc).isoformat(),
+                            "deleted_type": "never_existed",
+                            "deleted_reason": error_reason,
+                            "error_message": error_reason,
+                        }}
+                    )
+                else:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {"status": "error", "error_message": error_reason}}
+                    )
         else:
             await db.social_accounts.update_one(
                 {"account_id": account_id},
-                {"$set": {"status": "error", "error_message": f"Compte @{username} introuvable sur {platform}"}}
+                {"$set": {
+                    "status": "deleted",
+                    "deleted_at": datetime.now(timezone.utc).isoformat(),
+                    "deleted_type": "never_existed",
+                    "deleted_reason": f"Compte @{username} introuvable sur {platform}",
+                    "error_message": f"Compte @{username} introuvable sur {platform}",
+                }}
             )
         return  # failed — no tracking
 
@@ -8821,13 +8853,26 @@ async def _scrape_one_account_into_campaign(
             "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat(),
         }
 
+        # Distingue "compte n'a jamais existe" (account_was_verified=False) vs
+        # "compte EXISTAIT mais a ete supprime" (account_was_verified=True via had_videos OR verified_at)
+        account_was_verified = bool(account.get("verified_at"))
+        # Compte qu'on a deja scrape avec succes (videos collectees) = il existait
+        had_previous_scrapes = bool(account.get("last_tracked_at"))
+        is_real_deletion = account_was_verified or had_previous_scrapes
+
         if is_strongly_deleted and not is_temporary:
             # Signal FORT et non temporaire -> deleted IMMEDIAT
             update_fields["status"] = "deleted"
             update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
-            update_fields["deleted_reason"] = f"Compte introuvable sur {plat} (detection directe)"
+            if is_real_deletion:
+                update_fields["deleted_reason"] = f"Compte supprime sur {plat} (le clippeur a supprime son compte)"
+                update_fields["deleted_type"] = "deleted_by_user"  # ex-compte verifie devenu inaccessible
+                logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : le compte EXISTAIT, supprime par le clippeur ({last_err[:100]})")
+            else:
+                update_fields["deleted_reason"] = f"Compte {plat} introuvable (n'a jamais existe ou URL invalide)"
+                update_fields["deleted_type"] = "never_existed"
+                logger.warning(f"❌ COMPTE INTROUVABLE {plat}/@{uname} : n'a jamais existe ({last_err[:100]})")
             update_fields["not_found_count"] = 99  # marque comme confirme
-            logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : detection directe ({last_err[:100]})")
         elif is_weakly_not_found and not is_temporary:
             # Signal faible -> incremente compteur, set deleted apres 3
             current_count = int(account.get("not_found_count") or 0) + 1
@@ -8835,8 +8880,13 @@ async def _scrape_one_account_into_campaign(
             if current_count >= 3:
                 update_fields["status"] = "deleted"
                 update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
-                update_fields["deleted_reason"] = f"Compte introuvable sur {plat} (3 echecs consecutifs)"
-                logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : {current_count} echecs 'introuvable' consecutifs")
+                if is_real_deletion:
+                    update_fields["deleted_reason"] = f"Compte supprime sur {plat} (3 echecs consecutifs apres avoir existe)"
+                    update_fields["deleted_type"] = "deleted_by_user"
+                else:
+                    update_fields["deleted_reason"] = f"Compte {plat} introuvable (3 echecs)"
+                    update_fields["deleted_type"] = "never_existed"
+                logger.warning(f"📛 {plat}/@{uname} : {current_count} echecs 'introuvable' consecutifs (type={'deleted' if is_real_deletion else 'never_existed'})")
         else:
             # Erreur temporaire ou autre : reset le compteur (le compte est probablement valide)
             update_fields["not_found_count"] = 0
