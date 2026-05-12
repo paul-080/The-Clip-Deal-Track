@@ -8778,28 +8778,69 @@ async def _scrape_one_account_into_campaign(
 
     # Cas 1 : aucune vidéo et erreur explicite
     if not videos and last_err and last_err != "aucune vidéo retournée":
-        # DETECTION COMPTE SUPPRIME : si l'erreur indique "introuvable" / "not found" / "404"
-        # → on incremente un compteur. Apres 3 echecs consecutifs sur ce motif, on marque
-        # le compte comme DELETED (status special pour l'UI).
+        # DETECTION COMPTE SUPPRIME : analyse fine de l'erreur pour distinguer
+        # "vraiment introuvable" vs "erreur temporaire (429, timeout, etc.)"
         err_lower = last_err.lower()
-        is_not_found = any(kw in err_lower for kw in ["introuvable", "not found", "404", "does not exist", "n'existe pas"])
+
+        # Signaux FORTS de compte supprime (set deleted IMMEDIATEMENT)
+        strong_deleted_signals = [
+            "compte tiktok @" in err_lower and "introuvable" in err_lower,
+            "compte instagram @" in err_lower and "introuvable" in err_lower,
+            "chaîne youtube" in err_lower and "introuvable" in err_lower,
+            "n'existe pas" in err_lower,
+            "does not exist" in err_lower,
+            "user not found" in err_lower,
+            "channel not found" in err_lower,
+            "channelnotfound" in err_lower,
+            "channel introuvable" in err_lower,
+            "no items returned" in err_lower,
+            "http 404" in err_lower,
+        ]
+        # Signaux FAIBLES (incremente compteur, set deleted apres 3 essais)
+        weak_not_found_signals = [
+            "introuvable" in err_lower,  # generique
+            "not found" in err_lower,
+            "404" in err_lower,
+        ]
+        # Signaux TEMPORAIRES (reset compteur, garder en error)
+        temporary_signals = [
+            "429" in err_lower,
+            "rate limit" in err_lower,
+            "timeout" in err_lower,
+            "502" in err_lower,
+            "bad gateway" in err_lower,
+            "all instagram strategies failed" in err_lower,
+            "all tiktok strategies failed" in err_lower,
+        ]
+        is_strongly_deleted = any(strong_deleted_signals)
+        is_weakly_not_found = any(weak_not_found_signals)
+        is_temporary = any(temporary_signals)
+
         update_fields = {
             "last_scrape_error": last_err,
             "last_scrape_attempt_at": datetime.now(timezone.utc).isoformat(),
         }
-        if is_not_found:
-            # Incrémente le compteur de "not found"
+
+        if is_strongly_deleted and not is_temporary:
+            # Signal FORT et non temporaire -> deleted IMMEDIAT
+            update_fields["status"] = "deleted"
+            update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
+            update_fields["deleted_reason"] = f"Compte introuvable sur {plat} (detection directe)"
+            update_fields["not_found_count"] = 99  # marque comme confirme
+            logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : detection directe ({last_err[:100]})")
+        elif is_weakly_not_found and not is_temporary:
+            # Signal faible -> incremente compteur, set deleted apres 3
             current_count = int(account.get("not_found_count") or 0) + 1
             update_fields["not_found_count"] = current_count
             if current_count >= 3:
-                # 3 echecs consecutifs sur "introuvable" -> compte supprime
                 update_fields["status"] = "deleted"
                 update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
                 update_fields["deleted_reason"] = f"Compte introuvable sur {plat} (3 echecs consecutifs)"
                 logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : {current_count} echecs 'introuvable' consecutifs")
         else:
-            # Erreur autre que "not found" : reset le compteur
+            # Erreur temporaire ou autre : reset le compteur (le compte est probablement valide)
             update_fields["not_found_count"] = 0
+
         await db.social_accounts.update_one(
             {"account_id": acc_id},
             {"$set": update_fields}
