@@ -555,22 +555,9 @@ async def _fetch_instagram_graphql_direct(url: str) -> Optional[dict]:
         except Exception as e:
             logger.debug(f"GraphQL curl_cffi fallback exception: {e}")
 
-    # Methode 2 (fallback) : httpx classique avec User-Agent Chrome
+    # Methode 1 (httpx) et 2 (curl_cffi) ont epuise la cascade. Si rien n'a marche, on rend la main.
     if data is None:
-        try:
-            ua_headers = {**headers, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
-            client_kwargs = {"timeout": 30, "headers": ua_headers, "cookies": cookies}
-            if BACKEND_PROXY_URL:
-                client_kwargs["proxy"] = BACKEND_PROXY_URL  # httpx 0.28+ : 'proxy' singulier au lieu de 'proxies'
-            async with httpx.AsyncClient(**client_kwargs) as c:
-                r = await c.post("https://www.instagram.com/api/graphql", content=body_str)
-            if r.status_code != 200:
-                logger.debug(f"GraphQL httpx HTTP {r.status_code} for {shortcode}: {r.text[:150]}")
-                return None
-            data = r.json()
-        except Exception as e:
-            logger.debug(f"GraphQL httpx exception for {shortcode}: {type(e).__name__}: {e}")
-            return None
+        return None
     media = (data.get("data") or {}).get("xdt_shortcode_media")
     if not media:
         return None
@@ -4356,16 +4343,21 @@ async def _verify_tiktok_tikwm(username: str) -> dict:
     Free, no API key required.
     """
     username = username.lstrip("@")
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        r = await c.get(
-            "https://www.tikwm.com/api/user/info",
-            params={"unique_id": username},
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.tikwm.com/",
-            }
-        )
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get(
+                "https://www.tikwm.com/api/user/info",
+                params={"unique_id": username},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Referer": "https://www.tikwm.com/",
+                }
+            )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as e:
+        raise ValueError(f"TikWm API injoignable: {type(e).__name__}")
+    except Exception as e:
+        raise ValueError(f"TikWm API erreur reseau: {type(e).__name__}: {str(e)[:80]}")
     if r.status_code != 200:
         raise ValueError(f"TikWm API inaccessible (HTTP {r.status_code})")
     try:
@@ -5280,14 +5272,25 @@ async def _fetch_instagram_videos_rapidapi(username: str) -> list:
             params = {"username_or_id_or_url": username}
             if pagination_token:
                 params["pagination_token"] = pagination_token
-            r = await c.get(
-                "https://instagram-scraper-api2.p.rapidapi.com/v1/posts",
-                params=params,
-                headers=headers,
-            )
+            try:
+                r = await c.get(
+                    "https://instagram-scraper-api2.p.rapidapi.com/v1/posts",
+                    params=params,
+                    headers=headers,
+                )
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as e:
+                logger.debug(f"RapidAPI Insta network error for @{username}: {type(e).__name__}")
+                break
+            except Exception as e:
+                logger.debug(f"RapidAPI Insta unexpected error for @{username}: {type(e).__name__}: {str(e)[:80]}")
+                break
             if r.status_code != 200:
                 break
-            body = r.json()
+            try:
+                body = r.json()
+            except Exception:
+                logger.debug(f"RapidAPI Insta invalid JSON for @{username}")
+                break
             items = body.get("data", {}).get("items", [])
             for item in items:
                 media_type = item.get("media_type")
@@ -5921,19 +5924,29 @@ async def _fetch_tiktok_single_video_tikwm(video_url: str) -> dict | None:
     This endpoint works without authentication even from cloud servers.
     Returns a video dict or None.
     """
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        r = await c.post(
-            "https://www.tikwm.com/api/",
-            data={"url": video_url, "hd": "1"},
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://www.tikwm.com/",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        )
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.post(
+                "https://www.tikwm.com/api/",
+                data={"url": video_url, "hd": "1"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://www.tikwm.com/",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as e:
+        logger.debug(f"TikWm single video network error: {type(e).__name__}")
+        return None
+    except Exception as e:
+        logger.debug(f"TikWm single video unexpected error: {type(e).__name__}: {str(e)[:80]}")
+        return None
     if r.status_code != 200:
         return None
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception:
+        return None
     if data.get("code") != 0:
         return None
     v = data.get("data") or {}
@@ -6055,15 +6068,23 @@ async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
         "x-rapidapi-key": RAPIDAPI_KEY,
     }
     result = []
-    async with httpx.AsyncClient(timeout=25) as c:
-        r = await c.get(
-            "https://tiktok-scraper7.p.rapidapi.com/user/posts",
-            headers=headers,
-            params={"unique_id": username, "count": "35", "cursor": "0"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.get(
+                "https://tiktok-scraper7.p.rapidapi.com/user/posts",
+                headers=headers,
+                params={"unique_id": username, "count": "35", "cursor": "0"},
+            )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as e:
+        raise ValueError(f"RapidAPI TikTok injoignable: {type(e).__name__}")
+    except Exception as e:
+        raise ValueError(f"RapidAPI TikTok erreur reseau: {type(e).__name__}: {str(e)[:80]}")
     if r.status_code != 200:
         raise ValueError(f"RapidAPI TikTok HTTP {r.status_code}: {r.text[:200]}")
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception:
+        raise ValueError("RapidAPI TikTok: reponse invalide (JSON parse failed)")
     code = data.get("code", -1)
     if code != 0:
         raise ValueError(f"RapidAPI TikTok error code {code}: {data.get('msg', '')}")
