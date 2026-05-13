@@ -16593,26 +16593,65 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
     vmap = {s["_id"]: s for s in video_stats}
 
     by_status: dict = {}
+    by_display_status: dict = {}
     details = []
+    now_iso = datetime.now(timezone.utc).isoformat()
     for a in accounts:
         st = a.get("status", "unknown")
         by_status[st] = by_status.get(st, 0) + 1
         vstat = vmap.get(a["account_id"], {"n": 0, "total_views": 0})
+
+        # Calcul du status d'affichage (meme logique que last-scrape-details)
+        platform = a.get("platform")
+        username = a.get("username")
+        last_tracked = a.get("last_tracked_at")
+        paused_until = a.get("tracking_paused_until")
+        status_acc = a.get("status", "verified")
+        last_scrape = await db.scraping_history.find_one(
+            {"platform": platform, "username": username},
+            {"_id": 0, "success": 1, "video_count": 1, "source": 1, "error": 1, "timestamp": 1},
+            sort=[("timestamp", -1)]
+        )
+        if status_acc == "deleted":
+            disp = "deleted"
+        elif paused_until and paused_until > now_iso:
+            disp = "skipped_paused"
+        elif not last_tracked:
+            disp = "never_tried"
+        elif last_scrape and last_scrape.get("success"):
+            try:
+                ts_dt = _parse_utc(last_scrape.get("timestamp"))
+                if ts_dt and (datetime.now(timezone.utc) - ts_dt).total_seconds() < 36 * 3600:
+                    disp = "ok"
+                else:
+                    disp = "skipped_cold"
+            except Exception:
+                disp = "ok"
+        else:
+            disp = "ko"
+        by_display_status[disp] = by_display_status.get(disp, 0) + 1
+
         details.append({
             "account_id": a["account_id"],
-            "platform": a.get("platform"),
-            "username": a.get("username"),
-            "status": a.get("status"),
-            "last_tracked_at": a.get("last_tracked_at"),
+            "platform": platform,
+            "username": username,
+            "db_status": status_acc,
+            "display_status": disp,
+            "last_tracked_at": last_tracked,
             "last_scrape_error": (a.get("last_scrape_error") or "")[:200],
             "error_message": (a.get("error_message") or "")[:200],
             "consecutive_failures": a.get("consecutive_failures") or 0,
-            "tracking_paused_until": a.get("tracking_paused_until"),
+            "tracking_paused_until": paused_until,
             "last_existence_check_at": a.get("last_existence_check_at"),
             "last_existence_check_result": a.get("last_existence_check_result"),
             "deleted_type": a.get("deleted_type"),
             "deleted_reason": (a.get("deleted_reason") or "")[:200],
             "verified_at": a.get("verified_at"),
+            "last_scrape_success": (last_scrape or {}).get("success"),
+            "last_scrape_source": (last_scrape or {}).get("source"),
+            "last_scrape_error_msg": ((last_scrape or {}).get("error") or "")[:200],
+            "last_scrape_video_count": (last_scrape or {}).get("video_count") or 0,
+            "last_scrape_timestamp": (last_scrape or {}).get("timestamp"),
             "n_videos_in_db": vstat["n"],
             "total_views_in_db": vstat["total_views"],
         })
@@ -16621,7 +16660,8 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
         "campaign_id": campaign_id,
         "campaign_name": campaign.get("name"),
         "total_accounts": len(accounts),
-        "by_status": by_status,
+        "by_db_status": by_status,
+        "by_display_status": by_display_status,
         "tracking_per_day": campaign.get("tracking_per_day"),
         "details": details,
     }
