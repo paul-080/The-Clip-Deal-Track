@@ -16839,6 +16839,140 @@ async def admin_reset_stats_history(campaign_id: str, request: Request, body: di
     }
 
 
+@api_router.post("/admin/recheck-failing-accounts")
+async def admin_recheck_failing(request: Request, body: dict = None):
+    """Re-verifie ACTIVEMENT les comptes status=verified mais qui ECHOUENT au scrape
+    (consecutive_failures >= 1 OU tracking_paused_until set). Pour chacun :
+    - Si verif active confirme 'deleted' (2+ sources) -> passe en status='deleted'
+    - Si verif dit 'exists' -> reset consecutive_failures + tracking_paused_until
+    - Si verif uncertain -> reset pause seulement (laisse verified)
+
+    Aussi : pour les comptes status='error', meme logique.
+
+    body = { campaign_id?, dry_run (default true) }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    dry_run = bool(body.get("dry_run", True))
+    cid_filter = body.get("campaign_id")
+
+    # Filtre : comptes en echec mais pas encore deleted
+    query: dict = {
+        "$and": [
+            {"status": {"$in": ["verified", "error"]}},
+            {"$or": [
+                {"consecutive_failures": {"$gte": 1}},
+                {"tracking_paused_until": {"$exists": True, "$ne": None}},
+            ]}
+        ]
+    }
+    if cid_filter:
+        assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": cid_filter}, {"_id": 0, "account_id": 1}
+        ).to_list(2000)
+        ids = [a["account_id"] for a in assignments if a.get("account_id")]
+        query["account_id"] = {"$in": ids}
+
+    accounts = await db.social_accounts.find(query, {"_id": 0}).limit(300).to_list(300)
+
+    results = {"marked_deleted": [], "restored_alive": [], "reset_pause_only": [], "errors": []}
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username") or ""
+        account_id = acc.get("account_id")
+        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+        try:
+            exists = await asyncio.wait_for(
+                _verify_account_still_exists(platform, check_target or username), timeout=30
+            )
+        except Exception as ex:
+            results["errors"].append({"username": username, "platform": platform, "error": str(ex)[:100]})
+            continue
+
+        entry = {"account_id": account_id, "platform": platform, "username": username,
+                 "old_status": acc.get("status"), "old_consec": acc.get("consecutive_failures") or 0,
+                 "verif": "exists" if exists is True else "deleted" if exists is False else "uncertain"}
+
+        # Cas 1 : verif confirme deleted (2 sources)
+        if exists is False:
+            # Securite : si videos en DB, on ne marque pas deleted (faux positif possible)
+            n_videos = await db.tracked_videos.count_documents({"account_id": account_id})
+            if n_videos > 0:
+                entry["note"] = f"verif=deleted MAIS {n_videos} videos en DB -> on garde verified"
+                results["reset_pause_only"].append(entry)
+                if not dry_run:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "consecutive_failures": 0,
+                            "tracking_paused_until": None,
+                            "last_existence_check_at": now_iso,
+                            "last_existence_check_result": "uncertain_has_videos",
+                        }}
+                    )
+            else:
+                entry["note"] = "verif=deleted (2 sources) + 0 video DB -> marque deleted"
+                results["marked_deleted"].append(entry)
+                if not dry_run:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "deleted",
+                            "deleted_at": now_iso,
+                            "deleted_type": "confirmed_after_failures",
+                            "deleted_reason": "Verif active (2 sources) confirme introuvable + 0 video historique",
+                            "last_existence_check_at": now_iso,
+                            "last_existence_check_result": "deleted",
+                            "not_found_count": 99,
+                        }}
+                    )
+        elif exists is True:
+            entry["note"] = "verif=exists -> reset failures + pause"
+            results["restored_alive"].append(entry)
+            if not dry_run:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "consecutive_failures": 0,
+                        "tracking_paused_until": None,
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "exists",
+                        "error_message": None,
+                    }}
+                )
+        else:
+            entry["note"] = "verif=uncertain -> reset pause uniquement"
+            results["reset_pause_only"].append(entry)
+            if not dry_run:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "tracking_paused_until": None,
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "uncertain",
+                    }}
+                )
+        await asyncio.sleep(0.4)
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "checked": len(accounts),
+        "summary": {
+            "marked_deleted": len(results["marked_deleted"]),
+            "restored_alive": len(results["restored_alive"]),
+            "reset_pause_only": len(results["reset_pause_only"]),
+            "errors": len(results["errors"]),
+        },
+        "details": results,
+    }
+
+
 @api_router.post("/admin/recheck-deleted-accounts")
 async def admin_recheck_deleted(request: Request, body: dict = None):
     """Re-verifie ACTIVEMENT (2 sources) tous les comptes marques deleted/error
@@ -19002,12 +19136,22 @@ async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depend
         paused_until = acc.get("tracking_paused_until")
         status_acc = acc.get("status", "verified")
 
-        # Recupere le dernier scrape de scraping_history pour ce compte (pour la source)
-        last_scrape = await db.scraping_history.find_one(
-            {"platform": platform, "username": username},
-            {"_id": 0},
-            sort=[("timestamp", -1)]
-        )
+        # Recupere le dernier scrape de scraping_history pour ce compte (pour la source).
+        # BUG FIX YouTube : le scrape YouTube logge avec channel_id (UC...) comme 'username'
+        # mais les comptes ont aussi un handle. On cherche les 2 pour matcher.
+        channel_id = acc.get("platform_channel_id")
+        if platform == "youtube" and channel_id:
+            last_scrape = await db.scraping_history.find_one(
+                {"platform": platform, "username": {"$in": [username, channel_id]}},
+                {"_id": 0},
+                sort=[("timestamp", -1)]
+            )
+        else:
+            last_scrape = await db.scraping_history.find_one(
+                {"platform": platform, "username": username},
+                {"_id": 0},
+                sort=[("timestamp", -1)]
+            )
 
         # Determine status global
         if status_acc == "deleted":
