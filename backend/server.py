@@ -2270,8 +2270,12 @@ async def google_login(login_req: GoogleLoginRequest):
 # ================= CAMPAIGN ROUTES =================
 
 def _check_agency_subscription(user: dict):
-    """Raise 402 if agency's trial has expired and they have no active subscription.
-    Status 402 (Payment Required) avec message clair pour l'UI."""
+    """Raise 402 si l'agence n'a aucun plan effectif.
+    - active = OK (abonnement paye)
+    - trial < 14 jours = OK
+    - trial expire (>= 14j) ou status absent/none = BLOQUE
+    - expired/cancelled = BLOQUE
+    Cohenrent avec _get_user_effective_plan() / _is_agency_blocked()."""
     if user.get("role") != "agency":
         return
     sub_status = user.get("subscription_status", "none")
@@ -2280,17 +2284,23 @@ def _check_agency_subscription(user: dict):
     if sub_status == "trial":
         trial_started_at = user.get("trial_started_at")
         if trial_started_at:
-            trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
-                return  # trial still active
-    if sub_status in (None, "none"):
-        return  # brand new account — allow (trial not yet started)
-    # Trial expire OU subscription expired/cancelled -> BLOQUE
+            try:
+                trial_start = datetime.fromisoformat(trial_started_at.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) < trial_start + timedelta(days=14):
+                    return  # trial still active
+            except Exception:
+                pass
+        # Trial expire (>= 14j) OU trial_started_at corrompu -> BLOQUE (fall through)
+    # Tous les autres cas (none, expired, cancelled, trial expire) -> BLOQUE
+    # ANTI-FRAUDE : meme une agence sans status (legacy ou exotique) doit choisir un plan.
     raise HTTPException(
         status_code=402,
         detail={
             "error": "subscription_required",
-            "message": "Votre essai gratuit de 14 jours est terminé. Choisissez un abonnement pour continuer à utiliser The Clip Deal Track.",
+            "message": (
+                "Votre essai gratuit de 14 jours est terminé "
+                "ou aucun abonnement actif. Choisissez un plan pour continuer à utiliser The Clip Deal Track."
+            ),
             "action_required": "subscribe",
         }
     )
@@ -3421,6 +3431,10 @@ async def accept_application(campaign_id: str, application_id: str, user: dict =
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign or campaign["agency_id"] != user["user_id"]:
         raise HTTPException(status_code=403, detail="Not authorized")
+    # ANTI-FRAUDE : agence bloquee ne peut pas accepter de nouveaux clippeurs
+    _check_agency_subscription(user)
+    # LIMITE PLAN : verifier qu'on ne depasse pas max_tracked_accounts
+    await _assert_within_plan_limit(user, "tracked_accounts")
 
     application = await db.applications.find_one({"application_id": application_id}, {"_id": 0})
     if not application:
@@ -14860,6 +14874,8 @@ async def confirm_payment(body: dict, user: dict = Depends(get_current_user)):
     """Agency marks a direct payment as done."""
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    # ANTI-FRAUDE : agence bloquee ne peut pas confirmer de paiement
+    _check_agency_subscription(user)
 
     clipper_user_id = body.get("user_id")
     campaign_id = body.get("campaign_id")
@@ -15107,11 +15123,11 @@ async def contact_devis(req: ContactDevisRequest, request: Request):
 
 SUBSCRIPTION_PLANS = {
     # ===== Plans VUES UNIQUEMENT (tracking de vues, AUCUN tracking de clics) =====
-    "plan_small":     {"name": "Starter",   "amount": 34900,  "label": "349€/mois",
+    "plan_small":     {"name": "Starter",   "amount": 24900,  "label": "249€/mois",
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
                        "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 1, "click_only": False, "view_only": True},
-    "plan_unlimited": {"name": "Business",   "amount": 75000,  "label": "750€/mois",
+    "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
                        "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
                        "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": None,
@@ -15131,15 +15147,16 @@ SUBSCRIPTION_PLANS = {
 
 # Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
 # tracked_accounts = nombre max de comptes Insta/TikTok/YouTube ajoutes a une campagne (somme tous comptes).
+# SOURCE DE VERITE pour tracking_per_day : aligne avec SUBSCRIPTION_PLANS pour eviter incoherence.
 PLAN_LIMITS = {
     "plan_small":           {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 1, "click_only": False, "view_only": True},
-    "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 2, "click_only": False, "view_only": True},
-    "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 2, "click_only": False, "view_only": True},
+    "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 1, "click_only": False, "view_only": True},
+    "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_custom":          {"campaigns": None, "tracked_accounts": None,  "tracking_per_day": 4, "click_only": False, "view_only": False},
     "plan_small_click":     {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 0, "click_only": True,  "view_only": False},
     "plan_medium_click":    {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
     "plan_unlimited_click": {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
-    "plan_full":            {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 2, "click_only": False, "view_only": True},
+    "plan_full":            {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 1, "click_only": False, "view_only": True},
 }
 
 def _get_user_effective_plan(user: dict) -> Optional[str]:
@@ -15198,6 +15215,81 @@ def _get_plan_limits(user: dict) -> dict:
         # BLOQUE : aucune action autorisee tant que pas d'abonnement
         return {"campaigns": 0, "tracked_accounts": 0, "tracking_per_day": 0, "click_only": False, "view_only": False, "blocked": True}
     return PLAN_LIMITS.get(plan_id, PLAN_LIMITS["plan_small"])
+
+
+async def require_active_subscription(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency FastAPI : recupere l'user courant ET refuse si agence bloquee (trial expire sans abo).
+    Utilise SUR LES ENDPOINTS D'ECRITURE (create campaign, add account, etc.).
+    Les GET de lecture historique restent permis avec get_current_user simple.
+    """
+    if _is_agency_blocked(user):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "subscription_required",
+                "message": "Votre essai gratuit de 14 jours est terminé. Souscrivez un abonnement pour continuer.",
+                "action_required": "subscribe",
+            }
+        )
+    return user
+
+
+async def _assert_within_plan_limit(user: dict, limit_key: str, action_label: str = ""):
+    """Verifie qu'un user agence n'a pas depasse la limite de son plan.
+    limit_key : 'campaigns' ou 'tracked_accounts'
+    Leve HTTPException 402 avec action_required='upgrade' si depassement.
+    No-op pour les non-agences ou si limit = None (illimite).
+    """
+    if user.get("role") != "agency":
+        return
+    limits = _get_plan_limits(user)
+    if limits.get("blocked"):
+        # Trial expire ou abo annule -> bloque total
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "subscription_required",
+                "message": "Votre essai gratuit est terminé. Souscrivez un abonnement pour continuer.",
+                "action_required": "subscribe",
+            }
+        )
+    max_val = limits.get(limit_key)
+    if max_val is None:
+        return  # illimite
+    user_id = user["user_id"]
+    if limit_key == "campaigns":
+        current = await db.campaigns.count_documents({"agency_id": user_id, "status": {"$ne": "archived"}})
+    elif limit_key == "tracked_accounts":
+        # Comptes assignes aux campagnes de cette agence (toutes campagnes confondues)
+        agency_campaigns = await db.campaigns.find(
+            {"agency_id": user_id, "status": {"$ne": "archived"}},
+            {"_id": 0, "campaign_id": 1}
+        ).to_list(500)
+        cids = [c["campaign_id"] for c in agency_campaigns]
+        if cids:
+            current = await db.campaign_social_accounts.count_documents({"campaign_id": {"$in": cids}})
+        else:
+            current = 0
+    else:
+        return  # cle inconnue, no-op safe
+    if current >= max_val:
+        plan_id = _get_user_effective_plan(user)
+        current_plan_name = (SUBSCRIPTION_PLANS.get(plan_id) or {}).get("name") or "votre plan"
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "plan_limit_exceeded",
+                "message": (
+                    f"Limite de {current_plan_name} atteinte : {current}/{max_val} {limit_key.replace('_', ' ')}. "
+                    f"Passez a un plan superieur pour continuer."
+                ),
+                "action_required": "upgrade",
+                "limit_key": limit_key,
+                "current": current,
+                "max": max_val,
+                "plan_id": plan_id,
+            }
+        )
 
 @api_router.post("/subscription/checkout")
 async def create_subscription_checkout(body: dict, user: dict = Depends(get_current_user)):
@@ -21719,6 +21811,9 @@ async def update_campaign_settings(campaign_id: str, body: dict, user: dict = De
     """
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    # ANTI-FRAUDE : agence bloquee ne peut pas modifier ses campagnes
+    if user.get("role") == "agency":
+        _check_agency_subscription(user)
     campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")

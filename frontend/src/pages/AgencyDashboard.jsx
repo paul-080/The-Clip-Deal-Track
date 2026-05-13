@@ -21,6 +21,7 @@ const fmtViews = (n) => {
 };
 import Sidebar from "../components/Sidebar";
 import ScrapeStatusPanel from "../components/ScrapeStatusPanel";
+import SubscriptionRequired from "./SubscriptionRequired";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import {
@@ -282,6 +283,49 @@ export default function AgencyDashboard() {
   const [unreadCounts, setUnreadCounts] = useState({});
   const [supportUnread, setSupportUnread] = useState(0);
 
+  // ── PAYWALL : statut abonnement global pour bloquer l'agence si trial expire ──
+  // null = en cours de chargement, true = bloque (rendu SubscriptionRequired full screen),
+  // false = OK (rendu dashboard normal).
+  const [agencyBlocked, setAgencyBlocked] = useState(null);
+  const [trialDaysLeft, setTrialDaysLeft] = useState(0);
+  const [blockReason, setBlockReason] = useState("trial_expired");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/subscription/status`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        // BLOQUE si :
+        // - trial_expired == true
+        // - subscription_status in (expired, cancelled, past_due)
+        // - subscription_status absent/none ET pas en trial (cas anormal)
+        const status = d.subscription_status;
+        const expired = !!d.trial_expired;
+        const noActiveSub = !(status === "active" || (status === "trial" && !expired));
+        if (noActiveSub) {
+          setBlockReason(
+            expired
+              ? "trial_expired"
+              : status === "cancelled" || status === "expired" || status === "past_due"
+              ? "subscription_ended"
+              : "no_subscription"
+          );
+          setTrialDaysLeft(d.trial_days_remaining || 0);
+          setAgencyBlocked(true);
+        } else {
+          setAgencyBlocked(false);
+        }
+      })
+      .catch(() => {
+        // En cas d'erreur reseau on n'bloque pas (mieux vaut laisser passer que bloquer a tort)
+        if (!cancelled) setAgencyBlocked(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     fetchData();
     fetchUnreadCounts();
@@ -364,10 +408,23 @@ export default function AgencyDashboard() {
     { id: "settings", label: "Paramètres", icon: Settings, path: "/agency/settings" },
   ];
 
+  // ── PAYWALL : ecran full-screen si trial expire / sans abo ──
+  // Pendant le loading initial, on affiche un spinner pour eviter le flash du dashboard
+  if (agencyBlocked === null) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-[#FF007F] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (agencyBlocked === true) {
+    return <SubscriptionRequired reason={blockReason} currentTrialDaysRemaining={trialDaysLeft} />;
+  }
+
   return (
     <div className="flex min-h-screen bg-[#0A0A0A]">
-      <Sidebar 
-        items={sidebarItems} 
+      <Sidebar
+        items={sidebarItems}
         accentColor={ACCENT_COLOR}
         role="agency"
       />
@@ -4976,11 +5033,11 @@ function SettingsPage() {
   // ===== Plans VUES (tracking vues seulement, AUCUN tracking de clics) =====
   const PLANS_FULL = [
     {
-      id: "plan_small", name: "Starter", price: "349€/mois",
+      id: "plan_small", name: "Starter", price: "249€/mois",
       features: [
         "1 campagne active",
         "30 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 1× / jour (08h Paris)",
+        "Tracking vues 1× / jour (23h30 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Support standard",
@@ -4992,7 +5049,7 @@ function SettingsPage() {
       features: [
         "3 campagnes actives",
         "100 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 2× / jour (08h00 + 20h00 Paris)",
+        "Tracking vues 1× / jour (23h30 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",
@@ -5001,11 +5058,11 @@ function SettingsPage() {
       ]
     },
     {
-      id: "plan_unlimited", name: "Business", price: "750€/mois",
+      id: "plan_unlimited", name: "Business", price: "749€/mois",
       features: [
         "Campagnes illimitées",
         "400 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 2× / jour (08h00 + 20h00 Paris)",
+        "Tracking vues 3× / jour (08h30, 15h30, 23h30 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",
@@ -5207,7 +5264,7 @@ function SettingsPage() {
                   <p className="text-[#00E5FF] font-semibold text-sm">🎁 Essai gratuit — plan Business activé</p>
                   <p className="text-white/60 text-xs mt-0.5">
                     {subStatus.trial_days_remaining > 0
-                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 750€/mois`
+                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 749€/mois`
                       : "Dernier jour — choisis un plan ci-dessous pour continuer"}
                   </p>
                   {subStatus.usage && subStatus.limits && (
