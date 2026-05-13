@@ -12825,8 +12825,10 @@ async def get_campaign_views_chart(
                         sort=[("scraped_at", -1)]
                     )
                     prev_total = int((prev_snap or {}).get("total_views") or 0)
-                    # ── PLAFONNEMENT ANTI-GONFLE ──
-                    # Calcule le total live filtre pour borner les snapshots historiques
+                    # ── SNAPSHOTS IMMUTABLES ──
+                    # On garde les valeurs ENREGISTREES a l'epoque (immuables).
+                    # Seul le DERNIER snapshot (le plus recent) est replace par le live actuel
+                    # pour refleter la valeur exacte au moment de la lecture.
                     tracking_start_h = campaign_doc_chk.get("tracking_start_date") or campaign_doc_chk.get("created_at")
                     active_assignments_h = await db.campaign_social_accounts.find(
                         {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
@@ -12842,25 +12844,21 @@ async def get_campaign_views_chart(
                             {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
                         ]).to_list(1)
                         live_total_h = int(live_agg_h[0]["total_views"]) if live_agg_h else 0
-                    # Plafonne chaque snapshot par live_total_h pour eviter chiffres gonfles
-                    if live_total_h > 0:
-                        for s in hourly_snaps:
-                            s["total_views"] = min(int(s.get("total_views") or 0), live_total_h)
-                        # Plafonne aussi prev_total
-                        prev_total = min(prev_total, live_total_h)
-                        # Pour le DERNIER snapshot (= le plus recent), on remplace par le live exact
-                        if hourly_snaps:
-                            hourly_snaps[-1]["total_views"] = live_total_h
+                    # SEUL le dernier snapshot (= le plus recent = maintenant) est replace par live.
+                    # Les anciens snapshots restent intacts (pas de plafonnement retroactif).
+                    if live_total_h > 0 and hourly_snaps:
+                        last_raw = int(hourly_snaps[-1].get("total_views") or 0)
+                        hourly_snaps[-1]["total_views"] = max(live_total_h, last_raw)
                     timeline = _hourly_chart_from_snapshots(hourly_snaps, start, end, prev_total)
                     return {
                         "timeline": timeline,
-                        "source": "hourly_snapshots_delta_capped_live",
+                        "source": "hourly_snapshots_delta_immutable",
                         "granularity": "hourly",
                         "period_start": start.isoformat(),
                         "period_end": end.isoformat(),
                         "offset": offset,
                         "days": days,
-                        "note": "Plan Business : 2 scrapes/jour -> 2 points horaires (08h + 20h Paris), plafonne par total live filtre.",
+                        "note": "Plan Business : 3 scrapes/jour. Snapshots horaires passes immutables.",
                     }
 
     # ── CALCUL LIVE du total_views ACTUEL (filtre anti-fantomes + anti-vieilles) ──
@@ -12895,21 +12893,26 @@ async def get_campaign_views_chart(
         {"_id": 0, "date": 1, "total_views": 1}
     ).sort("date", 1).to_list(2000)
 
-    # Construit map date -> total_views, MAIS borne par live_total_views
-    # (anti-snapshot-gonfle : si le snapshot du 10 mai = 3M mais live = 10k, on plafonne)
+    # Construit map date -> total_views.
+    # PRINCIPE (apres bug 2026-05-13) : snapshots historiques = IMMUTABLES.
+    # On ne les plafonne PAS par live_total_views car ca fait varier les chiffres
+    # passes quand des comptes sont deletes (ex: la valeur d'hier change aujourd'hui).
+    # Seul le snapshot d'AUJOURD'HUI est remplace par live_total_views (= valeur
+    # la plus precise au moment de la lecture).
     snap_by_date = {}
-    # CONVENTION Paris : jour du scrape = jour Paris au moment de l'ecriture
     today_str = _today_paris_str()
     for s in snapshots:
         if not s.get("date"):
             continue
         raw_total = int(s.get("total_views") or 0)
-        # Pour le snapshot d'AUJOURD'HUI : on utilise live_total_views (plus precis et filtre)
         if s["date"] == today_str:
-            snap_by_date[s["date"]] = live_total_views
+            # Snapshot du jour : utilise live_total_views (precise) mais au minimum le snapshot
+            # ecrit dans la journee (sinon on serait < a la valeur enregistree, ce qui ferait
+            # des deltas negatifs / clip a 0 incorrects).
+            snap_by_date[s["date"]] = max(live_total_views, raw_total)
         else:
-            # Pour les snapshots passes : on les plafonne par live_total_views
-            snap_by_date[s["date"]] = min(raw_total, live_total_views) if live_total_views > 0 else raw_total
+            # Snapshots passes : INTOUCHABLES. Valeur exacte ecrite a l'epoque.
+            snap_by_date[s["date"]] = raw_total
 
     # Si aucun snapshot aujourd'hui mais on a un total live > 0 : on l'ajoute
     if today_str not in snap_by_date and live_total_views > 0:
@@ -12937,13 +12940,13 @@ async def get_campaign_views_chart(
 
     return {
         "timeline": timeline,
-        "source": "daily_snapshots_delta_capped_live",
+        "source": "daily_snapshots_delta_immutable",
         "granularity": "daily",
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
         "offset": offset,
         "days": days,
-        "note": "Vues GAGNEES par jour (delta snapshots, plafonne par total live filtre anti-fantomes).",
+        "note": "Vues GAGNEES par jour. Snapshots passes immutables (ne bougent jamais). Aujourd'hui = live actuel.",
     }
 
 
@@ -16254,6 +16257,122 @@ async def admin_purge_dead_accounts(
         "checked": len(accounts),
         "summary": {k: v for k, v in results.items() if k != "actions"},
         "actions": results["actions"],
+    }
+
+
+@api_router.post("/admin/recompute-snapshots")
+async def admin_recompute_snapshots(request: Request, body: dict = None):
+    """Recalcule TOUS les snapshots quotidiens des campagnes a partir de la source
+    de verite : video_views_snapshots (qui stocke les vues par video par jour).
+
+    Corrige les chiffres historiques incoherents (ex: "hier" qui change d'un
+    jour a l'autre) en repartant du detail par video.
+
+    body (optional) = {
+      campaign_id: '...',   # si fourni, ne recalcule que cette campagne
+      dry_run: true/false   # default true (preview uniquement)
+    }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    campaign_filter = body.get("campaign_id")
+    dry_run = bool(body.get("dry_run", True))
+
+    # Liste les campagnes a traiter
+    if campaign_filter:
+        campaigns = await db.campaigns.find({"campaign_id": campaign_filter}, {"_id": 0, "campaign_id": 1, "name": 1}).to_list(5)
+    else:
+        campaigns = await db.campaigns.find({}, {"_id": 0, "campaign_id": 1, "name": 1}).to_list(500)
+
+    summary = {"campaigns_processed": 0, "snapshots_recomputed": 0, "snapshots_unchanged": 0, "details": []}
+    for camp in campaigns:
+        cid = camp["campaign_id"]
+        # Pour chaque date distincte dans video_views_snapshots, calcule la somme des vues
+        # par video pour cette campagne, ce jour-la.
+        agg = await db.video_views_snapshots.aggregate([
+            {"$match": {"campaign_id": cid}},
+            {"$group": {
+                "_id": "$date",
+                "total_views": {"$sum": "$views"},
+                "total_likes": {"$sum": "$likes"},
+                "total_comments": {"$sum": "$comments"},
+                "n_videos": {"$sum": 1},
+            }},
+            {"$sort": {"_id": 1}},
+        ]).to_list(1000)
+
+        if not agg:
+            continue
+
+        campaign_changes = 0
+        for daily in agg:
+            date_str = daily["_id"]
+            if not date_str:
+                continue
+            new_total = int(daily.get("total_views") or 0)
+            new_likes = int(daily.get("total_likes") or 0)
+            new_comments = int(daily.get("total_comments") or 0)
+            new_videos = int(daily.get("n_videos") or 0)
+
+            # Compare avec l'existant
+            existing = await db.views_snapshots.find_one(
+                {"campaign_id": cid, "date": date_str},
+                {"_id": 0, "total_views": 1}
+            )
+            old_total = int((existing or {}).get("total_views") or 0)
+
+            if old_total == new_total:
+                summary["snapshots_unchanged"] += 1
+                continue
+
+            campaign_changes += 1
+            summary["snapshots_recomputed"] += 1
+            summary["details"].append({
+                "campaign_id": cid,
+                "campaign_name": camp.get("name"),
+                "date": date_str,
+                "old_total_views": old_total,
+                "new_total_views": new_total,
+                "diff": new_total - old_total,
+            })
+
+            if not dry_run:
+                await db.views_snapshots.update_one(
+                    {"campaign_id": cid, "date": date_str},
+                    {"$set": {
+                        "campaign_id": cid,
+                        "date": date_str,
+                        "total_views": new_total,
+                        "total_likes": new_likes,
+                        "total_comments": new_comments,
+                        "total_videos": new_videos,
+                        "recomputed_at": datetime.now(timezone.utc).isoformat(),
+                        "recomputed_source": "video_views_snapshots",
+                    }},
+                    upsert=True,
+                )
+
+        if campaign_changes > 0:
+            summary["campaigns_processed"] += 1
+            if not dry_run:
+                logger.warning(f"📊 RECOMPUTE snapshots : {campaign_changes} changements pour campagne {cid}")
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "summary": {
+            "campaigns_processed": summary["campaigns_processed"],
+            "snapshots_recomputed": summary["snapshots_recomputed"],
+            "snapshots_unchanged": summary["snapshots_unchanged"],
+        },
+        "sample_changes": summary["details"][:30],
+        "note": (
+            "DRY RUN : aucune modification. Relancer avec dry_run=false pour appliquer."
+            if dry_run else
+            f"{summary['snapshots_recomputed']} snapshots recomputed."
+        ),
     }
 
 
