@@ -1797,6 +1797,10 @@ async def verify_email(req: VerifyEmailRequest):
     is_agency = pending["role"] == "agency"
     # Trial 14j auto pour les agences = plan Business par défaut
     trial_fields = {"subscription_status": "trial", "trial_started_at": now_iso} if is_agency else {}
+    # AUTO-BYPASS : si email dans whitelist BYPASS_EMAILS -> jamais bloque par paywall
+    email_lc_check = req.email.lower()
+    if is_agency and email_lc_check in BYPASS_EMAILS:
+        trial_fields["subscription_bypass"] = True
 
     if existing_user:
         user_id = existing_user["user_id"]
@@ -1809,6 +1813,9 @@ async def verify_email(req: VerifyEmailRequest):
         # Active le trial uniquement si l'agence n'a jamais eu de subscription_status
         if is_agency and not existing_user.get("subscription_status"):
             update_set.update(trial_fields)
+        # Auto-bypass meme si user existant (au cas ou paul re-active)
+        if is_agency and email_lc_check in BYPASS_EMAILS and not existing_user.get("subscription_bypass"):
+            update_set["subscription_bypass"] = True
         await db.users.update_one({"user_id": user_id}, {"$set": update_set})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -2219,6 +2226,9 @@ async def google_login(login_req: GoogleLoginRequest):
         if is_agency_g and not existing.get("subscription_status"):
             upd["subscription_status"] = "trial"
             upd["trial_started_at"] = now_iso_g
+        # AUTO-BYPASS : si email dans whitelist BYPASS_EMAILS -> jamais bloque
+        if is_agency_g and email in BYPASS_EMAILS and not existing.get("subscription_bypass"):
+            upd["subscription_bypass"] = True
         await db.users.update_one({"user_id": user_id}, {"$set": upd})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -2240,6 +2250,9 @@ async def google_login(login_req: GoogleLoginRequest):
         if is_agency_g:
             new_user["subscription_status"] = "trial"
             new_user["trial_started_at"] = now_iso_g
+        # AUTO-BYPASS : si email dans whitelist BYPASS_EMAILS -> jamais bloque
+        if is_agency_g and email in BYPASS_EMAILS:
+            new_user["subscription_bypass"] = True
         await db.users.insert_one(new_user)
 
     session_token = uuid.uuid4().hex
@@ -2275,8 +2288,12 @@ def _check_agency_subscription(user: dict):
     - trial < 14 jours = OK
     - trial expire (>= 14j) ou status absent/none = BLOQUE
     - expired/cancelled = BLOQUE
+    BYPASS : si user.subscription_bypass == True (compte demo / admin / Paul) -> OK toujours.
     Cohenrent avec _get_user_effective_plan() / _is_agency_blocked()."""
     if user.get("role") != "agency":
+        return
+    # BYPASS : comptes demo, admin, ou flagges manuellement par Paul
+    if user.get("subscription_bypass") is True:
         return
     sub_status = user.get("subscription_status", "none")
     if sub_status == "active":
@@ -14918,6 +14935,33 @@ async def get_subscription_status(user: dict = Depends(get_current_user)):
     if user.get("role") not in ["agency"]:
         raise HTTPException(status_code=403, detail="Agences uniquement")
 
+    # BYPASS : compte demo / admin / Paul -> retourne un etat 'active' synthetique
+    # avec plan_unlimited (Business), jamais bloque.
+    if user.get("subscription_bypass") is True:
+        plan_details = SUBSCRIPTION_PLANS["plan_unlimited"]
+        limits = PLAN_LIMITS["plan_unlimited"]
+        return {
+            "subscription_status": "active",
+            "subscription_plan": "plan_unlimited",
+            "effective_plan": "plan_unlimited",
+            "is_blocked": False,
+            "is_demo": True,
+            "plan_name": plan_details.get("name"),
+            "plan_label": plan_details.get("label") + " (compte demo / bypass)",
+            "view_only": limits.get("view_only", False),
+            "click_only": limits.get("click_only", False),
+            "trial_started_at": user.get("trial_started_at"),
+            "trial_days_remaining": 9999,
+            "trial_hours_remaining": 9999 * 24,
+            "trial_expired": False,
+            "limits": {
+                "max_campaigns": limits.get("campaigns"),
+                "max_tracked_accounts": limits.get("tracked_accounts"),
+                "tracking_per_day": limits.get("tracking_per_day"),
+            },
+            "usage": {"campaigns": 0, "clippers": 0},
+        }
+
     trial_started_at = user.get("trial_started_at")
     subscription_status = user.get("subscription_status", "none")
     subscription_plan = user.get("subscription_plan")
@@ -15161,11 +15205,15 @@ PLAN_LIMITS = {
 
 def _get_user_effective_plan(user: dict) -> Optional[str]:
     """Return the effective plan_id for a user.
+    - subscription_bypass=True (demo/admin/Paul) = plan_unlimited (acces complet)
     - active = subscription_plan paye
     - trial actif (<14j) = plan_unlimited (Business)
     - trial expire ET non paye = None (BLOQUE total — l'agence doit choisir un abonnement)
     - aucun status = plan_small (legacy fallback)
     """
+    # BYPASS : comptes demo / admin / Paul -> acces complet (plan_unlimited)
+    if user.get("subscription_bypass") is True:
+        return "plan_unlimited"
     sub_status = user.get("subscription_status", "none")
     if sub_status == "active":
         return user.get("subscription_plan") or "plan_small"
@@ -15185,8 +15233,12 @@ def _get_user_effective_plan(user: dict) -> Optional[str]:
 def _is_agency_blocked(user: dict) -> bool:
     """Retourne True si l'agence n'a plus de plan valide (trial expire sans abonnement actif).
     Les autres roles (clipper, manager, client) ne sont JAMAIS bloques.
+    BYPASS : si user.subscription_bypass == True (compte demo / admin / Paul) -> jamais bloque.
     """
     if user.get("role") != "agency":
+        return False
+    # BYPASS : comptes demo, admin, ou flagges manuellement par Paul
+    if user.get("subscription_bypass") is True:
         return False
     return _get_user_effective_plan(user) is None
 
@@ -16969,6 +17021,52 @@ async def admin_check_user(request: Request, email: Optional[str] = None, user_i
             f"OK : plan effectif = {effective_plan}, limites = {limits}"
         ),
     }
+
+
+@api_router.post("/admin/users/{user_id}/set-bypass")
+async def admin_set_user_bypass(user_id: str, request: Request, body: dict):
+    """Active/desactive le bypass abonnement pour un compte agence (compte demo / VIP / Paul).
+    body = { bypass: true/false }
+    Header X-Admin-Code requis.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    bypass_val = bool(body.get("bypass", True))
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"subscription_bypass": bypass_val, "subscription_bypass_set_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    logger.warning(f"🔓 BYPASS subscription {'ACTIVE' if bypass_val else 'DESACTIVE'} pour user {user_id} ({user.get('email')}) par admin")
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "email": user.get("email"),
+        "subscription_bypass": bypass_val,
+        "message": "Bypass active : compte non soumis au paywall." if bypass_val else "Bypass desactive : compte soumis au paywall normal.",
+    }
+
+
+@api_router.get("/admin/users/bypassed")
+async def admin_list_bypassed_users(request: Request):
+    """Liste tous les comptes avec subscription_bypass=true (comptes demo/admin/VIP)."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    cursor = db.users.find(
+        {"subscription_bypass": True},
+        {"_id": 0, "user_id": 1, "email": 1, "name": 1, "role": 1, "subscription_bypass_set_at": 1, "created_at": 1}
+    )
+    users = [u async for u in cursor]
+    return {"count": len(users), "users": users}
+
+
+# Whitelist d'emails auto-bypass (set au login/register). Var env BYPASS_EMAILS (sep par virgule)
+_BYPASS_EMAILS_RAW = os.environ.get("BYPASS_EMAILS", "paulangloy@gmail.com").strip().lower()
+BYPASS_EMAILS = {e.strip() for e in _BYPASS_EMAILS_RAW.split(",") if e.strip()}
 
 
 @api_router.post("/admin/set-user-subscription")
