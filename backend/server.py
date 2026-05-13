@@ -16733,6 +16733,120 @@ async def admin_reset_stats_history(campaign_id: str, request: Request, body: di
     }
 
 
+@api_router.post("/admin/recheck-deleted-accounts")
+async def admin_recheck_deleted(request: Request, body: dict = None):
+    """Re-verifie ACTIVEMENT (2 sources) tous les comptes marques deleted/error
+    et restore en 'verified' tous ceux dont la verif renvoie 'exists' OU 'uncertain'.
+    Seuls les comptes confirmes deleted (2+ sources disent 404) restent deleted.
+
+    body = {
+      campaign_id: str (optional, filtre),
+      dry_run: bool (default true),
+      max_to_check: int (default 200, anti-overload)
+    }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    dry_run = bool(body.get("dry_run", True))
+    max_to_check = int(body.get("max_to_check", 200))
+    cid_filter = body.get("campaign_id")
+
+    # Liste les comptes deleted/error a re-verifier
+    query: dict = {"status": {"$in": ["deleted", "error"]}}
+    if cid_filter:
+        # Filtre via campaign_social_accounts
+        assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": cid_filter}, {"_id": 0, "account_id": 1}
+        ).to_list(2000)
+        ids = [a["account_id"] for a in assignments if a.get("account_id")]
+        query["account_id"] = {"$in": ids}
+    accounts = await db.social_accounts.find(query, {"_id": 0}).limit(max_to_check).to_list(max_to_check)
+
+    results = {"exists": [], "uncertain": [], "confirmed_deleted": [], "errors": []}
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username") or ""
+        account_id = acc.get("account_id")
+        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+        try:
+            exists = await asyncio.wait_for(
+                _verify_account_still_exists(platform, check_target or username), timeout=30
+            )
+        except Exception as ex:
+            results["errors"].append({"account_id": account_id, "username": username, "error": str(ex)[:100]})
+            continue
+
+        entry = {
+            "account_id": account_id,
+            "platform": platform,
+            "username": username,
+            "old_status": acc.get("status"),
+            "verif_result": "exists" if exists is True else "deleted" if exists is False else "uncertain",
+        }
+        if exists is True:
+            results["exists"].append(entry)
+        elif exists is False:
+            results["confirmed_deleted"].append(entry)
+        else:
+            results["uncertain"].append(entry)
+        await asyncio.sleep(0.5)  # anti-spam plateformes
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "checked": len(accounts),
+            "summary": {
+                "would_restore_exists": len(results["exists"]),
+                "would_restore_uncertain": len(results["uncertain"]),
+                "stay_deleted_confirmed": len(results["confirmed_deleted"]),
+                "errors": len(results["errors"]),
+            },
+            "samples": {
+                "exists": results["exists"][:10],
+                "uncertain": results["uncertain"][:10],
+                "confirmed_deleted": results["confirmed_deleted"][:10],
+            },
+        }
+
+    # Apply : restore exists + uncertain
+    now_iso = datetime.now(timezone.utc).isoformat()
+    to_restore = [r["account_id"] for r in results["exists"] + results["uncertain"]]
+    if to_restore:
+        await db.social_accounts.update_many(
+            {"account_id": {"$in": to_restore}},
+            {"$set": {
+                "status": "verified",
+                "consecutive_failures": 0,
+                "tracking_paused_until": None,
+                "not_found_count": 0,
+                "last_existence_check_at": now_iso,
+                "last_existence_check_result": "exists_or_uncertain_recheck",
+                "deleted_at": None,
+                "deleted_reason": None,
+                "deleted_type": None,
+                "error_message": None,
+                "restored_at": now_iso,
+                "restored_reason": "admin_recheck_deleted_returned_exists_or_uncertain",
+            }}
+        )
+        logger.warning(f"🔄 RECHECK : {len(to_restore)} comptes restaures (verif active a confirme existence ou uncertain)")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "checked": len(accounts),
+        "restored_count": len(to_restore),
+        "summary": {
+            "restored_exists": len(results["exists"]),
+            "restored_uncertain": len(results["uncertain"]),
+            "stay_deleted_confirmed": len(results["confirmed_deleted"]),
+            "errors": len(results["errors"]),
+        },
+    }
+
+
 @api_router.post("/admin/restore-false-positives")
 async def admin_restore_false_positives(request: Request, body: dict = None):
     """Restaure les comptes marques 'deleted' ou 'error' alors qu'ils ont
