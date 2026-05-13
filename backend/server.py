@@ -5778,23 +5778,54 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
         err_msg = str(e).lower()
         is_definitely_not_found = any(kw in err_msg for kw in ["introuvable", "not found", "n'existe pas", "does not exist", "404"])
 
-        # TikTok: NEVER use HTTP fallback — cloud IPs are blocked by TikTok/Cloudflare
-        # and the response (200 + JS challenge) cannot reliably confirm account existence.
+        # TikTok: NEVER use HTTP fallback — cloud IPs are blocked by TikTok/Cloudflare.
+        # PAUL : "Si error, c'est de ma faute. Donc 'error' doit etre rare."
+        # Strategy : double-check via verif active (2 sources) avant de conclure.
         if platform == "tiktok":
-            # Si l'erreur dit explicitement "introuvable" -> marque DELETED (compte n'existe pas)
-            # Sinon error (inaccessible temporairement)
-            new_status = "deleted" if is_definitely_not_found else "error"
-            await db.social_accounts.update_one(
-                {"account_id": account_id},
-                {"$set": {
-                    "status": new_status,
-                    "error_message": (
-                        f"Compte TikTok @{username} introuvable. Vérifiez l'URL." if is_definitely_not_found
-                        else f"Compte TikTok @{username} inaccessible. TikTok bloque la vérification depuis cloud. Réessayez plus tard."
-                    ),
-                    **({"deleted_at": datetime.now(timezone.utc).isoformat(), "deleted_reason": "Verification a l'ajout : introuvable"} if is_definitely_not_found else {}),
-                }}
-            )
+            confirm = None
+            try:
+                confirm = await asyncio.wait_for(
+                    _verify_tiktok_exists(username), timeout=20
+                )
+            except Exception:
+                pass
+            if confirm is False or (is_definitely_not_found and confirm is not True):
+                # 2 sources confirment introuvable -> deleted
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "deleted",
+                        "deleted_at": datetime.now(timezone.utc).isoformat(),
+                        "deleted_type": "never_existed",
+                        "deleted_reason": f"Compte TikTok @{username} confirme introuvable a la verification (2 sources)",
+                        "error_message": f"Compte TikTok @{username} introuvable. Vérifiez l'URL.",
+                    }}
+                )
+            elif confirm is True:
+                # Verif active confirme l'existence -> on accepte le compte sans stats
+                # (pas d'error : c'est mon probleme de scraping, mais le compte existe)
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "verified_at": datetime.now(timezone.utc).isoformat(),
+                        "display_name": username,
+                        "error_message": None,
+                    }}
+                )
+            else:
+                # Ambigu : on accepte en verified provisoire (pas d'error)
+                # Le compte sera retente au prochain scrape. Si toujours pas de videos,
+                # on continuera a essayer sans le marquer deleted (sauf si verif 2 sources le confirme).
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "verified_at": datetime.now(timezone.utc).isoformat(),
+                        "display_name": username,
+                        "error_message": None,
+                    }}
+                )
             return
 
         if via_url or platform in ("instagram", "youtube"):
@@ -9756,11 +9787,10 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "consecutive_failures": new_failures,
                     }
 
-                    # VERIFICATION ACTIVE D'EXISTENCE : a CHAQUE echec on hit la plateforme
-                    # directement pour distinguer "compte supprime" d'un "rate limit / 0 videos transitoire".
-                    # Cooldown 6h pour ne pas spammer si on a deja verifie recemment.
-                    # NB: pas de gate sur prev_failures pour rattraper les comptes deja en echec
-                    # avant l'introduction de la verif active.
+                    # VERIFICATION ACTIVE D'EXISTENCE : a chaque echec on tente de distinguer
+                    # "compte supprime" vs "scrape ne fonctionne pas (rate-limit, IP bloquee)".
+                    # Cooldown 6h. SUPER STRICT : on ne marque jamais 'deleted' un compte qui a
+                    # deja des videos en DB (preuve qu'il existait/existe).
                     last_check = account.get("last_existence_check_at")
                     skip_check = False
                     if last_check:
@@ -9772,7 +9802,6 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                             pass
                     if not skip_check:
                         try:
-                            # Pour YouTube on utilise channel_id si dispo, sinon username
                             check_target = account.get("platform_channel_id") if platform == "youtube" else username
                             exists = await asyncio.wait_for(
                                 _verify_account_still_exists(platform, check_target or username),
@@ -9785,17 +9814,30 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                 else "uncertain"
                             )
                             if exists is False:
-                                # COMPTE CONFIRMÉ SUPPRIMÉ : on arrête le tracking immediat
-                                account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
-                                update_fields["status"] = "deleted"
-                                update_fields["deleted_at"] = now_iso
-                                update_fields["deleted_type"] = "deleted_by_user" if account_was_verified else "never_existed"
-                                update_fields["deleted_reason"] = (
-                                    f"Compte {platform} verifie supprime apres echec de scraping "
-                                    f"({new_failures} echecs - {'avait deja ete scrape' if account_was_verified else 'jamais verifie'})"
+                                # REGLE 1 : si le compte a deja des videos en DB, on ne le marque PAS deleted.
+                                # C'est la preuve qu'il existait, donc soit la verif a un faux positif,
+                                # soit le compte est devenu prive temporairement.
+                                existing_videos = await db.tracked_videos.count_documents(
+                                    {"account_id": account_id, "campaign_id": campaign_id}
                                 )
-                                update_fields["not_found_count"] = 99  # confirme
-                                logger.warning(f"📛 {platform}/@{username} : compte VERIFIE supprime (verif active 2 sources). Tracking arrete.")
+                                if existing_videos > 0:
+                                    update_fields["last_existence_check_result"] = "uncertain_has_videos"
+                                    logger.warning(
+                                        f"⚠️ {platform}/@{username} : verif dit deleted MAIS {existing_videos} videos en DB. "
+                                        f"On NE MARQUE PAS deleted (faux positif probable). Status reste verified."
+                                    )
+                                else:
+                                    # Confirme deleted : verif a 2+ sources + aucune video historique
+                                    account_was_verified = bool(account.get("verified_at"))
+                                    update_fields["status"] = "deleted"
+                                    update_fields["deleted_at"] = now_iso
+                                    update_fields["deleted_type"] = "never_existed" if not account_was_verified else "deleted_after_existed"
+                                    update_fields["deleted_reason"] = (
+                                        f"Compte {platform} confirme introuvable par 2 sources independantes. "
+                                        f"Aucune video historique en DB."
+                                    )
+                                    update_fields["not_found_count"] = 99
+                                    logger.warning(f"📛 {platform}/@{username} : compte CONFIRME introuvable (2 sources + 0 video). Tracking arrete.")
                         except asyncio.TimeoutError:
                             update_fields["last_existence_check_at"] = now_iso
                             update_fields["last_existence_check_result"] = "timeout"
@@ -9803,44 +9845,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         except Exception as ex:
                             logger.debug(f"Existence check error for {platform}/@{username}: {type(ex).__name__}: {ex}")
 
-                    # ── DELETED FORCE apres 7 echecs sans verif "exists" recente ──
-                    # Si la verif active n'a JAMAIS confirme l'existence (resultat exists=true),
-                    # apres 7 echecs consecutifs sur ce compte, on le considere mort.
-                    # Couvre le cas : compte prive, banni, supprime, ou simplement introuvable
-                    # par toutes les sources de scraping. Evite de gaspiller indefiniment.
-                    if update_fields.get("status") != "deleted" and new_failures >= 7:
-                        # Verifier que la derniere verif n'a PAS dit "exists" recemment (< 7 jours)
-                        last_check_result = (
-                            update_fields.get("last_existence_check_result")
-                            or account.get("last_existence_check_result")
-                        )
-                        last_check_at = (
-                            update_fields.get("last_existence_check_at")
-                            or account.get("last_existence_check_at")
-                        )
-                        recently_confirmed_alive = False
-                        if last_check_result == "exists" and last_check_at:
-                            try:
-                                last_dt = _parse_utc(last_check_at)
-                                if last_dt and (datetime.now(timezone.utc) - last_dt).total_seconds() < 7 * 24 * 3600:
-                                    recently_confirmed_alive = True
-                            except Exception:
-                                pass
-                        if not recently_confirmed_alive:
-                            account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
-                            update_fields["status"] = "deleted"
-                            update_fields["deleted_at"] = now_iso
-                            update_fields["deleted_type"] = "force_deleted_persistent_failure"
-                            update_fields["deleted_reason"] = (
-                                f"{new_failures} echecs consecutifs sans confirmation d'existence "
-                                f"(verif dit '{last_check_result or 'jamais verifie'}'). "
-                                f"Compte considere comme mort/prive/banni."
-                            )
-                            update_fields["not_found_count"] = 99
-                            logger.warning(
-                                f"⛔ {platform}/@{username} : DELETED FORCE apres {new_failures} echecs "
-                                f"(derniere verif: {last_check_result or 'aucune'}). Tracking arrete."
-                            )
+                    # ── DELETED FORCE RETIRE : Paul veut qu'un compte ne soit JAMAIS marque
+                    # deleted sur la base d'echecs de scraping seuls. Le scrape peut echouer
+                    # pour 1000 raisons (rate-limit, IP bloquee, API down) sans que le compte
+                    # n'ait disparu. On ne marque deleted QUE sur confirmation 2+ sources
+                    # ET aucune video historique en DB (regle ci-dessus).
+                    # Echecs persistants -> pause auto 24h uniquement (retry le lendemain).
 
                     # Si le compte n'est pas marque deleted par la verif, on applique l'auto-pause apres 3 echecs
                     if update_fields.get("status") != "deleted" and new_failures >= 3:
@@ -16720,6 +16730,83 @@ async def admin_reset_stats_history(campaign_id: str, request: Request, body: di
             "total_videos": live_videos,
         },
         "message": f"Historique wipé. Aujourd'hui = {live_total:,} vues. Demain, le delta sera correct.",
+    }
+
+
+@api_router.post("/admin/restore-false-positives")
+async def admin_restore_false_positives(request: Request, body: dict = None):
+    """Restaure les comptes marques 'deleted' ou 'error' alors qu'ils ont
+    deja des videos en DB (preuve qu'ils existent/existaient).
+
+    body = {
+      dry_run: bool (default true),
+      campaign_id: str (optional, filtre par campagne)
+    }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    dry_run = bool(body.get("dry_run", True))
+    cid_filter = body.get("campaign_id")
+
+    # 1. Trouve tous les comptes deleted ou error
+    query: dict = {"status": {"$in": ["deleted", "error"]}}
+    accounts = await db.social_accounts.find(query, {"_id": 0}).to_list(5000)
+
+    to_restore = []
+    for acc in accounts:
+        # Si le compte a des videos en DB, c'est forcement un faux positif
+        video_filter = {"account_id": acc["account_id"]}
+        if cid_filter:
+            video_filter["campaign_id"] = cid_filter
+        n_videos = await db.tracked_videos.count_documents(video_filter)
+        if n_videos > 0:
+            to_restore.append({
+                "account_id": acc["account_id"],
+                "platform": acc.get("platform"),
+                "username": acc.get("username"),
+                "old_status": acc.get("status"),
+                "deleted_reason": acc.get("deleted_reason"),
+                "videos_count": n_videos,
+            })
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "count": len(to_restore),
+            "to_restore": to_restore[:50],
+            "note": f"{len(to_restore)} comptes vont etre restaures (ils ont des videos historiques). Relancer avec dry_run=false pour appliquer.",
+        }
+
+    # Apply
+    now_iso = datetime.now(timezone.utc).isoformat()
+    restored_ids = [a["account_id"] for a in to_restore]
+    if restored_ids:
+        await db.social_accounts.update_many(
+            {"account_id": {"$in": restored_ids}},
+            {"$set": {
+                "status": "verified",
+                "consecutive_failures": 0,
+                "tracking_paused_until": None,
+                "not_found_count": 0,
+                "last_existence_check_at": None,
+                "last_existence_check_result": None,
+                "deleted_at": None,
+                "deleted_reason": None,
+                "deleted_type": None,
+                "error_message": None,
+                "restored_at": now_iso,
+                "restored_reason": "false_positive_had_videos_in_db",
+            }}
+        )
+        logger.warning(f"🔄 RESTORE FALSE POSITIVES : {len(restored_ids)} comptes restaures (avaient des videos en DB)")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "restored_count": len(restored_ids),
+        "restored_accounts": to_restore,
     }
 
 
