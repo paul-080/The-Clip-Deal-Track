@@ -9720,6 +9720,45 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         except Exception as ex:
                             logger.debug(f"Existence check error for {platform}/@{username}: {type(ex).__name__}: {ex}")
 
+                    # ── DELETED FORCE apres 7 echecs sans verif "exists" recente ──
+                    # Si la verif active n'a JAMAIS confirme l'existence (resultat exists=true),
+                    # apres 7 echecs consecutifs sur ce compte, on le considere mort.
+                    # Couvre le cas : compte prive, banni, supprime, ou simplement introuvable
+                    # par toutes les sources de scraping. Evite de gaspiller indefiniment.
+                    if update_fields.get("status") != "deleted" and new_failures >= 7:
+                        # Verifier que la derniere verif n'a PAS dit "exists" recemment (< 7 jours)
+                        last_check_result = (
+                            update_fields.get("last_existence_check_result")
+                            or account.get("last_existence_check_result")
+                        )
+                        last_check_at = (
+                            update_fields.get("last_existence_check_at")
+                            or account.get("last_existence_check_at")
+                        )
+                        recently_confirmed_alive = False
+                        if last_check_result == "exists" and last_check_at:
+                            try:
+                                last_dt = _parse_utc(last_check_at)
+                                if last_dt and (datetime.now(timezone.utc) - last_dt).total_seconds() < 7 * 24 * 3600:
+                                    recently_confirmed_alive = True
+                            except Exception:
+                                pass
+                        if not recently_confirmed_alive:
+                            account_was_verified = bool(account.get("verified_at")) or bool(account.get("last_tracked_at"))
+                            update_fields["status"] = "deleted"
+                            update_fields["deleted_at"] = now_iso
+                            update_fields["deleted_type"] = "force_deleted_persistent_failure"
+                            update_fields["deleted_reason"] = (
+                                f"{new_failures} echecs consecutifs sans confirmation d'existence "
+                                f"(verif dit '{last_check_result or 'jamais verifie'}'). "
+                                f"Compte considere comme mort/prive/banni."
+                            )
+                            update_fields["not_found_count"] = 99
+                            logger.warning(
+                                f"⛔ {platform}/@{username} : DELETED FORCE apres {new_failures} echecs "
+                                f"(derniere verif: {last_check_result or 'aucune'}). Tracking arrete."
+                            )
+
                     # Si le compte n'est pas marque deleted par la verif, on applique l'auto-pause apres 3 echecs
                     if update_fields.get("status") != "deleted" and new_failures >= 3:
                         pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=24)
@@ -9925,7 +9964,8 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 {"$set": update_set}
             )
             # Daily snapshot for chart + KPI
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            # CONVENTION Paris : un scrape 23h30 -> minuit appartient au JOUR Paris
+            today_str = _today_paris_str()
             await db.views_snapshots.update_one(
                 {"campaign_id": campaign_id, "date": today_str},
                 {"$set": {
@@ -10048,7 +10088,7 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         ]).to_list(1)
         total_global_views = agg_all[0]["total_views"] if agg_all else 0
         total_global_videos = agg_all[0]["total_videos"] if agg_all else 0
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = _today_paris_str()
         await db.views_snapshots.update_one(
             {"campaign_id": "__global__", "date": today_str},
             {"$set": {
@@ -10083,6 +10123,16 @@ SCRAPE_SCHEDULES_BY_PLAN = {
 # Default scrape schedule (fallback si plan inconnu) = 1 scrape/jour
 SCRAPE_SCHEDULE_PARIS = SCRAPE_SCHEDULES_BY_PLAN[1]
 PARIS_TZ = ZoneInfo("Europe/Paris") if ZoneInfo else timezone.utc
+
+
+def _today_paris_str() -> str:
+    """Date du jour au format YYYY-MM-DD en timezone Paris.
+    CONVENTION : un scrape qui demarre a 23h30 Paris (ex: 13 mai 23h30)
+    appartient au jour 13 mai, MEME s'il finit apres minuit Paris.
+    On utilise donc l'heure Paris au moment OU le snapshot est ecrit
+    (juste apres la fin du scrape, donc generalement encore le meme jour Paris).
+    """
+    return datetime.now(timezone.utc).astimezone(PARIS_TZ).strftime("%Y-%m-%d")
 
 
 def _next_scrape_time_utc(now_utc: datetime = None) -> datetime:
@@ -12801,7 +12851,8 @@ async def get_campaign_views_chart(
     # Construit map date -> total_views, MAIS borne par live_total_views
     # (anti-snapshot-gonfle : si le snapshot du 10 mai = 3M mais live = 10k, on plafonne)
     snap_by_date = {}
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # CONVENTION Paris : jour du scrape = jour Paris au moment de l'ecriture
+    today_str = _today_paris_str()
     for s in snapshots:
         if not s.get("date"):
             continue
@@ -15912,6 +15963,137 @@ async def admin_restore_recently_deleted(request: Request, hours: int = 24, dry_
             {"account_id": a.get("account_id"), "platform": a.get("platform"), "username": a.get("username")}
             for a in accounts
         ],
+    }
+
+
+@api_router.post("/admin/purge-dead-accounts")
+async def admin_purge_dead_accounts(
+    request: Request,
+    min_failures: int = 5,
+    dry_run: bool = True,
+    max_to_check: int = 200,
+):
+    """Audit AGRESSIF des comptes morts.
+    Pour chaque compte avec consecutive_failures >= min_failures,
+    lance une verif active (2 sources par plateforme). Si la verif dit
+    'deleted' OU si toutes les sources echouent silencieusement,
+    marque le compte 'deleted'.
+
+    dry_run=true (default) : retourne juste la liste sans modifier.
+    dry_run=false : applique.
+    """
+    await verify_admin_code(request)
+    query = {
+        "status": "verified",
+        "consecutive_failures": {"$gte": min_failures},
+    }
+    cursor = db.social_accounts.find(query, {"_id": 0}).limit(max_to_check)
+    accounts = [a async for a in cursor]
+    logger.info(f"Purge dead accounts: {len(accounts)} candidats (min_failures={min_failures}, dry_run={dry_run})")
+
+    results = {"exists": 0, "deleted": 0, "uncertain": 0, "errors": 0, "actions": []}
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username") or ""
+        account_id = acc.get("account_id")
+        consec = int(acc.get("consecutive_failures") or 0)
+        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            exists = await asyncio.wait_for(
+                _verify_account_still_exists(platform, check_target or username),
+                timeout=30
+            )
+        except Exception as ex:
+            results["errors"] += 1
+            results["actions"].append({
+                "account_id": account_id,
+                "platform": platform,
+                "username": username,
+                "consecutive_failures": consec,
+                "action": "error",
+                "error": f"{type(ex).__name__}: {ex}",
+            })
+            continue
+
+        if exists is True:
+            results["exists"] += 1
+            action = "kept_alive"
+            if not dry_run:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "exists",
+                        "consecutive_failures": 0,
+                        "tracking_paused_until": None,
+                    }}
+                )
+        elif exists is False:
+            results["deleted"] += 1
+            action = "marked_deleted"
+            if not dry_run:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "deleted",
+                        "deleted_at": now_iso,
+                        "deleted_type": "purge_admin",
+                        "deleted_reason": f"Purge admin : compte {platform} confirme supprime apres {consec} echecs",
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "deleted",
+                        "not_found_count": 99,
+                    }}
+                )
+        else:
+            results["uncertain"] += 1
+            # Si min_failures >= 7 et la verif est uncertain, on marque deleted force
+            # (regle de l'auto-pause : 7 echecs sans confirmation = mort)
+            if consec >= 7:
+                action = "force_deleted_uncertain"
+                results["deleted"] += 1
+                results["uncertain"] -= 1
+                if not dry_run:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "deleted",
+                            "deleted_at": now_iso,
+                            "deleted_type": "purge_admin_force",
+                            "deleted_reason": f"Purge admin force : {consec} echecs + verif uncertain = mort probable",
+                            "last_existence_check_at": now_iso,
+                            "last_existence_check_result": "uncertain",
+                            "not_found_count": 99,
+                        }}
+                    )
+            else:
+                action = "kept_uncertain"
+                if not dry_run:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "last_existence_check_at": now_iso,
+                            "last_existence_check_result": "uncertain",
+                        }}
+                    )
+        results["actions"].append({
+            "account_id": account_id,
+            "platform": platform,
+            "username": username,
+            "consecutive_failures": consec,
+            "verif_result": str(exists),
+            "action": action,
+        })
+        # Petit delay pour ne pas spam les plateformes
+        await asyncio.sleep(0.5)
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "min_failures": min_failures,
+        "checked": len(accounts),
+        "summary": {k: v for k, v in results.items() if k != "actions"},
+        "actions": results["actions"],
     }
 
 
