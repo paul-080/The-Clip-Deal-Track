@@ -16376,6 +16376,202 @@ async def admin_recompute_snapshots(request: Request, body: dict = None):
     }
 
 
+@api_router.get("/admin/click-fraud-report")
+async def admin_click_fraud_report(request: Request, hours: int = 24):
+    """Rapport anti-fraude des clics sur les dernieres N heures.
+    Liste : clicks suspects, top IPs suspects, top CIDR /24 suspects, top user agents bots.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    # Stats globales clics dans la fenetre
+    total_clicks = await db.click_events.count_documents({"clicked_at": {"$gte": cutoff}})
+    suspect_clicks = await db.click_events.count_documents({"clicked_at": {"$gte": cutoff}, "is_suspect": True})
+    billable_clicks = await db.click_events.count_documents({"clicked_at": {"$gte": cutoff}, "billable": True})
+
+    # Top IPs suspectes
+    top_suspect_ips = await db.click_events.aggregate([
+        {"$match": {"clicked_at": {"$gte": cutoff}, "is_suspect": True}},
+        {"$group": {
+            "_id": "$ip_hash",
+            "count": {"$sum": 1},
+            "reasons": {"$addToSet": "$suspect_reasons"},
+            "campaigns": {"$addToSet": "$campaign_id"},
+            "clippers": {"$addToSet": "$clipper_id"},
+        }},
+        {"$sort": {"count": -1}},
+        {"$limit": 20},
+    ]).to_list(20)
+
+    # Top CIDR /24 (bursts reseau)
+    top_cidr_bursts = await db.click_events.aggregate([
+        {"$match": {"clicked_at": {"$gte": cutoff}, "cidr24_hash": {"$exists": True, "$ne": ""}}},
+        {"$group": {
+            "_id": "$cidr24_hash",
+            "total_clicks": {"$sum": 1},
+            "suspect_clicks": {"$sum": {"$cond": ["$is_suspect", 1, 0]}},
+            "unique_links": {"$addToSet": "$link_id"},
+            "campaigns": {"$addToSet": "$campaign_id"},
+        }},
+        {"$match": {"total_clicks": {"$gte": 10}}},
+        {"$sort": {"total_clicks": -1}},
+        {"$limit": 20},
+    ]).to_list(20)
+
+    # Top user agents bots
+    top_bot_uas = await db.click_events.aggregate([
+        {"$match": {
+            "clicked_at": {"$gte": cutoff},
+            "is_suspect": True,
+            "suspect_reasons": {"$regex": "bot:"},
+        }},
+        {"$group": {
+            "_id": "$user_agent",
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"count": -1}},
+        {"$limit": 15},
+    ]).to_list(15)
+
+    # Top clippers avec ratio suspect eleve
+    clippers_stats = await db.click_events.aggregate([
+        {"$match": {"clicked_at": {"$gte": cutoff}}},
+        {"$group": {
+            "_id": "$clipper_id",
+            "total": {"$sum": 1},
+            "suspect": {"$sum": {"$cond": ["$is_suspect", 1, 0]}},
+        }},
+        {"$match": {"total": {"$gte": 5}}},
+        {"$addFields": {"suspect_ratio": {"$divide": ["$suspect", "$total"]}}},
+        {"$sort": {"suspect_ratio": -1}},
+        {"$limit": 20},
+    ]).to_list(20)
+
+    return {
+        "window_hours": hours,
+        "totals": {
+            "total_clicks": total_clicks,
+            "suspect_clicks": suspect_clicks,
+            "billable_clicks": billable_clicks,
+            "suspect_ratio": round(suspect_clicks / total_clicks, 3) if total_clicks else 0,
+        },
+        "top_suspect_ips": [
+            {"ip_hash_prefix": (x["_id"] or "")[:16], "count": x["count"], "reasons": x["reasons"][:5], "campaigns": x["campaigns"], "clippers": x["clippers"]}
+            for x in top_suspect_ips
+        ],
+        "top_cidr_bursts": [
+            {
+                "cidr24_prefix": (x["_id"] or "")[:16],
+                "total_clicks": x["total_clicks"],
+                "suspect_clicks": x["suspect_clicks"],
+                "unique_links_targeted": len(x["unique_links"]),
+                "campaigns": x["campaigns"],
+            }
+            for x in top_cidr_bursts
+        ],
+        "top_bot_user_agents": [
+            {"user_agent": (x["_id"] or "")[:100], "count": x["count"]}
+            for x in top_bot_uas
+        ],
+        "suspect_clippers": [
+            {"clipper_id": x["_id"], "total_clicks": x["total"], "suspect_clicks": x["suspect"], "suspect_ratio": round(x["suspect_ratio"], 3)}
+            for x in clippers_stats
+        ],
+    }
+
+
+@api_router.post("/admin/click-events/invalidate-by-pattern")
+async def admin_invalidate_clicks_by_pattern(request: Request, body: dict):
+    """Invalide retroactivement des clicks selon un pattern, recalcule les earnings.
+    body = {
+      campaign_id?: str,
+      clipper_id?: str,
+      ip_hash?: str,
+      cidr24_hash?: str,
+      since?: iso datetime,
+      dry_run: bool (default true)
+    }
+    Filtres se combinent en AND. Marque is_suspect=True, billable=False.
+    Decrement les compteurs unique_click_count sur click_links + recalc earnings.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    dry_run = bool(body.get("dry_run", True))
+
+    # Build filter
+    q: dict = {"is_suspect": {"$ne": True}}  # ne touche pas aux deja-suspect
+    for k in ("campaign_id", "clipper_id", "ip_hash", "cidr24_hash", "link_id"):
+        if body.get(k):
+            q[k] = body[k]
+    if body.get("since"):
+        q["clicked_at"] = {"$gte": body["since"]}
+    if len([k for k in q.keys() if k not in ("is_suspect", "clicked_at")]) == 0:
+        raise HTTPException(status_code=400, detail="Au moins un filtre requis (campaign_id, clipper_id, ip_hash, cidr24_hash, ou link_id)")
+
+    # Trouve les events impactes
+    events = await db.click_events.find(q, {"_id": 0, "event_id": 1, "link_id": 1, "is_unique": 1, "campaign_id": 1}).to_list(10000)
+
+    if dry_run:
+        # Compte par link les unique a decrementer
+        unique_per_link = {}
+        for e in events:
+            if e.get("is_unique"):
+                unique_per_link[e["link_id"]] = unique_per_link.get(e["link_id"], 0) + 1
+        return {
+            "ok": True,
+            "dry_run": True,
+            "would_invalidate": len(events),
+            "unique_per_link": unique_per_link,
+            "filter": {k: v for k, v in q.items() if k != "is_suspect"},
+        }
+
+    # Apply : marque suspect + recompte les compteurs
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.click_events.update_many(
+        q,
+        {"$set": {
+            "is_suspect": True,
+            "billable": False,
+            "suspect_reasons": ["admin_invalidated"],
+            "invalidated_at": now_iso,
+        }}
+    )
+
+    # Recompte les counters par link
+    affected_link_ids = list({e["link_id"] for e in events if e.get("link_id")})
+    for lid in affected_link_ids:
+        # Recompte depuis les events (source de verite)
+        billable_count = await db.click_events.count_documents({"link_id": lid, "billable": True})
+        all_count = await db.click_events.count_documents({"link_id": lid})
+        suspect_count = await db.click_events.count_documents({"link_id": lid, "is_suspect": True})
+        link = await db.click_links.find_one({"link_id": lid}, {"_id": 0})
+        if link:
+            campaign = await db.campaigns.find_one({"campaign_id": link["campaign_id"]}, {"_id": 0})
+            rate = (campaign or {}).get("rate_per_click", 0)
+            earnings = round((billable_count / 1000) * rate, 4)
+            await db.click_links.update_one(
+                {"link_id": lid},
+                {"$set": {
+                    "unique_click_count": billable_count,
+                    "click_count": all_count,
+                    "suspect_count": suspect_count,
+                    "earnings": earnings,
+                    "last_recompute_at": now_iso,
+                }}
+            )
+
+    logger.warning(f"🔒 ADMIN INVALIDATE : {len(events)} clics marques suspect, {len(affected_link_ids)} liens recalcules")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "invalidated_count": len(events),
+        "affected_links": affected_link_ids,
+    }
+
+
 @api_router.post("/admin/force-scrape-all")
 async def admin_force_scrape_all(request: Request):
     """Force IMMEDIATEMENT un scrape de TOUTES les campagnes actives.
@@ -21548,6 +21744,106 @@ def _hash_ip(ip: str) -> str:
     """Hash an IP address with salt — never store raw IPs (GDPR)."""
     return hashlib.sha256(f"{CLICK_SALT}:{ip}".encode()).hexdigest()
 
+
+def _hash_cidr24(ip: str) -> str:
+    """Hash le CIDR /24 de l'IP (premier 3 octets pour ipv4).
+    Permet de detecter des bots qui rotatent les IPs sur un meme reseau.
+    """
+    if not ip or ip == "unknown":
+        return _hash_ip(ip)
+    if ":" in ip:
+        # ipv6 : prefix /64 (premier 4 groupes)
+        groups = ip.split(":")[:4]
+        return _hash_ip(":".join(groups) + "::/64")
+    if "." in ip:
+        parts = ip.split(".")
+        if len(parts) >= 3:
+            return _hash_ip(".".join(parts[:3]) + ".0/24")
+    return _hash_ip(ip)
+
+
+# ── ANTI-FRAUDE CLIC : signatures bots/crawlers/headless ───────────────
+# Liste etendue : si le UA contient une de ces strings -> on flag bot, on ne facture pas
+_BOT_UA_SIGNATURES = [
+    # Crawlers et bots generiques
+    "bot", "crawler", "spider", "scraper",
+    # Automation tools (browser headless)
+    "headless", "puppeteer", "playwright", "selenium", "phantomjs", "nightmare", "cypress",
+    # CLI HTTP clients (utilises pour scripts/bots)
+    "curl/", "wget/", "python-requests", "python-httpx", "python-urllib", "python/",
+    "go-http-client", "java/", "okhttp", "axios/", "node-fetch", "got (",
+    "libwww-perl", "ruby/", "powershell", "winhttp", "winhttpapi",
+    # Social media crawlers (qui pre-fetchent les liens, pas des vrais clics)
+    "facebookexternalhit", "twitterbot", "linkedinbot", "whatsapp", "telegrambot",
+    "slackbot", "discordbot", "skypeuripreview", "viber", "instagrambot",
+    # Search engine crawlers
+    "googlebot", "bingbot", "duckduckbot", "yandexbot", "baiduspider", "applebot",
+    "ahrefsbot", "semrushbot", "mj12bot", "dotbot", "petalbot", "blexbot",
+    "facebot", "rogerbot", "exabot", "sogou", "uptimerobot", "pingdom",
+    # Tools de test/monitoring
+    "lighthouse", "chrome-lighthouse", "pagespeed", "monitoring", "newrelic",
+    "datadog", "site24x7", "statuscake", "linkchecker",
+]
+
+
+def _is_bot_ua(ua: str) -> tuple[bool, str]:
+    """Detecte les UAs de bots/crawlers/CLI/automation.
+    Retourne (is_bot, raison)."""
+    if not ua or not ua.strip():
+        return True, "no_user_agent"
+    ua_lower = ua.lower()
+    if len(ua_lower) < 20:
+        return True, "ua_too_short"  # un vrai UA fait 80+ chars
+    for sig in _BOT_UA_SIGNATURES:
+        if sig in ua_lower:
+            return True, f"bot_signature:{sig}"
+    # Heuristique : un vrai navigateur a Mozilla/X.X
+    if "mozilla/" not in ua_lower:
+        return True, "missing_mozilla"
+    return False, ""
+
+
+# ── Rate limiting clics : max 10 clics par IP / minute ─────────────────
+_CLICK_RATE_LIMIT_PER_MIN = 10
+_CLICK_RATE_TS: dict = {}  # ip_hash -> [timestamps]
+
+
+def _check_click_rate_limit(ip_hash: str) -> tuple[bool, int]:
+    """Retourne (rate_limited, count_last_minute). True si l'IP a depasse 10 clics/min."""
+    now = time.time()
+    timestamps = _CLICK_RATE_TS.get(ip_hash) or []
+    timestamps = [ts for ts in timestamps if now - ts < 60]
+    count = len(timestamps)
+    if count >= _CLICK_RATE_LIMIT_PER_MIN:
+        _CLICK_RATE_TS[ip_hash] = timestamps  # ne pas ajouter
+        return True, count
+    timestamps.append(now)
+    _CLICK_RATE_TS[ip_hash] = timestamps
+    # Cleanup global : si plus de 5000 IPs trackees, purge les anciennes
+    if len(_CLICK_RATE_TS) > 5000:
+        cutoff = now - 60
+        _CLICK_RATE_TS_NEW = {k: [t for t in v if t > cutoff] for k, v in _CLICK_RATE_TS.items()}
+        _CLICK_RATE_TS.clear()
+        _CLICK_RATE_TS.update({k: v for k, v in _CLICK_RATE_TS_NEW.items() if v})
+    return False, count + 1
+
+
+def _get_real_client_ip(request) -> str:
+    """Retourne l'IP reelle du client. Priorite :
+    1. X-Forwarded-For (premiere IP = client original quand derriere reverse proxy Railway)
+    2. request.client.host (IP directe TCP)
+    Note: X-Forwarded-For est trustee car Railway met cet header. Un attaquant qui le forge
+    sera vu avec son vrai IP TCP par Railway, qui sera dans X-Forwarded-For (ajoute par Railway).
+    """
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    if forwarded:
+        # Premiere IP = celle du client (Railway ajoute son IP a la fin)
+        ip = forwarded.split(",")[0].strip()
+        if ip:
+            return ip
+    return request.client.host if request.client else "unknown"
+
+
 def _gen_short_code() -> str:
     """Generate an 8-char alphanumeric short code."""
     alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
@@ -21556,26 +21852,61 @@ def _gen_short_code() -> str:
 async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
                                clipper_id: str, ip_hash: str, user_agent: str,
                                referrer: str, rate_per_click: float, unique_only: bool,
-                               click_billing_mode: str = "unique_24h"):
+                               click_billing_mode: str = "unique_24h",
+                               cidr24_hash: str = "",
+                               is_bot: bool = False, bot_reason: str = "",
+                               rate_limited: bool = False, rate_count: int = 0):
     """Fire-and-forget: record click event + update counters + recalc earnings.
+
+    ANTI-FRAUDE :
+    - is_bot=True : event enregistre comme bot_flagged, PAS facture
+    - rate_limited=True : event enregistre mais PAS facture (clic suspect)
+    - Detection /24 CIDR : si > 30 clics dans la meme heure depuis le meme /24,
+      on flag tous les nouveaux clics comme suspect_cidr_burst, PAS factures.
+
     click_billing_mode:
-      "all"              = tous les clics facturés, pas de dédup
+      "all"              = tous les clics non-fraud factures
       "unique_24h"       = 1 unique par IP / 24h (rolling window)
       "unique_lifetime"  = 1 unique par IP pour toute la campagne
     """
     try:
         now = datetime.now(timezone.utc).isoformat()
+        one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+        # ── DETECTION CIDR BURST : >30 clics du meme /24 en 1h = fraude reseau ──
+        cidr_burst = False
+        cidr_burst_count = 0
+        if cidr24_hash:
+            cidr_burst_count = await db.click_events.count_documents({
+                "campaign_id": campaign_id,
+                "cidr24_hash": cidr24_hash,
+                "clicked_at": {"$gte": one_hour_ago},
+            })
+            if cidr_burst_count >= 30:
+                cidr_burst = True
+
+        # Determine si le clic est suspect (bot, rate-limited, ou burst CIDR)
+        is_suspect = bool(is_bot or rate_limited or cidr_burst)
+        suspect_reasons = []
+        if is_bot:
+            suspect_reasons.append(f"bot:{bot_reason}")
+        if rate_limited:
+            suspect_reasons.append(f"rate_limit:{rate_count}/min")
+        if cidr_burst:
+            suspect_reasons.append(f"cidr24_burst:{cidr_burst_count}/h")
 
         # Deduplication via atomic upsert on click_dedup collection (race-condition safe)
         # Uses unique index on _dedup_key (created at startup)
-        if click_billing_mode == "all":
-            # No dedup — every click is unique for billing
+        # NOTE : les clics suspects ne sont JAMAIS comptes comme unique (donc non factures).
+        if is_suspect:
+            is_unique = False
+        elif click_billing_mode == "all":
             is_unique = True
         else:
-            # Bucket: lifetime OR daily for unique_24h (approximates rolling 24h)
             if click_billing_mode == "unique_lifetime":
                 bucket = "lifetime"
             else:
+                # Bucket UTC explicite (anti-decalage minuit)
                 bucket = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             dedup_key = f"{link_id}:{ip_hash}:{bucket}"
             try:
@@ -21586,12 +21917,11 @@ async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
                 )
                 is_unique = result.upserted_id is not None
             except Exception as e:
-                # Fallback to non-atomic check if upsert fails (e.g. duplicate key collision before index ready)
                 logger.warning(f"click_dedup upsert error, fallback to find_one: {e}")
                 existing = await db.click_dedup.find_one({"_dedup_key": dedup_key})
                 is_unique = existing is None
 
-        # Insert click event
+        # Insert click event with full anti-fraud metadata
         await db.click_events.insert_one({
             "event_id": f"clk_{uuid.uuid4().hex[:12]}",
             "link_id": link_id,
@@ -21599,25 +21929,61 @@ async def _record_click_async(link_id: str, short_code: str, campaign_id: str,
             "campaign_id": campaign_id,
             "clipper_id": clipper_id,
             "ip_hash": ip_hash,
+            "cidr24_hash": cidr24_hash,
             "user_agent": user_agent[:300] if user_agent else "",
             "referrer": referrer[:500] if referrer else "",
             "is_unique": is_unique,
+            "is_suspect": is_suspect,
+            "suspect_reasons": suspect_reasons,
+            "billable": is_unique and not is_suspect,
             "clicked_at": now,
         })
 
-        # Increment counters on the link
+        # Increment counters on the link (UNIQUEMENT pour les clics non-suspects)
         inc_fields = {"click_count": 1}
-        if is_unique:
+        if is_unique and not is_suspect:
             inc_fields["unique_click_count"] = 1
+        if is_suspect:
+            inc_fields["suspect_count"] = 1
         await db.click_links.update_one(
             {"link_id": link_id},
             {"$inc": inc_fields, "$set": {"last_clicked_at": now}}
         )
 
-        # Recalculate earnings on the link
+        # ── Si nouveau cas de fraude detecte : log alerte admin ──
+        if cidr_burst and cidr_burst_count == 30:
+            # Premier franchissement du seuil : alerte une seule fois
+            try:
+                await db.fraud_alerts.insert_one({
+                    "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                    "type": "click_cidr_burst",
+                    "severity": "warning",
+                    "status": "pending",
+                    "campaign_id": campaign_id,
+                    "clipper_id": clipper_id,
+                    "link_id": link_id,
+                    "cidr24_hash": cidr24_hash,
+                    "count_last_hour": cidr_burst_count,
+                    "reason": f"30+ clics en 1h depuis meme reseau /24 pour {short_code}",
+                    "details": f"Clipper {clipper_id} - lien {short_code} - reseau {cidr24_hash[:12]} - {cidr_burst_count} clics/h",
+                    "created_at": now,
+                    "timestamp": now,
+                    "resolved": False,
+                })
+                logger.warning(f"🚨 FRAUDE CLIC : burst /24 detecte pour {short_code} (lien {link_id}), {cidr_burst_count} clics/h")
+            except Exception:
+                pass
+
+        # Recalculate earnings on the link (uniquement clics non-suspects)
         link = await db.click_links.find_one({"link_id": link_id}, {"_id": 0})
         if link:
-            billable = link["unique_click_count"] if unique_only else link["click_count"]
+            # billable = clics non-suspects et uniques (ou all si mode "all")
+            if unique_only:
+                billable = int(link.get("unique_click_count") or 0)
+            else:
+                # En mode "all" : tous les clics non-suspects
+                billable = int(link.get("click_count") or 0) - int(link.get("suspect_count") or 0)
+                billable = max(0, billable)
             earnings = round((billable / 1000) * rate_per_click, 4)  # tarif par 1000 clics
             await db.click_links.update_one({"link_id": link_id}, {"$set": {"earnings": earnings}})
     except Exception as e:
@@ -21752,6 +22118,12 @@ async def track_click(short_code: str, request: Request):
     Public redirect endpoint — no auth required.
     Records the click and serves a page that escapes in-app WebViews (TikTok/Instagram/YouTube).
     Normal browsers get an immediate JS redirect. In-app browsers get a breakout page.
+
+    ANTI-FRAUDE :
+    - Bot User-Agent : event enregistre mais PAS facture
+    - Rate limit IP : >10 clics/min meme IP -> event enregistre mais PAS facture
+    - Burst CIDR /24 : >30 clics/h depuis meme reseau -> flag suspect, PAS facture
+    Le user voit toujours la page (UX preserved), mais la fraude n'est pas remuneree.
     """
     from starlette.responses import RedirectResponse
     link = await db.click_links.find_one({"short_code": short_code, "is_active": True}, {"_id": 0})
@@ -21770,21 +22142,29 @@ async def track_click(short_code: str, request: Request):
     click_billing_mode = (campaign.get("click_billing_mode", "unique_24h")) if campaign else "unique_24h"
     unique_only = click_billing_mode != "all"
 
-    # Get client IP
-    forwarded = request.headers.get("x-forwarded-for")
-    ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    # ── ANTI-FRAUDE : detection bot/rate-limit/cidr en amont ──
+    ip = _get_real_client_ip(request)
     ip_hash = _hash_ip(ip)
+    cidr24_hash = _hash_cidr24(ip)
     user_agent = request.headers.get("user-agent", "")
     referrer = request.headers.get("referer", "")
+
+    is_bot, bot_reason = _is_bot_ua(user_agent)
+    rate_limited, rate_count = _check_click_rate_limit(ip_hash)
 
     # Record click asynchronously — don't block the response
     asyncio.create_task(_record_click_async(
         link["link_id"], short_code, link["campaign_id"],
         link["clipper_id"], ip_hash, user_agent, referrer,
-        rate_per_click, unique_only, click_billing_mode
+        rate_per_click, unique_only, click_billing_mode,
+        cidr24_hash=cidr24_hash,
+        is_bot=is_bot, bot_reason=bot_reason,
+        rate_limited=rate_limited, rate_count=rate_count,
     ))
 
     # Always serve the HTML page — JS handles in-app vs normal browser
+    # NOTE : meme si le clic est suspect (bot/spam), on sert la page car l'utilisateur
+    # final ne doit pas savoir qu'on a detecte la fraude (sinon ils s'adaptent).
     html = _build_breakout_page(destination)
     return HTMLResponse(content=html, status_code=200)
 
