@@ -9431,13 +9431,81 @@ async def _verify_insta_exists(username: str) -> Optional[bool]:
     except Exception as e:
         logger.debug(f"_verify_insta_exists api @{username}: {type(e).__name__}")
 
-    # Combine : il faut DEUX False pour conclure deleted (strict).
-    # Si au moins 1 True -> exists.
-    if sig1 is True or sig2 is True:
+    # ── Source 3 : ClipScraper VPS (IP residentielle, bypass IP cloud bloquees) ──
+    sig3 = None
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(
+                    f"{CLIP_SCRAPER_URL}/v1/instagram/{username.lstrip('@')}",
+                    params={"max_videos": 1},
+                    headers={"X-API-Key": CLIP_SCRAPER_KEY},
+                )
+            if r.status_code == 200:
+                try:
+                    body = r.json() or {}
+                    videos = body.get("videos", [])
+                    err_msg = str(body.get("error", "") or body.get("detail", "")).lower()
+                    if "not found" in err_msg or "introuvable" in err_msg or "user not found" in err_msg:
+                        sig3 = False
+                    elif isinstance(videos, list) and len(videos) > 0:
+                        sig3 = True
+                    elif body.get("user_info") or body.get("display_name"):
+                        sig3 = True  # info compte presente -> existe meme si 0 video
+                except Exception:
+                    pass
+            elif r.status_code == 404:
+                sig3 = False
+        except Exception as e:
+            logger.debug(f"_verify_insta_exists vps @{username}: {type(e).__name__}")
+
+    # ── Source 4 : Meta Business Discovery (si tokens config) ──
+    # Permet de verifier les comptes Business/Creator via l'API officielle Meta.
+    sig4 = None
+    ig_token = os.environ.get("IG_LONG_LIVED_TOKEN", "").strip()
+    ig_biz_id = os.environ.get("IG_BUSINESS_ACCOUNT_ID", "").strip()
+    if ig_token and ig_biz_id:
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(
+                    f"https://graph.facebook.com/v18.0/{ig_biz_id}",
+                    params={
+                        "fields": f"business_discovery.username({username.lstrip('@')}){{id,username}}",
+                        "access_token": ig_token,
+                    },
+                )
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                    bd = data.get("business_discovery")
+                    if bd and bd.get("id"):
+                        sig4 = True
+                    # Pas de business_discovery = compte non-business OU n'existe pas
+                    # Ambigu : on ne tranche pas (laisse None)
+                except Exception:
+                    pass
+            elif r.status_code == 400:
+                # Insta peut renvoyer 400 si compte non-business (ambigu, pas un signal deleted)
+                try:
+                    err = (r.json() or {}).get("error", {})
+                    err_msg = str(err.get("message", "")).lower()
+                    if "does not exist" in err_msg or "not found" in err_msg or "cannot find" in err_msg:
+                        sig4 = False
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"_verify_insta_exists meta_bd @{username}: {type(e).__name__}")
+
+    # Combine : exists si AU MOINS 1 source dit True.
+    # Deleted si AU MOINS 2 sources independantes disent False (strict).
+    signals = [sig1, sig2, sig3, sig4]
+    n_true = sum(1 for s in signals if s is True)
+    n_false = sum(1 for s in signals if s is False)
+    if n_true >= 1:
         return True
-    if sig1 is False and sig2 is False:
+    if n_false >= 2:
         return False
-    return None  # Tout autre cas (1 seul False, aucun signal, etc.) = incertain
+    return None
 
 
 async def _verify_tiktok_exists(username: str) -> Optional[bool]:
@@ -9492,45 +9560,170 @@ async def _verify_tiktok_exists(username: str) -> Optional[bool]:
     except Exception as e:
         logger.debug(f"_verify_tiktok_exists web @{username}: {type(e).__name__}")
 
-    if sig1 is True or sig2 is True:
+    # ── Source 3 : ClipScraper VPS (residentiel, bypass IP cloud bloquees) ──
+    sig3 = None
+    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                r = await c.post(
+                    f"{CLIP_SCRAPER_URL}/v1/tiktok/{username.lstrip('@')}",
+                    params={"max_videos": 1},
+                    headers={"X-API-Key": CLIP_SCRAPER_KEY},
+                )
+            if r.status_code == 200:
+                try:
+                    body = r.json() or {}
+                    videos = body.get("videos", [])
+                    err_msg = str(body.get("error", "") or body.get("detail", "")).lower()
+                    if "not found" in err_msg or "introuvable" in err_msg or "user not found" in err_msg:
+                        sig3 = False
+                    elif isinstance(videos, list) and len(videos) > 0:
+                        sig3 = True
+                    elif body.get("user_info") or body.get("display_name") or body.get("unique_id"):
+                        sig3 = True
+                except Exception:
+                    pass
+            elif r.status_code == 404:
+                sig3 = False
+        except Exception as e:
+            logger.debug(f"_verify_tiktok_exists vps @{username}: {type(e).__name__}")
+
+    # ── Source 4 : yt-dlp metadata (utilise un parser TikTok robuste) ──
+    sig4 = None
+    if YT_DLP_AVAILABLE:
+        try:
+            import yt_dlp
+            def _try_ytdlp():
+                opts = {
+                    "quiet": True,
+                    "skip_download": True,
+                    "no_warnings": True,
+                    "extract_flat": True,
+                    "playlist_items": "1",
+                    "socket_timeout": 12,
+                }
+                proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
+                if proxy_url:
+                    opts["proxy"] = proxy_url
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
+                    if info and (info.get("id") or info.get("uploader_id") or info.get("entries")):
+                        return True
+                except Exception as e:
+                    err = str(e).lower()
+                    if "404" in err or "couldn't find" in err or "user not found" in err or "does not exist" in err:
+                        return False
+                return None
+            sig4 = await asyncio.get_event_loop().run_in_executor(None, _try_ytdlp)
+        except Exception as e:
+            logger.debug(f"_verify_tiktok_exists ytdlp @{username}: {type(e).__name__}")
+
+    signals = [sig1, sig2, sig3, sig4]
+    n_true = sum(1 for s in signals if s is True)
+    n_false = sum(1 for s in signals if s is False)
+    if n_true >= 1:
         return True
-    if sig1 is False and sig2 is False:
+    if n_false >= 2:
         return False
     return None
 
 
 async def _verify_youtube_exists(handle_or_channel: str) -> Optional[bool]:
-    """Verifie via YouTube Data API officielle si un channel existe.
-    Accepte un handle (avec ou sans @) ou un channel_id (UCxxx)."""
-    if not YOUTUBE_API_KEY:
-        return None
+    """Verifie via 3 sources si un YouTube channel existe (API officielle + page web + yt-dlp)."""
     raw = (handle_or_channel or "").lstrip("@")
     if not raw:
         return False
-    # Channel ID direct
-    if raw.startswith("UC") and len(raw) >= 20:
+
+    # ── Source 1 : YouTube Data API officielle ──
+    sig1 = None
+    if YOUTUBE_API_KEY:
         try:
+            params = {"part": "id", "key": YOUTUBE_API_KEY}
+            if raw.startswith("UC") and len(raw) >= 20:
+                params["id"] = raw
+            else:
+                params["forHandle"] = raw
             async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get(
-                    "https://www.googleapis.com/youtube/v3/channels",
-                    params={"part": "id", "id": raw, "key": YOUTUBE_API_KEY},
-                )
+                r = await c.get("https://www.googleapis.com/youtube/v3/channels", params=params)
             if r.status_code == 200:
-                return len((r.json() or {}).get("items", [])) > 0
-        except Exception:
-            pass
-        return None
-    # Handle
+                items = (r.json() or {}).get("items", [])
+                sig1 = len(items) > 0
+            elif r.status_code in (403, 429):
+                sig1 = None  # quota/rate limit
+        except Exception as e:
+            logger.debug(f"_verify_youtube_exists API @{raw}: {type(e).__name__}")
+
+    # ── Source 2 : page web YouTube (handle ou channel_id) ──
+    sig2 = None
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get(
-                "https://www.googleapis.com/youtube/v3/channels",
-                params={"part": "id", "forHandle": raw, "key": YOUTUBE_API_KEY},
-            )
-        if r.status_code == 200:
-            return len((r.json() or {}).get("items", [])) > 0
-    except Exception:
-        pass
+        url = (
+            f"https://www.youtube.com/channel/{raw}"
+            if raw.startswith("UC") and len(raw) >= 20
+            else f"https://www.youtube.com/@{raw}"
+        )
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
+            r = await c.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
+            })
+        if r.status_code == 404:
+            sig2 = False
+        elif r.status_code == 200:
+            txt = r.text
+            # Marqueurs "Page introuvable" YouTube
+            not_found_markers = ["404 Not Found", "This page isn't available", "page introuvable", "channelDoesNotExist"]
+            if any(m.lower() in txt.lower() for m in not_found_markers):
+                sig2 = False
+            elif "ytInitialData" in txt and ('"channelId"' in txt or '"channelMetadataRenderer"' in txt):
+                sig2 = True
+    except Exception as e:
+        logger.debug(f"_verify_youtube_exists web @{raw}: {type(e).__name__}")
+
+    # ── Source 3 : yt-dlp metadata ──
+    sig3 = None
+    if YT_DLP_AVAILABLE:
+        try:
+            import yt_dlp
+            def _try_ytdlp():
+                opts = {
+                    "quiet": True,
+                    "skip_download": True,
+                    "no_warnings": True,
+                    "extract_flat": True,
+                    "playlist_items": "1",
+                    "socket_timeout": 12,
+                }
+                proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
+                if proxy_url:
+                    opts["proxy"] = proxy_url
+                url = (
+                    f"https://www.youtube.com/channel/{raw}"
+                    if raw.startswith("UC") and len(raw) >= 20
+                    else f"https://www.youtube.com/@{raw}"
+                )
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                    if info and (info.get("id") or info.get("uploader_id") or info.get("channel_id")):
+                        return True
+                except Exception as e:
+                    err = str(e).lower()
+                    if "404" in err or "does not exist" in err or "not found" in err:
+                        return False
+                return None
+            sig3 = await asyncio.get_event_loop().run_in_executor(None, _try_ytdlp)
+        except Exception as e:
+            logger.debug(f"_verify_youtube_exists ytdlp @{raw}: {type(e).__name__}")
+
+    # Decision
+    signals = [sig1, sig2, sig3]
+    n_true = sum(1 for s in signals if s is True)
+    n_false = sum(1 for s in signals if s is False)
+    if n_true >= 1:
+        return True
+    if n_false >= 2:
+        return False
     return None
 
 
@@ -16607,11 +16800,32 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
         last_tracked = a.get("last_tracked_at")
         paused_until = a.get("tracking_paused_until")
         status_acc = a.get("status", "verified")
-        last_scrape = await db.scraping_history.find_one(
-            {"platform": platform, "username": username},
-            {"_id": 0, "success": 1, "video_count": 1, "source": 1, "error": 1, "timestamp": 1},
-            sort=[("timestamp", -1)]
-        )
+        channel_id = a.get("platform_channel_id")
+        # BUG FIX YouTube : lookup par username OU channel_id
+        if platform == "youtube" and channel_id:
+            last_scrape = await db.scraping_history.find_one(
+                {"platform": platform, "username": {"$in": [username, channel_id]}},
+                {"_id": 0, "success": 1, "video_count": 1, "source": 1, "error": 1, "timestamp": 1},
+                sort=[("timestamp", -1)]
+            )
+        else:
+            last_scrape = await db.scraping_history.find_one(
+                {"platform": platform, "username": username},
+                {"_id": 0, "success": 1, "video_count": 1, "source": 1, "error": 1, "timestamp": 1},
+                sort=[("timestamp", -1)]
+            )
+        # PRIORITE verif active recente
+        last_check_result = a.get("last_existence_check_result")
+        last_check_at = a.get("last_existence_check_at")
+        verif_says_exists_recent = False
+        if last_check_result in ("exists", "exists_or_uncertain_recheck"):
+            try:
+                cdt = _parse_utc(last_check_at) if last_check_at else None
+                if cdt and (datetime.now(timezone.utc) - cdt).total_seconds() < 24 * 3600:
+                    verif_says_exists_recent = True
+            except Exception:
+                pass
+
         if status_acc == "deleted":
             disp = "deleted"
         elif paused_until and paused_until > now_iso:
@@ -16627,6 +16841,8 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
                     disp = "skipped_cold"
             except Exception:
                 disp = "ok"
+        elif verif_says_exists_recent:
+            disp = "ok"
         else:
             disp = "ko"
         by_display_status[disp] = by_display_status.get(disp, 0) + 1
@@ -19154,6 +19370,19 @@ async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depend
             )
 
         # Determine status global
+        # PRIORITE : si verif active recente (< 24h) confirme 'exists', on ne marque PAS ko
+        # meme si le dernier scrape a echoue (= bug serveur, pas un probleme de compte).
+        last_check_result = acc.get("last_existence_check_result")
+        last_check_at = acc.get("last_existence_check_at")
+        verif_says_exists_recent = False
+        if last_check_result in ("exists", "exists_or_uncertain_recheck"):
+            try:
+                check_dt = _parse_utc(last_check_at) if last_check_at else None
+                if check_dt and (datetime.now(timezone.utc) - check_dt).total_seconds() < 24 * 3600:
+                    verif_says_exists_recent = True
+            except Exception:
+                pass
+
         if status_acc == "deleted":
             status = "deleted"
             counters["deleted"] += 1
@@ -19176,6 +19405,12 @@ async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depend
             except Exception:
                 status = "ok"
                 counters["ok"] += 1
+        elif verif_says_exists_recent:
+            # Scrape a foire MAIS verif active recente confirme que le compte existe.
+            # C'est un probleme cote serveur, pas un compte mort. On affiche "ok"
+            # pour ne pas donner l'impression que le compte est en echec.
+            status = "ok"
+            counters["ok"] += 1
         else:
             status = "ko"
             counters["ko"] += 1
