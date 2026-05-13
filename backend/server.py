@@ -2577,6 +2577,14 @@ async def discover_campaigns(
         logger.warning(f"discover views aggregation error: {e}")
         views_map = {}
 
+    # Le client ne doit JAMAIS voir RPM/budget/tarifs (info commerciale agence-only)
+    is_client = user.get("role") == "client"
+    HIDDEN_FOR_CLIENT = {
+        "rpm", "budget_total", "budget_used", "budget_unlimited",
+        "rate_per_click", "min_view_payout", "max_view_payout",
+        "click_window_hours", "click_billing_mode",
+    }
+
     for campaign in campaigns:
         cid = campaign["campaign_id"]
         agency = agency_map.get(campaign["agency_id"], {})
@@ -2584,6 +2592,10 @@ async def discover_campaigns(
         campaign["user_status"] = membership_map.get(cid)
         campaign["clipper_count"] = clipper_count_map.get(cid, 0)
         campaign["total_views"] = views_map.get(cid, 0)
+        # Strip champs commerciaux pour le role client
+        if is_client:
+            for key in HIDDEN_FOR_CLIENT:
+                campaign.pop(key, None)
 
     # Search filter (after enrichment so we can search agency_name too)
     if search:
@@ -2662,12 +2674,19 @@ async def get_campaign(campaign_id: str, user: dict = Depends(get_current_user))
         "campaign_id": campaign_id,
         "user_id": user["user_id"]
     })
-    
+
     if not is_member and user.get("role") != "agency":
         campaign.pop("token_clipper", None)
         campaign.pop("token_manager", None)
         campaign.pop("token_client", None)
-    
+
+    # Le client ne doit JAMAIS voir RPM/budget/tarifs (info commerciale agence-only)
+    if user.get("role") == "client":
+        for key in ("rpm", "budget_total", "budget_used", "budget_unlimited",
+                    "rate_per_click", "min_view_payout", "max_view_payout",
+                    "click_window_hours", "click_billing_mode"):
+            campaign.pop(key, None)
+
     return campaign
 
 @api_router.get("/campaigns/{campaign_id}/links")

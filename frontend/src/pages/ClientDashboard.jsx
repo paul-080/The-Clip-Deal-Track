@@ -630,12 +630,6 @@ function DiscoverCampaigns({ onJoin }) {
     );
   }, [campaigns, search]);
 
-  const budgetPct = (c) => {
-    const total = c.budget_total;
-    if (!total || c.budget_unlimited) return null;
-    return Math.min(100, Math.round((c.budget_used / total) * 100));
-  };
-
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
       {/* Header */}
@@ -684,7 +678,6 @@ function DiscoverCampaigns({ onJoin }) {
           {filtered.map((c) => {
             // user_status is returned by the backend discover endpoint
             const status = c.user_status; // null | "pending" | "active" | "rejected"
-            const pct = budgetPct(c);
 
             return (
               <div key={c.campaign_id}
@@ -727,14 +720,8 @@ function DiscoverCampaigns({ onJoin }) {
                   )}
                 </div>
 
-                {/* Stats row */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-white/5 rounded-lg p-2.5 text-center">
-                    <p className="text-[10px] text-white/35 mb-0.5">RPM</p>
-                    <p className="font-mono font-bold text-sm" style={{ color: "#FFB300" }}>
-                      {c.rpm != null ? `${c.rpm}€` : "—"}
-                    </p>
-                  </div>
+                {/* Stats row — RPM et budget MASQUES pour le client (info commerciale agence-only) */}
+                <div className="grid grid-cols-2 gap-2">
                   <div className="bg-white/5 rounded-lg p-2.5 text-center">
                     <p className="text-[10px] text-white/35 mb-0.5">Clippers</p>
                     <p className="font-mono font-bold text-sm text-white">
@@ -748,28 +735,6 @@ function DiscoverCampaigns({ onJoin }) {
                     </p>
                   </div>
                 </div>
-
-                {/* Budget bar / badge */}
-                {c.budget_unlimited ? (
-                  <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-[#39FF14]/10 border border-[#39FF14]/25">
-                    <span className="text-[#39FF14] text-xs font-semibold">♾️ Budget illimité</span>
-                  </div>
-                ) : pct !== null ? (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <p className="text-[10px] text-white/30">Budget limité</p>
-                      <p className="text-[10px] font-mono text-white/40">{pct}%</p>
-                    </div>
-                    <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all"
-                        style={{ width: `${pct}%`, background: pct >= 90 ? "#ef4444" : pct >= 70 ? "#f59e0b" : "#22c55e" }} />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md bg-white/5 border border-white/10">
-                    <span className="text-white/40 text-xs italic">Budget non défini</span>
-                  </div>
-                )}
 
                 {/* CTA */}
                 {status === "active" ? (
