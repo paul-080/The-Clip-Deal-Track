@@ -1728,7 +1728,16 @@ function CampaignDashboard({ campaigns }) {
       });
       if (res.ok) {
         const data = await res.json();
-        setCampaign(data.campaign);
+        // BUG FIX : le backend retourne la campagne brute (sans members/social_accounts).
+        // On merge avec l'etat actuel pour conserver members[], puis on refetch pour avoir
+        // les donnees a jour SANS perdre la liste des clippeurs.
+        setCampaign((prev) => ({
+          ...(prev || {}),
+          ...(data.campaign || {}),
+          members: prev?.members || [],
+        }));
+        // Refetch complet en arriere-plan pour avoir l'etat exact (incluant members enrichis)
+        fetchCampaign();
         if (data.backfill_started) {
           toast.success("Paramètres sauvegardés ✓ — Backfill lancé : les vidéos depuis la nouvelle date sont en cours de récupération (peut prendre 1-5 min)", { duration: 8000 });
           // Rafraichit la liste des videos après quelques secondes
