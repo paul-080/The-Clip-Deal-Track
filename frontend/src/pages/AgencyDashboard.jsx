@@ -238,11 +238,31 @@ function ScrapeHistoryPanel({ campaignId }) {
                       };
                       const c = cfg[d.status] || cfg.never_tried;
                       const platIcon = d.platform === "instagram" ? "📷" : d.platform === "tiktok" ? "🎵" : d.platform === "youtube" ? "▶" : "?";
+                      // Construit l'URL publique du compte sur la plateforme
+                      const cleanUser = (d.username || "").replace(/^@/, "");
+                      const platformUrl = (
+                        d.platform === "tiktok" ? `https://www.tiktok.com/@${cleanUser}` :
+                        d.platform === "instagram" ? `https://www.instagram.com/${cleanUser}/` :
+                        d.platform === "youtube" ? (
+                          d.platform_channel_id ? `https://www.youtube.com/channel/${d.platform_channel_id}` : `https://www.youtube.com/@${cleanUser}`
+                        ) : null
+                      );
                       return (
-                        <div key={d.account_id} className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${c.bg} ${c.border} text-xs`}>
+                        <a
+                          key={d.account_id}
+                          href={platformUrl || "#"}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => { if (!platformUrl) e.preventDefault(); }}
+                          className={`flex items-center gap-3 px-3 py-2 rounded-lg border ${c.bg} ${c.border} text-xs transition-all ${platformUrl ? "hover:bg-white/5 hover:border-white/20 cursor-pointer" : "cursor-default"}`}
+                          title={platformUrl ? `Ouvrir ${cleanUser} sur ${d.platform}` : "URL indisponible"}
+                        >
                           <span className="text-base flex-shrink-0">{platIcon}</span>
                           <div className="flex-1 min-w-0">
-                            <div className="text-white font-medium truncate">@{d.username}</div>
+                            <div className="text-white font-medium truncate flex items-center gap-1.5">
+                              @{cleanUser}
+                              {platformUrl && <ExternalLink className="w-3 h-3 text-white/30 flex-shrink-0" />}
+                            </div>
                             <div className="text-white/40 text-[10px] truncate">
                               {d.last_source ? `Source: ${d.last_source}` : "—"}
                               {d.last_videos_count > 0 && <> · {d.last_videos_count} vid</>}
@@ -255,7 +275,7 @@ function ScrapeHistoryPanel({ campaignId }) {
                             )}
                           </div>
                           <span className={`${c.text} text-[10px] font-semibold flex-shrink-0`}>{c.label}</span>
-                        </div>
+                        </a>
                       );
                     })
                   )}
