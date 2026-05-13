@@ -17050,6 +17050,44 @@ async def admin_set_user_bypass(user_id: str, request: Request, body: dict):
     }
 
 
+@api_router.post("/admin/bypass-by-email")
+async def admin_bypass_by_email(request: Request, body: dict):
+    """Active/desactive le bypass par EMAIL (plus simple que user_id).
+    body = { email: '...', bypass: true/false (default true) }
+    Header X-Admin-Code requis. Ou query ?code=...
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    email = (body.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email requis dans le body")
+    bypass_val = bool(body.get("bypass", True))
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail=f"Aucun utilisateur avec email '{email}'")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "subscription_bypass": bypass_val,
+            "subscription_bypass_set_at": datetime.now(timezone.utc).isoformat(),
+        }}
+    )
+    logger.warning(f"🔓 BYPASS {'ACTIVE' if bypass_val else 'DESACTIVE'} pour {email} ({user['user_id']}) par admin")
+    return {
+        "ok": True,
+        "user_id": user["user_id"],
+        "email": email,
+        "role": user.get("role"),
+        "subscription_bypass": bypass_val,
+        "message": (
+            f"Bypass active : {email} n'est plus bloque par le paywall."
+            if bypass_val else
+            f"Bypass desactive : {email} est soumis au paywall normal."
+        ),
+    }
+
+
 @api_router.get("/admin/users/bypassed")
 async def admin_list_bypassed_users(request: Request):
     """Liste tous les comptes avec subscription_bypass=true (comptes demo/admin/VIP)."""
