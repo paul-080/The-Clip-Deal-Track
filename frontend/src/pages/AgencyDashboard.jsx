@@ -4310,9 +4310,19 @@ function CampaignDashboard({ campaigns }) {
       {/* ═══════════ SCRAPING TAB ═══════════ */}
       {activeTab === "scraping" && (
         <div className="space-y-4 max-w-4xl">
-          <div className="bg-[#0d0d0d] border border-white/8 rounded-xl p-3 text-xs text-white/50">
-            ℹ️ Le scraping est <strong>automatique</strong> selon ton abonnement. Les horaires sont fixes (Paris).
-            Tu peux pas le déclencher manuellement.
+          <div className="bg-[#0d0d0d] border border-white/8 rounded-xl p-4 text-xs text-white/60 space-y-2">
+            <p className="text-white/80 font-medium text-sm flex items-center gap-2">
+              <RefreshCw className="w-3.5 h-3.5 text-[#00E5FF]" /> Fonctionnement du scraping
+            </p>
+            <ul className="space-y-1 pl-4 list-disc marker:text-white/30">
+              <li>Le scraping est <strong className="text-white/80">automatique</strong> selon ton abonnement. Horaires fixes (Paris) :
+                <span className="text-white/70"> Starter & Pro = 23h30 (1×/jour), Business = 08h30 + 15h30 + 23h30 (3×/jour)</span>.
+              </li>
+              <li>Tu peux pas le déclencher manuellement.</li>
+              <li><strong className="text-white/80">Optimisation auto :</strong> quand une vidéo fait <strong className="text-[#f0c040]">moins de 50 vues en 48 heures</strong>, elle arrête d'être trackée
+                (elle reste visible avec ses dernières vues connues, mais on économise les requêtes).</li>
+              <li>Si un compte social devient introuvable (supprimé / banni), il est automatiquement marqué comme tel après vérification.</li>
+            </ul>
           </div>
           <ScrapeStatusPanel
             campaignId={campaignId}

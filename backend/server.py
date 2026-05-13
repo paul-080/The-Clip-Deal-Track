@@ -9550,6 +9550,23 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
         # Verifier si dü
         next_scrape = _parse_utc(campaign.get("next_scrape_at"))
         last_scrape = _parse_utc(campaign.get("last_scraped_at"))
+        stored_tracking_per_day = int(campaign.get("tracking_per_day") or 0)
+
+        # RECALCUL si le plan de l'agence a change (trial -> active, upgrade, etc.)
+        # Si tracking_per_day stored != tracking_per_day actuel -> recalculer next_scrape_at
+        # pour appliquer immediatement le nouveau rythme (8h30/15h30/23h30 si Business).
+        if stored_tracking_per_day != tracking_per_day:
+            next_scrape = _compute_next_scrape_at(cid, interval_h, last_scrape, tracking_per_day)
+            await db.campaigns.update_one(
+                {"campaign_id": cid},
+                {"$set": {
+                    "next_scrape_at": next_scrape.isoformat(),
+                    "scrape_interval_hours": interval_h,
+                    "tracking_per_day": tracking_per_day,
+                    "plan_changed_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
+            logger.info(f"Campaign {cid} : plan change detecte (was tracking_per_day={stored_tracking_per_day}, now={tracking_per_day}). Next scrape recalcule = {next_scrape.isoformat()}.")
 
         if not next_scrape:
             # Premier passage : on calcule selon le plan tracking_per_day
@@ -16290,6 +16307,92 @@ async def admin_purge_dead_accounts(
         "checked": len(accounts),
         "summary": {k: v for k, v in results.items() if k != "actions"},
         "actions": results["actions"],
+    }
+
+
+@api_router.post("/admin/reset-scrape-schedule")
+async def admin_reset_scrape_schedule(request: Request, body: dict = None):
+    """Reset next_scrape_at de toutes les campagnes pour appliquer immediatement
+    le plan actuel de l'agence (utile apres changement de plan, trial activation, etc).
+
+    body (optional) = {
+      agency_id: '...',       # ne reset que les campagnes de cette agence
+      campaign_id: '...',     # ne reset qu'une campagne specifique
+      dry_run: bool (default true)
+    }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    dry_run = bool(body.get("dry_run", True))
+
+    # Filtre campagnes
+    q: dict = {"status": "active"}
+    if body.get("agency_id"):
+        q["agency_id"] = body["agency_id"]
+    if body.get("campaign_id"):
+        q["campaign_id"] = body["campaign_id"]
+    campaigns = await db.campaigns.find(q, {"_id": 0}).to_list(500)
+    if not campaigns:
+        return {"ok": True, "checked": 0, "message": "Aucune campagne active trouvee"}
+
+    # Pre-fetch les plans
+    agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
+    agencies = await db.users.find(
+        {"user_id": {"$in": agency_ids}},
+        {"_id": 0}
+    ).to_list(len(agency_ids)) if agency_ids else []
+    agency_map = {a["user_id"]: a for a in agencies}
+
+    now = datetime.now(timezone.utc)
+    changes = []
+    applied = 0
+    for camp in campaigns:
+        cid = camp["campaign_id"]
+        agency = agency_map.get(camp.get("agency_id"))
+        if not agency:
+            continue
+        limits = _get_plan_limits(agency)
+        new_tpd = limits.get("tracking_per_day", 1)
+        if camp.get("payment_model") == "clicks":
+            new_interval_h = 24
+        else:
+            new_interval_h = _scrape_interval_hours(new_tpd)
+        old_tpd = int(camp.get("tracking_per_day") or 0)
+        old_next = camp.get("next_scrape_at")
+        last_scrape = _parse_utc(camp.get("last_scraped_at"))
+        new_next = _compute_next_scrape_at(cid, new_interval_h, last_scrape, new_tpd)
+
+        if old_tpd != new_tpd or not old_next:
+            changes.append({
+                "campaign_id": cid,
+                "campaign_name": camp.get("name"),
+                "agency_id": camp.get("agency_id"),
+                "old_tracking_per_day": old_tpd,
+                "new_tracking_per_day": new_tpd,
+                "old_next_scrape_at": old_next,
+                "new_next_scrape_at": new_next.isoformat(),
+            })
+            if not dry_run:
+                await db.campaigns.update_one(
+                    {"campaign_id": cid},
+                    {"$set": {
+                        "next_scrape_at": new_next.isoformat(),
+                        "tracking_per_day": new_tpd,
+                        "scrape_interval_hours": new_interval_h,
+                        "plan_reset_at": now.isoformat(),
+                    }}
+                )
+                applied += 1
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "campaigns_checked": len(campaigns),
+        "changes_needed": len(changes),
+        "applied": applied,
+        "changes": changes[:50],
     }
 
 

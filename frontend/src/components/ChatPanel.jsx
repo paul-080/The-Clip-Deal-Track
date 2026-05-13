@@ -1632,10 +1632,14 @@ export default function ChatPanel({ campaigns }) {
                       )}
                     </div>
 
-                    {/* Chat rémunération — fil compact */}
-                    <div className="overflow-y-auto px-3 py-2 space-y-2 flex-shrink-0" style={{ maxHeight: "110px" }}>
+                    {/* Chat rémunération — prend tout l'espace disponible (comme les autres chats) */}
+                    <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
                       {remunerationMessages.length === 0 ? (
-                        <p className="text-white/20 text-xs text-center py-2">Aucun message de paiement</p>
+                        <div className="flex flex-col items-center justify-center h-full text-center">
+                          <CreditCard className="w-8 h-8 text-white/10 mb-2" />
+                          <p className="text-white/30 text-sm">Aucun message de paiement</p>
+                          <p className="text-white/15 text-xs mt-1">Échangez avec ce clippeur ici</p>
+                        </div>
                       ) : (
                         remunerationMessages.map(msg => (
                           <PaymentMessageBubble key={msg.message_id} msg={msg} userId={user?.user_id} onReact={handleReact} />
@@ -1644,8 +1648,8 @@ export default function ChatPanel({ campaigns }) {
                       <div ref={remunerationEndRef} />
                     </div>
 
-                    {/* Actions fixes en bas — ultra-compact */}
-                    <div className="flex-shrink-0 border-t border-white/8 px-3 pt-1.5 pb-2 space-y-1.5">
+                    {/* Actions fixes en bas */}
+                    <div className="flex-shrink-0 border-t border-white/8 px-3 pt-2 pb-2.5 space-y-2">
                       {pd?.owed > 0 && (
                         <button
                           onClick={handleConfirmPayment}
