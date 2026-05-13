@@ -9378,7 +9378,10 @@ async def _verify_insta_exists(username: str) -> Optional[bool]:
                 or len(txt_full) < 5000  # page tronquee = redirect login
             ):
                 sig1 = None  # incertain (rate limit ou challenge)
-            elif "sorry, this page isn't available" in txt or "la page que vous recherchez n'est pas disponible" in txt:
+            # Marqueurs FIABLES de compte inexistant (confirmes via test direct mai 2026) :
+            # - 'PolarisErrorRoot' : composant React Insta pour les pages 404
+            # - 'sorry, this page isn..' : ancien marqueur, peut encore apparaitre
+            elif "polariserrorroot" in txt or "sorry, this page isn" in txt or "la page que vous recherchez n'est pas disponible" in txt:
                 sig1 = False
             elif f'"username":"{username.lower()}"' in txt or f'"@{username.lower()}"' in txt:
                 sig1 = True
@@ -9526,21 +9529,31 @@ async def _verify_tiktok_exists(username: str) -> Optional[bool]:
                 code = data.get("code")
                 msg = str(data.get("msg", "")).lower()
                 user_obj = (data.get("data") or {}).get("user")
-                if code == -1 or "not found" in msg or "doesn't exist" in msg or "user not found" in msg:
-                    sig1 = False
-                elif user_obj and user_obj.get("id"):
+                # BUG FIX : 'Free Api Limit' = rate limit (None), PAS deleted.
+                # On ne tranche False que sur marqueur explicite d'absence.
+                if user_obj and user_obj.get("id"):
                     sig1 = True
+                elif code == -1 and (
+                    "not found" in msg or "doesn't exist" in msg or "user not found" in msg
+                    or "invalid" in msg or "uid is empty" in msg
+                ):
+                    sig1 = False
+                # Sinon (rate limit, ambigu) -> None
             except Exception:
                 pass
     except Exception as e:
         logger.debug(f"_verify_tiktok_exists tikwm @{username}: {type(e).__name__}")
 
     # Source 2 : page publique TikTok
+    # BUG FIX CRITIQUE : 'Couldn't find this account' est dans le body TikTok MEME pour
+    # les comptes qui existent (texte cache par JS). On NE peut PAS l'utiliser comme
+    # signal deleted. Seul "uniqueId":"X" dans le JSON inline est fiable.
     proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
     kw = {"timeout": 12, "follow_redirects": True}
     if proxy:
         kw["proxy"] = proxy
     sig2 = None
+    user_lc = username.lower()
     try:
         async with httpx.AsyncClient(**kw) as c:
             r = await c.get(
@@ -9550,13 +9563,18 @@ async def _verify_tiktok_exists(username: str) -> Optional[bool]:
         if r.status_code == 404:
             sig2 = False
         elif r.status_code == 200:
-            txt = r.text.lower()
-            if "couldn't find this account" in txt or "compte introuvable" in txt or "nous n'avons pas trouvé" in txt:
+            body = r.text or ""
+            body_lc = body.lower()
+            # Signal d'existence : uniqueId du compte dans le JSON
+            if f'"uniqueid":"{user_lc}"' in body_lc or f'"unique_id":"{user_lc}"' in body_lc:
+                sig2 = True
+            # Signal de deleted : marqueurs fiables uniquement (PAS "couldn't find")
+            elif '"statuscode":10221' in body_lc or '"statuscode":10222' in body_lc or 'user_404' in body_lc:
                 sig2 = False
-            elif f'"uniqueid":"{username.lower()}"' in r.text.lower() or f'"unique_id":"{username.lower()}"' in r.text.lower():
-                sig2 = True
-            elif f"@{username.lower()}" in txt:
-                sig2 = True
+            elif len(body) < 30000:
+                # Page TikTok normale fait > 250KB. < 30KB = redirect/error/empty
+                sig2 = False
+            # Sinon : ambigu -> None
     except Exception as e:
         logger.debug(f"_verify_tiktok_exists web @{username}: {type(e).__name__}")
 
