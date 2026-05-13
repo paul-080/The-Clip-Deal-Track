@@ -2506,7 +2506,7 @@ function CampaignDashboard({ campaigns }) {
           <button
             onClick={async () => {
               try {
-                toast.info("Recalcul des stats en cours...");
+                toast.info("Recalcul de la courbe (à partir des données déjà collectées)...");
                 const res = await fetch(`${API}/campaigns/${campaignId}/recompute-stats`, {
                   method: "POST",
                   credentials: "include",
@@ -2525,9 +2525,9 @@ function CampaignDashboard({ campaigns }) {
               }
             }}
             className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#FF007F]/15 hover:bg-[#FF007F]/25 text-[#FF007F] text-sm transition-all border border-[#FF007F]/25"
-            title="Recalcule les snapshots historiques de la courbe (corrige les chiffres si déphasés)"
+            title="Recalcule la courbe à partir des données déjà collectées en base. PAS un scraping : aucune requête vers TikTok/Insta/YouTube, aucune consommation de quota."
           >
-            <BarChart3 className="w-4 h-4" /> Recalculer les stats
+            <BarChart3 className="w-4 h-4" /> Recalculer la courbe (no scrape)
           </button>
           <button onClick={() => { fetchAllVideos(); fetchStats(); }} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
             <RefreshCw className="w-4 h-4" /> Actualiser
