@@ -10937,7 +10937,14 @@ async def force_scrape_campaign(campaign_id: str, user: dict = Depends(get_curre
 @api_router.get("/campaigns/{campaign_id}/scrape-status")
 async def get_campaign_scrape_status(campaign_id: str, user: dict = Depends(get_current_user)):
     """Retourne le status de scraping de chaque compte (last_tracked_at, errors).
-    Permet à l'agence de savoir où en est le scraping."""
+    Permet à l'agence de savoir où en est le scraping.
+
+    Stats ALIGNEES avec la realite "live" :
+    - Horaires selon le PLAN de l'agence (Business=8h30+15h30+23h30, sinon 23h30)
+    - Comptes : seuls les non-deleted comptent
+    - Vidéos : filtrees par tracking_start_date + accounts actifs (meme logique que views-chart)
+    - Erreurs : uniquement comptes non-verified avec erreur (pas overlap avec verified)
+    """
     if user.get("role") not in ("agency", "manager", "admin"):
         raise HTTPException(status_code=403, detail="Réservé à l'agence et au manager")
 
@@ -10949,15 +10956,22 @@ async def get_campaign_scrape_status(campaign_id: str, user: dict = Depends(get_
         {"campaign_id": campaign_id}, {"_id": 0}
     ).to_list(500)
     account_ids = [a["account_id"] for a in assignments]
+    # FILTRE : on EXCLUT les comptes status=deleted (ne plus afficher dans le panel scraping)
     accounts = await db.social_accounts.find(
-        {"account_id": {"$in": account_ids}},
+        {"account_id": {"$in": account_ids}, "status": {"$ne": "deleted"}},
         {"_id": 0, "account_id": 1, "platform": 1, "username": 1, "status": 1,
-         "last_tracked_at": 1, "error_message": 1, "last_scrape_error": 1, "user_id": 1}
+         "last_tracked_at": 1, "error_message": 1, "last_scrape_error": 1, "user_id": 1,
+         "consecutive_failures": 1, "tracking_paused_until": 1}
     ).to_list(500)
+    non_deleted_ids = [a["account_id"] for a in accounts]
 
-    # Compte des vidéos par account
+    # Comptes des vidéos par account — ALIGNE avec la logique "live" (tracking_start + non-deleted)
+    tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
+    pipeline_match: dict = {"campaign_id": campaign_id, "account_id": {"$in": non_deleted_ids}}
+    if tracking_start:
+        pipeline_match["published_at"] = {"$gte": tracking_start}
     pipeline = [
-        {"$match": {"campaign_id": campaign_id, "account_id": {"$in": account_ids}}},
+        {"$match": pipeline_match},
         {"$group": {"_id": "$account_id", "count": {"$sum": 1}, "total_views": {"$sum": "$views"}}},
     ]
     video_stats = await db.tracked_videos.aggregate(pipeline).to_list(500)
@@ -10972,14 +10986,40 @@ async def get_campaign_scrape_status(campaign_id: str, user: dict = Depends(get_
             "total_views": st.get("total_views", 0),
         })
 
-    next_scrape = _next_scrape_time_utc()
+    # Determine les horaires selon le plan de l'agence (Business 3x/jour vs Starter/Pro 1x/jour)
+    agency = await db.users.find_one(
+        {"user_id": campaign.get("agency_id")},
+        {"_id": 0}
+    ) if campaign.get("agency_id") else None
+    if agency:
+        limits = _get_plan_limits(agency)
+        tracking_per_day = limits.get("tracking_per_day", 1)
+    else:
+        tracking_per_day = 1
+    schedule_for_plan = _get_schedule_for_plan(tracking_per_day)
+
+    # Prochain scrape : utiliser le schedule du plan, pas le defaut global
+    now_paris = datetime.now(timezone.utc).astimezone(PARIS_TZ)
+    candidates = []
+    for h, m in schedule_for_plan:
+        cand = now_paris.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand > now_paris:
+            candidates.append(cand)
+    tomorrow = now_paris + timedelta(days=1)
+    for h, m in schedule_for_plan:
+        cand = tomorrow.replace(hour=h, minute=m, second=0, microsecond=0)
+        candidates.append(cand)
+    next_scrape_local = min(candidates)
+    next_scrape_utc = next_scrape_local.astimezone(timezone.utc)
+
     return {
         "campaign_id": campaign_id,
-        "tracking_start_date": campaign.get("tracking_start_date"),
+        "tracking_start_date": tracking_start,
         "last_force_scrape_at": campaign.get("last_force_scrape_at"),
-        "next_auto_scrape_paris": next_scrape.astimezone(PARIS_TZ).strftime("%H:%M"),
-        "next_auto_scrape_utc": next_scrape.isoformat(),
-        "scrape_schedule_paris": [f"{h:02d}:{m:02d}" for h, m in SCRAPE_SCHEDULE_PARIS],
+        "next_auto_scrape_paris": next_scrape_local.strftime("%H:%M"),
+        "next_auto_scrape_utc": next_scrape_utc.isoformat(),
+        "scrape_schedule_paris": [f"{h:02d}:{m:02d}" for h, m in schedule_for_plan],
+        "tracking_per_day": tracking_per_day,
         "accounts": enriched,
     }
 

@@ -92,8 +92,10 @@ export default function ScrapeStatusPanel({ campaignId, onScrapeComplete, canFor
   }
 
   const accounts = status.accounts || [];
-  const accountsWithErrors = accounts.filter(a => a.status === "error" || a.last_scrape_error);
+  // BUG FIX : eviter overlap verified <-> errors.
+  // "errors" = comptes qui ne sont PAS verified (en error, pending, ou avec last_scrape_error non-verified)
   const verifiedAccounts = accounts.filter(a => a.status === "verified");
+  const accountsWithErrors = accounts.filter(a => a.status !== "verified" && (a.status === "error" || a.last_scrape_error));
   const totalVideos = accounts.reduce((s, a) => s + (a.videos_tracked || 0), 0);
 
   return (
