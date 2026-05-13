@@ -2282,18 +2282,34 @@ async def google_login(login_req: GoogleLoginRequest):
 
 # ================= CAMPAIGN ROUTES =================
 
+def _is_bypass_account(user: dict) -> bool:
+    """True si le compte doit etre exempte du paywall :
+    - subscription_bypass=True (flag explicite)
+    - email se termine par @demo.clipdeal.local (comptes demo seeded)
+    - email dans BYPASS_EMAILS (whitelist via env var)
+    """
+    if user.get("subscription_bypass") is True:
+        return True
+    email = (user.get("email") or "").lower()
+    if email.endswith("@demo.clipdeal.local"):
+        return True
+    if email in BYPASS_EMAILS:
+        return True
+    return False
+
+
 def _check_agency_subscription(user: dict):
     """Raise 402 si l'agence n'a aucun plan effectif.
     - active = OK (abonnement paye)
     - trial < 14 jours = OK
     - trial expire (>= 14j) ou status absent/none = BLOQUE
     - expired/cancelled = BLOQUE
-    BYPASS : si user.subscription_bypass == True (compte demo / admin / Paul) -> OK toujours.
+    BYPASS : si _is_bypass_account(user) (demo / admin / Paul) -> OK toujours.
     Cohenrent avec _get_user_effective_plan() / _is_agency_blocked()."""
     if user.get("role") != "agency":
         return
     # BYPASS : comptes demo, admin, ou flagges manuellement par Paul
-    if user.get("subscription_bypass") is True:
+    if _is_bypass_account(user):
         return
     sub_status = user.get("subscription_status", "none")
     if sub_status == "active":
@@ -14937,7 +14953,7 @@ async def get_subscription_status(user: dict = Depends(get_current_user)):
 
     # BYPASS : compte demo / admin / Paul -> retourne un etat 'active' synthetique
     # avec plan_unlimited (Business), jamais bloque.
-    if user.get("subscription_bypass") is True:
+    if _is_bypass_account(user):
         plan_details = SUBSCRIPTION_PLANS["plan_unlimited"]
         limits = PLAN_LIMITS["plan_unlimited"]
         return {
@@ -15205,14 +15221,14 @@ PLAN_LIMITS = {
 
 def _get_user_effective_plan(user: dict) -> Optional[str]:
     """Return the effective plan_id for a user.
-    - subscription_bypass=True (demo/admin/Paul) = plan_unlimited (acces complet)
+    - bypass (demo/admin/Paul) = plan_unlimited (acces complet)
     - active = subscription_plan paye
     - trial actif (<14j) = plan_unlimited (Business)
     - trial expire ET non paye = None (BLOQUE total — l'agence doit choisir un abonnement)
     - aucun status = plan_small (legacy fallback)
     """
-    # BYPASS : comptes demo / admin / Paul -> acces complet (plan_unlimited)
-    if user.get("subscription_bypass") is True:
+    # BYPASS : comptes demo / admin / Paul / whitelist email -> acces complet
+    if _is_bypass_account(user):
         return "plan_unlimited"
     sub_status = user.get("subscription_status", "none")
     if sub_status == "active":
@@ -15233,12 +15249,12 @@ def _get_user_effective_plan(user: dict) -> Optional[str]:
 def _is_agency_blocked(user: dict) -> bool:
     """Retourne True si l'agence n'a plus de plan valide (trial expire sans abonnement actif).
     Les autres roles (clipper, manager, client) ne sont JAMAIS bloques.
-    BYPASS : si user.subscription_bypass == True (compte demo / admin / Paul) -> jamais bloque.
+    BYPASS : compte demo (@demo.clipdeal.local) / admin / Paul / whitelist -> jamais bloque.
     """
     if user.get("role") != "agency":
         return False
-    # BYPASS : comptes demo, admin, ou flagges manuellement par Paul
-    if user.get("subscription_bypass") is True:
+    # BYPASS : comptes demo, admin, ou whitelist
+    if _is_bypass_account(user):
         return False
     return _get_user_effective_plan(user) is None
 
