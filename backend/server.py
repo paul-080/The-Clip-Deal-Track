@@ -16511,6 +16511,72 @@ async def admin_reset_scrape_schedule(request: Request, body: dict = None):
     }
 
 
+@api_router.get("/admin/campaigns/{campaign_id}/snapshots-debug")
+async def admin_snapshots_debug(campaign_id: str, request: Request):
+    """Debug : retourne les snapshots views_snapshots ET les aggregats video_views_snapshots
+    pour cette campagne, par date. Permet de comprendre les ecarts."""
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    # 1. Daily snapshots (views_snapshots)
+    daily_snaps = await db.views_snapshots.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "date": 1, "total_views": 1, "total_videos": 1, "updated_at": 1, "recomputed_at": 1}
+    ).sort("date", 1).to_list(100)
+
+    # 2. Hourly snapshots
+    hourly_snaps = await db.views_snapshots_hourly.find(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "hour_key": 1, "total_views": 1, "scraped_at_paris": 1, "hour": 1, "minute": 1}
+    ).sort("hour_key", -1).limit(20).to_list(20)
+
+    # 3. Video views snapshots agreges par date
+    video_agg = await db.video_views_snapshots.aggregate([
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {
+            "_id": "$date",
+            "total_views": {"$sum": "$views"},
+            "n_videos": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]).to_list(100)
+
+    # 4. Live total
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if campaign:
+        tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
+        assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+        ).to_list(2000)
+        active_account_ids = [a["account_id"] for a in assignments if a.get("account_id")]
+        live_total = 0
+        if active_account_ids:
+            match: dict = {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}}
+            if tracking_start:
+                match["published_at"] = {"$gte": tracking_start}
+            agg = await db.tracked_videos.aggregate([
+                {"$match": match},
+                {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+            ]).to_list(1)
+            live_total = int(agg[0]["total_views"]) if agg else 0
+    else:
+        live_total = 0
+        tracking_start = None
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": (campaign or {}).get("name"),
+        "tracking_start_date": tracking_start,
+        "live_total_views_now": live_total,
+        "now_paris": datetime.now(timezone.utc).astimezone(PARIS_TZ).strftime("%Y-%m-%d %H:%M"),
+        "today_paris": _today_paris_str(),
+        "daily_snapshots": daily_snaps,
+        "hourly_snapshots_recent": hourly_snaps,
+        "video_aggregates_by_date": video_agg,
+    }
+
+
 @api_router.post("/admin/recompute-snapshots")
 async def admin_recompute_snapshots(request: Request, body: dict = None):
     """Recalcule TOUS les snapshots quotidiens des campagnes a partir de la source
