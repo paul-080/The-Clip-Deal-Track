@@ -17092,13 +17092,17 @@ async def admin_recheck_failing(request: Request, body: dict = None):
     dry_run = bool(body.get("dry_run", True))
     cid_filter = body.get("campaign_id")
 
-    # Filtre : comptes en echec mais pas encore deleted
+    # Filtre : comptes en echec mais pas encore deleted.
+    # Inclut TOUS les status=error (meme sans consec) ET les verified avec failures.
     query: dict = {
-        "$and": [
-            {"status": {"$in": ["verified", "error"]}},
-            {"$or": [
-                {"consecutive_failures": {"$gte": 1}},
-                {"tracking_paused_until": {"$exists": True, "$ne": None}},
+        "$or": [
+            {"status": "error"},
+            {"$and": [
+                {"status": "verified"},
+                {"$or": [
+                    {"consecutive_failures": {"$gte": 1}},
+                    {"tracking_paused_until": {"$exists": True, "$ne": None}},
+                ]}
             ]}
         ]
     }
