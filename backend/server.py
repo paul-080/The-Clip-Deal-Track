@@ -16577,6 +16577,112 @@ async def admin_snapshots_debug(campaign_id: str, request: Request):
     }
 
 
+@api_router.post("/admin/campaigns/{campaign_id}/reset-stats-history")
+async def admin_reset_stats_history(campaign_id: str, request: Request, body: dict = None):
+    """Wipe TOTAL de l'historique stats d'une campagne :
+    - views_snapshots (daily)
+    - views_snapshots_hourly
+    - video_views_snapshots
+    Puis cree 1 nouveau snapshot du jour avec live_total_views_now.
+
+    Utile quand l'historique est corrompu (ex: bug de scraping qui a stocké
+    des valeurs aberrantes une fois, et qui contamine la courbe pour toujours).
+
+    body = { dry_run: bool (default true) }
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    dry_run = bool(body.get("dry_run", True))
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    # Calcule live_total_views_now (vraie valeur actuelle)
+    tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    active_account_ids = [a["account_id"] for a in assignments if a.get("account_id")]
+    live_total = 0
+    live_videos = 0
+    if active_account_ids:
+        match: dict = {"campaign_id": campaign_id, "account_id": {"$in": active_account_ids}}
+        if tracking_start:
+            match["published_at"] = {"$gte": tracking_start}
+        agg = await db.tracked_videos.aggregate([
+            {"$match": match},
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}, "n_videos": {"$sum": 1}}}
+        ]).to_list(1)
+        if agg:
+            live_total = int(agg[0]["total_views"])
+            live_videos = int(agg[0]["n_videos"])
+
+    # Comptage de ce qu'on va wiper (preview)
+    n_daily = await db.views_snapshots.count_documents({"campaign_id": campaign_id})
+    n_hourly = await db.views_snapshots_hourly.count_documents({"campaign_id": campaign_id})
+    n_video = await db.video_views_snapshots.count_documents({"campaign_id": campaign_id})
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.get("name"),
+            "live_total_views_now": live_total,
+            "live_videos_count": live_videos,
+            "will_delete": {
+                "daily_snapshots": n_daily,
+                "hourly_snapshots": n_hourly,
+                "video_views_snapshots": n_video,
+            },
+            "after_reset": {
+                "new_snap_today": {
+                    "date": _today_paris_str(),
+                    "total_views": live_total,
+                },
+                "courbe_apres_reset": "Vues d'aujourd'hui = total live (215K dans le cas de Check Marcus). Demain, delta = nouveau total - 215K.",
+            },
+            "note": "DRY RUN. Relancer avec dry_run=false pour wiper.",
+        }
+
+    # Apply : delete tout + cree snap[today] avec live
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_str = _today_paris_str()
+    res_daily = await db.views_snapshots.delete_many({"campaign_id": campaign_id})
+    res_hourly = await db.views_snapshots_hourly.delete_many({"campaign_id": campaign_id})
+    res_video = await db.video_views_snapshots.delete_many({"campaign_id": campaign_id})
+    await db.views_snapshots.insert_one({
+        "campaign_id": campaign_id,
+        "date": today_str,
+        "total_views": live_total,
+        "total_videos": live_videos,
+        "updated_at": now_iso,
+        "reset_at": now_iso,
+        "reset_source": "admin_reset_stats_history",
+    })
+    logger.warning(f"🗑️ RESET STATS HISTORY : {campaign_id} ({campaign.get('name')}) — wiped {res_daily.deleted_count} daily + {res_hourly.deleted_count} hourly + {res_video.deleted_count} video snapshots. New snap[{today_str}]={live_total}")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "deleted": {
+            "daily_snapshots": res_daily.deleted_count,
+            "hourly_snapshots": res_hourly.deleted_count,
+            "video_views_snapshots": res_video.deleted_count,
+        },
+        "new_snap_today": {
+            "date": today_str,
+            "total_views": live_total,
+            "total_videos": live_videos,
+        },
+        "message": f"Historique wipé. Aujourd'hui = {live_total:,} vues. Demain, le delta sera correct.",
+    }
+
+
 @api_router.post("/admin/recompute-snapshots")
 async def admin_recompute_snapshots(request: Request, body: dict = None):
     """Recalcule TOUS les snapshots quotidiens des campagnes a partir de la source
