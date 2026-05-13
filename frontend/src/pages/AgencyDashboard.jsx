@@ -2502,37 +2502,9 @@ function CampaignDashboard({ campaigns }) {
             <span className="text-white/30 text-xs">{allVideos.length} vidéos trackées</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={async () => {
-              try {
-                toast.info("Recalcul de la courbe (à partir des données déjà collectées)...");
-                const res = await fetch(`${API}/campaigns/${campaignId}/recompute-stats`, {
-                  method: "POST",
-                  credentials: "include",
-                });
-                const data = await res.json();
-                if (res.ok) {
-                  toast.success(data.message || `${data.dates_recomputed} jours recalculés`);
-                  fetchAllVideos();
-                  fetchStats();
-                  fetchCampaign();
-                } else {
-                  toast.error(data.detail || "Erreur lors du recalcul");
-                }
-              } catch (e) {
-                toast.error("Erreur réseau");
-              }
-            }}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#FF007F]/15 hover:bg-[#FF007F]/25 text-[#FF007F] text-sm transition-all border border-[#FF007F]/25"
-            title="Recalcule la courbe à partir des données déjà collectées en base. PAS un scraping : aucune requête vers TikTok/Insta/YouTube, aucune consommation de quota."
-          >
-            <BarChart3 className="w-4 h-4" /> Recalculer la courbe (no scrape)
-          </button>
-          <button onClick={() => { fetchAllVideos(); fetchStats(); }} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
-            <RefreshCw className="w-4 h-4" /> Actualiser
-          </button>
-        </div>
+        <button onClick={() => { fetchAllVideos(); fetchStats(); }} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-sm transition-all">
+          <RefreshCw className="w-4 h-4" /> Actualiser
+        </button>
       </div>
 
 
