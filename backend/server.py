@@ -12847,6 +12847,102 @@ async def get_campaign_kpi_stats(
     }
 
 
+@api_router.post("/campaigns/{campaign_id}/recompute-stats")
+async def recompute_campaign_stats(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Recalcule les snapshots quotidiens de la campagne a partir de
+    video_views_snapshots (source de verite par video par jour).
+
+    Corrige les chiffres historiques incoherents (ex: 'hier' qui change
+    d'un jour a l'autre apres deletions de comptes).
+
+    Reserve a l'agence proprietaire ou au manager de la campagne.
+    Pas d'admin code requis, c'est une action sur SES donnees.
+    """
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    role = user.get("role")
+    if role not in ("agency", "manager"):
+        raise HTTPException(status_code=403, detail="Agence ou manager uniquement")
+    if role == "agency" and campaign.get("agency_id") != user.get("user_id"):
+        raise HTTPException(status_code=403, detail="Cette campagne n'est pas la votre")
+
+    # Agrege video_views_snapshots par date pour cette campagne
+    agg = await db.video_views_snapshots.aggregate([
+        {"$match": {"campaign_id": campaign_id}},
+        {"$group": {
+            "_id": "$date",
+            "total_views": {"$sum": "$views"},
+            "total_likes": {"$sum": "$likes"},
+            "total_comments": {"$sum": "$comments"},
+            "n_videos": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]).to_list(2000)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    recomputed = 0
+    unchanged = 0
+    changes = []
+
+    for daily in agg:
+        date_str = daily["_id"]
+        if not date_str:
+            continue
+        new_total = int(daily.get("total_views") or 0)
+        new_likes = int(daily.get("total_likes") or 0)
+        new_comments = int(daily.get("total_comments") or 0)
+        new_videos = int(daily.get("n_videos") or 0)
+
+        existing = await db.views_snapshots.find_one(
+            {"campaign_id": campaign_id, "date": date_str},
+            {"_id": 0, "total_views": 1}
+        )
+        old_total = int((existing or {}).get("total_views") or 0)
+
+        if old_total == new_total:
+            unchanged += 1
+            continue
+
+        recomputed += 1
+        changes.append({
+            "date": date_str,
+            "old_views": old_total,
+            "new_views": new_total,
+            "diff": new_total - old_total,
+        })
+        await db.views_snapshots.update_one(
+            {"campaign_id": campaign_id, "date": date_str},
+            {"$set": {
+                "campaign_id": campaign_id,
+                "date": date_str,
+                "total_views": new_total,
+                "total_likes": new_likes,
+                "total_comments": new_comments,
+                "total_videos": new_videos,
+                "recomputed_at": now_iso,
+                "recomputed_source": "video_views_snapshots",
+            }},
+            upsert=True,
+        )
+
+    logger.info(f"Recompute campaign {campaign_id} by {user.get('user_id')}: {recomputed} dates updated, {unchanged} unchanged")
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "dates_recomputed": recomputed,
+        "dates_unchanged": unchanged,
+        "changes": changes[:30],
+        "message": (
+            f"{recomputed} snapshot(s) recalcule(s), {unchanged} inchange(s). "
+            f"La courbe affiche maintenant les vraies valeurs historiques."
+            if recomputed > 0 else
+            "Aucun changement : les snapshots etaient deja a jour."
+        ),
+    }
+
+
 @api_router.get("/campaigns/{campaign_id}/views-chart")
 async def get_campaign_views_chart(
     campaign_id: str,
