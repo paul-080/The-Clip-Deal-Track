@@ -16561,6 +16561,72 @@ async def admin_reset_scrape_schedule(request: Request, body: dict = None):
     }
 
 
+@api_router.get("/admin/campaigns/{campaign_id}/accounts-debug")
+async def admin_accounts_debug(campaign_id: str, request: Request):
+    """Detail par compte d'une campagne (admin, pas de session user).
+    Retourne pour chaque compte : status, last_scrape_error, consecutive_failures,
+    last_existence_check_result, tracking_paused_until, n_videos, last_tracked_at.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0}
+    ).to_list(2000)
+    account_ids = [a["account_id"] for a in assignments]
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}},
+        {"_id": 0}
+    ).to_list(2000)
+
+    # Videos par compte
+    pipeline = [
+        {"$match": {"campaign_id": campaign_id, "account_id": {"$in": account_ids}}},
+        {"$group": {"_id": "$account_id", "n": {"$sum": 1}, "total_views": {"$sum": "$views"}}},
+    ]
+    video_stats = await db.tracked_videos.aggregate(pipeline).to_list(2000)
+    vmap = {s["_id"]: s for s in video_stats}
+
+    by_status: dict = {}
+    details = []
+    for a in accounts:
+        st = a.get("status", "unknown")
+        by_status[st] = by_status.get(st, 0) + 1
+        vstat = vmap.get(a["account_id"], {"n": 0, "total_views": 0})
+        details.append({
+            "account_id": a["account_id"],
+            "platform": a.get("platform"),
+            "username": a.get("username"),
+            "status": a.get("status"),
+            "last_tracked_at": a.get("last_tracked_at"),
+            "last_scrape_error": (a.get("last_scrape_error") or "")[:200],
+            "error_message": (a.get("error_message") or "")[:200],
+            "consecutive_failures": a.get("consecutive_failures") or 0,
+            "tracking_paused_until": a.get("tracking_paused_until"),
+            "last_existence_check_at": a.get("last_existence_check_at"),
+            "last_existence_check_result": a.get("last_existence_check_result"),
+            "deleted_type": a.get("deleted_type"),
+            "deleted_reason": (a.get("deleted_reason") or "")[:200],
+            "verified_at": a.get("verified_at"),
+            "n_videos_in_db": vstat["n"],
+            "total_views_in_db": vstat["total_views"],
+        })
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "total_accounts": len(accounts),
+        "by_status": by_status,
+        "tracking_per_day": campaign.get("tracking_per_day"),
+        "details": details,
+    }
+
+
 @api_router.get("/admin/campaigns/{campaign_id}/snapshots-debug")
 async def admin_snapshots_debug(campaign_id: str, request: Request):
     """Debug : retourne les snapshots views_snapshots ET les aggregats video_views_snapshots
