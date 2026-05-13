@@ -9244,8 +9244,16 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
 async def _verify_insta_exists(username: str) -> Optional[bool]:
     """Verifie via 2 sources independantes si un compte Insta existe.
     Renvoie True (existe), False (supprime/inexistant), None (incertain).
+
+    PRUDENCE : on ne renvoie False QUE si les 2 sources confirment un 404 EXPLICITE.
+    Toute reponse ambigue (rate limit, challenge, login required, redirect) -> None.
     """
     username = username.lstrip("@")
+    # Pre-check : username corrompu (contient =, &, %, etc.) -> deleted direct
+    import re as _re_v
+    if _re_v.search(r'[^a-zA-Z0-9._-]', username):
+        logger.info(f"_verify_insta_exists: username @{username} contient des caracteres invalides -> deleted")
+        return False
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -9262,11 +9270,22 @@ async def _verify_insta_exists(username: str) -> Optional[bool]:
         if r.status_code == 404:
             sig1 = False
         elif r.status_code == 200:
-            txt = r.text.lower()
-            if "sorry, this page isn't available" in txt or "la page que vous recherchez n'est pas disponible" in txt:
+            txt_full = r.text or ""
+            txt = txt_full.lower()
+            # Detecte les pages "challenge required" / "login required" -> incertain (PAS deleted)
+            if (
+                "challenge_required" in txt
+                or "login_required" in txt
+                or "checkpoint_required" in txt
+                or "/accounts/login" in txt
+                or len(txt_full) < 5000  # page tronquee = redirect login
+            ):
+                sig1 = None  # incertain (rate limit ou challenge)
+            elif "sorry, this page isn't available" in txt or "la page que vous recherchez n'est pas disponible" in txt:
                 sig1 = False
-            elif f'"username":"{username.lower()}"' in r.text.lower() or f'"@{username.lower()}"' in r.text.lower():
+            elif f'"username":"{username.lower()}"' in txt or f'"@{username.lower()}"' in txt:
                 sig1 = True
+            # Sinon : page ambigue -> sig1 reste None
     except Exception as e:
         logger.debug(f"_verify_insta_exists web @{username}: {type(e).__name__}")
 
@@ -9289,26 +9308,39 @@ async def _verify_insta_exists(username: str) -> Optional[bool]:
         elif r.status_code == 200:
             try:
                 data = r.json()
-                user = (data.get("data") or {}).get("user")
-                if user:
-                    sig2 = True
+                # Detecte challenge/rate-limit/login -> incertain
+                msg = str(data.get("message", "")).lower()
+                status = str(data.get("status", "")).lower()
+                if (
+                    "challenge" in msg
+                    or "checkpoint" in msg
+                    or "login" in msg
+                    or status == "fail"
+                    or data.get("require_login")
+                ):
+                    sig2 = None
                 else:
-                    sig2 = False
+                    user = (data.get("data") or {}).get("user")
+                    if user:
+                        sig2 = True
+                    else:
+                        # JSON valide sans user MAIS pas de message ambigu -> probable deleted
+                        sig2 = False
             except Exception:
-                pass
+                pass  # JSON invalide -> sig2 reste None
+        elif r.status_code in (401, 403, 429):
+            # Rate limit / auth required -> incertain (PAS deleted)
+            sig2 = None
     except Exception as e:
         logger.debug(f"_verify_insta_exists api @{username}: {type(e).__name__}")
 
-    # Combine : il faut au moins 1 signal pour conclure.
-    # Si les 2 sources sont False -> True deleted. Si au moins 1 dit True -> existe.
+    # Combine : il faut DEUX False pour conclure deleted (strict).
+    # Si au moins 1 True -> exists.
     if sig1 is True or sig2 is True:
         return True
     if sig1 is False and sig2 is False:
         return False
-    if sig1 is False or sig2 is False:
-        # Un seul signal "supprime" : pas assez sur (peut etre rate limit).
-        return None
-    return None
+    return None  # Tout autre cas (1 seul False, aucun signal, etc.) = incertain
 
 
 async def _verify_tiktok_exists(username: str) -> Optional[bool]:
@@ -15685,6 +15717,226 @@ async def admin_bulk_verify_pending(request: Request, max_accounts: int = 100):
         "checked": len(accounts),
         "results": {k: v for k, v in results.items() if k != "details"},
         "details": results["details"][:50],  # cap pour la response
+    }
+
+
+@api_router.get("/admin/scrape-diagnostic")
+async def admin_scrape_diagnostic(request: Request, hours: int = 24):
+    """Diagnostic complet du systeme de scraping.
+    Pour Paul : comprendre rapidement si le scrape automatique a tourne,
+    combien de comptes sont actifs vs deleted, etat des campagnes, etc.
+    """
+    await verify_admin_code(request)
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=hours)).isoformat()
+
+    # ── Stats comptes globales ─────────────────────────────────────
+    total_accounts = await db.social_accounts.count_documents({})
+    verified = await db.social_accounts.count_documents({"status": "verified"})
+    deleted = await db.social_accounts.count_documents({"status": "deleted"})
+    pending = await db.social_accounts.count_documents({"status": "pending"})
+    error_status = await db.social_accounts.count_documents({"status": "error"})
+
+    # Comptes en pause auto (tracking_paused_until > now)
+    paused_now = await db.social_accounts.count_documents({
+        "tracking_paused_until": {"$gt": now.isoformat()},
+        "status": "verified",
+    })
+
+    # Comptes en echec persistant (consecutive_failures >= 3) mais pas deleted
+    persistent_failing = await db.social_accounts.count_documents({
+        "status": "verified",
+        "consecutive_failures": {"$gte": 3},
+    })
+
+    # Comptes scrapes recemment (last_tracked_at >= cutoff)
+    scraped_recently = await db.social_accounts.count_documents({
+        "last_tracked_at": {"$gte": cutoff},
+        "status": "verified",
+    })
+
+    # Comptes deleted recemment (par mon code de verif active probablement)
+    recent_deleted_cursor = db.social_accounts.find(
+        {"status": "deleted", "deleted_at": {"$gte": cutoff}},
+        {"_id": 0, "account_id": 1, "platform": 1, "username": 1, "deleted_at": 1, "deleted_reason": 1, "deleted_type": 1, "consecutive_failures": 1}
+    ).sort("deleted_at", -1).limit(100)
+    recent_deleted = [a async for a in recent_deleted_cursor]
+
+    # ── Stats campagnes ─────────────────────────────────────────────
+    total_campaigns = await db.campaigns.count_documents({})
+    active_campaigns = await db.campaigns.count_documents({"status": "active"})
+    # Campagnes scrapees recemment
+    campaigns_scraped_recently = await db.campaigns.count_documents({
+        "status": "active",
+        "last_scraped_at": {"$gte": cutoff},
+    })
+    # Campagnes dues maintenant (next_scrape_at <= now)
+    campaigns_due_now = await db.campaigns.count_documents({
+        "status": "active",
+        "next_scrape_at": {"$lte": now.isoformat()},
+    })
+
+    # Detail par campagne (top 20 actives)
+    campaigns_cursor = db.campaigns.find(
+        {"status": "active"},
+        {"_id": 0, "campaign_id": 1, "name": 1, "last_scraped_at": 1, "next_scrape_at": 1, "tracking_per_day": 1, "scrape_interval_hours": 1}
+    ).sort("last_scraped_at", -1).limit(20)
+    campaigns_detail = []
+    async for c in campaigns_cursor:
+        cid = c["campaign_id"]
+        # Compte les comptes assignes (via campaign_social_accounts)
+        n_assigned = await db.campaign_social_accounts.count_documents({"campaign_id": cid})
+        # Combien de comptes scrapes recemment
+        assignments = await db.campaign_social_accounts.find(
+            {"campaign_id": cid}, {"_id": 0, "account_id": 1}
+        ).to_list(500)
+        acc_ids = [a["account_id"] for a in assignments]
+        n_scraped_recent = await db.social_accounts.count_documents({
+            "account_id": {"$in": acc_ids},
+            "last_tracked_at": {"$gte": cutoff},
+            "status": "verified",
+        }) if acc_ids else 0
+        campaigns_detail.append({
+            **c,
+            "accounts_assigned": n_assigned,
+            "accounts_scraped_recently": n_scraped_recent,
+        })
+
+    # ── Etat scheduler ────────────────────────────────────────────
+    next_scrape_utc = _next_scrape_time_utc()
+    scheduler_state = {
+        "scheduler_lock_locked": _TRACKING_RUN_LOCK.locked(),
+        "next_global_scrape_utc": next_scrape_utc.isoformat(),
+        "next_global_scrape_paris": next_scrape_utc.astimezone(PARIS_TZ).strftime("%Y-%m-%d %H:%M"),
+        "schedule_paris": [f"{h:02d}:{m:02d}" for h, m in SCRAPE_SCHEDULE_PARIS],
+    }
+
+    # ── Watchdog state ────────────────────────────────────────────
+    watchdog_state = _WATCHDOG_LAST_CHECK
+
+    return {
+        "now_utc": now.isoformat(),
+        "now_paris": now.astimezone(PARIS_TZ).strftime("%Y-%m-%d %H:%M"),
+        "window_hours": hours,
+        "accounts": {
+            "total": total_accounts,
+            "verified": verified,
+            "deleted": deleted,
+            "pending": pending,
+            "error": error_status,
+            "paused_now": paused_now,
+            "persistent_failing": persistent_failing,
+            "scraped_recently": scraped_recently,
+            "deleted_in_window": len(recent_deleted),
+        },
+        "campaigns": {
+            "total": total_campaigns,
+            "active": active_campaigns,
+            "scraped_in_window": campaigns_scraped_recently,
+            "due_now": campaigns_due_now,
+        },
+        "scheduler": scheduler_state,
+        "watchdog": watchdog_state,
+        "campaigns_detail": campaigns_detail,
+        "recently_deleted_accounts": recent_deleted,
+        "proxy_pools": {
+            "static_count": len(BACKEND_PROXY_STATIC),
+            "rotating_count": len(BACKEND_PROXY_ROTATING),
+            "usage": _PROXY_USAGE_COUNT,
+        },
+    }
+
+
+@api_router.post("/admin/restore-recently-deleted")
+async def admin_restore_recently_deleted(request: Request, hours: int = 24, dry_run: bool = True):
+    """Restaure les comptes marques 'deleted' dans les dernieres N heures.
+    Utile si la verif active a marque a tort des comptes valides.
+
+    dry_run=True (default) : ne fait QUE retourner la liste sans modifier.
+    dry_run=false : effectue la restauration (status -> verified, reset counters).
+    """
+    await verify_admin_code(request)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    query = {
+        "status": "deleted",
+        "deleted_at": {"$gte": cutoff},
+    }
+    cursor = db.social_accounts.find(query, {"_id": 0})
+    accounts = [a async for a in cursor]
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "count": len(accounts),
+            "accounts": [
+                {
+                    "account_id": a.get("account_id"),
+                    "platform": a.get("platform"),
+                    "username": a.get("username"),
+                    "deleted_at": a.get("deleted_at"),
+                    "deleted_reason": a.get("deleted_reason"),
+                    "deleted_type": a.get("deleted_type"),
+                }
+                for a in accounts
+            ],
+            "note": "Aucune modification. Relancer avec dry_run=false pour appliquer.",
+        }
+
+    # Restauration effective
+    restored_ids = [a["account_id"] for a in accounts]
+    if restored_ids:
+        await db.social_accounts.update_many(
+            {"account_id": {"$in": restored_ids}},
+            {"$set": {
+                "status": "verified",
+                "consecutive_failures": 0,
+                "tracking_paused_until": None,
+                "not_found_count": 0,
+                "last_existence_check_at": None,  # force re-verif au prochain scrape
+                "last_existence_check_result": None,
+                "deleted_at": None,
+                "deleted_reason": None,
+                "deleted_type": None,
+                "restored_at": datetime.now(timezone.utc).isoformat(),
+                "restored_reason": f"Restauration manuelle admin (deleted depuis < {hours}h)",
+            }}
+        )
+        logger.warning(f"🔄 RESTORE : {len(restored_ids)} comptes restaures (status=verified) par admin")
+
+    return {
+        "ok": True,
+        "dry_run": False,
+        "restored_count": len(restored_ids),
+        "restored_accounts": [
+            {"account_id": a.get("account_id"), "platform": a.get("platform"), "username": a.get("username")}
+            for a in accounts
+        ],
+    }
+
+
+@api_router.post("/admin/force-scrape-all")
+async def admin_force_scrape_all(request: Request):
+    """Force IMMEDIATEMENT un scrape de TOUTES les campagnes actives.
+    Ignore les next_scrape_at. A utiliser pour rattraper un scrape rate.
+    """
+    await verify_admin_code(request)
+    if _TRACKING_RUN_LOCK.locked():
+        return {
+            "ok": False,
+            "error": "Un scrape est deja en cours, attendre la fin (ou re-essayer dans 5 min).",
+        }
+    # Lance en background, ne bloque pas la response
+    async def _do_force():
+        async with _TRACKING_RUN_LOCK:
+            try:
+                await run_video_tracking(force_all=True)
+            except Exception as e:
+                logger.error(f"force-scrape-all error: {type(e).__name__}: {e}", exc_info=True)
+    asyncio.create_task(_do_force())
+    return {
+        "ok": True,
+        "message": "Scrape force lance en arriere-plan (toutes campagnes actives). Voir logs Railway pour suivre.",
     }
 
 
