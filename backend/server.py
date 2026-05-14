@@ -16997,7 +16997,7 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                                 await asyncio.sleep(10 * (attempt + 1))  # 10s, 20s entre retries
 
                     # ETAPE 3 : Apres 3 echecs, refaire un dernier check d'existence
-                    # pour distinguer "deleted" d'une vraie erreur technique.
+                    # pour distinguer 3 cas : (a) deleted, (b) vivant 0 videos, (c) erreur technique.
                     try:
                         if plat == "instagram":
                             exists_final = await asyncio.wait_for(_verify_insta_exists(user_), timeout=30)
@@ -17009,6 +17009,11 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                             exists_final = None
                         if exists_final is False:
                             return acc, [], "deleted"
+                        if exists_final is True:
+                            # Le compte EXISTE et toutes les sources retournent vide ou echouent
+                            # -> c'est probablement un compte vivant SANS videos (cas marcuus.lawrence38)
+                            # On classifie en SUCCES avec 0 videos (pas error)
+                            return acc, [], None
                     except Exception:
                         pass
 
