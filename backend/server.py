@@ -10065,13 +10065,21 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     # pour 1000 raisons (rate-limit, IP bloquee, API down) sans que le compte
                     # n'ait disparu. On ne marque deleted QUE sur confirmation 2+ sources
                     # ET aucune video historique en DB (regle ci-dessus).
-                    # Echecs persistants -> pause auto 24h uniquement (retry le lendemain).
 
-                    # Si le compte n'est pas marque deleted par la verif, on applique l'auto-pause apres 3 echecs
-                    if update_fields.get("status") != "deleted" and new_failures >= 3:
-                        pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=24)
-                        update_fields["tracking_paused_until"] = pause_until_dt.isoformat()
-                        logger.warning(f"⚠️ {platform}/@{username} : {new_failures} echecs consecutifs -> pause auto 24h jusqu'a {pause_until_dt.isoformat()}")
+                    # PAUSE GRADUEE : plus indulgent qu'un 24h direct.
+                    # Permet de re-tenter rapidement les comptes rate-limited temporairement.
+                    if update_fields.get("status") != "deleted":
+                        pause_h = None
+                        if new_failures >= 7:
+                            pause_h = 24  # echecs persistants -> pause longue (lendemain)
+                        elif new_failures >= 5:
+                            pause_h = 6   # echecs serieux -> 6h
+                        elif new_failures >= 3:
+                            pause_h = 1   # echec moyen -> retry dans 1h (au lieu de 24h)
+                        if pause_h is not None:
+                            pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=pause_h)
+                            update_fields["tracking_paused_until"] = pause_until_dt.isoformat()
+                            logger.warning(f"⚠️ {platform}/@{username} : {new_failures} echecs consecutifs -> pause auto {pause_h}h")
                     await db.social_accounts.update_one(
                         {"account_id": account_id},
                         {"$set": update_fields}
@@ -17326,6 +17334,116 @@ async def admin_recheck_deleted(request: Request, body: dict = None):
             "stay_deleted_confirmed": len(results["confirmed_deleted"]),
             "errors": len(results["errors"]),
         },
+    }
+
+
+@api_router.get("/admin/health-summary")
+async def admin_health_summary(request: Request):
+    """Dashboard sante du systeme de scraping.
+    Vue d'ensemble en 1 endpoint : que se passe-t-il MAINTENANT ?
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    now = datetime.now(timezone.utc)
+    now_paris = now.astimezone(PARIS_TZ)
+    h24_ago = (now - timedelta(hours=24)).isoformat()
+    h1_ago = (now - timedelta(hours=1)).isoformat()
+
+    # Campagnes actives
+    campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
+    n_camps = len(campaigns)
+    # Prochain scrape global
+    next_at_list = [c.get("next_scrape_at") for c in campaigns if c.get("next_scrape_at")]
+    next_at_global = min(next_at_list) if next_at_list else None
+    # Dernier scrape global
+    last_scraped_list = [c.get("last_scraped_at") for c in campaigns if c.get("last_scraped_at")]
+    last_scraped_global = max(last_scraped_list) if last_scraped_list else None
+
+    # Comptes
+    n_total = await db.social_accounts.count_documents({})
+    n_verified = await db.social_accounts.count_documents({"status": "verified"})
+    n_deleted = await db.social_accounts.count_documents({"status": "deleted"})
+    n_error = await db.social_accounts.count_documents({"status": "error"})
+    n_pending = await db.social_accounts.count_documents({"status": "pending"})
+    n_paused = await db.social_accounts.count_documents({
+        "status": "verified",
+        "tracking_paused_until": {"$gt": now.isoformat()}
+    })
+    n_with_failures = await db.social_accounts.count_documents({
+        "status": "verified",
+        "consecutive_failures": {"$gte": 1}
+    })
+
+    # Scrapes derniere 24h
+    n_scrapes_24h = await db.scraping_history.count_documents({"timestamp": {"$gte": h24_ago}})
+    n_scrapes_24h_ok = await db.scraping_history.count_documents({"timestamp": {"$gte": h24_ago}, "success": True})
+    n_scrapes_24h_ko = n_scrapes_24h - n_scrapes_24h_ok
+    success_rate_24h = round(100 * n_scrapes_24h_ok / n_scrapes_24h, 1) if n_scrapes_24h else 0
+
+    # Sources utilisees derniere 24h
+    sources_agg = await db.scraping_history.aggregate([
+        {"$match": {"timestamp": {"$gte": h24_ago}}},
+        {"$group": {"_id": {"source": "$source", "success": "$success"}, "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]).to_list(50)
+    by_source = {}
+    for s in sources_agg:
+        src = s["_id"]["source"]
+        ok = s["_id"]["success"]
+        by_source.setdefault(src, {"ok": 0, "ko": 0})
+        by_source[src]["ok" if ok else "ko"] += s["count"]
+
+    # Tracked videos
+    n_videos = await db.tracked_videos.count_documents({})
+    agg_total = await db.tracked_videos.aggregate([
+        {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+    ]).to_list(1)
+    total_views = agg_total[0]["total_views"] if agg_total else 0
+
+    # Diagnostic
+    issues = []
+    if n_camps == 0:
+        issues.append("CRITIQUE : aucune campagne active")
+    if not last_scraped_global:
+        issues.append("CRITIQUE : aucun scrape jamais effectue")
+    elif last_scraped_global < h24_ago:
+        issues.append(f"WARNING : dernier scrape > 24h ({last_scraped_global})")
+    if success_rate_24h < 50 and n_scrapes_24h > 10:
+        issues.append(f"WARNING : taux reussite faible ({success_rate_24h}%) sur 24h")
+    if n_paused > n_verified * 0.3:
+        issues.append(f"WARNING : >30% des comptes sont en pause ({n_paused}/{n_verified})")
+
+    return {
+        "now_utc": now.isoformat(),
+        "now_paris": now_paris.strftime("%Y-%m-%d %H:%M:%S"),
+        "campaigns": {
+            "active": n_camps,
+            "last_scraped_global": last_scraped_global,
+            "next_scrape_global": next_at_global,
+        },
+        "accounts": {
+            "total": n_total,
+            "verified": n_verified,
+            "with_failures": n_with_failures,
+            "paused_auto": n_paused,
+            "deleted": n_deleted,
+            "error": n_error,
+            "pending": n_pending,
+        },
+        "tracked_videos": {
+            "count": n_videos,
+            "total_views_all_campaigns": total_views,
+        },
+        "scraping_24h": {
+            "total_attempts": n_scrapes_24h,
+            "success": n_scrapes_24h_ok,
+            "failed": n_scrapes_24h_ko,
+            "success_rate_pct": success_rate_24h,
+            "by_source": by_source,
+        },
+        "issues": issues if issues else ["OK"],
     }
 
 
