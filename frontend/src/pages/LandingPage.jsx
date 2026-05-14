@@ -393,11 +393,13 @@ export default function LandingPage() {
                 <ChevronRight className="w-5 h-5" />
               </Button>
               <Button
+                onClick={() => navigate("/decouvrir")}
                 variant="outline"
                 data-testid="hero-learn-more-btn"
-                className="bg-transparent border-white/20 hover:bg-white/5 text-white rounded-full px-8 py-6 text-lg transition-colors duration-200"
+                className="bg-transparent border-white/20 hover:bg-white/5 text-white rounded-full px-8 py-6 text-lg transition-colors duration-200 flex items-center gap-2"
               >
-                En savoir plus
+                Découvrir toutes les fonctionnalités
+                <ChevronRight className="w-5 h-5" />
               </Button>
             </motion.div>
 

@@ -18,6 +18,7 @@ import ClaimPage from "./pages/ClaimPage";
 import TermsPage from "./pages/TermsPage";
 import ResetPasswordPage from "./pages/ResetPasswordPage";
 import ContactDevis from "./pages/ContactDevis";
+import Features from "./pages/Features";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 export const API = `${BACKEND_URL}/api`;
@@ -410,6 +411,8 @@ const AppRouter = () => {
 
       {/* Contact devis Enterprise */}
       <Route path="/contact-devis" element={<ContactDevis />} />
+      <Route path="/decouvrir" element={<Features />} />
+      <Route path="/features" element={<Features />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
