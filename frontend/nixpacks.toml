@@ -1,5 +1,8 @@
 [phases.install]
 cmds = ["npm install --only=production 2>/dev/null || npm install"]
 
+[phases.build]
+cmds = ["npm run build"]
+
 [start]
 cmd = "npx serve -s build -l $PORT"
