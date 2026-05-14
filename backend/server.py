@@ -16995,6 +16995,43 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                             return acc, [], "deleted"
                     except Exception:
                         pass
+
+                    # ETAPE 4 (DERNIER FILET) : Test direct simple sans proxy / sans librairie.
+                    # Pour les comptes que _verify_*_exists n'arrive pas a trancher (proxy bloque,
+                    # TikWm rate-limit, VPS down). On fait juste un GET HTTPS direct depuis Railway
+                    # et on cherche le marqueur d'inexistence dans le body brut.
+                    try:
+                        ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
+                        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c_simple:
+                            if plat == "tiktok":
+                                r_s = await c_simple.get(
+                                    f"https://www.tiktok.com/@{user_.lstrip('@')}",
+                                    headers={"User-Agent": ua}
+                                )
+                                if r_s.status_code == 200:
+                                    body_s = r_s.text or ""
+                                    body_s_lc = body_s.lower()
+                                    ulc = user_.lstrip('@').lower()
+                                    has_uid = (f'"uniqueid":"{ulc}"' in body_s_lc) or (f'"unique_id":"{ulc}"' in body_s_lc)
+                                    is_challenge = ("captcha" in body_s_lc) or ("challenge_required" in body_s_lc) or ("verify_fp" in body_s_lc)
+                                    # Page TikTok complete chargee SANS uniqueId du compte ET pas de challenge = compte inexistant
+                                    if (not has_uid) and (len(body_s) > 200000) and (not is_challenge):
+                                        return acc, [], "deleted"
+                                elif r_s.status_code == 404:
+                                    return acc, [], "deleted"
+                            elif plat == "instagram":
+                                r_s = await c_simple.get(
+                                    f"https://www.instagram.com/{user_.lstrip('@')}/",
+                                    headers={"User-Agent": ua}
+                                )
+                                if r_s.status_code == 200:
+                                    body_s_lc = (r_s.text or "").lower()
+                                    if "polariserrorroot" in body_s_lc or "sorry, this page isn" in body_s_lc:
+                                        return acc, [], "deleted"
+                                elif r_s.status_code == 404:
+                                    return acc, [], "deleted"
+                    except Exception:
+                        pass
                     return acc, [], f"{type(last_err).__name__}: {str(last_err)[:120]}"
 
             results_list = await asyncio.gather(*[_scrape_one(a) for a in accounts])
