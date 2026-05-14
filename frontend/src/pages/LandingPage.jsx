@@ -294,50 +294,54 @@ export default function LandingPage() {
       {/* Hero Section */}
       <header className="relative">
         {/* Navigation */}
-        <nav className="relative z-20 flex items-center justify-between px-6 lg:px-16 py-6">
-          <motion.div 
+        <nav className="relative z-20 flex items-center justify-between gap-2 px-4 sm:px-6 lg:px-16 py-4 sm:py-6">
+          <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="flex items-center gap-3"
+            className="flex items-center gap-2 sm:gap-3 min-w-0 flex-shrink"
           >
             <img
               src={process.env.PUBLIC_URL + "/logo.svg"}
               alt="The Clip Deal Track"
-              className="w-10 h-10 rounded-lg"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex-shrink-0"
             />
-            <span className="font-display font-bold text-xl tracking-tight text-white">
-              The Clip Deal Track
+            {/* Texte logo : version compacte sur mobile, complet sur sm+ */}
+            <span className="font-display font-bold text-base sm:text-xl tracking-tight text-white truncate">
+              <span className="hidden sm:inline">The Clip Deal Track</span>
+              <span className="sm:hidden">Clip Deal</span>
             </span>
           </motion.div>
 
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="flex items-center gap-3"
+            className="flex items-center gap-2 sm:gap-3 flex-shrink-0"
           >
             {user ? (
               <Button
                 onClick={handleGetStarted}
                 data-testid="nav-login-btn"
-                className="bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-full px-6 py-2 font-medium transition-colors duration-200"
+                className="bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-full px-4 sm:px-6 py-2 text-sm sm:text-base font-medium transition-colors duration-200"
               >
                 Dashboard
               </Button>
             ) : (
               <>
+                {/* Se connecter : cache sur tres petit ecran (< sm) */}
                 <Button
                   onClick={() => setShowLoginModal(true)}
                   variant="ghost"
                   data-testid="nav-login-btn"
-                  className="text-white/70 hover:text-white hover:bg-white/10 rounded-full px-5 py-2 font-medium transition-colors duration-200"
+                  className="hidden sm:inline-flex text-white/70 hover:text-white hover:bg-white/10 rounded-full px-5 py-2 font-medium transition-colors duration-200"
                 >
                   Se connecter
                 </Button>
                 <Button
                   onClick={handleGetStarted}
-                  className="bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black rounded-full px-5 py-2 font-semibold transition-colors duration-200"
+                  className="bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black rounded-full px-4 sm:px-5 py-2 text-sm sm:text-base font-semibold transition-colors duration-200 whitespace-nowrap"
                 >
-                  Créer un compte
+                  <span className="hidden sm:inline">Créer un compte</span>
+                  <span className="sm:hidden">S'inscrire</span>
                 </Button>
               </>
             )}
