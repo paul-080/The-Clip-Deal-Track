@@ -16994,6 +16994,9 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
                 disp = "ok"
         elif verif_says_exists_recent:
             disp = "ok"
+        elif status_acc == "verified":
+            # REGLE PAUL : status=verified -> compte existe -> ok meme si scrape echoue
+            disp = "ok"
         else:
             disp = "ko"
         by_display_status[disp] = by_display_status.get(disp, 0) + 1
@@ -19857,8 +19860,12 @@ async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depend
                 counters["ok"] += 1
         elif verif_says_exists_recent:
             # Scrape a foire MAIS verif active recente confirme que le compte existe.
-            # C'est un probleme cote serveur, pas un compte mort. On affiche "ok"
-            # pour ne pas donner l'impression que le compte est en echec.
+            status = "ok"
+            counters["ok"] += 1
+        elif status_acc == "verified":
+            # REGLE PAUL : status=verified -> compte existe -> display=ok meme si scrape echoue.
+            # Ne JAMAIS afficher 'echec' pour un compte verified. C'est l'echec du scraping
+            # cote serveur (rate-limit, IP bloquee), pas un probleme du compte lui-meme.
             status = "ok"
             counters["ok"] += 1
         else:
