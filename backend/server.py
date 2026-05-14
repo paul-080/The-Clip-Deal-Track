@@ -9901,31 +9901,47 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 except Exception:
                     pass
 
-            # ── Smart cache COMPTE : skip Apify si pas de growth récent ──
-            # Campagnes au CLIC : tracking soft 24h (la facturation est au clic, vues = info)
-            # Campagnes au VUE : tracking 6h actif, 12h stagnant, 24h mort
-            # YouTube est gratuit (API officielle), on ne skip jamais.
+            # ── Smart cache COMPTE INTELLIGENT ──
+            # Permet de scraper a 1h/h en haute frequence SANS gaspiller les quotas
+            # sur les comptes morts/inactifs. Strategie graduee selon l'activite :
+            #
+            #   Compte ACTIF (growth > 0 derniere passe)             -> scrape a chaque cycle
+            #   Compte VIEW LOW (growth=0, total<1000)                -> max 1x/24h
+            #   Compte STAGNANT (growth=0, total>=1000)               -> max 1x/12h
+            #   Compte VERY COLD (>7 jours sans growth)               -> max 1x/24h
+            #   YouTube                                               -> jamais skip (API gratuite)
+            #   Si dernier scrape failed                              -> toujours retry (anti-coince)
             try:
                 last_tracked = account.get("last_tracked_at")
                 last_growth = account.get("last_growth", None)
                 last_total = account.get("last_total_views", 0) or 0
-                # Si le dernier scrape a echoue, on RETENTE toujours (pas de skip)
-                # pour ne pas laisser un compte en panne pendant 12-24h
                 last_scrape_err = account.get("last_scrape_error")
+                last_growth_at = account.get("last_growth_at")  # derniere fois growth > 0
                 if platform != "youtube" and last_tracked and not last_scrape_err:
                     last_dt = _parse_utc(last_tracked) or datetime.now(timezone.utc)
                     elapsed_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                    days_since_growth = None
+                    if last_growth_at:
+                        try:
+                            lg_dt = _parse_utc(last_growth_at)
+                            if lg_dt:
+                                days_since_growth = (datetime.now(timezone.utc) - lg_dt).total_seconds() / 86400
+                        except Exception:
+                            pass
                     if is_clicks_campaign:
-                        # Campagne au clic : 24h fixe, peu importe l'activite
                         if elapsed_hours < 24:
-                            logger.info(f"Skip {platform}/@{username} — campaign clicks (soft tracking 24h) - last {elapsed_hours:.1f}h")
+                            logger.info(f"Skip {platform}/@{username} — clicks campaign (24h soft) - last {elapsed_hours:.1f}h")
                             continue
                     elif last_growth is not None:
-                        # Comptes très inactifs (campagne vues) : 24h
+                        # NIVEAU 4 : tres tres mort (> 7 jours sans growth) -> 1x/24h
+                        if days_since_growth and days_since_growth > 7 and elapsed_hours < 24:
+                            logger.info(f"Skip {platform}/@{username} — very cold ({days_since_growth:.0f}j sans growth) — wait 24h")
+                            continue
+                        # NIVEAU 3 : inactif (0 growth + < 1000 vues) -> 24h
                         if last_growth == 0 and last_total < 1000 and elapsed_hours < 24:
                             logger.info(f"Skip {platform}/@{username} — cold (no growth, low views) — wait 24h")
                             continue
-                        # Comptes stagnants : 12h
+                        # NIVEAU 2 : stagnant (0 growth) -> 12h
                         if last_growth == 0 and elapsed_hours < 12:
                             logger.info(f"Skip {platform}/@{username} — stagnant (no growth) — wait 12h")
                             continue
@@ -9986,17 +10002,28 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         fetch_videos(platform, username, account, since_days),
                         timeout=150
                     )
+                    fetch_was_rate_limited = False
                 except asyncio.TimeoutError:
                     logger.warning(f"fetch_videos TIMEOUT (150s) for {platform}/@{username} — skipped")
                     videos = []
                     fetch_failed_with_error = True
+                    fetch_was_rate_limited = False
                 except Exception as fetch_err:
+                    err_msg = str(fetch_err).lower()
+                    # BACKOFF INTELLIGENT : si rate-limit detecte, on n'incremente PAS failures
+                    # (sinon un rate-limit temporaire = pause 24h injustifiee).
+                    fetch_was_rate_limited = any(kw in err_msg for kw in [
+                        "rate limited", "rate-limit", "rate limit", "429", "too many requests",
+                        "checkpoint_required", "challenge_required", "login_required",
+                        "free api limit",
+                    ])
                     logger.warning(f"fetch_videos failed for {platform}/@{username}: {fetch_err}")
                     videos = []
                     fetch_failed_with_error = True
                 else:
                     # fetch_videos a renvoye une liste (potentiellement vide) sans exception
                     fetch_failed_with_error = False
+                    fetch_was_rate_limited = False
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
                     # CAS 1 : fetch_videos a renvoye [] SANS erreur = compte existe mais 0 video recente.
@@ -10018,8 +10045,20 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                             pass
                         await asyncio.sleep(0.5)
                         continue
-                    # CAS 2 : fetch_videos a echoue avec exception/timeout = vrai echec
-                    # Incrémente le compteur. Pause graduee selon nb d'echecs.
+                    # CAS 2a : Rate-limit detecte = c'est de notre cote (IP/quota), PAS le compte.
+                    # On NE compte PAS ca comme un echec consecutif. Au prochain cycle on retentera.
+                    if fetch_was_rate_limited:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "last_tracked_at": now_iso,
+                                "last_scrape_error": "rate_limited_skipped",
+                            }}
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
+                    # CAS 2b : vraie erreur (timeout / exception non rate-limit)
+                    # Incremente le compteur. Pause graduee selon nb d'echecs.
                     prev_failures = int(account.get("consecutive_failures", 0) or 0)
                     new_failures = prev_failures + 1
                     update_fields = {
@@ -10244,13 +10283,17 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 new_account_total = sum(int(v.get("views", 0) or 0) for v in videos)
                 old_account_total = account.get("last_total_views", 0) or 0
                 account_growth = new_account_total - old_account_total
+                _set_growth = {
+                    "last_tracked_at": now_iso,
+                    "last_total_views": new_account_total,
+                    "last_growth": account_growth,
+                }
+                # Si du growth detecte, store le timestamp (sert pour smart cache niveau 4)
+                if account_growth > 0:
+                    _set_growth["last_growth_at"] = now_iso
                 await db.social_accounts.update_one(
                     {"account_id": account_id},
-                    {"$set": {
-                        "last_tracked_at": now_iso,
-                        "last_total_views": new_account_total,
-                        "last_growth": account_growth,
-                    }}
+                    {"$set": _set_growth}
                 )
                 # jitter to reduce rate-limit risk
                 await asyncio.sleep(1)
@@ -10489,10 +10532,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
 # Plan Starter / Pro (1 scrape/jour) : lance a 23h30, finit ~minuit
 # Plan Business (3 scrapes/jour)     : lance a 8h30/15h30/23h30, finit ~9h/16h/minuit
 SCRAPE_SCHEDULES_BY_PLAN = {
-    1: [(23, 30)],                            # 1/jour : minuit (lance 30 min avant)
-    2: [(8, 30), (23, 30)],                   # 2/jour : 9h + minuit (legacy/compat)
-    3: [(8, 30), (15, 30), (23, 30)],         # 3/jour : 9h, 16h, minuit (lance 30 min avant)
+    1: [(23, 30)],                            # 1/jour : minuit (Starter)
+    2: [(8, 30), (23, 30)],                   # 2/jour (legacy/compat)
+    3: [(8, 30), (15, 30), (23, 30)],         # 3/jour : Business (8h30 + 15h30 + 23h30 Paris)
     4: [(5, 30), (11, 30), (17, 30), (23, 30)],  # 4/jour (futur premium)
+    6: [(3, 30), (7, 30), (11, 30), (15, 30), (19, 30), (23, 30)],  # 6/jour : Enterprise (toutes les 4h)
+    24: [(h, 0) for h in range(24)],          # 24/jour : Enterprise++ (toutes les heures, dispo si infra solide)
 }
 # Default scrape schedule (fallback si plan inconnu) = 1 scrape/jour
 SCRAPE_SCHEDULE_PARIS = SCRAPE_SCHEDULES_BY_PLAN[1]
@@ -10548,13 +10593,17 @@ def _campaign_offset_minutes(campaign_id: str) -> int:
 
 def _scrape_interval_hours(tracking_per_day: int) -> int:
     """Intervalle entre 2 scrapes selon le plan agence."""
+    if tracking_per_day >= 24:
+        return 1   # Enterprise++ : toutes les heures (necessite infra solide)
+    if tracking_per_day >= 6:
+        return 4   # Enterprise : 6x/jour (toutes les 4h)
     if tracking_per_day >= 4:
-        return 6   # Premium futur : 4x/jour
+        return 6   # Premium : 4x/jour
     if tracking_per_day == 3:
-        return 8   # Business 750€ : 3x/jour (9h, 16h, 24h)
+        return 8   # Business : 3x/jour
     if tracking_per_day == 2:
         return 12  # Legacy : 2x/jour
-    return 24      # Starter / Pro 549€ : 1x/jour (a minuit)
+    return 24      # Starter / Pro : 1x/jour
 
 
 def _get_schedule_for_plan(tracking_per_day: int) -> list:
@@ -10802,6 +10851,53 @@ async def watchdog_loop():
         except Exception as e:
             logger.error(f"Watchdog loop error: {e}")
         await asyncio.sleep(3600)  # 1h entre checks
+
+
+async def auto_healthcheck_loop():
+    """Healthcheck horaire : calcule le success_rate sur la derniere heure.
+    Log un warning explicite si < 50%. Insere dans fraud_alerts si < 30% pour 3 cycles.
+    Permet de detecter rapidement quand le scraping est casse globalement.
+    """
+    _consecutive_bad_cycles = 0
+    while True:
+        try:
+            await asyncio.sleep(3600)  # check toutes les heures
+            h1_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            total = await db.scraping_history.count_documents({"timestamp": {"$gte": h1_ago}})
+            if total < 5:
+                logger.debug(f"auto_healthcheck : trop peu de scrapes ({total}) sur la derniere heure, skip")
+                continue
+            ok = await db.scraping_history.count_documents({"timestamp": {"$gte": h1_ago}, "success": True})
+            success_rate = round(100 * ok / total, 1)
+            if success_rate < 30:
+                _consecutive_bad_cycles += 1
+                logger.error(f"🚨 HEALTHCHECK CRITIQUE : success_rate={success_rate}% sur la derniere heure ({_consecutive_bad_cycles} cycles consecutifs)")
+                if _consecutive_bad_cycles >= 3:
+                    try:
+                        await db.fraud_alerts.insert_one({
+                            "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+                            "type": "scrape_success_rate_critical",
+                            "severity": "critical",
+                            "status": "pending",
+                            "success_rate_pct": success_rate,
+                            "total_attempts_1h": total,
+                            "consecutive_bad_cycles": _consecutive_bad_cycles,
+                            "reason": f"Taux de reussite scraping critique : {success_rate}% pendant {_consecutive_bad_cycles}h.",
+                            "details": "Verifier : (1) cle TIKWM_API_KEY, (2) cookies INSTAGRAM_SESSIONS valides, (3) BACKEND_PROXY_URL OK, (4) VPS ClipScraper UP",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "resolved": False,
+                        })
+                    except Exception:
+                        pass
+                    _consecutive_bad_cycles = 0  # reset apres alerte
+            elif success_rate < 50:
+                logger.warning(f"⚠️ HEALTHCHECK : success_rate={success_rate}% (sous le seuil 50%, surveille)")
+                _consecutive_bad_cycles = max(_consecutive_bad_cycles - 1, 0)
+            else:
+                _consecutive_bad_cycles = 0
+        except Exception as e:
+            logger.error(f"auto_healthcheck_loop error: {e}")
 
 
 async def track_videos_loop():
@@ -24891,6 +24987,8 @@ async def startup_event():
     # Watchdog : surveille la sante des APIs (Insta/TikTok/YouTube) toutes les heures
     # Si 3 echecs consecutifs sur une plateforme = alerte critique admin
     asyncio.create_task(watchdog_loop())
+    # Auto-healthcheck : verifie le taux de reussite global toutes les heures
+    asyncio.create_task(auto_healthcheck_loop())
 
     # ═══ HEALTH CHECK STARTUP : log CLAIREMENT ce qui est configure ═══
     # Permet de voir au boot Railway ce qui marche et ce qui manque
