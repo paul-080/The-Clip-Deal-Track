@@ -17152,17 +17152,29 @@ async def admin_reclassify_campaign_accounts(request: Request, body: dict = None
     now_iso = now.isoformat()
     results = {"marked_deleted": [], "marked_ok_zero_videos": [], "pause_lifted": [], "uncertain_kept": [], "errors": []}
 
-    for acc in accounts:
+    # Parallelise les verifs par batch de 8 (anti-timeout Railway)
+    sem = asyncio.Semaphore(8)
+    async def _verif_one(acc):
+        async with sem:
+            platform_ = acc.get("platform")
+            username_ = acc.get("username") or ""
+            check_target_ = acc.get("platform_channel_id") if platform_ == "youtube" else username_
+            try:
+                exists_ = await asyncio.wait_for(
+                    _verify_account_still_exists(platform_, check_target_ or username_), timeout=25
+                )
+                return acc, exists_, None
+            except Exception as ex:
+                return acc, None, str(ex)[:100]
+
+    verif_results = await asyncio.gather(*[_verif_one(a) for a in accounts])
+
+    for acc, exists, err in verif_results:
         platform = acc.get("platform")
         username = acc.get("username") or ""
         account_id = acc.get("account_id")
-        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
-        try:
-            exists = await asyncio.wait_for(
-                _verify_account_still_exists(platform, check_target or username), timeout=30
-            )
-        except Exception as ex:
-            results["errors"].append({"platform": platform, "username": username, "error": str(ex)[:100]})
+        if err:
+            results["errors"].append({"platform": platform, "username": username, "error": err})
             continue
 
         entry = {"account_id": account_id, "platform": platform, "username": username,
@@ -17242,7 +17254,6 @@ async def admin_reclassify_campaign_accounts(request: Request, body: dict = None
                         "last_existence_check_result": "uncertain",
                     }}
                 )
-        await asyncio.sleep(0.3)
 
     return {
         "ok": True,
