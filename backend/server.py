@@ -16905,6 +16905,128 @@ async def admin_reset_scrape_schedule(request: Request, body: dict = None):
     }
 
 
+@api_router.post("/admin/campaigns/{campaign_id}/scrape-raw")
+async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None):
+    """RAW scrape : refait fetch_videos sur tous les comptes de la campagne,
+    SANS aucun filtre date (tracking_start ignore). Compte les videos par jour
+    de publication trouvees sur les plateformes. Pas de save en DB, juste un audit.
+
+    body = { since_days?: int (default 30) }
+    Tourne en background, polle GET /admin/scrape-raw-status?campaign_id=X.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    since_days = int(body.get("since_days") or 30)
+
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if _SCRAPE_RAW_RUNNING.get(campaign_id):
+        return {"ok": False, "already_running": True}
+
+    async def _do_raw_scrape():
+        try:
+            _SCRAPE_RAW_RUNNING[campaign_id] = True
+            assignments = await db.campaign_social_accounts.find(
+                {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+            ).to_list(500)
+            account_ids = [a["account_id"] for a in assignments]
+            accounts = await db.social_accounts.find(
+                {"account_id": {"$in": account_ids}, "status": "verified"},
+                {"_id": 0}
+            ).to_list(500)
+
+            by_date: dict = {}
+            by_platform_by_date: dict = {}
+            account_results = []
+            sem = asyncio.Semaphore(5)
+
+            async def _scrape_one(acc):
+                async with sem:
+                    plat = acc.get("platform")
+                    user_ = acc.get("username")
+                    try:
+                        videos = await asyncio.wait_for(
+                            fetch_videos(plat, user_, acc, since_days),
+                            timeout=120
+                        )
+                    except Exception as ex:
+                        return acc, [], f"{type(ex).__name__}: {str(ex)[:120]}"
+                    return acc, videos, None
+
+            results_list = await asyncio.gather(*[_scrape_one(a) for a in accounts])
+
+            for acc, videos, err in results_list:
+                plat = acc.get("platform")
+                user_ = acc.get("username")
+                if err:
+                    account_results.append({
+                        "platform": plat, "username": user_, "error": err, "n_videos": 0
+                    })
+                    continue
+                # Compte les videos par date (Paris)
+                local_count_by_date = {}
+                for v in videos:
+                    pub = v.get("published_at")
+                    if not pub:
+                        continue
+                    try:
+                        pub_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                        date_paris = pub_dt.astimezone(PARIS_TZ).strftime("%Y-%m-%d")
+                    except Exception:
+                        continue
+                    by_date[date_paris] = by_date.get(date_paris, 0) + 1
+                    local_count_by_date[date_paris] = local_count_by_date.get(date_paris, 0) + 1
+                    key = f"{date_paris}:{plat}"
+                    by_platform_by_date[key] = by_platform_by_date.get(key, 0) + 1
+                account_results.append({
+                    "platform": plat, "username": user_, "n_videos_total": len(videos),
+                    "by_date": local_count_by_date,
+                })
+
+            _SCRAPE_RAW_RESULTS[campaign_id] = {
+                "ok": True,
+                "campaign_id": campaign_id,
+                "campaign_name": campaign.get("name"),
+                "since_days": since_days,
+                "n_accounts_scraped": len(accounts),
+                "total_videos_found": sum(len(v) for _, v, _ in results_list if v),
+                "by_date_paris": dict(sorted(by_date.items())),
+                "by_platform_by_date": dict(sorted(by_platform_by_date.items())),
+                "account_results": account_results,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        finally:
+            _SCRAPE_RAW_RUNNING[campaign_id] = False
+
+    asyncio.create_task(_do_raw_scrape())
+    return {
+        "ok": True,
+        "started": True,
+        "campaign_id": campaign_id,
+        "since_days": since_days,
+        "message": f"Raw scrape lance en background (since_days={since_days}). Polle GET /admin/scrape-raw-status?campaign_id={campaign_id}",
+    }
+
+
+@api_router.get("/admin/scrape-raw-status")
+async def admin_scrape_raw_status(request: Request, campaign_id: str):
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    return {
+        "running": _SCRAPE_RAW_RUNNING.get(campaign_id, False),
+        "result": _SCRAPE_RAW_RESULTS.get(campaign_id),
+    }
+
+
+_SCRAPE_RAW_RUNNING: dict = {}
+_SCRAPE_RAW_RESULTS: dict = {}
+
+
 @api_router.get("/admin/campaigns/{campaign_id}/videos-by-day")
 async def admin_videos_by_day(campaign_id: str, request: Request, date: str = None):
     """Compte les videos publiees le jour donne (date Paris YYYY-MM-DD).
