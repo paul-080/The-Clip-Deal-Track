@@ -17110,6 +17110,22 @@ async def admin_reset_stats_history(campaign_id: str, request: Request, body: di
     }
 
 
+# Stockage en memoire des resultats reclassify (par campaign_id)
+_RECLASSIFY_RESULTS: dict = {}
+_RECLASSIFY_RUNNING: dict = {}
+
+
+@api_router.get("/admin/reclassify-status")
+async def admin_reclassify_status(request: Request, campaign_id: str):
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    return {
+        "running": _RECLASSIFY_RUNNING.get(campaign_id, False),
+        "result": _RECLASSIFY_RESULTS.get(campaign_id),
+    }
+
+
 @api_router.post("/admin/reclassify-campaign-accounts")
 async def admin_reclassify_campaign_accounts(request: Request, body: dict = None):
     """RECLASSIFIE tous les comptes d'une campagne selon leur etat reel.
@@ -17120,6 +17136,9 @@ async def admin_reclassify_campaign_accounts(request: Request, body: dict = None
                   + reset failures + reset pause + verif=exists
     - Si deleted (2+ sources confirment) + 0 video DB -> status=deleted
     - Si uncertain -> reset pause uniquement, garde verified
+
+    Tourne en BACKGROUND (anti-timeout 30s Railway). Retourne immediatement.
+    Poll GET /admin/reclassify-status?campaign_id=X pour voir le resultat.
 
     body = { campaign_id (required), dry_run (default true) }
 
@@ -17141,134 +17160,138 @@ async def admin_reclassify_campaign_accounts(request: Request, body: dict = None
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    assignments = await db.campaign_social_accounts.find({"campaign_id": cid}, {"_id": 0, "account_id": 1}).to_list(2000)
-    account_ids = [a["account_id"] for a in assignments]
-    accounts = await db.social_accounts.find(
-        {"account_id": {"$in": account_ids}, "status": {"$ne": "deleted"}},
-        {"_id": 0}
-    ).to_list(2000)
+    # Anti-double-run
+    if _RECLASSIFY_RUNNING.get(cid):
+        return {"ok": False, "already_running": True, "message": "Un reclassify est deja en cours sur cette campagne. Polle /admin/reclassify-status."}
 
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    results = {"marked_deleted": [], "marked_ok_zero_videos": [], "pause_lifted": [], "uncertain_kept": [], "errors": []}
+    async def _do_reclassify():
+        try:
+            _RECLASSIFY_RUNNING[cid] = True
+            assignments = await db.campaign_social_accounts.find({"campaign_id": cid}, {"_id": 0, "account_id": 1}).to_list(2000)
+            account_ids = [a["account_id"] for a in assignments]
+            accounts = await db.social_accounts.find(
+                {"account_id": {"$in": account_ids}, "status": {"$ne": "deleted"}},
+                {"_id": 0}
+            ).to_list(2000)
 
-    # Parallelise les verifs par batch de 8 (anti-timeout Railway)
-    sem = asyncio.Semaphore(8)
-    async def _verif_one(acc):
-        async with sem:
-            platform_ = acc.get("platform")
-            username_ = acc.get("username") or ""
-            check_target_ = acc.get("platform_channel_id") if platform_ == "youtube" else username_
-            try:
-                exists_ = await asyncio.wait_for(
-                    _verify_account_still_exists(platform_, check_target_ or username_), timeout=25
-                )
-                return acc, exists_, None
-            except Exception as ex:
-                return acc, None, str(ex)[:100]
+            now = datetime.now(timezone.utc)
+            now_iso = now.isoformat()
+            results = {"marked_deleted": [], "marked_ok_zero_videos": [], "pause_lifted": [], "uncertain_kept": [], "errors": []}
 
-    verif_results = await asyncio.gather(*[_verif_one(a) for a in accounts])
+            # Parallelise les verifs par batch de 8 (anti-timeout)
+            sem = asyncio.Semaphore(8)
+            async def _verif_one(acc):
+                async with sem:
+                    platform_ = acc.get("platform")
+                    username_ = acc.get("username") or ""
+                    check_target_ = acc.get("platform_channel_id") if platform_ == "youtube" else username_
+                    try:
+                        exists_ = await asyncio.wait_for(
+                            _verify_account_still_exists(platform_, check_target_ or username_), timeout=25
+                        )
+                        return acc, exists_, None
+                    except Exception as ex:
+                        return acc, None, str(ex)[:100]
 
-    for acc, exists, err in verif_results:
-        platform = acc.get("platform")
-        username = acc.get("username") or ""
-        account_id = acc.get("account_id")
-        if err:
-            results["errors"].append({"platform": platform, "username": username, "error": err})
-            continue
+            verif_results = await asyncio.gather(*[_verif_one(a) for a in accounts])
 
-        entry = {"account_id": account_id, "platform": platform, "username": username,
-                 "verif": "exists" if exists is True else "deleted" if exists is False else "uncertain"}
+            for acc, exists, err in verif_results:
+                platform = acc.get("platform")
+                username = acc.get("username") or ""
+                account_id = acc.get("account_id")
+                if err:
+                    results["errors"].append({"platform": platform, "username": username, "error": err})
+                    continue
 
-        if exists is True:
-            # Compte existe : marque scraping_history comme success (video_count=0) -> display='ok'
-            results["marked_ok_zero_videos"].append(entry)
-            if not dry_run:
-                # Insert dans scraping_history pour matcher la logique display
-                await db.scraping_history.insert_one({
-                    "platform": platform,
-                    "username": username,
-                    "source": "active_verification_zero_videos",
-                    "success": True,
-                    "video_count": 0,
-                    "timestamp": now_iso,
-                    "note": "Compte verifie comme existant (verif 2 sources). Pas de videos recentes trackees.",
-                })
-                # Pour YouTube on logge aussi sous le channel_id
-                if platform == "youtube" and acc.get("platform_channel_id"):
-                    await db.scraping_history.insert_one({
-                        "platform": platform,
-                        "username": acc["platform_channel_id"],
-                        "source": "active_verification_zero_videos",
-                        "success": True,
-                        "video_count": 0,
-                        "timestamp": now_iso,
-                    })
-                # Reset failures et pause
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "status": "verified",
-                        "consecutive_failures": 0,
-                        "tracking_paused_until": None,
-                        "not_found_count": 0,
-                        "last_existence_check_at": now_iso,
-                        "last_existence_check_result": "exists",
-                        "last_tracked_at": now_iso,
-                        "error_message": None,
-                    }}
-                )
-                if acc.get("tracking_paused_until"):
-                    results["pause_lifted"].append({**entry, "had_pause": True})
-        elif exists is False:
-            # 2+ sources confirment 404. Securite : ne pas marquer si videos en DB.
-            n_videos = await db.tracked_videos.count_documents({"account_id": account_id})
-            if n_videos > 0:
-                entry["note"] = f"verif=deleted MAIS {n_videos} videos en DB -> garde verified"
-                results["uncertain_kept"].append(entry)
-            else:
-                entry["note"] = "verif=deleted (2+ sources) + 0 video DB -> marque deleted"
-                results["marked_deleted"].append(entry)
-                if not dry_run:
-                    await db.social_accounts.update_one(
-                        {"account_id": account_id},
-                        {"$set": {
-                            "status": "deleted",
-                            "deleted_at": now_iso,
-                            "deleted_type": "reclassified_confirmed",
-                            "deleted_reason": "Reclassification : verif active 2+ sources confirme introuvable + 0 video historique",
-                            "last_existence_check_at": now_iso,
-                            "last_existence_check_result": "deleted",
-                            "not_found_count": 99,
-                        }}
-                    )
-        else:
-            entry["note"] = "verif=uncertain -> reset pause uniquement"
-            results["uncertain_kept"].append(entry)
-            if not dry_run:
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "tracking_paused_until": None,
-                        "last_existence_check_at": now_iso,
-                        "last_existence_check_result": "uncertain",
-                    }}
-                )
+                entry = {"account_id": account_id, "platform": platform, "username": username,
+                         "verif": "exists" if exists is True else "deleted" if exists is False else "uncertain"}
 
+                if exists is True:
+                    results["marked_ok_zero_videos"].append(entry)
+                    if not dry_run:
+                        await db.scraping_history.insert_one({
+                            "platform": platform, "username": username,
+                            "source": "active_verification_zero_videos",
+                            "success": True, "video_count": 0,
+                            "timestamp": now_iso,
+                            "note": "Compte verifie existant (verif 2 sources). Pas de video recente.",
+                        })
+                        if platform == "youtube" and acc.get("platform_channel_id"):
+                            await db.scraping_history.insert_one({
+                                "platform": platform, "username": acc["platform_channel_id"],
+                                "source": "active_verification_zero_videos",
+                                "success": True, "video_count": 0, "timestamp": now_iso,
+                            })
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "status": "verified", "consecutive_failures": 0,
+                                "tracking_paused_until": None, "not_found_count": 0,
+                                "last_existence_check_at": now_iso,
+                                "last_existence_check_result": "exists",
+                                "last_tracked_at": now_iso, "error_message": None,
+                            }}
+                        )
+                        if acc.get("tracking_paused_until"):
+                            results["pause_lifted"].append({**entry, "had_pause": True})
+                elif exists is False:
+                    n_videos = await db.tracked_videos.count_documents({"account_id": account_id})
+                    if n_videos > 0:
+                        entry["note"] = f"verif=deleted MAIS {n_videos} videos en DB -> garde verified"
+                        results["uncertain_kept"].append(entry)
+                    else:
+                        entry["note"] = "verif=deleted (2+ sources) + 0 video DB -> marque deleted"
+                        results["marked_deleted"].append(entry)
+                        if not dry_run:
+                            await db.social_accounts.update_one(
+                                {"account_id": account_id},
+                                {"$set": {
+                                    "status": "deleted",
+                                    "deleted_at": now_iso,
+                                    "deleted_type": "reclassified_confirmed",
+                                    "deleted_reason": "Reclassification : verif active 2+ sources confirme introuvable + 0 video historique",
+                                    "last_existence_check_at": now_iso,
+                                    "last_existence_check_result": "deleted",
+                                    "not_found_count": 99,
+                                }}
+                            )
+                else:
+                    entry["note"] = "verif=uncertain -> reset pause uniquement"
+                    results["uncertain_kept"].append(entry)
+                    if not dry_run:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "tracking_paused_until": None,
+                                "last_existence_check_at": now_iso,
+                                "last_existence_check_result": "uncertain",
+                            }}
+                        )
+
+            _RECLASSIFY_RESULTS[cid] = {
+                "ok": True, "dry_run": dry_run,
+                "campaign_id": cid, "campaign_name": campaign.get("name"),
+                "checked": len(accounts),
+                "summary": {
+                    "marked_deleted": len(results["marked_deleted"]),
+                    "marked_ok_zero_videos": len(results["marked_ok_zero_videos"]),
+                    "pause_lifted": len(results["pause_lifted"]),
+                    "uncertain_kept": len(results["uncertain_kept"]),
+                    "errors": len(results["errors"]),
+                },
+                "details": results,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        finally:
+            _RECLASSIFY_RUNNING[cid] = False
+
+    asyncio.create_task(_do_reclassify())
     return {
         "ok": True,
-        "dry_run": dry_run,
+        "started": True,
         "campaign_id": cid,
-        "campaign_name": campaign.get("name"),
-        "checked": len(accounts),
-        "summary": {
-            "marked_deleted": len(results["marked_deleted"]),
-            "marked_ok_zero_videos": len(results["marked_ok_zero_videos"]),
-            "pause_lifted": len(results["pause_lifted"]),
-            "uncertain_kept": len(results["uncertain_kept"]),
-            "errors": len(results["errors"]),
-        },
-        "details": results,
+        "dry_run": dry_run,
+        "message": f"Reclassify lance en background. Polle GET /admin/reclassify-status?campaign_id={cid} pour voir le resultat.",
     }
 
 
