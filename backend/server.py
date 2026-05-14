@@ -9778,10 +9778,14 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
     now_track_run = datetime.now(timezone.utc)
 
     # Pre-fetch agency plans pour eviter N+1
+    # BUG FIX : il FAUT inclure email + subscription_bypass + role pour que
+    # _is_bypass_account() fonctionne correctement (sinon comptes demo
+    # @demo.clipdeal.local ne sont pas reconnus -> trial vu comme expire -> tpd=0)
     agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
     agencies = await db.users.find(
         {"user_id": {"$in": agency_ids}},
-        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1, "trial_started_at": 1}
+        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1,
+         "trial_started_at": 1, "subscription_bypass": 1, "email": 1, "role": 1}
     ).to_list(len(agency_ids)) if agency_ids else []
     agency_map = {a["user_id"]: a for a in agencies}
 
@@ -24637,10 +24641,12 @@ async def check_and_issue_strikes():
     campaigns = await db.campaigns.find({"status": "active"}, {"_id": 0}).to_list(500)
 
     # Pre-fetch agencies pour verifier le plan (strikes auto desactives sur plans click-only)
+    # Inclut email + subscription_bypass pour _is_bypass_account
     agency_ids = list({c.get("agency_id") for c in campaigns if c.get("agency_id")})
     agencies = await db.users.find(
         {"user_id": {"$in": agency_ids}},
-        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1, "trial_started_at": 1}
+        {"_id": 0, "user_id": 1, "subscription_status": 1, "subscription_plan": 1,
+         "trial_started_at": 1, "subscription_bypass": 1, "email": 1, "role": 1}
     ).to_list(len(agency_ids)) if agency_ids else []
     agency_map = {a["user_id"]: a for a in agencies}
 
