@@ -9989,12 +9989,37 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 except asyncio.TimeoutError:
                     logger.warning(f"fetch_videos TIMEOUT (150s) for {platform}/@{username} — skipped")
                     videos = []
+                    fetch_failed_with_error = True
                 except Exception as fetch_err:
                     logger.warning(f"fetch_videos failed for {platform}/@{username}: {fetch_err}")
                     videos = []
+                    fetch_failed_with_error = True
+                else:
+                    # fetch_videos a renvoye une liste (potentiellement vide) sans exception
+                    fetch_failed_with_error = False
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
-                    # Incrémente le compteur d'echecs consecutifs. Si >= 3 -> pause 24h.
+                    # CAS 1 : fetch_videos a renvoye [] SANS erreur = compte existe mais 0 video recente.
+                    # On NE compte PAS ca comme un echec. Log success=True dans scraping_history
+                    # pour que le display soit 'ok' (pas 'ko').
+                    if not fetch_failed_with_error:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "last_tracked_at": now_iso,
+                                "consecutive_failures": 0,  # reset car ce n'est pas un echec
+                                "tracking_paused_until": None,
+                                "last_scrape_error": None,
+                            }}
+                        )
+                        try:
+                            await _log_scrape("scrape_ok_zero_videos", platform, username, True, 0, "scrape reussi mais 0 video recente (probablement compte sans publications recentes)")
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.5)
+                        continue
+                    # CAS 2 : fetch_videos a echoue avec exception/timeout = vrai echec
+                    # Incrémente le compteur. Pause graduee selon nb d'echecs.
                     prev_failures = int(account.get("consecutive_failures", 0) or 0)
                     new_failures = prev_failures + 1
                     update_fields = {
@@ -17082,6 +17107,157 @@ async def admin_reset_stats_history(campaign_id: str, request: Request, body: di
             "total_videos": live_videos,
         },
         "message": f"Historique wipé. Aujourd'hui = {live_total:,} vues. Demain, le delta sera correct.",
+    }
+
+
+@api_router.post("/admin/reclassify-campaign-accounts")
+async def admin_reclassify_campaign_accounts(request: Request, body: dict = None):
+    """RECLASSIFIE tous les comptes d'une campagne selon leur etat reel.
+
+    Pour chaque compte non-ok :
+    - Verif active (2+ sources)
+    - Si exists -> log scraping_history(success=True, video_count=0) -> display=ok
+                  + reset failures + reset pause + verif=exists
+    - Si deleted (2+ sources confirment) + 0 video DB -> status=deleted
+    - Si uncertain -> reset pause uniquement, garde verified
+
+    body = { campaign_id (required), dry_run (default true) }
+
+    Resout les cas que Paul a signales :
+    - YouTube avec videos anciennes -> 'ok 0 vues' au lieu de 'echec'
+    - Insta supprime mais marque 'echec' -> 'supprime'
+    - Comptes en pause qui existent -> reset pause + ok
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+    body = body or {}
+    cid = body.get("campaign_id")
+    if not cid:
+        raise HTTPException(status_code=400, detail="campaign_id required")
+    dry_run = bool(body.get("dry_run", True))
+
+    campaign = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    assignments = await db.campaign_social_accounts.find({"campaign_id": cid}, {"_id": 0, "account_id": 1}).to_list(2000)
+    account_ids = [a["account_id"] for a in assignments]
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}, "status": {"$ne": "deleted"}},
+        {"_id": 0}
+    ).to_list(2000)
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    results = {"marked_deleted": [], "marked_ok_zero_videos": [], "pause_lifted": [], "uncertain_kept": [], "errors": []}
+
+    for acc in accounts:
+        platform = acc.get("platform")
+        username = acc.get("username") or ""
+        account_id = acc.get("account_id")
+        check_target = acc.get("platform_channel_id") if platform == "youtube" else username
+        try:
+            exists = await asyncio.wait_for(
+                _verify_account_still_exists(platform, check_target or username), timeout=30
+            )
+        except Exception as ex:
+            results["errors"].append({"platform": platform, "username": username, "error": str(ex)[:100]})
+            continue
+
+        entry = {"account_id": account_id, "platform": platform, "username": username,
+                 "verif": "exists" if exists is True else "deleted" if exists is False else "uncertain"}
+
+        if exists is True:
+            # Compte existe : marque scraping_history comme success (video_count=0) -> display='ok'
+            results["marked_ok_zero_videos"].append(entry)
+            if not dry_run:
+                # Insert dans scraping_history pour matcher la logique display
+                await db.scraping_history.insert_one({
+                    "platform": platform,
+                    "username": username,
+                    "source": "active_verification_zero_videos",
+                    "success": True,
+                    "video_count": 0,
+                    "timestamp": now_iso,
+                    "note": "Compte verifie comme existant (verif 2 sources). Pas de videos recentes trackees.",
+                })
+                # Pour YouTube on logge aussi sous le channel_id
+                if platform == "youtube" and acc.get("platform_channel_id"):
+                    await db.scraping_history.insert_one({
+                        "platform": platform,
+                        "username": acc["platform_channel_id"],
+                        "source": "active_verification_zero_videos",
+                        "success": True,
+                        "video_count": 0,
+                        "timestamp": now_iso,
+                    })
+                # Reset failures et pause
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "status": "verified",
+                        "consecutive_failures": 0,
+                        "tracking_paused_until": None,
+                        "not_found_count": 0,
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "exists",
+                        "last_tracked_at": now_iso,
+                        "error_message": None,
+                    }}
+                )
+                if acc.get("tracking_paused_until"):
+                    results["pause_lifted"].append({**entry, "had_pause": True})
+        elif exists is False:
+            # 2+ sources confirment 404. Securite : ne pas marquer si videos en DB.
+            n_videos = await db.tracked_videos.count_documents({"account_id": account_id})
+            if n_videos > 0:
+                entry["note"] = f"verif=deleted MAIS {n_videos} videos en DB -> garde verified"
+                results["uncertain_kept"].append(entry)
+            else:
+                entry["note"] = "verif=deleted (2+ sources) + 0 video DB -> marque deleted"
+                results["marked_deleted"].append(entry)
+                if not dry_run:
+                    await db.social_accounts.update_one(
+                        {"account_id": account_id},
+                        {"$set": {
+                            "status": "deleted",
+                            "deleted_at": now_iso,
+                            "deleted_type": "reclassified_confirmed",
+                            "deleted_reason": "Reclassification : verif active 2+ sources confirme introuvable + 0 video historique",
+                            "last_existence_check_at": now_iso,
+                            "last_existence_check_result": "deleted",
+                            "not_found_count": 99,
+                        }}
+                    )
+        else:
+            entry["note"] = "verif=uncertain -> reset pause uniquement"
+            results["uncertain_kept"].append(entry)
+            if not dry_run:
+                await db.social_accounts.update_one(
+                    {"account_id": account_id},
+                    {"$set": {
+                        "tracking_paused_until": None,
+                        "last_existence_check_at": now_iso,
+                        "last_existence_check_result": "uncertain",
+                    }}
+                )
+        await asyncio.sleep(0.3)
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "campaign_id": cid,
+        "campaign_name": campaign.get("name"),
+        "checked": len(accounts),
+        "summary": {
+            "marked_deleted": len(results["marked_deleted"]),
+            "marked_ok_zero_videos": len(results["marked_ok_zero_videos"]),
+            "pause_lifted": len(results["pause_lifted"]),
+            "uncertain_kept": len(results["uncertain_kept"]),
+            "errors": len(results["errors"]),
+        },
+        "details": results,
     }
 
 
