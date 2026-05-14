@@ -16905,6 +16905,74 @@ async def admin_reset_scrape_schedule(request: Request, body: dict = None):
     }
 
 
+@api_router.get("/admin/campaigns/{campaign_id}/videos-by-day")
+async def admin_videos_by_day(campaign_id: str, request: Request, date: str = None):
+    """Compte les videos publiees le jour donne (date Paris YYYY-MM-DD).
+    Pas de scrape : utilise uniquement tracked_videos.published_at deja en DB.
+    """
+    code = request.query_params.get("code") or request.headers.get("X-Admin-Code", "")
+    if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
+        raise HTTPException(status_code=403, detail="Code admin invalide")
+
+    if not date:
+        date = _today_paris_str()
+    # Bornes Paris : 00:00 a 23:59:59 le jour `date`
+    try:
+        day_start = datetime.fromisoformat(f"{date}T00:00:00+02:00")  # CEST (ete)
+        day_end = day_start + timedelta(days=1)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Date invalide '{date}', format YYYY-MM-DD requis")
+    day_start_iso = day_start.astimezone(timezone.utc).isoformat()
+    day_end_iso = day_end.astimezone(timezone.utc).isoformat()
+
+    # Compte videos publiees ce jour
+    cursor = db.tracked_videos.find(
+        {
+            "campaign_id": campaign_id,
+            "published_at": {"$gte": day_start_iso, "$lt": day_end_iso},
+        },
+        {"_id": 0, "video_id": 1, "platform": 1, "platform_video_id": 1, "url": 1,
+         "title": 1, "views": 1, "user_id": 1, "account_id": 1, "published_at": 1, "fetched_at": 1}
+    ).sort("published_at", 1)
+    videos = await cursor.to_list(5000)
+
+    # Stats par plateforme et par clippeur
+    by_platform: dict = {}
+    by_user: dict = {}
+    total_views = 0
+    for v in videos:
+        plat = v.get("platform") or "?"
+        by_platform[plat] = by_platform.get(plat, 0) + 1
+        uid = v.get("user_id") or "?"
+        by_user[uid] = by_user.get(uid, 0) + 1
+        total_views += int(v.get("views") or 0)
+
+    # Date du dernier scrape global pour cette campagne (info pour Paul)
+    camp = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0, "name": 1, "last_scraped_at": 1})
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": (camp or {}).get("name"),
+        "date_paris": date,
+        "window_utc": {"start": day_start_iso, "end": day_end_iso},
+        "total_videos_published_that_day": len(videos),
+        "total_views_those_videos_now": total_views,
+        "by_platform": by_platform,
+        "by_clipper_count": len(by_user),
+        "last_scrape_of_campaign": (camp or {}).get("last_scraped_at"),
+        "sample_videos": [
+            {
+                "platform": v.get("platform"),
+                "title": (v.get("title") or "")[:60],
+                "views": v.get("views"),
+                "published_at": v.get("published_at"),
+                "url": v.get("url"),
+            }
+            for v in videos[:20]
+        ],
+    }
+
+
 @api_router.get("/admin/campaigns/{campaign_id}/accounts-debug")
 async def admin_accounts_debug(campaign_id: str, request: Request):
     """Detail par compte d'une campagne (admin, pas de session user).
