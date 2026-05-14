@@ -2670,16 +2670,16 @@ function CampaignDashboard({ campaigns }) {
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
-                  { label: `Clics totaux (${lbl})`, value: (clickStats.total_clicks || 0).toLocaleString("fr-FR"), color: "text-white" },
-                  { label: `Clics uniques (${lbl})`, value: (clickStats.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]" },
-                  { label: `Taux unicité (${lbl})`, value: clickStats.total_clicks > 0 ? `${Math.round((clickStats.unique_clicks / clickStats.total_clicks) * 100)}%` : "—", color: "text-[#39FF14]" },
-                  { label: `Gains générés (${lbl})`, value: `€${(clickStats.total_earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]" },
-                  { label: "Prix / 1K clics", value: `€${clickStats.rate_per_click || 0}`, color: "text-[#FF007F]" },
-                  { label: `Moy. clics/jour (${lbl})`, value: clickStats.chart?.length > 0 ? Math.round(clickStats.total_clicks / Math.max(1, clickStats.chart.filter(d => d.clicks > 0).length)).toLocaleString("fr-FR") : "0", color: "text-white/70" },
+                  { label: `Clics totaux ${lbl}`, value: (clickStats.total_clicks || 0).toLocaleString("fr-FR"), colorClass: "kpi-num-blanc" },
+                  { label: `Clics uniques ${lbl}`, value: (clickStats.unique_clicks || 0).toLocaleString("fr-FR"), colorClass: "kpi-num-orange" },
+                  { label: `Taux unicité ${lbl}`, value: clickStats.total_clicks > 0 ? `${Math.round((clickStats.unique_clicks / clickStats.total_clicks) * 100)}%` : "—", colorClass: "kpi-num-vert" },
+                  { label: `Gains générés ${lbl}`, value: `€${(clickStats.total_earnings || 0).toFixed(2)}`, colorClass: "kpi-num-cyan" },
+                  { label: "Prix / 1K clics", value: `€${clickStats.rate_per_click || 0}`, colorClass: "kpi-num-rose" },
+                  { label: `Moy. clics/jour ${lbl}`, value: clickStats.chart?.length > 0 ? Math.round(clickStats.total_clicks / Math.max(1, clickStats.chart.filter(d => d.clicks > 0).length)).toLocaleString("fr-FR") : "0", colorClass: "kpi-num-blanc" },
                 ].map(kpi => (
-                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                    <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
-                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
+                  <div key={kpi.label} className="luxe-card">
+                    <p className="kpi-label">{kpi.label}</p>
+                    <p className={`kpi-num ${kpi.colorClass}`}>{kpi.value}</p>
                   </div>
                 ))}
               </div>
@@ -2912,16 +2912,16 @@ function CampaignDashboard({ campaigns }) {
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
-                  { label: `Vues (${lbl})`, value: fmt(pViews), color: "text-white" },
-                  { label: `Likes (${lbl})`, value: fmt(pLikes), color: "text-[#FF007F]" },
-                  { label: `Commentaires (${lbl})`, value: fmt(pComments), color: "text-white/70" },
-                  { label: `Engagement (${lbl})`, value: `${pEngagement}%`, color: "text-[#39FF14]" },
-                  { label: `Moy. vues/vidéo (${lbl})`, value: fmt(pAvgViews), color: "text-[#00E5FF]" },
-                  { label: `Gains générés (${lbl})`, value: `€${pEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
+                  { label: `Vues ${lbl}`, value: fmt(pViews), colorClass: "kpi-num-blanc" },
+                  { label: `Likes ${lbl}`, value: fmt(pLikes), colorClass: "kpi-num-rose" },
+                  { label: `Commentaires ${lbl}`, value: fmt(pComments), colorClass: "kpi-num-blanc" },
+                  { label: `Engagement ${lbl}`, value: `${pEngagement}%`, colorClass: "kpi-num-vert" },
+                  { label: `Moy. vues/vidéo ${lbl}`, value: fmt(pAvgViews), colorClass: "kpi-num-cyan" },
+                  { label: `Gains générés ${lbl}`, value: `€${pEarnings.toFixed(0)}`, colorClass: "kpi-num-orange" },
                 ].map((kpi) => (
-                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
-                    <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
-                    <p className={`font-mono font-bold text-xl ${kpi.color}`}>
+                  <div key={kpi.label} className="luxe-card">
+                    <p className="kpi-label">{kpi.label}</p>
+                    <p className={`kpi-num ${kpi.colorClass}`}>
                       {kpiStatsLoading && !kpiStats ? <span className="text-white/30">…</span> : kpi.value}
                     </p>
                   </div>
