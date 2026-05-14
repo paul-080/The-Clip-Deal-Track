@@ -16948,20 +16948,66 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                 async with sem:
                     plat = acc.get("platform")
                     user_ = acc.get("username")
+
+                    # ETAPE 1 : Verification d'existence en amont.
+                    # Si 2+ sources confirment que le compte n'existe pas, classifier "deleted"
+                    # et passer (evite TimeoutError sur des comptes morts).
                     try:
-                        videos = await asyncio.wait_for(
-                            fetch_videos(plat, user_, acc, since_days),
-                            timeout=120
-                        )
-                    except Exception as ex:
-                        return acc, [], f"{type(ex).__name__}: {str(ex)[:120]}"
-                    return acc, videos, None
+                        if plat == "instagram":
+                            exists = await asyncio.wait_for(_verify_insta_exists(user_), timeout=45)
+                        elif plat == "tiktok":
+                            exists = await asyncio.wait_for(_verify_tiktok_exists(user_), timeout=45)
+                        elif plat == "youtube":
+                            exists = await asyncio.wait_for(_verify_youtube_exists(user_), timeout=45)
+                        else:
+                            exists = None
+                        if exists is False:
+                            return acc, [], "deleted"
+                    except Exception:
+                        pass  # Si check echoue (timeout, etc), tenter fetch_videos quand meme
+
+                    # ETAPE 2 : fetch_videos avec retry intelligent (3 tentatives + backoff)
+                    last_err = None
+                    for attempt in range(3):
+                        try:
+                            videos = await asyncio.wait_for(
+                                fetch_videos(plat, user_, acc, since_days),
+                                timeout=180  # 3 min par tentative
+                            )
+                            return acc, videos, None
+                        except Exception as ex:
+                            last_err = ex
+                            if attempt < 2:
+                                await asyncio.sleep(10 * (attempt + 1))  # 10s, 20s entre retries
+
+                    # ETAPE 3 : Apres 3 echecs, refaire un dernier check d'existence
+                    # pour distinguer "deleted" d'une vraie erreur technique.
+                    try:
+                        if plat == "instagram":
+                            exists_final = await asyncio.wait_for(_verify_insta_exists(user_), timeout=30)
+                        elif plat == "tiktok":
+                            exists_final = await asyncio.wait_for(_verify_tiktok_exists(user_), timeout=30)
+                        elif plat == "youtube":
+                            exists_final = await asyncio.wait_for(_verify_youtube_exists(user_), timeout=30)
+                        else:
+                            exists_final = None
+                        if exists_final is False:
+                            return acc, [], "deleted"
+                    except Exception:
+                        pass
+                    return acc, [], f"{type(last_err).__name__}: {str(last_err)[:120]}"
 
             results_list = await asyncio.gather(*[_scrape_one(a) for a in accounts])
 
             for acc, videos, err in results_list:
                 plat = acc.get("platform")
                 user_ = acc.get("username")
+                if err == "deleted":
+                    # Compte n'existe plus (confirme par 2+ sources) - succes de classification
+                    account_results.append({
+                        "platform": plat, "username": user_, "status": "deleted", "n_videos": 0
+                    })
+                    continue
                 if err:
                     account_results.append({
                         "platform": plat, "username": user_, "error": err, "n_videos": 0
@@ -16987,12 +17033,19 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                     "by_date": local_count_by_date,
                 })
 
+            n_deleted = sum(1 for r in account_results if r.get("status") == "deleted")
+            n_error = sum(1 for r in account_results if r.get("error"))
+            n_ok = sum(1 for r in account_results if not r.get("error") and r.get("status") != "deleted")
             _SCRAPE_RAW_RESULTS[campaign_id] = {
                 "ok": True,
                 "campaign_id": campaign_id,
                 "campaign_name": campaign.get("name"),
                 "since_days": since_days,
                 "n_accounts_scraped": len(accounts),
+                "n_accounts_ok": n_ok,
+                "n_accounts_deleted": n_deleted,
+                "n_accounts_error": n_error,
+                "success_rate_pct": round(100.0 * (n_ok + n_deleted) / max(1, len(accounts)), 1),
                 "total_videos_found": sum(len(v) for _, v, _ in results_list if v),
                 "by_date_paris": dict(sorted(by_date.items())),
                 "by_platform_by_date": dict(sorted(by_platform_by_date.items())),
