@@ -77,6 +77,50 @@ body {
     color: #FFFFFF;
     letter-spacing: -0.011em;
     font-feature-settings: "cv11", "ss01", "ss03";
+    position: relative;
+}
+
+/* ─── Apple-flavored ambient background (subtle radial gradients) ─────── */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(255, 0, 127, 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse 60% 50% at 100% 100%, rgba(0, 229, 255, 0.03) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+body > * { position: relative; z-index: 1; }
+
+/* ─── Apple-style glassmorphism for cards (translucent + backdrop blur) ── */
+/* Override des fonds opaques utilises partout dans le projet */
+.bg-\[\#121212\] {
+    background-color: rgba(255, 255, 255, 0.025) !important;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.bg-\[\#0d0d0d\] {
+    background-color: rgba(10, 10, 11, 0.65) !important;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+.bg-\[\#1a1a1a\] {
+    background-color: rgba(255, 255, 255, 0.035) !important;
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+}
+
+/* Adoucissement des borders pour le look Apple */
+.border-white\/10 {
+    border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+.border-white\/5 {
+    border-color: rgba(255, 255, 255, 0.04) !important;
 }
 
 h1, h2, h3, h4, h5, h6 {
