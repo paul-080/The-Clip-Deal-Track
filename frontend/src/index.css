@@ -70,19 +70,24 @@ html {
 
 body {
     margin: 0;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     background-color: #0A0A0A;
     color: #FFFFFF;
+    letter-spacing: -0.011em;
+    font-feature-settings: "cv11", "ss01", "ss03";
 }
 
 h1, h2, h3, h4, h5, h6 {
-    font-family: 'Chivo', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+    letter-spacing: -0.022em;
+    font-weight: 600;
 }
 
 .font-display {
-    font-family: 'Chivo', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+    letter-spacing: -0.022em;
 }
 
 .font-mono {
