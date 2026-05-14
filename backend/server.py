@@ -16996,40 +16996,67 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                     except Exception:
                         pass
 
-                    # ETAPE 4 (DERNIER FILET) : Test direct simple sans proxy / sans librairie.
-                    # Pour les comptes que _verify_*_exists n'arrive pas a trancher (proxy bloque,
-                    # TikWm rate-limit, VPS down). On fait juste un GET HTTPS direct depuis Railway
-                    # et on cherche le marqueur d'inexistence dans le body brut.
+                    # ETAPE 4 (DERNIER FILET) : Test direct via PROXY RESIDENTIEL.
+                    # On essaie tour a tour plusieurs proxies residentiels pour eviter
+                    # le banning anti-bot de TikTok/Insta. Si la page complete charge
+                    # SANS uniqueId du compte ET sans captcha -> deleted.
                     try:
                         ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
-                        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c_simple:
-                            if plat == "tiktok":
-                                r_s = await c_simple.get(
-                                    f"https://www.tiktok.com/@{user_.lstrip('@')}",
-                                    headers={"User-Agent": ua}
-                                )
-                                if r_s.status_code == 200:
-                                    body_s = r_s.text or ""
-                                    body_s_lc = body_s.lower()
-                                    ulc = user_.lstrip('@').lower()
-                                    has_uid = (f'"uniqueid":"{ulc}"' in body_s_lc) or (f'"unique_id":"{ulc}"' in body_s_lc)
-                                    is_challenge = ("captcha" in body_s_lc) or ("challenge_required" in body_s_lc) or ("verify_fp" in body_s_lc)
-                                    # Page TikTok complete chargee SANS uniqueId du compte ET pas de challenge = compte inexistant
-                                    if (not has_uid) and (len(body_s) > 200000) and (not is_challenge):
-                                        return acc, [], "deleted"
-                                elif r_s.status_code == 404:
-                                    return acc, [], "deleted"
-                            elif plat == "instagram":
-                                r_s = await c_simple.get(
-                                    f"https://www.instagram.com/{user_.lstrip('@')}/",
-                                    headers={"User-Agent": ua}
-                                )
-                                if r_s.status_code == 200:
-                                    body_s_lc = (r_s.text or "").lower()
-                                    if "polariserrorroot" in body_s_lc or "sorry, this page isn" in body_s_lc:
-                                        return acc, [], "deleted"
-                                elif r_s.status_code == 404:
-                                    return acc, [], "deleted"
+                        # Selectionne 3 proxies residentiels (pool Webshare)
+                        residential_proxies = [p for p in BACKEND_PROXY_LIST if ("p.webshare.io" in p or "residential-" in p)][:3]
+                        if not residential_proxies:
+                            residential_proxies = [None]  # fallback sans proxy
+
+                        deleted_confirmed = False
+                        for proxy_try in residential_proxies:
+                            try:
+                                kwargs_s = {"timeout": 18, "follow_redirects": True}
+                                if proxy_try:
+                                    kwargs_s["proxy"] = proxy_try
+                                async with httpx.AsyncClient(**kwargs_s) as c_simple:
+                                    if plat == "tiktok":
+                                        r_s = await c_simple.get(
+                                            f"https://www.tiktok.com/@{user_.lstrip('@')}",
+                                            headers={"User-Agent": ua}
+                                        )
+                                        if r_s.status_code == 404:
+                                            deleted_confirmed = True
+                                            break
+                                        if r_s.status_code == 200:
+                                            body_s = r_s.text or ""
+                                            body_s_lc = body_s.lower()
+                                            ulc = user_.lstrip('@').lower()
+                                            has_uid = (f'"uniqueid":"{ulc}"' in body_s_lc) or (f'"unique_id":"{ulc}"' in body_s_lc)
+                                            # Captcha/challenge anti-bot reel (PAS "verify_fp" qui est un cookie partout)
+                                            is_captcha = ("captcha" in body_s_lc) or ("challenge_required" in body_s_lc) or ("/login?lang=" in body_s_lc and len(body_s) < 100000)
+                                            if has_uid:
+                                                # Le compte EXISTE - inutile de continuer, c'est juste un soucis de scraping
+                                                break
+                                            if (not has_uid) and (len(body_s) > 150000) and (not is_captcha):
+                                                deleted_confirmed = True
+                                                break
+                                            # Sinon (page trop petite ou captcha), on essaie un autre proxy
+                                    elif plat == "instagram":
+                                        r_s = await c_simple.get(
+                                            f"https://www.instagram.com/{user_.lstrip('@')}/",
+                                            headers={"User-Agent": ua}
+                                        )
+                                        if r_s.status_code == 404:
+                                            deleted_confirmed = True
+                                            break
+                                        if r_s.status_code == 200:
+                                            body_s = r_s.text or ""
+                                            body_s_lc = body_s.lower()
+                                            if "polariserrorroot" in body_s_lc or "sorry, this page isn" in body_s_lc or "la page que vous recherchez n'est pas disponible" in body_s_lc:
+                                                deleted_confirmed = True
+                                                break
+                                            # Compte existe (marqueur username present)
+                                            if f'"username":"{user_.lstrip("@").lower()}"' in body_s_lc:
+                                                break
+                            except Exception:
+                                continue  # essai suivant
+                        if deleted_confirmed:
+                            return acc, [], "deleted"
                     except Exception:
                         pass
                     return acc, [], f"{type(last_err).__name__}: {str(last_err)[:120]}"
