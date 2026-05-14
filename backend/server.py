@@ -140,6 +140,13 @@ def _is_rotating_proxy(proxy_url: str) -> bool:
 # Separation des pools : Static (illimite) en priorite, Rotating en fallback
 BACKEND_PROXY_STATIC = [p for p in BACKEND_PROXY_LIST if not _is_rotating_proxy(p)]
 BACKEND_PROXY_ROTATING = [p for p in BACKEND_PROXY_LIST if _is_rotating_proxy(p)]
+
+# Si WEBSHARE_RESIDENTIAL_SATURATED=true, on retire completement les rotating du pool actif.
+# Empeche toutes les requetes de cogner les proxies satures (renvoient 402 Payment Required).
+if os.environ.get('WEBSHARE_RESIDENTIAL_SATURATED', 'false').strip().lower() in ('true', '1', 'yes'):
+    print(f"⚠️ WEBSHARE_RESIDENTIAL_SATURATED=true → {len(BACKEND_PROXY_ROTATING)} rotating proxies disabled (bandwidth quota saturated)", flush=True)
+    BACKEND_PROXY_ROTATING = []  # Force vide -> pas de fallback rotating
+
 print(
     f"Proxy pools: {len(BACKEND_PROXY_STATIC)} Static (illimite) + "
     f"{len(BACKEND_PROXY_ROTATING)} Rotating (quota bandwidth limite)",
@@ -167,6 +174,15 @@ def _mark_proxy_bad(proxy_url: str, duration_sec: int = None):
     # Trunque pour ne pas log le user:pass
     safe = proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url
     logger.warning(f"Proxy marque bad pour {duration//60}min : {safe}")
+
+
+# Plan rotating residential Webshare sature -> renvoie 402 Payment Required sur toutes les requetes.
+# Au lieu de cogner ces proxies a chaque scrape (et polluer les logs), on les pre-marque bad au demarrage
+# si la variable env WEBSHARE_RESIDENTIAL_SATURATED=true est defini.
+_WEBSHARE_RESIDENTIAL_SATURATED = (
+    os.environ.get('WEBSHARE_RESIDENTIAL_SATURATED', 'false').strip().lower()
+    in ('true', '1', 'yes')
+)
 
 def _mark_proxy_good(proxy_url: str):
     """Reset compteur d'echecs sur succes."""
@@ -16996,19 +17012,17 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                     except Exception:
                         pass
 
-                    # ETAPE 4 (DERNIER FILET) : Test direct via PROXY RESIDENTIEL.
-                    # On essaie tour a tour plusieurs proxies residentiels pour eviter
-                    # le banning anti-bot de TikTok/Insta. Si la page complete charge
-                    # SANS uniqueId du compte ET sans captcha -> deleted.
+                    # ETAPE 4 (DERNIER FILET) : Test direct sans proxy + via proxies STATIC datacenter.
+                    # Strategie : 1/ essaye SANS proxy (IP Railway directe, marche souvent)
+                    # 2/ si pas concluant, essaye via 3 proxies STATIC datacenter (les rotating
+                    # residentiels sont satures donc renvoient 402 -> on les evite).
                     try:
                         ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15"
-                        # Selectionne 3 proxies residentiels (pool Webshare)
-                        residential_proxies = [p for p in BACKEND_PROXY_LIST if ("p.webshare.io" in p or "residential-" in p)][:3]
-                        if not residential_proxies:
-                            residential_proxies = [None]  # fallback sans proxy
+                        # Pool de proxies : None d'abord (sans proxy), puis 3 STATIC datacenter
+                        proxy_attempts = [None] + BACKEND_PROXY_STATIC[:3]
 
                         deleted_confirmed = False
-                        for proxy_try in residential_proxies:
+                        for proxy_try in proxy_attempts:
                             try:
                                 kwargs_s = {"timeout": 18, "follow_redirects": True}
                                 if proxy_try:
@@ -17029,8 +17043,20 @@ async def admin_scrape_raw(campaign_id: str, request: Request, body: dict = None
                                             has_uid = (f'"uniqueid":"{ulc}"' in body_s_lc) or (f'"unique_id":"{ulc}"' in body_s_lc)
                                             # Captcha/challenge anti-bot reel (PAS "verify_fp" qui est un cookie partout)
                                             is_captcha = ("captcha" in body_s_lc) or ("challenge_required" in body_s_lc) or ("/login?lang=" in body_s_lc and len(body_s) < 100000)
+                                            # Marqueurs FIABLES de compte inexistant - confirmes via logs Playwright
+                                            is_dead_marker = (
+                                                "couldn't find this account" in body_s_lc
+                                                or "couldn’t find this account" in body_s_lc
+                                                or "user_not_found" in body_s_lc
+                                                or '"statuscode":10221' in body_s_lc
+                                                or '"statuscode":10222' in body_s_lc
+                                            )
                                             if has_uid:
                                                 # Le compte EXISTE - inutile de continuer, c'est juste un soucis de scraping
+                                                break
+                                            if is_dead_marker and not is_captcha:
+                                                # Signal explicite "Couldn't find this account" -> deleted confirme
+                                                deleted_confirmed = True
                                                 break
                                             if (not has_uid) and (len(body_s) > 150000) and (not is_captcha):
                                                 deleted_confirmed = True
