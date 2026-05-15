@@ -10095,6 +10095,7 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                 skip_check = True
                         except Exception:
                             pass
+                    account_confirmed_alive = False  # set a True si verif confirme exists=True
                     if not skip_check:
                         try:
                             check_target = account.get("platform_channel_id") if platform == "youtube" else username
@@ -10108,6 +10109,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                 else "deleted" if exists is False
                                 else "uncertain"
                             )
+                            if exists is True:
+                                # FIX : compte VIVANT confirme mais scrape rate (rate-limit, proxy
+                                # bloque, sources externes down). On NE compte PAS ca comme un echec
+                                # consecutif : le compte est OK, c'est notre scraping qui galere.
+                                # Au prochain cycle on retentera, sans escalade de pause.
+                                account_confirmed_alive = True
                             if exists is False:
                                 # REGLE 1 : si le compte a deja des videos en DB, on ne le marque PAS deleted.
                                 # C'est la preuve qu'il existait, donc soit la verif a un faux positif,
@@ -10145,6 +10152,28 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     # pour 1000 raisons (rate-limit, IP bloquee, API down) sans que le compte
                     # n'ait disparu. On ne marque deleted QUE sur confirmation 2+ sources
                     # ET aucune video historique en DB (regle ci-dessus).
+
+                    # FIX : compte VIVANT confirme par verif active mais scrape rate.
+                    # Au lieu d'incrementer failures + pause graduee, on traite comme succes
+                    # (le compte est OK, c'est juste le scraping qui galere temporairement).
+                    if account_confirmed_alive and update_fields.get("status") != "deleted":
+                        update_fields["consecutive_failures"] = 0
+                        update_fields["tracking_paused_until"] = None
+                        update_fields["last_scrape_error"] = "exists_but_scrape_failed_temporarily"
+                        try:
+                            await _log_scrape(
+                                "active_verification_exists_scrape_failed", platform, username,
+                                True, 0,
+                                "compte verifie vivant mais sources de scraping rate (proxy sature, IP bloquee)"
+                            )
+                        except Exception:
+                            pass
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": update_fields}
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
 
                     # PAUSE GRADUEE : plus indulgent qu'un 24h direct.
                     # Permet de re-tenter rapidement les comptes rate-limited temporairement.
