@@ -6182,17 +6182,20 @@ async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 10) -> list
         raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
 
-    # Actors + payloads à essayer dans l'ordre
+    # Actors + payloads a essayer dans l'ordre.
+    # ORDRE CORRIGE 2026-05-15 : "profiles" en PREMIER car teste OK avec token user
+    # (le payload "startUrls" sur clockworks~tiktok-scraper renvoie systematiquement
+    # 0 items chez nous, raison inconnue mais "profiles" marche).
     attempts = [
         ("clockworks~tiktok-scraper", {
-            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
+            "profiles": [f"https://www.tiktok.com/@{username}"],
             "resultsType": "posts",
             "maxPostsPerProfile": max_posts,
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": False,
         }),
         ("clockworks~tiktok-scraper", {
-            "profiles": [f"https://www.tiktok.com/@{username}"],
+            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
             "resultsType": "posts",
             "maxPostsPerProfile": max_posts,
             "shouldDownloadVideos": False,
