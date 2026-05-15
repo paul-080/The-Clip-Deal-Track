@@ -435,6 +435,42 @@ export default function LandingPage() {
         <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-[#FF007F]/20 rounded-full blur-[120px] translate-y-1/2 -translate-x-1/3" />
       </header>
 
+      {/* Video Section — Lancement SaaS */}
+      <section className="relative z-10 px-6 lg:px-16 py-20 bg-[#0A0A0A]">
+        <div className="max-w-5xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="text-center mb-10"
+          >
+            <h2 className="text-3xl lg:text-4xl font-display font-bold text-white mb-4 tracking-tight">
+              Découvrez The Clip Deal Track en vidéo
+            </h2>
+            <p className="text-white/50 text-lg">
+              Quelques minutes pour comprendre comment automatiser vos campagnes de clipping.
+            </p>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            whileInView={{ opacity: 1, scale: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5 }}
+            className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10"
+            style={{ boxShadow: "0 0 80px rgba(255, 0, 127, 0.15), 0 0 120px rgba(0, 229, 255, 0.10)" }}
+          >
+            <iframe
+              src="https://www.youtube.com/embed/sWCEX7Q8gDo?rel=0&modestbranding=1"
+              title="The Clip Deal Track — Présentation"
+              className="absolute inset-0 w-full h-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+            />
+          </motion.div>
+        </div>
+      </section>
+
       {/* Features Section */}
       <section className="relative z-10 px-6 lg:px-16 py-24 bg-[#0A0A0A]">
         <div className="max-w-6xl mx-auto">
