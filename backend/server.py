@@ -11358,14 +11358,18 @@ async def get_campaign_scrape_status(campaign_id: str, user: dict = Depends(get_
         {"campaign_id": campaign_id}, {"_id": 0}
     ).to_list(500)
     account_ids = [a["account_id"] for a in assignments]
-    # FILTRE : on EXCLUT les comptes status=deleted (ne plus afficher dans le panel scraping)
+    # On garde TOUS les comptes (incluant deleted) pour les afficher avec badge
+    # "Compte supprime" dans le frontend (Paul : "il me le supprime tout seul d'une
+    # campagne pas normal, juste marquer 'compte supprime' a cote et ne pas tracker").
+    # Pour les STATS (vues, videos) on filtre les deleted plus bas via non_deleted_ids.
     accounts = await db.social_accounts.find(
-        {"account_id": {"$in": account_ids}, "status": {"$ne": "deleted"}},
+        {"account_id": {"$in": account_ids}},
         {"_id": 0, "account_id": 1, "platform": 1, "username": 1, "status": 1,
          "last_tracked_at": 1, "error_message": 1, "last_scrape_error": 1, "user_id": 1,
-         "consecutive_failures": 1, "tracking_paused_until": 1}
+         "consecutive_failures": 1, "tracking_paused_until": 1,
+         "deleted_at": 1, "deleted_reason": 1, "deleted_type": 1}
     ).to_list(500)
-    non_deleted_ids = [a["account_id"] for a in accounts]
+    non_deleted_ids = [a["account_id"] for a in accounts if a.get("status") != "deleted"]
 
     # Comptes des vidéos par account — ALIGNE avec la logique "live" (tracking_start + non-deleted)
     tracking_start = campaign.get("tracking_start_date") or campaign.get("created_at")
