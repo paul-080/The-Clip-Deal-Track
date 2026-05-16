@@ -2512,7 +2512,7 @@ function CampaignDashboard({ campaigns }) {
       <div className="flex gap-0 bg-white/5 rounded-xl p-1 w-fit border border-white/10">
         {[
           { id: "overview", label: "Vue d'ensemble" },
-          { id: "videos", label: `Vidéos & Comptes (${allVideos.length})`, dot: videosLoading },
+          { id: "videos", label: `Vidéos & Comptes (${allVideos.length}${allAccountsByClipper.length > 0 ? ` · ${allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0)} comptes` : ''})`, dot: videosLoading },
           { id: "candidatures", label: "Candidatures", badge: pendingMembers.length + expulsionRequests.length },
           ...((campaign.payment_model === "clicks" || campaign.payment_model === "both") ? [{ id: "liens", label: "🔗 Liens" }] : []),
           { id: "clip-winner", label: "🏆 Clip Winner" },
@@ -3215,7 +3215,11 @@ function CampaignDashboard({ campaigns }) {
               <button
                 onClick={() => { setVideosSubView("accounts"); if (allAccountsByClipper.length === 0) fetchAllAccounts(); }}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${videosSubView === "accounts" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
-                👥 Comptes
+                👥 Comptes {allAccountsByClipper.length > 0 && (
+                  <span className={videosSubView === "accounts" ? "text-white/80" : "text-white/30"}>
+                    ({allAccountsByClipper.reduce((s, c) => s + c.accounts.length, 0)})
+                  </span>
+                )}
               </button>
             </div>
             {videosSubView === "accounts" && (
