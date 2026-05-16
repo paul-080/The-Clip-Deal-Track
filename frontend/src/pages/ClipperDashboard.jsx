@@ -2458,10 +2458,18 @@ function CampaignDashboard({ campaigns, clipperStats }) {
           <CardContent className="pt-0">
             {(() => {
               const days = parseInt(viewsPeriod) || 7;
-              let tlData = (viewsTimeline?.timeline || []).map(d => ({
-                ...d,
-                label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
-              }));
+              const isHourly = viewsTimeline?.granularity === "hourly";
+              let tlData = (viewsTimeline?.timeline || []).map(d => {
+                const dateKey = (d.date || "").length >= 10 ? (d.date || "").slice(0, 10) : (d.date || "");
+                const videosPosted = isHourly
+                  ? myVideos.filter(v => v.published_at && v.published_at.slice(0, 13) === dateKey.slice(0, 13)).length
+                  : myVideos.filter(v => v.published_at && v.published_at.slice(0, 10) === dateKey).length;
+                return {
+                  ...d,
+                  videos_posted: videosPosted,
+                  label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+                };
+              });
               // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
               if (tlData.length === 0) {
                 const now = new Date();
@@ -2489,9 +2497,23 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                     <YAxis tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
                       tickFormatter={v => v >= 1000000 ? `${(v/1000000).toFixed(1)}M` : v >= 1000 ? `${Math.round(v/1000)}K` : v} />
                     <Tooltip
-                      contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
-                      labelStyle={{ color: "white" }}
-                      formatter={(v) => [v >= 1000000 ? `${(v/1000000).toFixed(1)}M` : v >= 1000 ? `${(v/1000).toFixed(1)}K` : v.toLocaleString("fr-FR"), "Nouvelles vues"]}
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        const p = payload[0]?.payload || {};
+                        const views = p.views || 0;
+                        const videosPosted = p.videos_posted || 0;
+                        return (
+                          <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px" }}>
+                            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginBottom: 6 }}>{label}</div>
+                            <div style={{ color: "#00E5FF", fontSize: 14, fontWeight: 600 }}>
+                              {fmtViews(views)} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>{isHourly ? "nouvelles vues" : "vues"}</span>
+                            </div>
+                            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 11, marginTop: 4 }}>
+                              📹 {videosPosted} vidéo{videosPosted > 1 ? "s" : ""} posté{videosPosted > 1 ? "es" : "e"} {isHourly ? "cette heure" : "ce jour"}
+                            </div>
+                          </div>
+                        );
+                      }}
                     />
                     <Area type="monotone" dataKey="views" stroke="#00E5FF" strokeWidth={2} fill="url(#myViewsGrad)" dot={false} />
                   </AreaChart>
