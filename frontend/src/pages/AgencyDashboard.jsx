@@ -2979,12 +2979,19 @@ function CampaignDashboard({ campaigns }) {
             {(() => {
               const isHourly = viewsTimeline?.granularity === "hourly";
               const days = parseInt(viewsTimeline?.days || viewsPeriod) || 7;
-              let tlData = (viewsTimeline?.timeline || []).map(d => ({
-                ...d,
-                label: d.label || (isHourly
-                  ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
-                  : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
-              }));
+              let tlData = (viewsTimeline?.timeline || []).map(d => {
+                const dateKey = (d.date || "").length >= 10 ? (d.date || "").slice(0, 10) : (d.date || "");
+                const videosPosted = isHourly
+                  ? allVideos.filter(v => v.published_at && v.published_at.slice(0, 13) === dateKey.slice(0, 13)).length
+                  : allVideos.filter(v => v.published_at && v.published_at.slice(0, 10) === dateKey).length;
+                return {
+                  ...d,
+                  videos_posted: videosPosted,
+                  label: d.label || (isHourly
+                    ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+                    : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
+                };
+              });
               // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
               if (tlData.length === 0) {
                 const now = new Date();
@@ -3022,9 +3029,25 @@ function CampaignDashboard({ campaigns }) {
                     <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
                       interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
                     <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
-                    <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
-                      labelStyle={{ color: "white", fontSize: 11 }}
-                      formatter={(v, name) => [fmt(v), isHourly ? "Nouvelles vues" : "Vues"]} />
+                    <Tooltip
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        const p = payload[0]?.payload || {};
+                        const views = p.views || 0;
+                        const videosPosted = p.videos_posted || 0;
+                        return (
+                          <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px" }}>
+                            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginBottom: 6 }}>{label}</div>
+                            <div style={{ color: "#FF007F", fontSize: 14, fontWeight: 600 }}>
+                              {fmt(views)} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>{isHourly ? "nouvelles vues" : "vues"}</span>
+                            </div>
+                            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 11, marginTop: 4 }}>
+                              📹 {videosPosted} vidéo{videosPosted > 1 ? "s" : ""} posté{videosPosted > 1 ? "es" : "e"} {isHourly ? "cette heure" : "ce jour"}
+                            </div>
+                          </div>
+                        );
+                      }}
+                    />
                     <Area type="monotone" dataKey="views" stroke="#FF007F" strokeWidth={2} fill="url(#viewsTimelineGrad)" dot={showDots ? { fill: "#FF007F", r: 4 } : false} />
                   </AreaChart>
                 </ResponsiveContainer>
