@@ -37,6 +37,16 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [emailNotVerified, setEmailNotVerified] = useState(false);
 
+  // Set body[data-role] selon le role connecte pour que le gradient ambient
+  // d'index.css s'adapte automatiquement (rose=agency, cyan=clipper, vert=manager, orange=client)
+  useEffect(() => {
+    if (user?.role) {
+      document.body.dataset.role = user.role;
+    } else {
+      delete document.body.dataset.role;
+    }
+  }, [user?.role]);
+
   const checkAuth = useCallback(async () => {
     try {
       const bearer = localStorage.getItem("preview_bearer");

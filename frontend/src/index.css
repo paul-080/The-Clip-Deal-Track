@@ -81,18 +81,80 @@ body {
     min-height: 100vh;
 }
 
-/* ─── Stripe/Vercel ambient gradients (subtle, behind content only) ─── */
+/* ─── Palettes 3 nuances (light / default / dark) par role ─── */
+:root {
+    /* Agency : rose */
+    --agency-light: #FF7DB8;
+    --agency: #FF007F;
+    --agency-dark: #B30059;
+    --agency-rgb: 255, 0, 127;
+    --agency-light-rgb: 255, 125, 184;
+    --agency-dark-rgb: 179, 0, 89;
+
+    /* Clipper : cyan */
+    --clipper-light: #80F2FF;
+    --clipper: #00E5FF;
+    --clipper-dark: #007A99;
+    --clipper-rgb: 0, 229, 255;
+    --clipper-light-rgb: 128, 242, 255;
+    --clipper-dark-rgb: 0, 122, 153;
+
+    /* Manager : vert */
+    --manager-light: #99FF7A;
+    --manager: #39FF14;
+    --manager-dark: #1A8C00;
+    --manager-rgb: 57, 255, 20;
+    --manager-light-rgb: 153, 255, 122;
+    --manager-dark-rgb: 26, 140, 0;
+
+    /* Client : orange */
+    --client-light: #FFD99E;
+    --client: #FFB300;
+    --client-dark: #B37D00;
+    --client-rgb: 255, 179, 0;
+    --client-light-rgb: 255, 217, 158;
+    --client-dark-rgb: 179, 125, 0;
+}
+
+/* ─── Stripe/Vercel ambient gradients, adapte au role connecte ─── */
 /* z-index: -1 pour rester derriere TOUT le contenu, surtout modals/dialogs */
 body::before {
     content: '';
     position: fixed;
     inset: 0;
+    /* Default (avant login / public pages) : violet + rose stripe-style */
     background:
       radial-gradient(ellipse 70% 50% at 75% 0%, rgba(168, 85, 247, 0.12) 0%, transparent 55%),
       radial-gradient(ellipse 60% 40% at 20% 100%, rgba(236, 72, 153, 0.10) 0%, transparent 55%),
       radial-gradient(ellipse 50% 30% at 100% 60%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
     pointer-events: none;
     z-index: -1;
+}
+
+/* Gradient adapte par role connecte (set par App.js via body.dataset.role) */
+body[data-role="agency"]::before {
+    background:
+      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--agency-rgb), 0.12) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--agency-light-rgb), 0.10) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--agency-dark-rgb), 0.15) 0%, transparent 50%);
+}
+body[data-role="clipper"]::before {
+    background:
+      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--clipper-rgb), 0.10) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--clipper-light-rgb), 0.08) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--clipper-dark-rgb), 0.15) 0%, transparent 50%);
+}
+body[data-role="manager"]::before {
+    background:
+      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--manager-rgb), 0.10) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--manager-light-rgb), 0.08) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--manager-dark-rgb), 0.15) 0%, transparent 50%);
+}
+body[data-role="client"]::before {
+    background:
+      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--client-rgb), 0.12) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--client-light-rgb), 0.10) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--client-dark-rgb), 0.15) 0%, transparent 50%);
 }
 
 h1, h2, h3, h4, h5, h6 {
