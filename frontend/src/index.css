@@ -73,10 +73,26 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #0A0A0A;
+    background-color: #000000;
     color: #FFFFFF;
     letter-spacing: -0.011em;
     font-feature-settings: "cv11", "ss01", "ss03";
+    position: relative;
+    min-height: 100vh;
+}
+
+/* ─── Stripe/Vercel ambient gradients (subtle, behind content only) ─── */
+/* z-index: -1 pour rester derriere TOUT le contenu, surtout modals/dialogs */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(168, 85, 247, 0.12) 0%, transparent 55%),
+      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(236, 72, 153, 0.10) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: -1;
 }
 
 h1, h2, h3, h4, h5, h6 {
