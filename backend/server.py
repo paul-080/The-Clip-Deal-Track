@@ -10257,45 +10257,47 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     new_likes = max(new_likes_raw, old_likes)
                     new_comments = max(new_comments_raw, old_comments)
 
-                    # ── Smart cache : skip update si video MORTE (< 50 vues gagnees en 48h) ──
-                    # Paul : "Une fois qu'une video fait moins de 50 vues en 48h, on arrete de la tracker."
-                    # Aussi : on garde l'ancien check pour les videos peu populaires sans growth.
-                    has_growth = new_views > old_views
-                    is_cold = (not has_growth) and new_views < 100 and old_views > 0
-
-                    # Check delta 48h via video_views_snapshots (snapshot daily par video)
-                    # Skip uniquement si la video est trackee depuis >= 48h (sinon on lui laisse le temps).
+                    # ── Stop tracking : UNIQUEMENT si video >= 30 JOURS ET < 50 vues / 48h ──
+                    # REGLE PAUL 2026-05-17 : on track TOUJOURS sans exception, jusqu'a ce que
+                    # la video soit clairement morte. La regle stricte :
+                    #   1. La video doit avoir >= 30 jours (first_tracked_at)
+                    #   2. ET avoir gagne < 50 vues sur les dernieres 48h
+                    # AVANT 30 jours : on track inconditionnellement (peu importe le nb de vues).
+                    # On NE skip plus les videos "peu populaires" (< 100 vues sans growth) :
+                    # ca privait Paul de mises a jour sur des videos jeunes qui peuvent encore decoller.
+                    is_dead = False
                     video_doc_id = existing.get("video_id") if existing else None
-                    if not is_cold and video_doc_id:
-                        try:
-                            cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
-                            snap_48h = await db.video_views_snapshots.find_one(
-                                {"video_id": video_doc_id, "date": {"$lte": cutoff_48h}},
-                                {"_id": 0, "views": 1, "date": 1},
-                                sort=[("date", -1)],
-                            )
-                            if snap_48h:
-                                views_48h_ago = int(snap_48h.get("views") or 0)
-                                growth_48h = new_views - views_48h_ago
-                                if growth_48h < 50:
-                                    # Video morte : <50 vues gagnees en 48h -> on arrete de la tracker
-                                    is_cold = True
-                                    # On marque pour ne plus la rescraper du tout
-                                    try:
-                                        await db.tracked_videos.update_one(
-                                            {"video_id": video_doc_id},
-                                            {"$set": {
-                                                "tracking_stopped": True,
-                                                "tracking_stopped_at": now_iso,
-                                                "tracking_stopped_reason": f"dead_video_<50_views_48h (growth={growth_48h})",
-                                            }}
-                                        )
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
+                    first_tracked = _parse_utc(existing.get("first_tracked_at")) if existing else None
+                    if video_doc_id and first_tracked:
+                        age_hours = (datetime.now(timezone.utc) - first_tracked).total_seconds() / 3600
+                        if age_hours >= 720:  # 30 jours
+                            try:
+                                cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
+                                snap_48h = await db.video_views_snapshots.find_one(
+                                    {"video_id": video_doc_id, "date": {"$lte": cutoff_48h}},
+                                    {"_id": 0, "views": 1, "date": 1},
+                                    sort=[("date", -1)],
+                                )
+                                if snap_48h:
+                                    views_48h_ago = int(snap_48h.get("views") or 0)
+                                    growth_48h = new_views - views_48h_ago
+                                    if growth_48h < 50:
+                                        is_dead = True
+                                        try:
+                                            await db.tracked_videos.update_one(
+                                                {"video_id": video_doc_id},
+                                                {"$set": {
+                                                    "tracking_stopped": True,
+                                                    "tracking_stopped_at": now_iso,
+                                                    "tracking_stopped_reason": f"dead_video_after_30d_<50_views_48h (growth={growth_48h})",
+                                                }}
+                                            )
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
 
-                    if is_cold:
+                    if is_dead:
                         skipped_cold += 1
                         continue
 
