@@ -17351,21 +17351,15 @@ async def admin_accounts_debug(campaign_id: str, request: Request):
             except Exception:
                 pass
 
+        # PAUL : "soit il existe (ok/track), soit supprime. Pas de skip".
+        # On NE genere plus skipped_cold (dernier scrape > 36h = ok quand meme)
+        # ni skipped_paused (compte en pause auto = ok aussi, c'est notre probleme de scraping).
         if status_acc == "deleted":
             disp = "deleted"
-        elif paused_until and paused_until > now_iso:
-            disp = "skipped_paused"
-        elif not last_tracked:
+        elif not last_tracked and status_acc != "verified":
             disp = "never_tried"
         elif last_scrape and last_scrape.get("success"):
-            try:
-                ts_dt = _parse_utc(last_scrape.get("timestamp"))
-                if ts_dt and (datetime.now(timezone.utc) - ts_dt).total_seconds() < 36 * 3600:
-                    disp = "ok"
-                else:
-                    disp = "skipped_cold"
-            except Exception:
-                disp = "ok"
+            disp = "ok"
         elif verif_says_exists_recent:
             disp = "ok"
         elif status_acc == "verified":
@@ -20220,18 +20214,11 @@ async def get_campaign_last_scrape_details(campaign_id: str, user: dict = Depend
             status = "never_tried"
             counters["never_tried"] += 1
         elif last_scrape and last_scrape.get("success"):
-            # Verifie que c'est recent (< 36h)
-            try:
-                ts_dt = _parse_utc(last_scrape.get("timestamp"))
-                if ts_dt and (datetime.now(timezone.utc) - ts_dt).total_seconds() < 36 * 3600:
-                    status = "ok"
-                    counters["ok"] += 1
-                else:
-                    status = "skipped_cold"
-                    counters["skipped_cold"] += 1
-            except Exception:
-                status = "ok"
-                counters["ok"] += 1
+            # PAUL : "a aucun moment tu skip, soit il existe (track), soit supprime".
+            # Le dernier scrape connu est un SUCCES -> compte ok, peu importe quand.
+            # (avant : "skipped_cold" si > 36h, supprime pour simplifier le panel)
+            status = "ok"
+            counters["ok"] += 1
         elif verif_says_exists_recent:
             # Scrape a foire MAIS verif active recente confirme que le compte existe.
             status = "ok"
