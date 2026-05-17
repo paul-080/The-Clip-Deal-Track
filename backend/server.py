@@ -20346,6 +20346,45 @@ async def admin_recent_scrapes(request: Request, limit: int = 50, platform: Opti
     }
 
 
+@api_router.post("/admin/debug-apify-tiktok")
+async def admin_debug_apify_tiktok(request: Request, username: str, _: bool = Depends(verify_admin_code)):
+    """Debug : test direct _fetch_tiktok_videos_apify pour voir ce qui sort.
+    Retourne le nombre de videos + premier message d'erreur si echec.
+    """
+    username = (username or "").lstrip("@")
+    if not username:
+        raise HTTPException(status_code=400, detail="username requis")
+
+    out = {
+        "username": username,
+        "APIFY_DISABLED": APIFY_DISABLED,
+        "APIFY_TOKEN_set": bool(APIFY_TOKEN),
+        "APIFY_TIKTOK_FORCE_OFF": _APIFY_TIKTOK_KILL_SWITCH,
+        "APIFY_TIKTOK_DAILY_BUDGET": APIFY_TIKTOK_DAILY_BUDGET,
+    }
+    try:
+        out["budget_ok"] = await _apify_budget_ok("tiktok")
+    except Exception as e:
+        out["budget_ok_error"] = str(e)
+
+    if not APIFY_TOKEN or APIFY_DISABLED:
+        out["result"] = "ABORTED: Apify token missing or disabled"
+        return out
+    if _APIFY_TIKTOK_KILL_SWITCH:
+        out["result"] = "ABORTED: APIFY_TIKTOK_FORCE_OFF kill switch is ON"
+        return out
+
+    try:
+        videos = await asyncio.wait_for(_fetch_tiktok_videos_apify(username, max_posts=3), timeout=120)
+        out["videos_count"] = len(videos)
+        out["first_video"] = videos[0] if videos else None
+        out["result"] = "SUCCESS" if videos else "EMPTY"
+    except Exception as e:
+        out["result"] = "EXCEPTION"
+        out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
+
+
 @api_router.post("/admin/reactivate-archived-videos")
 async def admin_reactivate_archived_videos(request: Request, body: dict = None, _: bool = Depends(verify_admin_code)):
     """Reactive les videos auto-archivees (tracking_active=False).
