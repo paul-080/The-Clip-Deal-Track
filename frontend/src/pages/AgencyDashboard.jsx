@@ -3031,22 +3031,39 @@ function CampaignDashboard({ campaigns }) {
             {(() => {
               const isHourly = viewsTimeline?.granularity === "hourly";
               const days = parseInt(viewsTimeline?.days || viewsPeriod) || 7;
+              const todayParisDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Paris" }))
+                .toISOString().slice(0, 10);
               let tlData = (viewsTimeline?.timeline || []).map(d => {
                 const dateKey = (d.date || "").length >= 10 ? (d.date || "").slice(0, 10) : (d.date || "");
                 const videosPosted = isHourly
                   ? allVideos.filter(v => v.published_at && v.published_at.slice(0, 13) === dateKey.slice(0, 13)).length
                   : allVideos.filter(v => v.published_at && v.published_at.slice(0, 10) === dateKey).length;
-                // Anciennes videos qui contribuent encore aux vues ce jour-la
-                // (postees avant ce jour mais toujours en tracking_active)
                 const videosOld = allVideos.filter(v => {
                   if (!v.published_at) return false;
                   const pub = v.published_at.slice(0, 10);
                   return pub < dateKey && v.tracking_active !== false;
                 }).length;
+
+                // Split vues nouvelles/anciennes — PRECIS uniquement pour AUJOURD'HUI
+                // (les videos publiees aujourd'hui ont toutes leurs vues = vues d'aujourd'hui).
+                // Pour les autres jours, on ne peut pas calculer cote frontend (faudrait
+                // les snapshots quotidiens par video, dispo cote backend uniquement).
+                let viewsNew = null;
+                let viewsOldDay = null;
+                if (!isHourly && dateKey === todayParisDate) {
+                  const newVideosToday = allVideos.filter(v =>
+                    v.published_at && v.published_at.slice(0, 10) === todayParisDate
+                  );
+                  viewsNew = newVideosToday.reduce((s, v) => s + (Number(v.views) || 0), 0);
+                  viewsOldDay = Math.max(0, (d.views || 0) - viewsNew);
+                }
+
                 return {
                   ...d,
                   videos_posted: videosPosted,
                   videos_old: videosOld,
+                  views_new_today: viewsNew,
+                  views_old_today: viewsOldDay,
                   label: d.label || (isHourly
                     ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
                     : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
@@ -3096,21 +3113,39 @@ function CampaignDashboard({ campaigns }) {
                         const views = p.views || 0;
                         const videosPosted = p.videos_posted || 0;
                         const videosOld = p.videos_old || 0;
+                        const viewsNew = p.views_new_today;  // null si pas aujourd'hui
+                        const viewsOldDay = p.views_old_today;
                         return (
-                          <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px" }}>
+                          <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px", minWidth: 220 }}>
                             <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginBottom: 6 }}>{label}</div>
                             <div style={{ color: "#FF007F", fontSize: 14, fontWeight: 600 }}>
                               {fmt(views)} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>{isHourly ? "nouvelles vues" : "vues"}</span>
                             </div>
-                            <div style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
-                              <span style={{ color: "#39FF14" }}>📹</span>
-                              {videosPosted} nouvelle{videosPosted > 1 ? "s" : ""} vidéo{videosPosted > 1 ? "s" : ""} {isHourly ? "cette heure" : "ce jour"}
-                            </div>
-                            {videosOld > 0 && (
-                              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
-                                <span style={{ color: "#00E5FF" }}>📁</span>
-                                {videosOld} ancienne{videosOld > 1 ? "s" : ""} vidéo{videosOld > 1 ? "s" : ""} active{videosOld > 1 ? "s" : ""}
-                              </div>
+                            {viewsNew !== null && viewsNew !== undefined && (
+                              <>
+                                <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 6, paddingTop: 6 }}>
+                                  <div style={{ color: "#39FF14", fontSize: 12, fontWeight: 500 }}>
+                                    {fmt(viewsNew)} <span style={{ color: "rgba(255,255,255,0.55)", fontSize: 10, fontWeight: 400 }}>vues sur nouvelles vidéos ({videosPosted})</span>
+                                  </div>
+                                  <div style={{ color: "#00E5FF", fontSize: 12, fontWeight: 500, marginTop: 2 }}>
+                                    {fmt(viewsOldDay)} <span style={{ color: "rgba(255,255,255,0.55)", fontSize: 10, fontWeight: 400 }}>vues sur anciennes vidéos ({videosOld})</span>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                            {(viewsNew === null || viewsNew === undefined) && (
+                              <>
+                                <div style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                                  <span style={{ color: "#39FF14" }}>📹</span>
+                                  {videosPosted} nouvelle{videosPosted > 1 ? "s" : ""} vidéo{videosPosted > 1 ? "s" : ""} {isHourly ? "cette heure" : "ce jour"}
+                                </div>
+                                {videosOld > 0 && (
+                                  <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                                    <span style={{ color: "#00E5FF" }}>📁</span>
+                                    {videosOld} ancienne{videosOld > 1 ? "s" : ""} vidéo{videosOld > 1 ? "s" : ""} active{videosOld > 1 ? "s" : ""}
+                                  </div>
+                                )}
+                              </>
                             )}
                           </div>
                         );
