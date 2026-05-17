@@ -9222,16 +9222,17 @@ async def _scrape_one_account_into_campaign(
         new_likes = max(int(vid.get("likes", 0) or 0), int(existing.get("likes") or 0))
         new_comments = max(int(vid.get("comments", 0) or 0), int(existing.get("comments") or 0))
 
-        # ── DETECTION AUTO-ARCHIVAGE : video > 24h trackee ET < 50 vues sur 48h ──
-        # Seuil baisse de 100 -> 50 vues (regle metier paul) :
-        # une video qui prend < 50 vues sur 48h glissantes apres 24h de tracking
-        # est consideree comme "morte" et arretee. Reactivable manuellement.
+        # ── DETECTION AUTO-ARCHIVAGE : video > 1 MOIS trackee ET < 50 vues sur 48h ──
+        # REGLE PAUL 2026-05 : une video reste trackee TANT QU'ELLE EST RECENTE (< 1 mois).
+        # Apres 1 mois, si elle prend < 50 vues sur 48h glissantes, on archive.
+        # Avant : seuil etait 24h (trop court, beaucoup de fausses archives sur des
+        # videos qui ont juste un creux temporaire avant un rebond viral).
         should_archive = False
         archive_reason = None
         first_tracked = _parse_utc(existing.get("first_tracked_at"))
         if first_tracked:
             age_hours = (datetime.now(timezone.utc) - first_tracked).total_seconds() / 3600
-            if age_hours >= 24:
+            if age_hours >= 720:  # 30 jours * 24h = 720h
                 # Recupere les vues d'il y a ~48h via video_views_snapshots
                 try:
                     cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
