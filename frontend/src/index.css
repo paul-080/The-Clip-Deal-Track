@@ -131,6 +131,55 @@ body::before {
     z-index: -1;
 }
 
+/* ─── STRIPE GLASSMORPHISM — cards principales + sidebar ─── */
+/* On override SEULEMENT les classes utilisees pour les cards/sidebar du dashboard,
+   PAS les fonds des modals shadcn (bg-background, bg-popover, bg-card via CSS vars).
+   Ca evite le bug precedent ou les modals devenaient transparents.
+
+   Classes ciblees :
+   - bg-[#121212] : cards dashboard (KPIs, graphs, panels)
+   - bg-[#0d0d0d] : sidebar
+   On NE TOUCHE PAS bg-[#1a1a1a] (utilise parfois pour des inputs / hovers modals)
+*/
+.bg-\[\#121212\] {
+    background-color: rgba(255, 255, 255, 0.025) !important;
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+.bg-\[\#0d0d0d\] {
+    background-color: rgba(0, 0, 0, 0.55) !important;
+    backdrop-filter: blur(32px) saturate(140%);
+    -webkit-backdrop-filter: blur(32px) saturate(140%);
+}
+
+/* Adoucissement des bordures (style Stripe : tres subtiles) */
+.border-white\/10 {
+    border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Utility classes pour titres et chiffres en gradient Stripe-style */
+.stripe-title {
+    background: linear-gradient(135deg, #FFFFFF 0%, #A0A0B5 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    color: transparent;
+}
+
+.stripe-kpi-grad {
+    background: linear-gradient(135deg, #FFFFFF 0%, rgba(255,255,255,0.65) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    color: transparent;
+}
+
+/* Subtle glow sur les chiffres clés (effet Stripe premium discret) */
+.stripe-glow {
+    text-shadow: 0 0 24px rgba(255, 255, 255, 0.08);
+}
+
 /* Gradient adapte par role connecte (set par App.js via body.dataset.role) */
 body[data-role="agency"]::before {
     background:
