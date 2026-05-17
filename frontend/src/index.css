@@ -131,42 +131,93 @@ body::before {
     z-index: -1;
 }
 
-/* ─── STRIPE GLASSMORPHISM — cards principales + sidebar ─── */
-/* On override SEULEMENT les classes utilisees pour les cards/sidebar du dashboard,
-   PAS les fonds des modals shadcn (bg-background, bg-popover, bg-card via CSS vars).
-   Ca evite le bug precedent ou les modals devenaient transparents.
+/* ═══════════════════════════════════════════════════════════════════════
+   STRIPE GLASSMORPHISM — applique force avec specificity garantie
+   On cible les selectors Tailwind compiles ET ajoute des regles globales
+   pour s'assurer que ca passe.
+   ═══════════════════════════════════════════════════════════════════════ */
 
-   Classes ciblees :
-   - bg-[#121212] : cards dashboard (KPIs, graphs, panels)
-   - bg-[#0d0d0d] : sidebar
-   On NE TOUCHE PAS bg-[#1a1a1a] (utilise parfois pour des inputs / hovers modals)
-*/
-.bg-\[\#121212\] {
-    background-color: rgba(255, 255, 255, 0.025) !important;
-    backdrop-filter: blur(24px) saturate(140%);
-    -webkit-backdrop-filter: blur(24px) saturate(140%);
+/* Cards dashboard (bg-[#121212]) - translucides avec blur */
+body .bg-\[\#121212\],
+body div[class*="bg-[#121212]"] {
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    backdrop-filter: blur(28px) saturate(160%) !important;
+    -webkit-backdrop-filter: blur(28px) saturate(160%) !important;
+    border-color: rgba(255, 255, 255, 0.08) !important;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+body .bg-\[\#121212\]:hover,
+body div[class*="bg-[#121212]"]:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
-.bg-\[\#0d0d0d\] {
-    background-color: rgba(0, 0, 0, 0.55) !important;
-    backdrop-filter: blur(32px) saturate(140%);
-    -webkit-backdrop-filter: blur(32px) saturate(140%);
+/* Sidebar (bg-[#0d0d0d]) - tres translucide avec gros blur */
+body .bg-\[\#0d0d0d\],
+body aside[class*="bg-[#0d0d0d]"] {
+    background-color: rgba(0, 0, 0, 0.5) !important;
+    backdrop-filter: blur(40px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+    border-right-color: rgba(255, 255, 255, 0.06) !important;
 }
 
-/* Adoucissement des bordures (style Stripe : tres subtiles) */
-.border-white\/10 {
-    border-color: rgba(255, 255, 255, 0.06) !important;
+/* Card variantes (bg-[#1a1a1a]) - inputs et panels */
+body .bg-\[\#1a1a1a\] {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
 }
 
-/* Utility classes pour titres et chiffres en gradient Stripe-style */
-.stripe-title {
-    background: linear-gradient(135deg, #FFFFFF 0%, #A0A0B5 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    color: transparent;
+/* Bordures Stripe ultra subtiles */
+body .border-white\/10 {
+    border-color: rgba(255, 255, 255, 0.07) !important;
+}
+body .border-white\/5 {
+    border-color: rgba(255, 255, 255, 0.05) !important;
 }
 
+/* Chiffres mono/bold dans les KPIs : glow subtil + font-weight pousse */
+body .font-mono.font-bold {
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    text-shadow: 0 0 32px currentColor;
+    filter: brightness(1.05);
+}
+
+/* Couleurs accent boostees avec glow Stripe-style (les couleurs des roles
+   restent telles quelles, on ajoute juste un glow tres subtil) */
+body .text-\[\#FF007F\] { text-shadow: 0 0 28px rgba(255, 0, 127, 0.35); }
+body .text-\[\#00E5FF\] { text-shadow: 0 0 28px rgba(0, 229, 255, 0.35); }
+body .text-\[\#39FF14\] { text-shadow: 0 0 28px rgba(57, 255, 20, 0.30); }
+body .text-\[\#FFB300\] { text-shadow: 0 0 28px rgba(255, 179, 0, 0.35); }
+body .text-\[\#f0c040\] { text-shadow: 0 0 28px rgba(240, 192, 64, 0.35); }
+
+/* Boutons primaires : touch Stripe (subtle gradient + glow) */
+body button[class*="bg-[#FF007F]"],
+body .bg-\[\#FF007F\] {
+    box-shadow: 0 0 30px rgba(255, 0, 127, 0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+    transition: box-shadow 0.2s ease, transform 0.1s ease;
+}
+body button[class*="bg-[#FF007F]"]:hover,
+body .bg-\[\#FF007F\]:hover {
+    box-shadow: 0 0 40px rgba(255, 0, 127, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+/* Tableaux : lignes hover plus visibles */
+body tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.02) !important;
+}
+
+/* Inputs / textareas : look Stripe (border subtle + glow on focus) */
+body input[class*="bg-white"],
+body textarea[class*="bg-white"] {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+body input:focus, body textarea:focus, body select:focus {
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08), 0 0 20px rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Utility classes pour chiffres XL en gradient Stripe-style */
 .stripe-kpi-grad {
     background: linear-gradient(135deg, #FFFFFF 0%, rgba(255,255,255,0.65) 100%);
     -webkit-background-clip: text;
@@ -175,9 +226,8 @@ body::before {
     color: transparent;
 }
 
-/* Subtle glow sur les chiffres clés (effet Stripe premium discret) */
 .stripe-glow {
-    text-shadow: 0 0 24px rgba(255, 255, 255, 0.08);
+    text-shadow: 0 0 24px rgba(255, 255, 255, 0.10);
 }
 
 /* Gradient adapte par role connecte (set par App.js via body.dataset.role) */
