@@ -3036,9 +3036,17 @@ function CampaignDashboard({ campaigns }) {
                 const videosPosted = isHourly
                   ? allVideos.filter(v => v.published_at && v.published_at.slice(0, 13) === dateKey.slice(0, 13)).length
                   : allVideos.filter(v => v.published_at && v.published_at.slice(0, 10) === dateKey).length;
+                // Anciennes videos qui contribuent encore aux vues ce jour-la
+                // (postees avant ce jour mais toujours en tracking_active)
+                const videosOld = allVideos.filter(v => {
+                  if (!v.published_at) return false;
+                  const pub = v.published_at.slice(0, 10);
+                  return pub < dateKey && v.tracking_active !== false;
+                }).length;
                 return {
                   ...d,
                   videos_posted: videosPosted,
+                  videos_old: videosOld,
                   label: d.label || (isHourly
                     ? new Date(d.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
                     : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
@@ -3087,15 +3095,23 @@ function CampaignDashboard({ campaigns }) {
                         const p = payload[0]?.payload || {};
                         const views = p.views || 0;
                         const videosPosted = p.videos_posted || 0;
+                        const videosOld = p.videos_old || 0;
                         return (
                           <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px" }}>
                             <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginBottom: 6 }}>{label}</div>
                             <div style={{ color: "#FF007F", fontSize: 14, fontWeight: 600 }}>
                               {fmt(views)} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>{isHourly ? "nouvelles vues" : "vues"}</span>
                             </div>
-                            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 11, marginTop: 4 }}>
-                              📹 {videosPosted} vidéo{videosPosted > 1 ? "s" : ""} posté{videosPosted > 1 ? "es" : "e"} {isHourly ? "cette heure" : "ce jour"}
+                            <div style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ color: "#39FF14" }}>📹</span>
+                              {videosPosted} nouvelle{videosPosted > 1 ? "s" : ""} vidéo{videosPosted > 1 ? "s" : ""} {isHourly ? "cette heure" : "ce jour"}
                             </div>
+                            {videosOld > 0 && (
+                              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                                <span style={{ color: "#00E5FF" }}>📁</span>
+                                {videosOld} ancienne{videosOld > 1 ? "s" : ""} vidéo{videosOld > 1 ? "s" : ""} active{videosOld > 1 ? "s" : ""}
+                              </div>
+                            )}
                           </div>
                         );
                       }}
