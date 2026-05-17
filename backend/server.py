@@ -10287,9 +10287,9 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                             await db.tracked_videos.update_one(
                                                 {"video_id": video_doc_id},
                                                 {"$set": {
-                                                    "tracking_stopped": True,
-                                                    "tracking_stopped_at": now_iso,
-                                                    "tracking_stopped_reason": f"dead_video_after_30d_<50_views_48h (growth={growth_48h})",
+                                                    "tracking_active": False,
+                                                    "archived_at": now_iso,
+                                                    "archived_reason": f"+{growth_48h} vues sur 48h (< 50) après 30 jours · tracking arrêté",
                                                 }}
                                             )
                                         except Exception:
