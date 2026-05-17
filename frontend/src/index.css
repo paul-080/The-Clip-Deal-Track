@@ -176,21 +176,11 @@ body .border-white\/5 {
     border-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Chiffres mono/bold dans les KPIs : glow subtil + font-weight pousse */
+/* Chiffres mono/bold : juste un peu plus serres, PAS de glow/reflet */
 body .font-mono.font-bold {
     font-weight: 700;
     letter-spacing: -0.025em;
-    text-shadow: 0 0 32px currentColor;
-    filter: brightness(1.05);
 }
-
-/* Couleurs accent boostees avec glow Stripe-style (les couleurs des roles
-   restent telles quelles, on ajoute juste un glow tres subtil) */
-body .text-\[\#FF007F\] { text-shadow: 0 0 28px rgba(255, 0, 127, 0.35); }
-body .text-\[\#00E5FF\] { text-shadow: 0 0 28px rgba(0, 229, 255, 0.35); }
-body .text-\[\#39FF14\] { text-shadow: 0 0 28px rgba(57, 255, 20, 0.30); }
-body .text-\[\#FFB300\] { text-shadow: 0 0 28px rgba(255, 179, 0, 0.35); }
-body .text-\[\#f0c040\] { text-shadow: 0 0 28px rgba(240, 192, 64, 0.35); }
 
 /* Boutons primaires : touch Stripe (subtle gradient + glow) */
 body button[class*="bg-[#FF007F]"],
