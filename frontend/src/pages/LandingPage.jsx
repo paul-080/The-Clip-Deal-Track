@@ -636,6 +636,77 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Coming Soon Section — Roadmap */}
+      <section className="relative z-10 px-6 lg:px-16 py-20">
+        <div className="max-w-5xl mx-auto">
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="text-center mb-10"
+          >
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 mb-4">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14] animate-pulse" />
+              <span className="text-[11px] uppercase tracking-widest text-white/60 font-medium">À venir prochainement</span>
+            </div>
+            <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-3">
+              Notre roadmap
+            </h2>
+            <p className="text-white/50 text-base lg:text-lg">
+              Les prochaines features qui arrivent sur The Clip Deal Track.
+            </p>
+          </motion.div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* App mobile */}
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: 0.1 }}
+              className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#00E5FF]/8 to-transparent border border-[#00E5FF]/20 p-7"
+            >
+              <div className="absolute top-4 right-4">
+                <span className="text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 rounded-full bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40">
+                  Soon
+                </span>
+              </div>
+              <div className="text-4xl mb-4">📱</div>
+              <h3 className="text-xl lg:text-2xl font-display font-bold text-white mb-2 tracking-tight">
+                Application mobile
+              </h3>
+              <p className="text-white/55 text-sm leading-relaxed">
+                iOS et Android. Suivre tes campagnes, valider tes clips, et toucher tes paiements
+                directement depuis ton téléphone. Notifications push en temps réel.
+              </p>
+            </motion.div>
+
+            {/* Paiement automatique clippeurs */}
+            <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: 0.2 }}
+              className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#39FF14]/8 to-transparent border border-[#39FF14]/20 p-7"
+            >
+              <div className="absolute top-4 right-4">
+                <span className="text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 rounded-full bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/40">
+                  Soon
+                </span>
+              </div>
+              <div className="text-4xl mb-4">⚡</div>
+              <h3 className="text-xl lg:text-2xl font-display font-bold text-white mb-2 tracking-tight">
+                Paiement automatique aux clippeurs
+              </h3>
+              <p className="text-white/55 text-sm leading-relaxed">
+                Virement automatique aux clippeurs quand les paliers sont atteints. Plus de relances,
+                plus de fichiers Excel. L'agence valide une fois, on s'occupe du reste.
+              </p>
+            </motion.div>
+          </div>
+        </div>
+      </section>
+
       {/* CTA Section */}
       <section className="relative z-10 px-6 lg:px-16 py-24">
         <div className="max-w-4xl mx-auto text-center">
