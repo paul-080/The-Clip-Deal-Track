@@ -2701,39 +2701,78 @@ function CampaignDashboard({ campaigns }) {
                 </div>
               </div>
             </div>
-            {clickStatsLoading ? (
+            {clickStatsLoading && !clickStats ? (
               <div className="h-48 flex items-center justify-center">
                 <div className="w-6 h-6 border-2 border-[#f0c040]/30 border-t-[#f0c040] rounded-full animate-spin" />
               </div>
-            ) : clickStats?.chart?.some(d => d.clicks > 0) ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={clickStats.chart} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="clicksGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="uniqueGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#39FF14" stopOpacity={0.15} />
-                      <stop offset="95%" stopColor="#39FF14" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                  <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
-                    interval={Math.max(0, Math.floor((clickStats.chart?.length || 1) / 10) - 1)} />
-                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
-                    labelStyle={{ color: "white", fontSize: 11 }}
-                    formatter={(v, name) => [v.toLocaleString("fr-FR"), name === "clicks" ? "Clics totaux" : "Clics uniques"]} />
-                  <Area type="monotone" dataKey="clicks" stroke="#f0c040" strokeWidth={2} fill="url(#clicksGrad)" dot={false} />
-                  <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" strokeWidth={1.5} fill="url(#uniqueGrad)" dot={false} strokeDasharray="4 2" />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-48 flex items-center justify-center">
-                <p className="text-white/20 text-sm">Aucun clic enregistré sur cette période</p>
-              </div>
-            )}
+            ) : (() => {
+              // Affichage TOUJOURS : si pas de data, on remplit avec des zeros pour avoir la courbe vide visible
+              let chartData = clickStats?.chart || [];
+              if (chartData.length === 0) {
+                const days = period === "1d" ? 1 : period === "7d" ? 7 : period === "30d" ? 30 : 7;
+                const now = new Date();
+                for (let i = days - 1; i >= 0; i--) {
+                  const d = new Date(now.getTime() - i * 86400000);
+                  chartData.push({
+                    label: d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
+                    date: d.toISOString().slice(0, 10),
+                    clicks: 0,
+                    unique_clicks: 0,
+                  });
+                }
+              }
+              // Enrichit chaque point avec videos_posted (videos publiees ce jour-la)
+              chartData = chartData.map(d => {
+                const dateKey = (d.date || "").length >= 10 ? (d.date || "").slice(0, 10) : (d.date || "");
+                const videosPosted = allVideos.filter(v => v.published_at && v.published_at.slice(0, 10) === dateKey).length;
+                return { ...d, videos_posted: videosPosted };
+              });
+              return (
+                <ResponsiveContainer width="100%" height={220}>
+                  <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="clicksGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
+                        <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
+                      </linearGradient>
+                      <linearGradient id="uniqueGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#39FF14" stopOpacity={0.15} />
+                        <stop offset="95%" stopColor="#39FF14" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                    <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
+                      interval={Math.max(0, Math.floor(chartData.length / 10) - 1)} />
+                    <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} />
+                    <Tooltip
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        const p = payload[0]?.payload || {};
+                        const totalClicks = p.clicks || 0;
+                        const uniqueClicks = p.unique_clicks || 0;
+                        const videosPosted = p.videos_posted || 0;
+                        return (
+                          <div style={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, padding: "10px 12px" }}>
+                            <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, marginBottom: 6 }}>{label}</div>
+                            <div style={{ color: "#f0c040", fontSize: 14, fontWeight: 600 }}>
+                              {totalClicks.toLocaleString("fr-FR")} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>clics totaux</span>
+                            </div>
+                            <div style={{ color: "#39FF14", fontSize: 13, fontWeight: 500, marginTop: 2 }}>
+                              {uniqueClicks.toLocaleString("fr-FR")} <span style={{ color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 400 }}>clics uniques</span>
+                            </div>
+                            <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 11, marginTop: 4 }}>
+                              📹 {videosPosted} vidéo{videosPosted > 1 ? "s" : ""} posté{videosPosted > 1 ? "es" : "e"} ce jour
+                            </div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Area type="monotone" dataKey="clicks" stroke="#f0c040" strokeWidth={2} fill="url(#clicksGrad)" dot={false} />
+                    <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" strokeWidth={1.5} fill="url(#uniqueGrad)" dot={false} strokeDasharray="4 2" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              );
+            })()}
           </div>
 
           {/* Budget + Clippers ranking for clicks */}
