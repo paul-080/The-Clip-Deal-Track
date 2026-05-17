@@ -1178,9 +1178,17 @@ function AllVideosPage() {
                 </div>
                 {/* Info */}
                 <div className="p-2.5">
-                  <p className="text-white text-xs font-medium line-clamp-2 mb-1.5 leading-snug">
+                  <p className={`text-xs font-medium line-clamp-2 mb-1.5 leading-snug ${v.tracking_active === false ? "text-white/50" : "text-white"}`}>
                     {v.title || "Vidéo sans titre"}
                   </p>
+                  {v.tracking_active === false && (
+                    <div
+                      className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium whitespace-nowrap mb-1.5"
+                      title={v.archived_reason || "Cette vidéo a fait moins de 50 vues sur 48h. Tracking automatiquement arrêté."}
+                    >
+                      🔇 −50 vues / 48h
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <span className="text-white/30 text-[10px]">
                       {v.published_at ? new Date(v.published_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) : ""}

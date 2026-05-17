@@ -2353,7 +2353,7 @@ function CampaignDashboard({ campaigns }) {
   };
 
   const handleDeleteVideo = async (videoId) => {
-    if (!window.confirm("Supprimer cette vidéo du tracking ?")) return;
+    if (!window.confirm("Supprimer cette vidéo du tracking ?\n\nLa vidéo et toutes ses vues seront supprimées définitivement.")) return;
     setDeletingVideo(videoId);
     try {
       // Tente nouveau endpoint d'abord, fallback ancien
@@ -2365,6 +2365,19 @@ function CampaignDashboard({ campaigns }) {
       else { const e = await res.json().catch(() => ({})); toast.error(e.detail || "Erreur"); }
     } catch { toast.error("Erreur réseau"); }
     setDeletingVideo(null);
+  };
+
+  const handleResumeTrackingVideo = async (videoId) => {
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos/${videoId}/resume-tracking`, { method: "POST", credentials: "include" });
+      if (res.ok) {
+        toast.success("Tracking réactivé, rafraîchissement en cours");
+        setTimeout(() => fetchAllVideos(), 1500);
+      } else {
+        const e = await res.json().catch(() => ({}));
+        toast.error(e.detail || "Erreur");
+      }
+    } catch { toast.error("Erreur réseau"); }
   };
 
   const handleRemoveSocialAccount = async (accountId) => {
@@ -3545,8 +3558,15 @@ function CampaignDashboard({ campaigns }) {
                           ? new Date(video.published_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit" })
                           : "—"}
                       </div>
-                      {/* Actions : réassigner + supprimer */}
+                      {/* Actions : réassigner + reprendre tracking (si arrêtée) + supprimer */}
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
+                        {video.tracking_active === false && (
+                          <button
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleResumeTrackingVideo(video.video_id); }}
+                            className="p-1 rounded hover:bg-emerald-500/20 text-emerald-400/70 hover:text-emerald-400 transition-colors"
+                            title="Reprendre le tracking de cette vidéo (les données seront rafraîchies immédiatement)"
+                          >▶</button>
+                        )}
                         <button
                           onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleReassignVideo(video.video_id, video.user_id); }}
                           className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#00E5FF] transition-colors"
@@ -3556,7 +3576,7 @@ function CampaignDashboard({ campaigns }) {
                           onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDeleteVideo(video.video_id); }}
                           disabled={deletingVideo === video.video_id}
                           className="p-1 rounded hover:bg-red-500/20 text-red-400/50 hover:text-red-400 transition-colors disabled:opacity-30"
-                          title="Supprimer la vidéo du tracking"
+                          title="Arrêter de tracker cette vidéo et la supprimer (avec ses vues)"
                         >🗑</button>
                       </div>
                     </a>

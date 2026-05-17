@@ -1274,9 +1274,17 @@ function CampaignDashboard({ campaigns }) {
                     <div className="min-w-0 pr-4">
                       <a href={v.url} target="_blank" rel="noopener noreferrer"
                         className="text-white text-xs font-medium line-clamp-2 hover:underline">{v.title || v.url || "—"}</a>
-                      <div className="flex items-center gap-2 mt-0.5">
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: (PLAT_COLOR[v.platform] || "#fff") + "20", color: PLAT_COLOR[v.platform] || "#fff" }}>{v.platform}</span>
                         {v.clipper_name && <span className="text-white/30 text-[10px]">{v.clipper_name}</span>}
+                        {v.tracking_active === false && (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium whitespace-nowrap"
+                            title={v.archived_reason || "Cette vidéo a fait moins de 50 vues sur 48h. Tracking automatiquement arrêté."}
+                          >
+                            🔇 −50 vues / 48h · plus trackée
+                          </span>
+                        )}
                       </div>
                     </div>
                     {/* Stats */}

@@ -12484,6 +12484,55 @@ async def delete_campaign_video(campaign_id: str, video_id: str, user: dict = De
         raise HTTPException(status_code=404, detail="Vidéo introuvable")
     return {"message": "Vidéo supprimée"}
 
+
+@api_router.post("/campaigns/{campaign_id}/tracked-videos/{video_id}/resume-tracking")
+async def resume_tracking_video(campaign_id: str, video_id: str, user: dict = Depends(get_current_user)):
+    """Agency/Manager : reactive le tracking d'une video archivee (auto-arretee).
+    - tracking_active passe a True
+    - archived_at et archived_reason supprimes
+    - Trigger un scrape immediat du compte qui possede cette video (background task)
+      pour rafraichir instantanement ses stats au lieu d'attendre le prochain cycle.
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+
+    campaign_check = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign_check:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    await _assert_campaign_authority(user, campaign_check)
+
+    video = await db.tracked_videos.find_one(
+        {"video_id": video_id, "campaign_id": campaign_id}, {"_id": 0}
+    )
+    if not video:
+        raise HTTPException(status_code=404, detail="Vidéo introuvable")
+
+    # Reactive le tracking
+    await db.tracked_videos.update_one(
+        {"video_id": video_id, "campaign_id": campaign_id},
+        {"$set": {
+            "tracking_active": True,
+            "reactivated_at": datetime.now(timezone.utc).isoformat(),
+            "reactivated_by": user["user_id"],
+        },
+         "$unset": {"archived_at": "", "archived_reason": ""}}
+    )
+
+    # Trigger scrape immediat du compte (background task pour ne pas bloquer la response)
+    account_id = video.get("account_id")
+    if account_id:
+        async def _refresh_after_resume():
+            try:
+                acc = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0})
+                if acc:
+                    cutoff = _parse_utc(campaign_check.get("tracking_start_date")) or datetime.now(timezone.utc)
+                    await _scrape_one_account_into_campaign(acc, campaign_check, cutoff, since_days=30, wait_verification=False)
+            except Exception as e:
+                logger.warning(f"Resume-tracking refresh failed for video {video_id}: {e}")
+        asyncio.create_task(_refresh_after_resume())
+
+    return {"message": "Tracking réactivé, données en cours de rafraîchissement", "video_id": video_id}
+
 @api_router.post("/social-accounts/{account_id}/refresh")
 async def refresh_social_account(account_id: str, user: dict = Depends(get_current_user)):
     """Re-trigger verification for a social account"""
