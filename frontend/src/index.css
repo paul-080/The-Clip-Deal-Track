@@ -73,11 +73,10 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #000000;
+    background-color: #0A0A0A;
     color: #FFFFFF;
     letter-spacing: -0.011em;
     font-feature-settings: "cv11", "ss01", "ss03";
-    position: relative;
     min-height: 100vh;
 }
 
@@ -116,134 +115,84 @@ body {
     --client-dark-rgb: 179, 125, 0;
 }
 
-/* ─── Stripe/Vercel ambient gradients, adapte au role connecte ─── */
-/* z-index: -1 pour rester derriere TOUT le contenu, surtout modals/dialogs */
-body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    /* Default (avant login / public pages) : violet + rose stripe-style */
-    background:
-      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(168, 85, 247, 0.12) 0%, transparent 55%),
-      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(236, 72, 153, 0.10) 0%, transparent 55%),
-      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
-    pointer-events: none;
-    z-index: -1;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════
-   STRIPE GLASSMORPHISM — applique force avec specificity garantie
-   On cible les selectors Tailwind compiles ET ajoute des regles globales
-   pour s'assurer que ca passe.
+   STYLE WHOP-LIKE : epure, premium, contours fins, AUCUN glow/gradient/blur
+   Inspiration : whop.com (dark mode propre)
+   - Fond uniforme noir profond
+   - Cards opaques tres legerement plus claires
+   - Bordures ultra-fines (5-7% blanc max)
+   - Pas de backdrop-filter, pas d'ombre, pas de neon
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* Cards dashboard (bg-[#121212]) - translucides avec blur */
+/* Cards dashboard - opaques avec contour fin (style Whop) */
 body .bg-\[\#121212\],
 body div[class*="bg-[#121212]"] {
-    background-color: rgba(255, 255, 255, 0.03) !important;
-    backdrop-filter: blur(28px) saturate(160%) !important;
-    -webkit-backdrop-filter: blur(28px) saturate(160%) !important;
-    border-color: rgba(255, 255, 255, 0.08) !important;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
+    background-color: #111114 !important;
+    border-color: rgba(255, 255, 255, 0.06) !important;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 body .bg-\[\#121212\]:hover,
 body div[class*="bg-[#121212]"]:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    border-color: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(255, 255, 255, 0.10) !important;
 }
 
-/* Sidebar (bg-[#0d0d0d]) - tres translucide avec gros blur */
+/* Sidebar - fond legerement plus sombre que le body */
 body .bg-\[\#0d0d0d\],
 body aside[class*="bg-[#0d0d0d]"] {
-    background-color: rgba(0, 0, 0, 0.5) !important;
-    backdrop-filter: blur(40px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
-    border-right-color: rgba(255, 255, 255, 0.06) !important;
+    background-color: #060608 !important;
+    border-right-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Card variantes (bg-[#1a1a1a]) - inputs et panels */
+/* Card variantes (inputs / panels) */
 body .bg-\[\#1a1a1a\] {
-    background-color: rgba(255, 255, 255, 0.04) !important;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background-color: #16161A !important;
 }
 
-/* Bordures Stripe ultra subtiles */
+/* Bordures fines partout (style Whop) */
 body .border-white\/10 {
-    border-color: rgba(255, 255, 255, 0.07) !important;
+    border-color: rgba(255, 255, 255, 0.06) !important;
 }
 body .border-white\/5 {
-    border-color: rgba(255, 255, 255, 0.05) !important;
+    border-color: rgba(255, 255, 255, 0.04) !important;
 }
 
-/* Chiffres mono/bold : juste un peu plus serres, PAS de glow/reflet */
+/* Chiffres mono : weight 700, letter-spacing serre, PAS de glow */
 body .font-mono.font-bold {
     font-weight: 700;
     letter-spacing: -0.025em;
 }
 
-/* Boutons primaires : touch Stripe (subtle gradient + glow) */
+/* Boutons primaires : couleur solide, PAS de glow/gradient */
 body button[class*="bg-[#FF007F]"],
 body .bg-\[\#FF007F\] {
-    box-shadow: 0 0 30px rgba(255, 0, 127, 0.25), inset 0 1px 0 rgba(255,255,255,0.15);
-    transition: box-shadow 0.2s ease, transform 0.1s ease;
+    transition: background-color 0.15s ease, transform 0.05s ease;
 }
 body button[class*="bg-[#FF007F]"]:hover,
 body .bg-\[\#FF007F\]:hover {
-    box-shadow: 0 0 40px rgba(255, 0, 127, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+    background-color: #E50073 !important;
+}
+body button[class*="bg-[#FF007F]"]:active,
+body .bg-\[\#FF007F\]:active {
+    transform: scale(0.98);
 }
 
-/* Tableaux : lignes hover plus visibles */
+/* Tableaux : lignes hover discretes */
 body tbody tr:hover {
     background-color: rgba(255, 255, 255, 0.02) !important;
 }
 
-/* Inputs / textareas : look Stripe (border subtle + glow on focus) */
-body input[class*="bg-white"],
-body textarea[class*="bg-white"] {
-    transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
+/* Inputs / textareas focus : border accent au lieu de glow */
 body input:focus, body textarea:focus, body select:focus {
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08), 0 0 20px rgba(255, 255, 255, 0.04) !important;
+    border-color: rgba(255, 255, 255, 0.20) !important;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
-/* Utility classes pour chiffres XL en gradient Stripe-style */
-.stripe-kpi-grad {
-    background: linear-gradient(135deg, #FFFFFF 0%, rgba(255,255,255,0.65) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    color: transparent;
+/* Coins arrondis legerement plus prononces (style Whop) */
+body .rounded-xl {
+    border-radius: 12px !important;
 }
-
-.stripe-glow {
-    text-shadow: 0 0 24px rgba(255, 255, 255, 0.10);
-}
-
-/* Gradient adapte par role connecte (set par App.js via body.dataset.role) */
-body[data-role="agency"]::before {
-    background:
-      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--agency-rgb), 0.12) 0%, transparent 55%),
-      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--agency-light-rgb), 0.10) 0%, transparent 55%),
-      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--agency-dark-rgb), 0.15) 0%, transparent 50%);
-}
-body[data-role="clipper"]::before {
-    background:
-      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--clipper-rgb), 0.10) 0%, transparent 55%),
-      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--clipper-light-rgb), 0.08) 0%, transparent 55%),
-      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--clipper-dark-rgb), 0.15) 0%, transparent 50%);
-}
-body[data-role="manager"]::before {
-    background:
-      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--manager-rgb), 0.10) 0%, transparent 55%),
-      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--manager-light-rgb), 0.08) 0%, transparent 55%),
-      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--manager-dark-rgb), 0.15) 0%, transparent 50%);
-}
-body[data-role="client"]::before {
-    background:
-      radial-gradient(ellipse 70% 50% at 75% 0%, rgba(var(--client-rgb), 0.12) 0%, transparent 55%),
-      radial-gradient(ellipse 60% 40% at 20% 100%, rgba(var(--client-light-rgb), 0.10) 0%, transparent 55%),
-      radial-gradient(ellipse 50% 30% at 100% 60%, rgba(var(--client-dark-rgb), 0.15) 0%, transparent 50%);
+body .rounded-2xl {
+    border-radius: 16px !important;
 }
 
 h1, h2, h3, h4, h5, h6 {
