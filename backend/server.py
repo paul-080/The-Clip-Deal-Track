@@ -86,17 +86,55 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
+# FAILSAFE 2026-05-23 : Railway MongoDB crash en boucle (bug kernel 6.19 + OOM).
+# Si MONGO_URL primaire est defaillant, on tente MONGO_URL_FALLBACK (Atlas typiquement).
 mongo_url = os.environ.get('MONGO_URL')
-if not mongo_url and os.environ.get("RAILWAY_ENVIRONMENT") == "production":
-    raise RuntimeError("MONGO_URL est requis en production")
+mongo_url_fallback = os.environ.get('MONGO_URL_FALLBACK')
+if not mongo_url and not mongo_url_fallback and os.environ.get("RAILWAY_ENVIRONMENT") == "production":
+    raise RuntimeError("MONGO_URL ou MONGO_URL_FALLBACK est requis en production")
 db_name = os.environ.get('DB_NAME', 'clipdeal_dev')
 
-if mongo_url:
-    client = AsyncIOMotorClient(mongo_url)
+def _make_client(uri: str):
+    """AsyncIOMotorClient avec timeout court pour detecter rapidement un MongoDB defaillant."""
+    return AsyncIOMotorClient(uri, serverSelectionTimeoutMS=8000)
+
+def _test_mongo_sync(uri: str, label: str) -> bool:
+    """Test synchrone si MongoDB repond. Used at startup to pick primary or fallback."""
+    try:
+        from pymongo import MongoClient as _SyncClient
+        _sc = _SyncClient(uri, serverSelectionTimeoutMS=8000)
+        _sc.admin.command('ping')
+        _sc.close()
+        print(f"[MongoDB] {label} : UP and responding", flush=True)
+        return True
+    except Exception as _e:
+        print(f"[MongoDB] {label} : DOWN ({type(_e).__name__}: {str(_e)[:120]})", flush=True)
+        return False
+
+# Selection du client : primary d'abord, fallback en backup
+selected_uri = None
+selected_label = None
+if mongo_url and _test_mongo_sync(mongo_url, "MONGO_URL (primary)"):
+    selected_uri = mongo_url
+    selected_label = "primary"
+elif mongo_url_fallback and _test_mongo_sync(mongo_url_fallback, "MONGO_URL_FALLBACK (Atlas)"):
+    selected_uri = mongo_url_fallback
+    selected_label = "fallback"
+elif mongo_url:
+    # Primary defini mais down + pas de fallback -> on tente quand meme primary
+    # (le scheduler retry de motor finira par se connecter quand il redemarre)
+    print("[MongoDB] WARN : primary down, no fallback configured. Using primary anyway.", flush=True)
+    selected_uri = mongo_url
+    selected_label = "primary (down at startup)"
+
+if selected_uri:
+    client = _make_client(selected_uri)
+    print(f"[MongoDB] Connected via {selected_label}", flush=True)
 else:
     # Local dev fallback when MongoDB is not configured.
     from mongomock_motor import AsyncMongoMockClient
     client = AsyncMongoMockClient()
+    print("[MongoDB] Using in-memory mock (dev only)", flush=True)
 
 db = client[db_name]
 
