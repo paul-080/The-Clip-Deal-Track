@@ -10426,7 +10426,9 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     and current_status == "active"):
                 update_set["status"] = "paused"
                 update_set["paused_reason"] = "budget_exhausted"
-                logger.info(f"Auto-pause campaign {campaign_id}: budget exhausted ({budget_used}€ >= {budget_total}€)")
+                update_set["budget_exhausted_at"] = datetime.now(timezone.utc).isoformat()
+                update_set["views_at_exhaustion"] = int(total_campaign_views)
+                logger.info(f"Auto-pause campaign {campaign_id}: budget exhausted ({budget_used}€ >= {budget_total}€) at {total_campaign_views} views")
             await db.campaigns.update_one(
                 {"campaign_id": campaign_id},
                 {"$set": update_set}
@@ -24510,6 +24512,7 @@ async def regenerate_click_link(campaign_id: str, clipper_id: str, user: dict = 
 
 class AddBudgetRequest(BaseModel):
     amount: float  # montant en euros à ajouter
+    pay_pending_views: bool = False  # si True : remunere les vues faites entre l'epuisement et maintenant
 
 @api_router.patch("/campaigns/{campaign_id}/settings")
 async def update_campaign_settings(campaign_id: str, body: dict, user: dict = Depends(get_current_user)):
@@ -24773,16 +24776,102 @@ async def add_campaign_budget(campaign_id: str, body: AddBudgetRequest, user: di
     current_budget = campaign.get("budget_total") or 0
     new_budget = round(current_budget + body.amount, 2)
     set_fields: dict = {"budget_total": new_budget, "budget_unlimited": False}
+
+    # OPTION : remunerer les vues faites entre l'epuisement du budget et maintenant
+    # (pertinent uniquement si la campagne etait pause pour budget_exhausted)
+    pending_views_paid = 0
+    pending_cost = 0.0
+    if (body.pay_pending_views
+        and campaign.get("status") == "paused"
+        and campaign.get("paused_reason") == "budget_exhausted"):
+        try:
+            views_at_pause = int(campaign.get("views_at_exhaustion") or 0)
+            # Total live current
+            campaign_assignments = await db.campaign_social_accounts.find(
+                {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+            ).to_list(2000)
+            acc_ids = [a["account_id"] for a in campaign_assignments if a.get("account_id")]
+            current_total_views = 0
+            if acc_ids:
+                tracking_start = campaign.get("tracking_start_date")
+                live_match: dict = {"campaign_id": campaign_id, "account_id": {"$in": acc_ids}}
+                if tracking_start:
+                    live_match["published_at"] = {"$gte": tracking_start}
+                live_agg = await db.tracked_videos.aggregate([
+                    {"$match": live_match},
+                    {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+                ]).to_list(1)
+                current_total_views = int(live_agg[0]["total_views"]) if live_agg else 0
+            pending_views_paid = max(0, current_total_views - views_at_pause)
+            rpm = float(campaign.get("rpm") or 0)
+            pending_cost = round((pending_views_paid / 1000) * rpm, 2)
+            # On augmente budget_used du cout des vues pendantes
+            current_used = float(campaign.get("budget_used") or 0)
+            set_fields["budget_used"] = round(current_used + pending_cost, 2)
+        except Exception as e:
+            logger.warning(f"Pay pending views calc failed: {e}")
+
     # Auto-reactivate if the campaign was paused due to budget exhaustion
     if campaign.get("status") == "paused" and campaign.get("paused_reason") == "budget_exhausted":
         set_fields["status"] = "active"
         set_fields["paused_reason"] = None
+        # Reset les markers d'epuisement (on a soit paye soit ignore les vues pendantes)
+        set_fields["budget_exhausted_at"] = None
+        set_fields["views_at_exhaustion"] = None
     await db.campaigns.update_one(
         {"campaign_id": campaign_id},
         {"$set": set_fields}
     )
     updated = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
-    return {"budget_total": new_budget, "budget_used": updated.get("budget_used", 0), "status": updated.get("status")}
+    return {
+        "budget_total": new_budget,
+        "budget_used": updated.get("budget_used", 0),
+        "status": updated.get("status"),
+        "pending_views_paid": pending_views_paid,
+        "pending_cost": pending_cost,
+    }
+
+
+@api_router.get("/campaigns/{campaign_id}/pending-views-estimate")
+async def estimate_pending_views(campaign_id: str, user: dict = Depends(get_current_user)):
+    """Retourne le nombre de vues + le cout estime des vues faites depuis
+    que le budget a ete epuise (pour afficher dans le modal "Ajouter du budget").
+    """
+    if user.get("role") not in ["agency", "manager"]:
+        raise HTTPException(status_code=403, detail="Agency/Manager uniquement")
+    campaign = await db.campaigns.find_one({"campaign_id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if campaign.get("status") != "paused" or campaign.get("paused_reason") != "budget_exhausted":
+        return {"pending_views": 0, "pending_cost": 0, "paused_since": None}
+
+    views_at_pause = int(campaign.get("views_at_exhaustion") or 0)
+    campaign_assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": campaign_id}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    acc_ids = [a["account_id"] for a in campaign_assignments if a.get("account_id")]
+    current_total_views = 0
+    if acc_ids:
+        tracking_start = campaign.get("tracking_start_date")
+        live_match: dict = {"campaign_id": campaign_id, "account_id": {"$in": acc_ids}}
+        if tracking_start:
+            live_match["published_at"] = {"$gte": tracking_start}
+        live_agg = await db.tracked_videos.aggregate([
+            {"$match": live_match},
+            {"$group": {"_id": None, "total_views": {"$sum": "$views"}}}
+        ]).to_list(1)
+        current_total_views = int(live_agg[0]["total_views"]) if live_agg else 0
+    pending = max(0, current_total_views - views_at_pause)
+    rpm = float(campaign.get("rpm") or 0)
+    cost = round((pending / 1000) * rpm, 2)
+    return {
+        "pending_views": pending,
+        "pending_cost": cost,
+        "paused_since": campaign.get("budget_exhausted_at"),
+        "views_at_pause": views_at_pause,
+        "current_total_views": current_total_views,
+        "rpm": rpm,
+    }
 
 # Include router
 # ================== PROSPECTS SYSTEM (campagnes pré-remplies pour démarcher agences) ==================

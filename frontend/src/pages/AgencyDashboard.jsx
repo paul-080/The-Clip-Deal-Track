@@ -1710,7 +1710,7 @@ function CampaignDashboard({ campaigns }) {
     finally { setRegeneratingLinkId(null); }
   };
 
-  const handleAddBudget = async () => {
+  const handleAddBudget = async (payPendingViews = false) => {
     const amount = parseFloat(addBudgetAmount);
     if (!amount || amount <= 0) return;
     setAddingBudget(true);
@@ -1719,14 +1719,19 @@ function CampaignDashboard({ campaigns }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, pay_pending_views: payPendingViews }),
       });
       if (res.ok) {
         const data = await res.json();
-        setCampaign(prev => ({ ...prev, budget_total: data.budget_total, budget_unlimited: false }));
-        toast.success(`+€${amount} ajouté au budget ✓`);
+        setCampaign(prev => ({ ...prev, budget_total: data.budget_total, budget_used: data.budget_used, budget_unlimited: false, status: data.status }));
+        if (data.pending_views_paid > 0) {
+          toast.success(`+€${amount} ajouté · ${data.pending_views_paid.toLocaleString("fr-FR")} vues rémunérées (€${data.pending_cost})`);
+        } else {
+          toast.success(`+€${amount} ajouté au budget ✓`);
+        }
         setAddBudgetAmount("");
         setShowAddBudget(false);
+        setPendingViewsEstimate(null);
       } else {
         const err = await res.json();
         toast.error(err.detail || "Erreur lors de l'ajout");
@@ -1734,6 +1739,21 @@ function CampaignDashboard({ campaigns }) {
     } catch { toast.error("Erreur réseau"); }
     finally { setAddingBudget(false); }
   };
+
+  // State + fetch : estimation des vues en attente quand la campagne est paused budget
+  const [pendingViewsEstimate, setPendingViewsEstimate] = useState(null);
+  const fetchPendingViewsEstimate = useCallback(async () => {
+    if (!campaignId) return;
+    try {
+      const res = await fetch(`${API}/campaigns/${campaignId}/pending-views-estimate`, { credentials: "include" });
+      if (res.ok) setPendingViewsEstimate(await res.json());
+    } catch {}
+  }, [campaignId]);
+  useEffect(() => {
+    if (showAddBudget && campaign?.status === "paused" && campaign?.paused_reason === "budget_exhausted") {
+      fetchPendingViewsEstimate();
+    }
+  }, [showAddBudget, campaign?.status, campaign?.paused_reason, fetchPendingViewsEstimate]);
 
   const handleSaveSettings = async () => {
     if (!settingsForm) return;
@@ -3215,29 +3235,58 @@ function CampaignDashboard({ campaigns }) {
               {!campaign.budget_unlimited && (
                 <div>
                   {showAddBudget ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        value={addBudgetAmount}
-                        onChange={(e) => setAddBudgetAmount(e.target.value)}
-                        placeholder="Montant €"
-                        className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-8 text-sm"
-                        onKeyDown={(e) => { if (e.key === "Enter") handleAddBudget(); if (e.key === "Escape") setShowAddBudget(false); }}
-                        autoFocus
-                      />
-                      <button
-                        onClick={handleAddBudget}
-                        disabled={addingBudget || !addBudgetAmount}
-                        className="px-3 h-8 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
-                      >
-                        {addingBudget ? "…" : "Ajouter"}
-                      </button>
-                      <button
-                        onClick={() => { setShowAddBudget(false); setAddBudgetAmount(""); }}
-                        className="px-2 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 text-xs transition-colors"
-                      >
-                        ✕
-                      </button>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          value={addBudgetAmount}
+                          onChange={(e) => setAddBudgetAmount(e.target.value)}
+                          placeholder="Montant €"
+                          className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-8 text-sm"
+                          onKeyDown={(e) => { if (e.key === "Enter") handleAddBudget(false); if (e.key === "Escape") setShowAddBudget(false); }}
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => { setShowAddBudget(false); setAddBudgetAmount(""); setPendingViewsEstimate(null); }}
+                          className="px-2 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 text-xs transition-colors"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {/* Si campagne pausee budget : propose 2 boutons - payer/ignorer les vues pendantes */}
+                      {pendingViewsEstimate && pendingViewsEstimate.pending_views > 0 ? (
+                        <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 space-y-2">
+                          <p className="text-amber-300 text-xs">
+                            ⚠️ <strong>{pendingViewsEstimate.pending_views.toLocaleString("fr-FR")} vues</strong> ont été faites depuis l'épuisement du budget (coût : <strong>€{pendingViewsEstimate.pending_cost}</strong>).
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleAddBudget(true)}
+                              disabled={addingBudget || !addBudgetAmount}
+                              className="flex-1 px-3 h-9 rounded-lg bg-[#39FF14] hover:bg-[#39FF14]/80 text-black text-xs font-semibold disabled:opacity-50 transition-colors"
+                              title="Les clippeurs seront payés pour ces vues. Le coût sera retiré du nouveau budget."
+                            >
+                              ✓ Rémunérer ces vues
+                            </button>
+                            <button
+                              onClick={() => handleAddBudget(false)}
+                              disabled={addingBudget || !addBudgetAmount}
+                              className="flex-1 px-3 h-9 rounded-lg bg-white/10 hover:bg-white/15 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                              title="Les vues entre l'épuisement et maintenant ne seront pas payées."
+                            >
+                              ✗ Ignorer ces vues
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleAddBudget(false)}
+                          disabled={addingBudget || !addBudgetAmount}
+                          className="w-full px-3 h-9 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-xs font-semibold disabled:opacity-50 transition-colors"
+                        >
+                          {addingBudget ? "…" : "Ajouter au budget"}
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <button
