@@ -1392,6 +1392,8 @@ function CampaignDashboard({ campaigns }) {
   const [kickingMember, setKickingMember] = useState(null);
   const [strikingMember, setStrikingMember] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
+  // Modal "Detail vues du jour" : { date: 'YYYY-MM-DD', label: '17/05' } ou null
+  const [dayDetailsModal, setDayDetailsModal] = useState(null);
   // Modal de reattribution : { type: 'account'|'video', id, currentUserId } ou null
   const [reassignDialog, setReassignDialog] = useState(null);
   const [reassignLoading, setReassignLoading] = useState(false);
@@ -3095,7 +3097,20 @@ function CampaignDashboard({ campaigns }) {
               const showDots = isHourly && days <= 1;
               return (
                 <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <AreaChart
+                    data={tlData}
+                    margin={{ top: 5, right: 5, left: -20, bottom: 0 }}
+                    onClick={(e) => {
+                      if (e && e.activePayload && e.activePayload[0]) {
+                        const p = e.activePayload[0].payload;
+                        if (p?.date && !isHourly) {
+                          const dateKey = p.date.length >= 10 ? p.date.slice(0, 10) : p.date;
+                          setDayDetailsModal({ date: dateKey, label: p.label || dateKey });
+                        }
+                      }
+                    }}
+                    style={{ cursor: !isHourly ? "pointer" : "default" }}
+                  >
                     <defs>
                       <linearGradient id="viewsTimelineGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#FF007F" stopOpacity={0.3} />
@@ -4759,6 +4774,94 @@ function CampaignDashboard({ campaigns }) {
           </div>
         </div>
       )}
+
+      {/* Modal "Detail vues du jour" — liste des videos avec vues */}
+      {dayDetailsModal && (() => {
+        const dayDate = dayDetailsModal.date;
+        const todayParisDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Paris" }))
+          .toISOString().slice(0, 10);
+        const isToday = dayDate === todayParisDate;
+        // Categorise les videos : postees ce jour vs anciennes encore actives
+        const newVideos = (allVideos || [])
+          .filter(v => v.published_at && v.published_at.slice(0, 10) === dayDate)
+          .sort((a, b) => (Number(b.views) || 0) - (Number(a.views) || 0));
+        const oldVideos = (allVideos || [])
+          .filter(v => v.published_at && v.published_at.slice(0, 10) < dayDate && v.tracking_active !== false)
+          .sort((a, b) => (Number(b.views) || 0) - (Number(a.views) || 0));
+        const totalNew = newVideos.reduce((s, v) => s + (Number(v.views) || 0), 0);
+        const renderRow = (v) => (
+          <a
+            key={v.video_id || v.platform_video_id}
+            href={v.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors"
+          >
+            <span className="text-base flex-shrink-0">
+              {v.platform === "tiktok" ? "🎵" : v.platform === "instagram" ? "📷" : v.platform === "youtube" ? "▶" : "🎬"}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-white text-sm truncate">{v.title || "Vidéo sans titre"}</p>
+              <p className="text-white/40 text-[11px] truncate">@{v.account_username || v.platform_video_id}</p>
+            </div>
+            <span className="text-white font-mono text-sm whitespace-nowrap">{fmt(v.views || 0)}</span>
+          </a>
+        );
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+            onClick={() => setDayDetailsModal(null)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#0F0F12] border border-white/10 rounded-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col"
+            >
+              <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
+                <div>
+                  <p className="text-white font-semibold text-base">Détail des vidéos — {dayDetailsModal.label}</p>
+                  <p className="text-white/40 text-xs mt-0.5">
+                    {newVideos.length} nouvelle{newVideos.length > 1 ? "s" : ""} · {oldVideos.length} ancienne{oldVideos.length > 1 ? "s" : ""}
+                    {isToday && ` · ${fmt(totalNew)} vues totales sur les nouvelles`}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDayDetailsModal(null)}
+                  className="p-1.5 rounded-lg hover:bg-white/5 text-white/40 hover:text-white"
+                ><X className="w-4 h-4" /></button>
+              </div>
+              <div className="overflow-y-auto flex-1 px-2 py-2">
+                {newVideos.length > 0 && (
+                  <>
+                    <p className="text-[10px] uppercase tracking-widest text-[#39FF14] font-semibold px-3 py-2">
+                      Nouvelles vidéos postées ce jour ({newVideos.length})
+                    </p>
+                    {newVideos.map(renderRow)}
+                  </>
+                )}
+                {oldVideos.length > 0 && (
+                  <>
+                    <p className="text-[10px] uppercase tracking-widest text-[#00E5FF] font-semibold px-3 py-2 mt-3">
+                      Anciennes vidéos actives ({oldVideos.length})
+                    </p>
+                    {oldVideos.slice(0, 20).map(renderRow)}
+                    {oldVideos.length > 20 && (
+                      <p className="text-center text-white/30 text-xs py-2">+ {oldVideos.length - 20} autres (top 20 affichés)</p>
+                    )}
+                  </>
+                )}
+                {newVideos.length === 0 && oldVideos.length === 0 && (
+                  <p className="text-center text-white/40 text-sm py-8">Aucune vidéo trackée pour cette date.</p>
+                )}
+              </div>
+              {!isToday && (
+                <div className="px-5 py-3 border-t border-white/5 text-[11px] text-white/40">
+                  ⓘ Les vues affichées sont actuelles (pas le delta de ce jour précis). Le split exact des vues par jour nécessite les snapshots historiques par vidéo.
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal de reattribution compte/video a un clippeur (ou aucun) */}
       {reassignDialog && (
