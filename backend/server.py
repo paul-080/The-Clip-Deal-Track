@@ -9938,12 +9938,14 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 {"$set": {"next_scrape_at": next_scrape.isoformat(), "scrape_interval_hours": interval_h, "tracking_per_day": tracking_per_day}}
             )
 
-        # SPEC PAUL : aucun staggered scheduling, tous les comptes scrapes ensemble
-        # aux horaires Pro fixes (8h30/16h30/23h30 Paris). On laisse la campagne
-        # passer dans le filtre — le gating fixed-time est gere ailleurs par
-        # _compute_next_scrape_at + le tick scheduler (track_videos_loop).
-        # was: if not force_all and next_scrape > now_track_run: skipped_count += 1; continue
-        _ = next_scrape  # var conservee (utilisee dans logs/calculs ulterieurs)
+        # SPEC PAUL : tous les comptes scrapes ensemble aux horaires Pro fixes
+        # (8h30/16h30/23h30 Paris). _compute_next_scrape_at retourne la prochaine
+        # de ces heures, donc le skip ci-dessous fire pile aux horaires voulus.
+        # Sans ce skip, le tick (toutes les 5 min) scraperait toutes les campagnes
+        # toutes les 5 min = explosion budget Apify/proxies.
+        if not force_all and next_scrape and next_scrape > now_track_run:
+            skipped_count += 1
+            continue
 
         campaign["_scrape_interval_h"] = interval_h
         campaign["_tracking_per_day"] = tracking_per_day
