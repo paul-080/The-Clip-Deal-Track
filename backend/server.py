@@ -9162,18 +9162,57 @@ async def _scrape_one_account_into_campaign(
         had_previous_scrapes = bool(account.get("last_tracked_at"))
         is_real_deletion = account_was_verified or had_previous_scrapes
 
+        confirmed_deleted = False  # defaut : pas confirme. Set True seulement apres double-verif.
         if is_strongly_deleted and not is_temporary:
-            # Signal FORT et non temporaire -> deleted IMMEDIAT
+            # SPEC PAUL : double-verification avant deleted.
+            # Une seule source 404 ne suffit plus — on demande confirmation a
+            # _verify_account_still_exists (verifie 2+ sources independantes via
+            # _verify_insta_exists / _verify_tiktok_exists / _verify_youtube_exists).
+            # Si la verif dit True (existe) ou None (incertain) -> on ne marque PAS deleted.
+            # Safety net supplementaire : si videos historiques en DB -> jamais deleted (faux positif).
+            try:
+                check_target = account.get("platform_channel_id") if plat == "youtube" else uname
+                verif = await asyncio.wait_for(
+                    _verify_account_still_exists(plat, check_target or uname),
+                    timeout=30
+                )
+                if verif is False:
+                    # Verif confirme 404. Verifie qu'il n'y a pas de videos historiques.
+                    existing_videos = await db.tracked_videos.count_documents({"account_id": acc_id})
+                    if existing_videos > 0:
+                        logger.warning(
+                            f"⚠️ {plat}/@{uname} : signal fort deleted MAIS {existing_videos} videos en DB. "
+                            f"On NE MARQUE PAS deleted (faux positif probable)."
+                        )
+                        update_fields["last_existence_check_result"] = "uncertain_has_videos"
+                    else:
+                        confirmed_deleted = True
+                else:
+                    # verif=True (existe) ou None (incertain) -> on ne marque PAS deleted
+                    logger.info(
+                        f"⚠️ {plat}/@{uname} : signal fort deleted MAIS verif active dit "
+                        f"{'exists' if verif is True else 'uncertain'} -> on garde verified, retry au prochain cycle"
+                    )
+                    update_fields["last_existence_check_result"] = "exists" if verif is True else "uncertain"
+            except asyncio.TimeoutError:
+                logger.warning(f"⚠️ {plat}/@{uname} : signal fort deleted MAIS verif active TIMEOUT -> on garde verified")
+                update_fields["last_existence_check_result"] = "timeout"
+            except Exception as ex:
+                logger.debug(f"Double-verif {plat}/@{uname} erreur: {type(ex).__name__}: {ex}")
+                update_fields["last_existence_check_result"] = "error"
+
+        if is_strongly_deleted and not is_temporary and confirmed_deleted:
+            # Confirme par 2 sources (signal scraping + verif active) + aucune video historique
             update_fields["status"] = "deleted"
             update_fields["deleted_at"] = datetime.now(timezone.utc).isoformat()
             if is_real_deletion:
-                update_fields["deleted_reason"] = f"Compte supprime sur {plat} (le clippeur a supprime son compte)"
+                update_fields["deleted_reason"] = f"Compte supprime sur {plat} (confirme 2 sources : scrape + verif active)"
                 update_fields["deleted_type"] = "deleted_by_user"  # ex-compte verifie devenu inaccessible
-                logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : le compte EXISTAIT, supprime par le clippeur ({last_err[:100]})")
+                logger.warning(f"📛 COMPTE SUPPRIME {plat}/@{uname} : confirme 2 sources, le compte EXISTAIT ({last_err[:100]})")
             else:
-                update_fields["deleted_reason"] = f"Compte {plat} introuvable (n'a jamais existe ou URL invalide)"
+                update_fields["deleted_reason"] = f"Compte {plat} introuvable (confirme 2 sources, jamais existe)"
                 update_fields["deleted_type"] = "never_existed"
-                logger.warning(f"❌ COMPTE INTROUVABLE {plat}/@{uname} : n'a jamais existe ({last_err[:100]})")
+                logger.warning(f"❌ COMPTE INTROUVABLE {plat}/@{uname} : confirme 2 sources, jamais existe ({last_err[:100]})")
             update_fields["not_found_count"] = 99  # marque comme confirme
         elif is_weakly_not_found and not is_temporary:
             # Signal faible -> incremente compteur, set deleted apres 3
@@ -9899,9 +9938,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                 {"$set": {"next_scrape_at": next_scrape.isoformat(), "scrape_interval_hours": interval_h, "tracking_per_day": tracking_per_day}}
             )
 
-        if not force_all and next_scrape > now_track_run:
-            skipped_count += 1
-            continue
+        # SPEC PAUL : aucun staggered scheduling, tous les comptes scrapes ensemble
+        # aux horaires Pro fixes (8h30/16h30/23h30 Paris). On laisse la campagne
+        # passer dans le filtre — le gating fixed-time est gere ailleurs par
+        # _compute_next_scrape_at + le tick scheduler (track_videos_loop).
+        # was: if not force_all and next_scrape > now_track_run: skipped_count += 1; continue
+        _ = next_scrape  # var conservee (utilisee dans logs/calculs ulterieurs)
 
         campaign["_scrape_interval_h"] = interval_h
         campaign["_tracking_per_day"] = tracking_per_day
@@ -9940,18 +9982,15 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
             platform = account["platform"]
             username = account["username"]
 
-            # ── DEAD ACCOUNT GUARD : skip si le compte est en pause auto apres 3 echecs ──
-            # Set par la logique plus bas. Permet d'eviter de gaspiller des requetes sur des
-            # comptes inexistants/bannis. Auto-reset apres 24h.
+            # ── DEAD ACCOUNT GUARD : RETIRE (spec Paul) ──
+            # was: skip si tracking_paused_until > now (pause auto apres 3/5/7 echecs).
+            # Spec Pro = aucune pause auto. Tous les comptes verified retentes a chaque cycle.
+            # On reset le flag s'il traine (legacy) pour ne pas polluer la DB.
             paused_until = account.get("tracking_paused_until")
             if paused_until:
                 try:
                     pu_dt = _parse_utc(paused_until)
-                    if pu_dt and pu_dt > datetime.now(timezone.utc):
-                        logger.info(f"Skip {platform}/@{username} — paused auto jusqu'a {paused_until} ({account.get('consecutive_failures', 0)} echecs consecutifs)")
-                        continue
-                    elif pu_dt:
-                        # Pause expiree, on retente et reset le flag
+                    if pu_dt:
                         await db.social_accounts.update_one(
                             {"account_id": account_id},
                             {"$set": {"tracking_paused_until": None}}
@@ -9990,19 +10029,11 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         if elapsed_hours < 24:
                             logger.info(f"Skip {platform}/@{username} — clicks campaign (24h soft) - last {elapsed_hours:.1f}h")
                             continue
-                    elif last_growth is not None:
-                        # NIVEAU 4 : tres tres mort (> 7 jours sans growth) -> 1x/24h
-                        if days_since_growth and days_since_growth > 7 and elapsed_hours < 24:
-                            logger.info(f"Skip {platform}/@{username} — very cold ({days_since_growth:.0f}j sans growth) — wait 24h")
-                            continue
-                        # NIVEAU 3 : inactif (0 growth + < 1000 vues) -> 24h
-                        if last_growth == 0 and last_total < 1000 and elapsed_hours < 24:
-                            logger.info(f"Skip {platform}/@{username} — cold (no growth, low views) — wait 24h")
-                            continue
-                        # NIVEAU 2 : stagnant (0 growth) -> 12h
-                        if last_growth == 0 and elapsed_hours < 12:
-                            logger.info(f"Skip {platform}/@{username} — stagnant (no growth) — wait 12h")
-                            continue
+                    # SPEC PAUL : Pro = 3 scrapes/jour, TOUS les comptes verified scrapés à chaque cycle.
+                    # AUCUN smart cache compte (very cold / cold / stagnant) — retiré.
+                    # was: NIVEAU 4 very cold (>7j sans growth) -> skip 24h
+                    # was: NIVEAU 3 cold (0 growth + <1000 vues) -> skip 24h
+                    # was: NIVEAU 2 stagnant (0 growth) -> skip 12h
             except Exception:
                 pass  # En cas de doute, on scrape
             # YouTube: if channel_id is missing (verified via HTTP fallback), try to re-verify
@@ -10217,20 +10248,10 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         await asyncio.sleep(0.5)
                         continue
 
-                    # PAUSE GRADUEE : plus indulgent qu'un 24h direct.
-                    # Permet de re-tenter rapidement les comptes rate-limited temporairement.
-                    if update_fields.get("status") != "deleted":
-                        pause_h = None
-                        if new_failures >= 7:
-                            pause_h = 24  # echecs persistants -> pause longue (lendemain)
-                        elif new_failures >= 5:
-                            pause_h = 6   # echecs serieux -> 6h
-                        elif new_failures >= 3:
-                            pause_h = 1   # echec moyen -> retry dans 1h (au lieu de 24h)
-                        if pause_h is not None:
-                            pause_until_dt = datetime.now(timezone.utc) + timedelta(hours=pause_h)
-                            update_fields["tracking_paused_until"] = pause_until_dt.isoformat()
-                            logger.warning(f"⚠️ {platform}/@{username} : {new_failures} echecs consecutifs -> pause auto {pause_h}h")
+                    # PAUSE GRADUEE : RETIREE (spec Paul).
+                    # was: pause auto 1h/6h/24h apres 3/5/7 echecs consecutifs.
+                    # Spec Pro = aucune pause auto, retentes a chaque cycle 8h30/16h30/23h30.
+                    # On preserve new_failures pour metrics/diagnostic mais on ne bloque plus.
                     await db.social_accounts.update_one(
                         {"account_id": account_id},
                         {"$set": update_fields}
@@ -10620,12 +10641,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
 # IMPORTANT : on LANCE 30 min AVANT l'heure pile pour que le scrape FINISSE a l'heure pile.
 # Le scraping prend ~15-30 min pour 100-300 comptes avec rate limit Insta.
 #
-# Plan Starter / Pro (1 scrape/jour) : lance a 23h30, finit ~minuit
-# Plan Business (3 scrapes/jour)     : lance a 8h30/15h30/23h30, finit ~9h/16h/minuit
+# Plan Starter (1 scrape/jour) : lance a 23h30, finit ~minuit
+# Plan Pro (3 scrapes/jour)    : lance a 8h30/16h30/23h30 Paris (spec Paul)
 SCRAPE_SCHEDULES_BY_PLAN = {
     1: [(23, 30)],                            # 1/jour : minuit (Starter)
     2: [(8, 30), (23, 30)],                   # 2/jour (legacy/compat)
-    3: [(8, 30), (15, 30), (23, 30)],         # 3/jour : Business (8h30 + 15h30 + 23h30 Paris)
+    3: [(8, 30), (16, 30), (23, 30)],         # 3/jour : Pro (8h30 + 16h30 + 23h30 Paris)
     4: [(5, 30), (11, 30), (17, 30), (23, 30)],  # 4/jour (futur premium)
     6: [(3, 30), (7, 30), (11, 30), (15, 30), (19, 30), (23, 30)],  # 6/jour : Enterprise (toutes les 4h)
     24: [(h, 0) for h in range(24)],          # 24/jour : Enterprise++ (toutes les heures, dispo si infra solide)
@@ -15892,11 +15913,11 @@ SUBSCRIPTION_PLANS = {
     "plan_small":     {"name": "Starter",   "amount": 24900,  "label": "249€/mois",
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 1, "click_only": False, "view_only": True},
+                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
                        "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
-                       "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": None,
+                       "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": 6,
                        "click_only": False, "view_only": False, "is_custom": True},
     # ===== Plans CLICS UNIQUEMENT (tracking de clics, AUCUN tracking de vues) =====
     # Le clippeur enregistre son compte (visible dans "Mes comptes"+"Mes videos") mais aucune video n'est scrapee.
@@ -15908,7 +15929,7 @@ SUBSCRIPTION_PLANS = {
                              "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 0, "click_only": True, "view_only": False},
     # Legacy aliases (compat ancien code)
     "plan_full":      {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
-                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 1, "click_only": False, "view_only": True},
+                       "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 3, "click_only": False, "view_only": True},
 }
 
 # Limits per plan (None = unlimited). Trial period = Business (plan_unlimited) by default.
@@ -15916,13 +15937,13 @@ SUBSCRIPTION_PLANS = {
 # SOURCE DE VERITE pour tracking_per_day : aligne avec SUBSCRIPTION_PLANS pour eviter incoherence.
 PLAN_LIMITS = {
     "plan_small":           {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 1, "click_only": False, "view_only": True},
-    "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 1, "click_only": False, "view_only": True},
+    "plan_medium":          {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_unlimited":       {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 3, "click_only": False, "view_only": True},
-    "plan_custom":          {"campaigns": None, "tracked_accounts": None,  "tracking_per_day": 4, "click_only": False, "view_only": False},
+    "plan_custom":          {"campaigns": None, "tracked_accounts": None,  "tracking_per_day": 6, "click_only": False, "view_only": False},
     "plan_small_click":     {"campaigns": 1,    "tracked_accounts": 30,    "tracking_per_day": 0, "click_only": True,  "view_only": False},
     "plan_medium_click":    {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
     "plan_unlimited_click": {"campaigns": None, "tracked_accounts": 400,   "tracking_per_day": 0, "click_only": True,  "view_only": False},
-    "plan_full":            {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 1, "click_only": False, "view_only": True},
+    "plan_full":            {"campaigns": 3,    "tracked_accounts": 100,   "tracking_per_day": 3, "click_only": False, "view_only": True},
 }
 
 def _get_user_effective_plan(user: dict) -> Optional[str]:
