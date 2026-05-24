@@ -3451,6 +3451,10 @@ function CampaignDashboard({ campaigns }) {
             )}
             <span className="text-white/30 text-xs self-center">{displayVideos.length} vidéo{displayVideos.length !== 1 ? "s" : ""}</span>
             <div className="ml-auto flex items-center gap-2">
+              <button onClick={() => { setTrackResult(null); setManualVideoForm({ target: "", url: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok") }); setShowManualVideoModal(true); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#f0c040]/10 hover:bg-[#f0c040]/20 border border-[#f0c040]/30 text-[#f0c040] text-xs font-medium transition-all">
+                + Tracker une vidéo (lien)
+              </button>
               <button onClick={() => { setTrackAccountForm({ user_id: "", platform: ((campaign?.platforms && campaign.platforms.length > 0) ? campaign.platforms[0] : "tiktok"), username: "" }); setAccountVideos(null); setShowTrackAccountModal(true); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 border border-[#00E5FF]/30 text-[#00E5FF] text-xs font-medium transition-all">
                 + Tracker un compte / vidéos

@@ -10412,28 +10412,58 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
             except Exception as e:
                 logger.warning(f"Tracking failed for {platform}/@{username}: {e}")
         # Re-fetch manually added videos to keep views updated
+        # + meme regle d'archive que les videos scrapees par compte :
+        #   age >= 30j ET growth_48h < 50 -> tracking_active=False
         try:
             manual_vids = await db.tracked_videos.find(
                 {"campaign_id": campaign_id, "manually_added": True, "url": {"$ne": None}},
-                {"_id": 0, "video_id": 1, "url": 1, "platform": 1, "user_id": 1}
+                {"_id": 0, "video_id": 1, "url": 1, "platform": 1, "user_id": 1,
+                 "views": 1, "created_at": 1, "first_tracked_at": 1, "tracking_active": 1}
             ).to_list(50)
             for mv in manual_vids:
                 try:
+                    # Skip si video deja archivee (ne pas la rescraper pour rien)
+                    if mv.get("tracking_active") is False:
+                        continue
                     mv_url = mv.get("url", "")
                     mv_platform = mv.get("platform", "")
                     if not mv_url or not mv_platform:
                         continue
                     fresh = await fetch_single_video_by_url(mv_url, mv_platform)
-                    mv_earnings = round((fresh["views"] / 1000) * rpm, 2) if mv.get("user_id") else 0
+                    # MAX ONLY : les vues ne diminuent jamais entre 2 scrapes
+                    new_views = max(int(fresh.get("views") or 0), int(mv.get("views") or 0))
+                    mv_earnings = round((new_views / 1000) * rpm, 2) if mv.get("user_id") else 0
+                    mv_update = {
+                        "views": new_views,
+                        "likes": fresh.get("likes", 0),
+                        "comments": fresh.get("comments", 0),
+                        "earnings": mv_earnings,
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    # Auto-archive si age >= 30 jours ET growth_48h < 50
+                    first_tracked = _parse_utc(mv.get("first_tracked_at") or mv.get("created_at"))
+                    if first_tracked:
+                        age_hours = (datetime.now(timezone.utc) - first_tracked).total_seconds() / 3600
+                        if age_hours >= 720:  # 30 jours
+                            try:
+                                cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%d")
+                                snap_48h = await db.video_views_snapshots.find_one(
+                                    {"video_id": mv.get("video_id") or "",
+                                     "date": {"$lte": cutoff_48h}},
+                                    sort=[("date", -1)]
+                                )
+                                if snap_48h:
+                                    old_views_48h = int(snap_48h.get("views") or 0)
+                                    growth_48h = new_views - old_views_48h
+                                    if growth_48h < 50:
+                                        mv_update["tracking_active"] = False
+                                        mv_update["archived_reason"] = f"+{growth_48h} vues sur 48h (<50) apres 30j"
+                                        mv_update["archived_at"] = datetime.now(timezone.utc).isoformat()
+                            except Exception as ae:
+                                logger.debug(f"Manual video archive check failed: {ae}")
                     await db.tracked_videos.update_one(
                         {"video_id": mv["video_id"]},
-                        {"$set": {
-                            "views": fresh["views"],
-                            "likes": fresh.get("likes", 0),
-                            "comments": fresh.get("comments", 0),
-                            "earnings": mv_earnings,
-                            "fetched_at": datetime.now(timezone.utc).isoformat(),
-                        }}
+                        {"$set": mv_update}
                     )
                 except Exception as e:
                     logger.debug(f"Manual video re-fetch skipped: {e}")
