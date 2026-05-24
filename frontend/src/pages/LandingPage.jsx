@@ -378,8 +378,7 @@ export default function LandingPage() {
               transition={{ delay: 0.3 }}
               className="text-lg text-white/60 max-w-xl mb-10 leading-relaxed"
             >
-              Connectez agences, clippeurs et créateurs. Rémunération au RPM, 
-              suivi en temps réel, gestion des équipes simplifiée.
+              Tracking auto TikTok / Instagram / YouTube, paiement aux clippeurs en 1 clic, anti-fraude intégré.
             </motion.p>
 
             <motion.div
@@ -445,10 +444,10 @@ export default function LandingPage() {
             className="text-center mb-10"
           >
             <h2 className="text-3xl lg:text-4xl font-display font-bold text-white mb-4 tracking-tight">
-              Découvrez The Clip Deal Track en vidéo
+              Voir la plateforme en action
             </h2>
             <p className="text-white/50 text-lg">
-              Quelques minutes pour comprendre comment automatiser vos campagnes de clipping.
+              2 minutes, tout est dit.
             </p>
           </motion.div>
 
@@ -481,10 +480,10 @@ export default function LandingPage() {
             className="text-center mb-16"
           >
             <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-4">
-              Comment ça fonctionne
+              4 rôles, 1 plateforme
             </h2>
             <p className="text-white/50 max-w-lg mx-auto">
-              Une plateforme conçue pour simplifier la gestion de vos campagnes de clipping
+              Chaque acteur du clipping a son espace dédié.
             </p>
           </motion.div>
 
@@ -558,19 +557,18 @@ export default function LandingPage() {
                 <span className="text-sm text-[#00E5FF]">Système RPM</span>
               </div>
               <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-6">
-                Rémunération transparente
+                Payé au RPM,
                 <br />
-                <span className="text-[#00E5FF]">au nombre de vues</span>
+                <span className="text-[#00E5FF]">pas à l'estimation</span>
               </h2>
               <p className="text-white/50 mb-8 leading-relaxed">
-                Les clippeurs sont payés selon leurs performances. Chaque campagne définit 
-                un RPM (revenu par 1000 vues), un seuil minimum et un plafond maximum.
+                Vues récupérées direct depuis TikTok, Instagram, YouTube. Tu fixes le RPM, on calcule, tu valides.
               </p>
               <ul className="space-y-4">
                 {[
                   "RPM personnalisable par campagne",
-                  "Suivi des vues en temps réel",
-                  "Paiements automatiques",
+                  "Tracking vues 1× ou 3×/jour",
+                  "Paiement validé en 1 clic",
                   "Historique détaillé des gains",
                 ].map((item, i) => (
                   <li key={i} className="flex items-center gap-3 text-white/70">
@@ -704,31 +702,6 @@ export default function LandingPage() {
               </p>
             </motion.div>
           </div>
-        </div>
-      </section>
-
-      {/* CTA Section */}
-      <section className="relative z-10 px-6 lg:px-16 py-24">
-        <div className="max-w-4xl mx-auto text-center">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-          >
-            <h2 className="font-display font-bold text-3xl lg:text-5xl text-white tracking-tight mb-6">
-              Prêt à commencer ?
-            </h2>
-            <p className="text-white/50 mb-10 max-w-lg mx-auto">
-              Rejoignez la plateforme et commencez à gérer vos campagnes de clipping dès aujourd'hui.
-            </p>
-            <Button
-              onClick={handleGetStarted}
-              data-testid="cta-start-btn"
-              className="bg-[#00E5FF] hover:bg-[#00d4eb] text-black font-bold rounded-full px-10 py-6 text-lg transition-colors duration-200"
-            >
-              Commencer gratuitement
-            </Button>
-          </motion.div>
         </div>
       </section>
 
@@ -927,7 +900,12 @@ export default function LandingPage() {
             />
             <span className="font-display font-bold text-white">The Clip Deal Track</span>
           </div>
-          <p className="text-sm text-white/40">© 2025 The Clip Deal Track. Tous droits réservés.</p>
+          <div className="flex items-center gap-5 text-sm text-white/40">
+            <button onClick={() => navigate("/features")} className="hover:text-white transition-colors">Fonctionnalités</button>
+            <button onClick={() => navigate("/contact-devis")} className="hover:text-white transition-colors">Contact</button>
+            <button onClick={() => navigate("/cgu")} className="hover:text-white transition-colors">CGU</button>
+            <span className="text-white/30">© 2025</span>
+          </div>
         </div>
       </footer>
 

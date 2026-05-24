@@ -25,7 +25,7 @@ import { motion } from "framer-motion";
 import {
   Home, Search, Smartphone, CreditCard, Settings, MessageCircle,
   Video, TrendingUp, Eye, DollarSign, Plus, Trash2, Check, X, AlertTriangle,
-  Heart, Share2, BarChart2, Link2, ChevronRight, HelpCircle, Copy, RefreshCw, MousePointerClick,
+  BarChart2, Link2, ChevronRight, HelpCircle, Copy, RefreshCw, MousePointerClick,
   ThumbsUp, ThumbsDown
 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -336,9 +336,6 @@ function PostCard({ ann, currentUser }) {
             <span>{comments.length || ""} commentaire{comments.length !== 1 ? "s" : ""}</span>
           </button>
         </div>
-        <button className="flex items-center gap-1.5 text-sm text-white/40 hover:text-white/70 transition-colors">
-          <Share2 className="w-4 h-4" /> Partager
-        </button>
       </div>
 
       {/* Comments section */}
@@ -445,9 +442,6 @@ function PostComposer({ user, onPosted }) {
             className="flex-1 text-left bg-white/5 rounded-full px-4 py-2 text-sm text-white/30 hover:bg-white/10 transition-colors"
           >
             Publier une annonce campagne…
-          </button>
-          <button className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#FF007F]/10 text-[#FF007F] text-xs font-medium hover:bg-[#FF007F]/20 transition-colors">
-            <Video className="w-3.5 h-3.5" /> En direct
           </button>
         </div>
       ) : (

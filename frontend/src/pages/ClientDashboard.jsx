@@ -184,7 +184,7 @@ function CampaignView({ campaigns }) {
   const fetchAllVideos = async () => {
     setVideosLoading(true);
     try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/videos`, { credentials: "include" });
+      const res = await fetch(`${API}/campaigns/${campaignId}/tracked-videos`, { credentials: "include" });
       if (res.ok) { const d = await res.json(); setAllVideos(d.videos || []); }
     } catch {} finally { setVideosLoading(false); }
   };
@@ -205,11 +205,14 @@ function CampaignView({ campaigns }) {
     } catch {} finally { setTopClipsLoading(false); }
   };
 
-  if (!campaign) return (
-    <div className="flex items-center justify-center h-64">
-      <p className="text-white/40">Campagne non trouvée</p>
-    </div>
-  );
+  if (!campaign) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <p className="text-white/60 text-base mb-2">Campagne introuvable</p>
+        <p className="text-white/30 text-sm">Cette campagne n'existe plus ou vous n'y avez pas accès.</p>
+      </div>
+    );
+  }
 
   // ── KPIs (same as agency, without gains estimés) ──────────────────────────
   const totalViews = allVideos.reduce((s, v) => s + (v.views || 0), 0);
@@ -247,16 +250,6 @@ function CampaignView({ campaigns }) {
     if (sortField === field) setSortDir(d => d === "asc" ? "desc" : "asc");
     else { setSortField(field); setSortDir("desc"); }
   };
-
-  // Guard : campaign peut etre undefined si l'ID est invalide ou si campaigns n'est pas encore charge
-  if (!campaign) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-center">
-        <p className="text-white/60 text-base mb-2">Campagne introuvable</p>
-        <p className="text-white/30 text-sm">Cette campagne n'existe plus ou vous n'y avez pas accès.</p>
-      </div>
-    );
-  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="client-campaign-view">

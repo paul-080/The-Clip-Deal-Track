@@ -171,7 +171,9 @@ export function PostCard({ ann, currentUser }) {
             <span>{comments.length || ""} commentaire{comments.length !== 1 ? "s" : ""}</span>
           </button>
         </div>
-        <button className="flex items-center gap-1.5 text-sm text-white/40 hover:text-white/70 transition-colors">
+        <button
+          onClick={() => { navigator.clipboard?.writeText(window.location.href); toast.success("Lien copié"); }}
+          className="flex items-center gap-1.5 text-sm text-white/40 hover:text-white/70 transition-colors">
           <Share2 className="w-4 h-4" /> Partager
         </button>
       </div>

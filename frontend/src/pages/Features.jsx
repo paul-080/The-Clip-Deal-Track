@@ -446,7 +446,7 @@ export default function Features() {
             Mode d'emploi
           </h2>
           <p className="text-white/50 text-center mb-10">
-            De l'inscription au premier paiement, 5 étapes
+            De l'inscription au premier paiement, 6 étapes
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
             <StepCard

@@ -27,9 +27,9 @@ import { motion } from "framer-motion";
 import {
   Home, Search, Plus, Link2, CreditCard, Settings, MessageCircle,
   Video, Users, User, Eye, DollarSign, Copy, Check, Image, AlertTriangle,
-  TrendingUp, BarChart3, ExternalLink, Heart, MessageSquare, ArrowUpDown,
+  ExternalLink, Heart, MessageSquare, ArrowUpDown,
   ChevronUp, ChevronDown, RefreshCw, Play, HelpCircle, MousePointerClick, Calendar,
-  ThumbsUp, ThumbsDown, Share2, ChevronRight, BarChart2, X, Building2
+  X, Building2
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
 import { Button } from "../components/ui/button";
@@ -529,7 +529,7 @@ function AgencyHome({ announcements, onUpdate }) {
     >
       <div>
         <h1 className="font-display font-bold text-2xl md:text-3xl text-white mb-2">Accueil — Annonces</h1>
-        <p className="text-white/50">Publiez des annonces pour vos clippeurs (avec photo, like, dislike, commentaires)</p>
+        <p className="text-white/50">Annonces pour vos clippeurs</p>
       </div>
 
       {/* Composer (avec upload photo) */}
@@ -1382,7 +1382,6 @@ function CampaignDashboard({ campaigns }) {
   const { user } = useAuth();
   const campaignId = location.pathname.split("/")[3];
   const [campaign, setCampaign] = useState(null);
-  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("overview");
   const [pendingMembers, setPendingMembers] = useState([]);
@@ -1413,7 +1412,6 @@ function CampaignDashboard({ campaigns }) {
   // Mode "Voir les videos avant" : scrape le compte + selection
   const [accountVideos, setAccountVideos] = useState(null); // null | { videos: [], count, ... }
   const [scrapingForPreview, setScrapingForPreview] = useState(false);
-  const [trackingVideoId, setTrackingVideoId] = useState(null);
   // Multi-selection : ids des videos cochees pour bulk-add
   const [selectedVideoIds, setSelectedVideoIds] = useState(() => new Set());
   const [bulkTracking, setBulkTracking] = useState(false);
@@ -1424,12 +1422,6 @@ function CampaignDashboard({ campaigns }) {
   const [filterClipper, setFilterClipper] = useState("all");
   const [showManualVideoModal, setShowManualVideoModal] = useState(false);
   const [manualVideoForm, setManualVideoForm] = useState({ target: "", url: "", platform: "tiktok" });
-  // Mode "url" (URL directe) ou "account" (scrape compte + selection)
-  const [importMode, setImportMode] = useState("account");
-  const [scrapeUsername, setScrapeUsername] = useState("");
-  const [scrapedVideos, setScrapedVideos] = useState(null);
-  const [scrapingAccount, setScrapingAccount] = useState(false);
-  const [trackingVideoUrl, setTrackingVideoUrl] = useState(null);
   const [addingVideo, setAddingVideo] = useState(false);
   const [trackResult, setTrackResult] = useState(null); // { views, title, earnings }
   const [clickLinks, setClickLinks] = useState(null);      // { links, totals, rate_per_click }
@@ -1460,15 +1452,6 @@ function CampaignDashboard({ campaigns }) {
   const [topClips, setTopClips] = useState([]);
   const [topClipsLoading, setTopClipsLoading] = useState(false);
   const [topClipsPeriod, setTopClipsPeriod] = useState("all");
-  // ── Period stats (24h / 7d / 30d / year / all) ──────────────────────────────
-  const [periodStats, setPeriodStats] = useState(null);
-  const [periodSel, setPeriodSel] = useState("30d");
-  const [periodOffset, setPeriodOffset] = useState(0);
-  const [periodLoading, setPeriodLoading] = useState(false);
-  // Gains mensuels par campagne (split par clipper)
-  const [monthlyEarnings, setMonthlyEarnings] = useState(null);
-  const [monthlyEarningsLoading, setMonthlyEarningsLoading] = useState(false);
-  const [expandedMonth, setExpandedMonth] = useState(null);
 
   const fmt = fmtViews;
   const PLAT_COLOR = { tiktok: "#00E5FF", instagram: "#FF007F", youtube: "#FF4444" };
@@ -1512,119 +1495,6 @@ function CampaignDashboard({ campaigns }) {
       if (res.ok) setKpiStats(await res.json());
     } catch {}
     finally { setKpiStatsLoading(false); }
-  };
-
-  const fetchPeriodStats = async (p = periodSel, off = periodOffset) => {
-    setPeriodLoading(true);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/period-stats?period=${p}&offset=${off}`, { credentials: "include" });
-      if (res.ok) setPeriodStats(await res.json());
-    } catch {}
-    finally { setPeriodLoading(false); }
-  };
-
-  const fetchMonthlyEarnings = async () => {
-    setMonthlyEarningsLoading(true);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/monthly-earnings`, { credentials: "include" });
-      if (res.ok) setMonthlyEarnings(await res.json());
-    } catch {}
-    finally { setMonthlyEarningsLoading(false); }
-  };
-
-  // Auto-fetch period stats when entering overview tab
-  useEffect(() => {
-    if (campaignId && activeTab === "overview") {
-      fetchPeriodStats(periodSel, periodOffset);
-      fetchMonthlyEarnings();
-    }
-    // eslint-disable-next-line
-  }, [campaignId, activeTab, periodSel, periodOffset]);
-
-  const [refreshingStats, setRefreshingStats] = useState(false);
-  const [refreshCountdown, setRefreshCountdown] = useState(0);
-  const refreshAllData = useCallback(() => {
-    // Reload ALL data sources de la campagne
-    try { fetchCampaign?.(); } catch {}
-    try { fetchStats?.(); } catch {}
-    try { fetchAllVideos?.(); } catch {}
-    try { fetchTopClips?.(); } catch {}
-    try { fetchAllAccounts?.(); } catch {}
-    try { fetchPeriodStats?.(); } catch {}
-    try { fetchViewsTimeline?.(); } catch {}
-    try { fetchMonthlyEarnings?.(); } catch {}
-  }, []);
-
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const handleResetTrackingData = async () => {
-    if (resetting) return;
-    setResetting(true);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/reset-tracking-data`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ confirm: true }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const d = data.deleted || {};
-        toast.success(
-          `✓ Reset effectué : ${d.tracked_videos || 0} vidéos supprimées. Re-scrape en cours, données fraîches dans 1-3 min.`,
-          { duration: 8000 }
-        );
-        setResetConfirmOpen(false);
-        // Refresh UI immediatement (DB vidée) puis encore après scrape
-        try { fetchAllVideos?.(); } catch {}
-        try { fetchTopClips?.(); } catch {}
-        try { fetchStats?.(); } catch {}
-        setTimeout(() => { try { fetchAllVideos?.(); fetchTopClips?.(); fetchStats?.(); } catch {} }, 60000);
-        setTimeout(() => { try { fetchAllVideos?.(); fetchTopClips?.(); fetchStats?.(); } catch {} }, 180000);
-      } else {
-        toast.error(data.detail || `Erreur ${res.status}`);
-      }
-    } catch (e) {
-      toast.error("Erreur réseau");
-    } finally {
-      setResetting(false);
-    }
-  };
-
-  const handleRefreshStats = async () => {
-    if (refreshingStats) return;
-    setRefreshingStats(true);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/refresh-stats`, {
-        method: "POST", credentials: "include"
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        toast.success("✓ Scrape lancé — refresh auto dans 60s, 90s, 180s", { duration: 6000 });
-        // Refresh IMMEDIAT (fetch les data deja en DB)
-        refreshAllData();
-        // Refresh apres 60s, 90s, 180s pour capter les nouvelles vues
-        setTimeout(() => refreshAllData(), 60000);
-        setTimeout(() => refreshAllData(), 90000);
-        setTimeout(() => refreshAllData(), 180000);
-        // Countdown visuel pendant 3 min
-        let countdown = 180;
-        setRefreshCountdown(countdown);
-        const timer = setInterval(() => {
-          countdown -= 1;
-          setRefreshCountdown(countdown);
-          if (countdown <= 0) clearInterval(timer);
-        }, 1000);
-      } else if (res.status === 429) {
-        toast.error(data.detail || "Trop tôt, attends 5 min entre 2 refresh", { duration: 5000 });
-      } else {
-        toast.error(data.detail || `Erreur ${res.status} lors du refresh`);
-      }
-    } catch (e) {
-      toast.error("Erreur réseau : " + (e?.message || "connexion impossible"));
-    } finally {
-      setRefreshingStats(false);
-    }
   };
 
   const fetchClickStats = async (p = period, cFrom = customFrom, cTo = customTo) => {
@@ -1816,86 +1686,6 @@ function CampaignDashboard({ campaigns }) {
       }
     } catch { toast.error("Erreur réseau"); }
     finally { setDeletingCampaign(false); }
-  };
-
-  const handleScrapeAccount = async () => {
-    if (!scrapeUsername.trim()) return;
-    setScrapingAccount(true);
-    setScrapedVideos(null);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/list-account-videos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          username: scrapeUsername.trim().replace(/^@/, ""),
-          platform: manualVideoForm.platform,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setScrapedVideos(data);
-        if ((data.videos || []).length === 0) {
-          toast.error("Aucune vidéo trouvée sur ce compte");
-        } else {
-          toast.success(`${data.videos.length} vidéos trouvées — clique sur celle à tracker`);
-        }
-      } else {
-        let detail = "Erreur scraping";
-        try { detail = (await res.json()).detail || detail; } catch {}
-        toast.error(detail);
-      }
-    } catch (e) {
-      toast.error(`Erreur réseau: ${e?.message || "connexion impossible"}`);
-    } finally {
-      setScrapingAccount(false);
-    }
-  };
-
-  const handleTrackVideoFromList = async (video) => {
-    setTrackingVideoUrl(video.url);
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          url: video.url,
-          platform: manualVideoForm.platform,
-          target: manualVideoForm.target,
-          // si on a le username (depuis scrape) on l'envoie pour permettre VPS gratuit
-          ...(scrapeUsername ? { account_username: scrapeUsername.replace(/^@/, "") } : {}),
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const v = data.video || {};
-        const vws = v.views || 0;
-        const lks = v.likes || 0;
-        const status = data.scraping_status || "ok";
-        if (status === "ok") {
-          toast.success(`✓ Vidéo trackée — ${vws.toLocaleString("fr-FR")} vues officielles`);
-        } else if (status === "partial") {
-          toast.success(`✓ Vidéo trackée — ${lks.toLocaleString("fr-FR")} likes (vues non publiques)`, { duration: 6000 });
-        } else {
-          toast(data.message || "Vidéo enregistrée ⏳", { duration: 6000 });
-        }
-        // Marque la vidéo comme déjà trackée dans la liste
-        setScrapedVideos(prev => prev ? {
-          ...prev,
-          videos: prev.videos.map(x => x.platform_video_id === video.platform_video_id ? { ...x, _tracked: true, views: vws, likes: lks } : x)
-        } : prev);
-        fetchAllVideos();
-      } else {
-        let detail = `Erreur tracking (HTTP ${res.status})`;
-        try { detail = (await res.json()).detail || detail; } catch {}
-        toast.error(detail, { duration: 6000 });
-      }
-    } catch (e) {
-      toast.error(`Erreur: ${e?.message || "connexion impossible"}`);
-    } finally {
-      setTrackingVideoUrl(null);
-    }
   };
 
   const handleAddManualVideo = async () => {
@@ -2099,65 +1889,6 @@ function CampaignDashboard({ campaigns }) {
     }
   };
 
-  // Conserve l'ancien comportement single-click pour compatibilite (utilise ailleurs si besoin)
-  const handleTrackVideoFromAccountPreview = async (video) => {
-    if (trackingVideoId) return;
-    setTrackingVideoId(video.platform_video_id);
-    try {
-      const body = {
-        url: video.url,
-        platform: trackAccountForm.platform,
-        platform_video_id: video.platform_video_id || "",
-        account_username: trackAccountForm.username.trim().replace(/^@/, ""),
-        ...(trackAccountForm.user_id ? { target: trackAccountForm.user_id } : {}),
-      };
-      const res = await fetch(`${API}/campaigns/${campaignId}/add-video`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const v = data.video || {};
-        const realViews = v.views || 0;
-        const realLikes = v.likes || 0;
-        const status = data.scraping_status || "ok";
-        if (status === "ok") {
-          toast.success(`✓ Vidéo trackée — ${realViews.toLocaleString("fr-FR")} vues officielles`);
-        } else if (status === "partial") {
-          toast.success(`✓ Vidéo trackée — ${realLikes.toLocaleString("fr-FR")} likes (vues non publiques)`, { duration: 6000 });
-        } else if (status === "retry_later") {
-          toast(`⏳ Vidéo enregistrée — stats en attente (récupérées au prochain cycle de tracking)`, { duration: 7000, icon: "⏳" });
-        } else {
-          toast.success(data.message || "Vidéo trackée");
-        }
-        setAccountVideos(prev => prev ? {
-          ...prev,
-          videos: prev.videos.map(vv => vv.platform_video_id === video.platform_video_id ? { ...vv, _tracked: true, views: realViews, likes: realLikes } : vv),
-        } : prev);
-        fetchAllVideos();
-      } else {
-        const e = await res.json().catch(() => ({}));
-        toast.error(e.detail || `Erreur tracking (HTTP ${res.status})`, { duration: 6000 });
-      }
-    } catch (err) {
-      const isBlock = err?.message?.includes("Failed to fetch") || err?.name === "TypeError";
-      if (isBlock) {
-        toast.error("Requête bloquée par AdBlock/extension. Désactive-le pour theclipdealtrack.com.", { duration: 8000 });
-      } else {
-        toast.error(`Erreur réseau: ${err?.message || "connexion impossible"}`);
-      }
-    } finally {
-      setTrackingVideoId(null);
-    }
-  };
-
-  const handleTrackAllVideosAndAddAccount = async () => {
-    // Track le compte (scrape auto en background) + ajout
-    await handleTrackAccount();
-  };
-
   const handleTrackAccount = async () => {
     // user_id est OPTIONNEL : si vide, le compte est attribue a l'agence (gains restent agence)
     if (!trackAccountForm.platform || !trackAccountForm.username.trim()) {
@@ -2283,12 +2014,10 @@ function CampaignDashboard({ campaigns }) {
     } catch {} finally { setLoading(false); }
   };
 
-  const fetchStats = async () => {
-    try {
-      const res = await fetch(`${API}/campaigns/${campaignId}/stats`, { credentials: "include" });
-      if (res.ok) setStats(await res.json());
-    } catch {}
-  };
+  // Endpoint /stats n'est plus rendu dans le UI agence : les chiffres viennent de kpi-stats,
+  // period-stats, click-stats, views-chart. On garde la fonction comme no-op pour ne pas
+  // casser les onClick existants (refresh manuel & onScrapeComplete) sans appel inutile.
+  const fetchStats = () => {};
 
   const fetchPendingMembers = async () => {
     try {
@@ -2461,26 +2190,6 @@ function CampaignDashboard({ campaigns }) {
     } catch { toast.error("Erreur réseau"); }
   };
 
-  // ── Chart data: aggregate views per day from published_at ──────────────────
-  const chartData = useMemo(() => {
-    if (!allVideos.length) return [];
-    const byDay = {};
-    const today = new Date();
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(today); d.setDate(d.getDate() - i);
-      const key = d.toISOString().split("T")[0];
-      byDay[key] = { date: key, views: 0, videos: 0 };
-    }
-    allVideos.forEach(v => {
-      const d = (v.published_at || v.fetched_at || "").split("T")[0];
-      if (byDay[d]) { byDay[d].views += v.views || 0; byDay[d].videos += 1; }
-    });
-    return Object.values(byDay).map(d => ({
-      ...d,
-      label: new Date(d.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
-    }));
-  }, [allVideos]);
-
   // ── Filtered + sorted videos ─────────────────────────────────────────────
   const displayVideos = useMemo(() => {
     let vids = [...allVideos];
@@ -2503,14 +2212,6 @@ function CampaignDashboard({ campaigns }) {
     if (sortField !== field) return <ArrowUpDown className="w-3 h-3 text-white/20" />;
     return sortDir === "asc" ? <ChevronUp className="w-3 h-3 text-[#FF007F]" /> : <ChevronDown className="w-3 h-3 text-[#FF007F]" />;
   };
-
-  // ── Aggregate KPIs ───────────────────────────────────────────────────────
-  const totalViews = allVideos.reduce((s, v) => s + (v.views || 0), 0);
-  const totalLikes = allVideos.reduce((s, v) => s + (v.likes || 0), 0);
-  const totalComments = allVideos.reduce((s, v) => s + (v.comments || 0), 0);
-  const totalEarnings = allVideos.reduce((s, v) => s + (v.earnings || 0), 0);
-  const engagementRate = totalViews > 0 ? ((totalLikes + totalComments) / totalViews * 100).toFixed(1) : "0.0";
-  const avgViews = allVideos.length > 0 ? Math.round(totalViews / allVideos.length) : 0;
 
   // Clippers list for filter dropdown
   // Filter clippeurs SEULEMENT (pas de manager dans le classement)
@@ -5099,7 +4800,7 @@ function LinksPage() {
                 {[
                   { type: "clipper", token: campaign.token_clipper, icon: Video, label: "Lien Clippeur", color: "#00E5FF" },
                   { type: "manager", token: campaign.token_manager, icon: Users, label: "Lien Manager", color: "#39FF14" },
-                  { type: "client", token: campaign.token_client, icon: Eye, label: "Lien Client", color: "#FFB300" },
+                  { type: "client", token: campaign.token_client, icon: Eye, label: "Lien Client", color: "#f0c040" },
                 ].map(({ type, token, icon: Icon, label, color }) => (
                   <div
                     key={type}

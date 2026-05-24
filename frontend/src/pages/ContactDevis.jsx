@@ -97,9 +97,8 @@ export default function ContactDevis() {
             Retour
           </Link>
           <div className="flex items-center gap-2">
-            <div className="bg-gradient-to-br from-[#00E5FF] to-[#FF007F] rounded-md px-3 py-1">
-              <span className="text-black font-bold text-sm">▶ The Clip Deal Track</span>
-            </div>
+            <img src={process.env.PUBLIC_URL + "/logo.svg"} alt="" className="w-7 h-7 rounded-md" />
+            <span className="font-display font-bold text-white text-sm">The Clip Deal Track</span>
           </div>
         </div>
       </div>

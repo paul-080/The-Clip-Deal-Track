@@ -183,17 +183,11 @@ function HomePage({ reminderStatus, campaigns }) {
       )}
 
       {/* Quick stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Card className="bg-[#121212] border-white/10">
           <CardContent className="p-5">
             <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Campagnes</p>
             <p className="font-mono font-bold text-2xl text-[#39FF14]">{campaigns.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-5">
-            <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Statut</p>
-            <p className="font-mono font-bold text-2xl text-white">Manager</p>
           </CardContent>
         </Card>
         <Card className="bg-[#121212] border-white/10 cursor-pointer hover:border-[#39FF14]/30 transition-colors"
@@ -720,7 +714,7 @@ function CampaignDashboard({ campaigns }) {
   }, [campaignId]);
 
   useEffect(() => {
-    if (campaign?.payment_model === "views" || campaign.payment_model === "both") fetchViewsTimeline();
+    if (campaign?.payment_model === "views" || campaign?.payment_model === "both") fetchViewsTimeline();
   }, [campaign?.campaign_id]);
 
   const handleAddStrike = async (userId) => {
@@ -1079,7 +1073,7 @@ function CampaignDashboard({ campaigns }) {
                 <div className="flex items-center justify-between mb-2">
                   <div>
                     <h3 className="text-white font-semibold text-lg">Tracker un compte</h3>
-                    <p className="text-white/40 text-xs mt-0.5">Ajoute un compte social pour un clippeur. Les vidéos seront trackées automatiquement.</p>
+                    <p className="text-white/40 text-xs mt-0.5">Ajoute un compte social — tracking automatique.</p>
                   </div>
                   <button onClick={() => setShowTrackAccountModal(false)} className="text-white/30 hover:text-white text-xl leading-none">✕</button>
                 </div>
