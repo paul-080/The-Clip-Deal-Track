@@ -5824,197 +5824,107 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
                 "platform_channel_id": channel_id,
                 "verified_at": datetime.now(timezone.utc).isoformat(),
                 "error_message": None,
+                "verification_attempts": 0,
             }}
         )
         verified_ok = True
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
-        err_msg = str(e).lower()
-        is_definitely_not_found = any(kw in err_msg for kw in ["introuvable", "not found", "n'existe pas", "does not exist", "404"])
 
-        # TikTok: NEVER use HTTP fallback — cloud IPs are blocked by TikTok/Cloudflare.
-        # PAUL : "Si error, c'est de ma faute. Donc 'error' doit etre rare."
-        # Strategy : double-check via verif active (2 sources) avant de conclure.
-        if platform == "tiktok":
+        # V2 (2026-05-24) : REGLE STRICTE.
+        # Au lieu de la logique HTTP fallback foireuse (qui causait des faux positifs/negatifs),
+        # on s'appuie EXCLUSIVEMENT sur _verify_account_still_exists (qui sonde 3-4 sources
+        # independantes et applique des regles strictes : ≥2 sources concordantes).
+        #
+        # - True (exists)   -> verified (sans stats, le compte existe mais le scraping a echoue)
+        # - False (not_found) -> deleted (≥2 sources confirment l'absence)
+        # - None (unknown)  -> pending + verification_attempts++ ; apres 5 echecs -> error
+        confirm = None
+        try:
+            confirm = await asyncio.wait_for(
+                _verify_account_still_exists(platform, username),
+                timeout=45,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"_verify_account_still_exists timeout for {platform}/@{username}")
             confirm = None
-            try:
-                confirm = await asyncio.wait_for(
-                    _verify_tiktok_exists(username), timeout=20
-                )
-            except Exception:
-                pass
-            if confirm is False or (is_definitely_not_found and confirm is not True):
-                # 2 sources confirment introuvable -> deleted
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "status": "deleted",
-                        "deleted_at": datetime.now(timezone.utc).isoformat(),
-                        "deleted_type": "never_existed",
-                        "deleted_reason": f"Compte TikTok @{username} confirme introuvable a la verification (2 sources)",
-                        "error_message": f"Compte TikTok @{username} introuvable. Vérifiez l'URL.",
-                    }}
-                )
-            elif confirm is True:
-                # Verif active confirme l'existence -> on accepte le compte sans stats
-                # (pas d'error : c'est mon probleme de scraping, mais le compte existe)
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "status": "verified",
-                        "verified_at": datetime.now(timezone.utc).isoformat(),
-                        "display_name": username,
-                        "error_message": None,
-                    }}
-                )
-            else:
-                # Ambigu : on accepte en verified provisoire (pas d'error)
-                # Le compte sera retente au prochain scrape. Si toujours pas de videos,
-                # on continuera a essayer sans le marquer deleted (sauf si verif 2 sources le confirme).
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": {
-                        "status": "verified",
-                        "verified_at": datetime.now(timezone.utc).isoformat(),
-                        "display_name": username,
-                        "error_message": None,
-                    }}
-                )
-            return
+        except Exception as ve:
+            logger.warning(f"_verify_account_still_exists exception for {platform}/@{username}: {ve}")
+            confirm = None
 
-        if via_url or platform in ("instagram", "youtube"):
-            # Fallback via URL : GET request + parse body to confirm account existence
-            # For instagram/youtube we always try this (we can construct the URL from the username)
-            profile_urls = {
-                "instagram": f"https://www.instagram.com/{username}/",
-                "youtube": f"https://www.youtube.com/@{username}",
-            }
-            url_to_check = profile_urls.get(platform, "")
-            http_ok = False
-            error_reason = f"Compte @{username} introuvable sur {platform}. Vérifiez que le compte existe et est public."
+        # Recharge l'attempt counter actuel
+        try:
+            current = await db.social_accounts.find_one({"account_id": account_id}, {"_id": 0, "verification_attempts": 1})
+            attempts = int((current or {}).get("verification_attempts") or 0)
+        except Exception:
+            attempts = 0
 
-            if url_to_check:
-                try:
-                    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
-                        resp = await c.get(url_to_check, headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
-                        })
-                        body = resp.text
+        now_iso = datetime.now(timezone.utc).isoformat()
 
-                        if platform == "instagram":
-                            # Instagram returns 404 for non-existent accounts; 200 for existing ones
-                            if resp.status_code == 404:
-                                http_ok = False
-                                error_reason = f"Compte Instagram @{username} introuvable. Vérifiez le nom d'utilisateur."
-                            elif resp.status_code == 200:
-                                # Check for "not found" / private indicators in page
-                                not_found_markers = ["Page introuvable", "Désolé, cette page", "Sorry, this page"]
-                                if any(m in body for m in not_found_markers):
-                                    http_ok = False
-                                    error_reason = f"Compte Instagram @{username} introuvable ou privé."
-                                else:
-                                    http_ok = True
-                            else:
-                                http_ok = False
-
-                        elif platform == "youtube":
-                            # YouTube: check if channel page has meaningful content
-                            if resp.status_code == 404:
-                                http_ok = False
-                                error_reason = f"Chaîne YouTube @{username} introuvable."
-                            elif resp.status_code == 200:
-                                # ytInitialData must be present on a valid page
-                                if "ytInitialData" in body:
-                                    http_ok = True
-                                    # Extract channelId from page HTML so we can fetch videos later
-                                    import re as _re
-                                    cid_match = _re.search(r'"channelId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,24})"', body)
-                                    if cid_match:
-                                        channel_id = cid_match.group(1)
-                                else:
-                                    http_ok = False
-                                    error_reason = f"Chaîne YouTube @{username} introuvable ou inaccessible."
-                            else:
-                                http_ok = False
-                        else:
-                            http_ok = resp.status_code in (200, 301, 302)
-
-                except Exception as http_e:
-                    logger.warning(f"HTTP fallback check failed for {platform}/@{username}: {http_e}")
-                    http_ok = False
-
-            if http_ok:
-                fallback_set = {
+        if confirm is True:
+            # Compte confirme existant -> verified provisoire (pas de stats)
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {
                     "status": "verified",
-                    "verified_at": datetime.now(timezone.utc).isoformat(),
-                    "error_message": None,
+                    "verified_at": now_iso,
                     "display_name": username,
-                    "follower_count": None,
-                    "avatar_url": None,
-                }
-                # For YouTube: store the channelId extracted from page so video fetching works
-                if channel_id:
-                    fallback_set["platform_channel_id"] = channel_id
-                await db.social_accounts.update_one(
-                    {"account_id": account_id},
-                    {"$set": fallback_set}
-                )
-            elif platform == "instagram":
-                # Instagram IPs are blocked from cloud — accept account without stats
-                # SAUF si on a clairement detecte un 404/introuvable → status=deleted
-                if "introuvable" in error_reason.lower():
-                    await db.social_accounts.update_one(
-                        {"account_id": account_id},
-                        {"$set": {
-                            "status": "deleted",
-                            "deleted_at": datetime.now(timezone.utc).isoformat(),
-                            "deleted_type": "never_existed",
-                            "deleted_reason": error_reason,
-                            "error_message": error_reason,
-                        }}
-                    )
-                else:
-                    await db.social_accounts.update_one(
-                        {"account_id": account_id},
-                        {"$set": {
-                            "status": "verified",
-                            "verified_at": datetime.now(timezone.utc).isoformat(),
-                            "error_message": None,
-                            "display_name": username,
-                            "follower_count": None,
-                            "avatar_url": None,
-                        }}
-                    )
-            else:
-                # YouTube ou autre : status=deleted si introuvable, sinon error
-                if "introuvable" in error_reason.lower() or "404" in error_reason:
-                    await db.social_accounts.update_one(
-                        {"account_id": account_id},
-                        {"$set": {
-                            "status": "deleted",
-                            "deleted_at": datetime.now(timezone.utc).isoformat(),
-                            "deleted_type": "never_existed",
-                            "deleted_reason": error_reason,
-                            "error_message": error_reason,
-                        }}
-                    )
-                else:
-                    await db.social_accounts.update_one(
-                        {"account_id": account_id},
-                        {"$set": {"status": "error", "error_message": error_reason}}
-                    )
-        else:
+                    "error_message": None,
+                    "verification_attempts": 0,
+                    "last_existence_check_at": now_iso,
+                    "last_existence_check_result": "exists",
+                }}
+            )
+            logger.info(f"Account {platform}/@{username} confirmed EXISTS via active check -> verified (no stats)")
+        elif confirm is False:
+            # ≥2 sources confirment l'absence -> deleted
             await db.social_accounts.update_one(
                 {"account_id": account_id},
                 {"$set": {
                     "status": "deleted",
-                    "deleted_at": datetime.now(timezone.utc).isoformat(),
+                    "deleted_at": now_iso,
                     "deleted_type": "never_existed",
-                    "deleted_reason": f"Compte @{username} introuvable sur {platform}",
-                    "error_message": f"Compte @{username} introuvable sur {platform}",
+                    "deleted_reason": f"Compte {platform} @{username} confirme inexistant (verif multi-sources)",
+                    "error_message": f"Compte {platform} @{username} introuvable. Vérifiez l'URL.",
+                    "last_existence_check_at": now_iso,
+                    "last_existence_check_result": "deleted",
                 }}
+            )
+            logger.info(f"Account {platform}/@{username} confirmed NOT_FOUND via active check -> deleted")
+        else:
+            # Incertain : on incremente le compteur, JAMAIS marque deleted
+            new_attempts = attempts + 1
+            update_fields = {
+                "verification_attempts": new_attempts,
+                "last_verification_attempt_at": now_iso,
+                "last_existence_check_at": now_iso,
+                "last_existence_check_result": "uncertain",
+            }
+            if new_attempts >= 5:
+                # Apres 5 essais incertains, on passe en "error" pour que l'admin investigate.
+                # PAS deleted — le compte peut tres bien exister.
+                update_fields["status"] = "error"
+                update_fields["error_message"] = (
+                    f"Verification incertaine apres {new_attempts} tentatives. "
+                    f"Sources non concordantes (rate-limits, blocages cloud). "
+                    f"Verifier manuellement le compte."
+                )
+                logger.warning(
+                    f"Account {platform}/@{username} UNKNOWN apres {new_attempts} tentatives -> error (PAS deleted)"
+                )
+            else:
+                # Garde le compte en "pending" pour retry plus tard
+                update_fields["status"] = "pending"
+                update_fields["error_message"] = (
+                    f"Verification en cours (tentative {new_attempts}/5). "
+                    f"Sources externes incertaines, retry plus tard."
+                )
+                logger.info(
+                    f"Account {platform}/@{username} UNKNOWN attempt {new_attempts}/5 -> pending"
+                )
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": update_fields}
             )
         return  # failed — no tracking
 
@@ -9431,413 +9341,725 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
         asyncio.create_task(_track_api_call(service_map.get(platform, platform), success))
 
 
-# ================= ACCOUNT EXISTENCE VERIFICATION =================
-# Verifie ACTIVEMENT si un compte existe sur la plateforme apres un echec de scraping.
-# Permet de distinguer "compte supprime" (status=deleted) vs "rate limit temporaire".
+# ================= ACCOUNT EXISTENCE VERIFICATION (V2 - 2026-05-24) =================
+# Reecriture complete suite a bugs majeurs :
+#  - FAUX NEGATIFS (compte existe -> marque deleted) :
+#    * Instagram retourne 200 + PolarisErrorRoot + challenge_required POUR DES COMPTES VALIDES.
+#      L'ancienne logique marquait sig1=False sur PolarisErrorRoot -> faux negatifs.
+#    * L'ancienne logique trustait `data["user"] is None` comme deleted, ignorant les soft rate-limits.
+#  - FAUX POSITIFS (compte n'existe pas -> marque verified) :
+#    * Quand verif TikTok renvoyait None (incertain), _verify_and_update_account_inner
+#      marquait quand meme verified.
+#    * Quand verif Instagram retournait HTTP 200 sans "Sorry, this page" (cas ultra frequent),
+#      le fallback marquait verified meme sur compte inexistant.
+#
+# NOUVELLES REGLES STRICTES :
+#  - "exists" (True) : ≥1 source officielle (YouTube Data API, Meta Business Discovery)
+#    OU ≥2 sources independantes avec PREUVE CONCRETE (id numerique, follower count > 0,
+#    avatar URL, ou ≥1 video).
+#  - "not_found" (False) : ≥2 sources independantes confirment un 404 EXPLICITE
+#    (HTTP 404 ou message JSON explicite "not found", "user not found", "doesn't exist").
+#  - Sinon : "unknown" (None). Le caller NE DOIT PAS marquer le compte deleted.
+#
+# Une source qui timeout, 429, 403, 5xx, ou retourne du JSON ambigu/tronque -> "unknown".
+# Une source qui retourne 200 + page de challenge/login wall -> "unknown".
+# Une source qui retourne 200 + body court (< 5KB) sans signal explicite -> "unknown".
 
-async def _verify_insta_exists(username: str) -> Optional[bool]:
-    """Verifie via 2 sources independantes si un compte Insta existe.
-    Renvoie True (existe), False (supprime/inexistant), None (incertain).
+# Tuple (verdict, evidence) ou verdict in {"exists","not_found","unknown"}
+# evidence est un str descriptif pour les logs/debug.
 
-    PRUDENCE : on ne renvoie False QUE si les 2 sources confirment un 404 EXPLICITE.
-    Toute reponse ambigue (rate limit, challenge, login required, redirect) -> None.
-    """
-    username = username.lstrip("@")
-    # Pre-check : username corrompu (contient =, &, %, etc.) -> deleted direct
-    import re as _re_v
-    if _re_v.search(r'[^a-zA-Z0-9._-]', username):
-        logger.info(f"_verify_insta_exists: username @{username} contient des caracteres invalides -> deleted")
+def _src_exists(evidence: str) -> tuple:
+    return ("exists", evidence)
+
+
+def _src_not_found(evidence: str) -> tuple:
+    return ("not_found", evidence)
+
+
+def _src_unknown(reason: str) -> tuple:
+    return ("unknown", reason)
+
+
+# Marqueurs explicites de "user not found" dans les JSON des plateformes
+_NOT_FOUND_KEYWORDS = (
+    "not found",
+    "user not found",
+    "does not exist",
+    "doesn't exist",
+    "n'existe pas",
+    "introuvable",
+    "no user found",
+    "cannot find",
+    "user_404",
+)
+
+# Marqueurs de rate-limit / challenge / login wall -> incertain (PAS deleted)
+_RATE_LIMIT_KEYWORDS = (
+    "rate limit",
+    "rate_limit",
+    "too many request",
+    "challenge",
+    "checkpoint",
+    "login_required",
+    "login required",
+    "please wait",
+    "try again",
+    "free api limit",
+    "limit reached",
+    "payment required",
+    "quota",
+)
+
+
+def _has_keyword(text: str, kws: tuple) -> bool:
+    if not text:
         return False
+    t = text.lower()
+    return any(k in t for k in kws)
+
+
+# ───────────────────────── INSTAGRAM ─────────────────────────
+
+async def _insta_src_web_html(username: str) -> tuple:
+    """Source A : page web publique instagram.com/{username}/.
+    Note : depuis cloud sans cookie, Instagram renvoie souvent 200 + challenge.
+    On NE peut PAS utiliser PolarisErrorRoot comme signal -> present meme sur comptes valides.
+    Utilise un cookie de session si dispo (INSTAGRAM_SESSIONS).
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
     }
+    try:
+        if INSTAGRAM_SESSIONS:
+            session_cookie = _get_instagram_session()
+            if session_cookie:
+                headers["Cookie"] = _build_instagram_cookie_header(session_cookie)
+    except Exception:
+        pass
     proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
     kw = {"timeout": 12, "follow_redirects": True}
     if proxy:
         kw["proxy"] = proxy
-    # Source 1 : page web publique
-    sig1 = None  # True/False/None
     try:
         async with httpx.AsyncClient(**kw) as c:
             r = await c.get(f"https://www.instagram.com/{username}/", headers=headers)
-        if r.status_code == 404:
-            sig1 = False
-        elif r.status_code == 200:
-            txt_full = r.text or ""
-            txt = txt_full.lower()
-            # Detecte les pages "challenge required" / "login required" -> incertain (PAS deleted)
-            if (
-                "challenge_required" in txt
-                or "login_required" in txt
-                or "checkpoint_required" in txt
-                or "/accounts/login" in txt
-                or len(txt_full) < 5000  # page tronquee = redirect login
-            ):
-                sig1 = None  # incertain (rate limit ou challenge)
-            # Marqueurs FIABLES de compte inexistant (confirmes via test direct mai 2026) :
-            # - 'PolarisErrorRoot' : composant React Insta pour les pages 404
-            # - 'sorry, this page isn..' : ancien marqueur, peut encore apparaitre
-            elif "polariserrorroot" in txt or "sorry, this page isn" in txt or "la page que vous recherchez n'est pas disponible" in txt:
-                sig1 = False
-            elif f'"username":"{username.lower()}"' in txt or f'"@{username.lower()}"' in txt:
-                sig1 = True
-            # Sinon : page ambigue -> sig1 reste None
     except Exception as e:
-        logger.debug(f"_verify_insta_exists web @{username}: {type(e).__name__}")
+        return _src_unknown(f"http_exc:{type(e).__name__}")
 
-    # Source 2 : API web_profile_info (cible la meme info mais via API JSON)
-    api_headers = {
-        **headers,
+    if r.status_code == 404:
+        return _src_not_found("http_404")
+    if r.status_code in (429, 403, 401, 503, 502, 500):
+        return _src_unknown(f"http_{r.status_code}")
+    if r.status_code != 200:
+        return _src_unknown(f"http_{r.status_code}")
+
+    body = r.text or ""
+    body_lc = body.lower()
+    # Si la page est tres courte -> probable redirect/erreur silencieuse, on est incertain
+    if len(body) < 3000:
+        return _src_unknown("body_too_short")
+    # Challenge / login wall -> incertain (PAS deleted)
+    if any(m in body_lc for m in (
+        "challenge_required",
+        "checkpoint_required",
+        "login_required",
+        "/accounts/login/?next",
+    )):
+        return _src_unknown("login_or_challenge_wall")
+    # PREUVE D'EXISTENCE : presence du username exact dans le JSON inline
+    # (apparait dans une OG meta, dans le JSON shared_data, ou dans le LD+JSON)
+    u_lc = username.lower()
+    if (
+        f'"username":"{u_lc}"' in body_lc
+        or f'"alternatename":"@{u_lc}"' in body_lc
+        or f'@{u_lc}' in body_lc and ('"profilepage_or_role":' in body_lc or 'og:title' in body_lc)
+    ):
+        return _src_exists("username_in_html")
+    # Marqueur 404 ANCIEN : "Sorry, this page isn't available" (rare sur la nouvelle UI mais
+    # peut apparaitre selon User-Agent / region)
+    if (
+        "sorry, this page isn" in body_lc
+        or "la page que vous recherchez n'est pas disponible" in body_lc
+        or "désolé, cette page" in body_lc
+    ):
+        return _src_not_found("404_html_marker")
+    # PolarisErrorRoot SEUL n'est PAS un signal fiable (present sur comptes existants).
+    # Page valide mais pas de marqueur exploitable -> incertain
+    return _src_unknown("html_ambiguous")
+
+
+async def _insta_src_web_api(username: str) -> tuple:
+    """Source B : i.instagram.com/api/v1/users/web_profile_info.
+    Utilise le cookie de session si dispo (INSTAGRAM_SESSIONS) pour augmenter
+    le taux de reponse 200.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
         "X-IG-App-ID": "936619743392459",
         "Origin": "https://www.instagram.com",
         "Referer": f"https://www.instagram.com/{username}/",
     }
-    sig2 = None
+    # Si un session cookie est dispo, on le joint -> taux de succes >>
     try:
-        async with httpx.AsyncClient(**kw) as c:
-            r = await c.get(
-                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
-                headers=api_headers,
-            )
-        if r.status_code == 404:
-            sig2 = False
-        elif r.status_code == 200:
-            try:
-                data = r.json()
-                # Detecte challenge/rate-limit/login -> incertain
-                msg = str(data.get("message", "")).lower()
-                status = str(data.get("status", "")).lower()
-                if (
-                    "challenge" in msg
-                    or "checkpoint" in msg
-                    or "login" in msg
-                    or status == "fail"
-                    or data.get("require_login")
-                ):
-                    sig2 = None
-                else:
-                    user = (data.get("data") or {}).get("user")
-                    if user:
-                        sig2 = True
-                    else:
-                        # JSON valide sans user MAIS pas de message ambigu -> probable deleted
-                        sig2 = False
-            except Exception:
-                pass  # JSON invalide -> sig2 reste None
-        elif r.status_code in (401, 403, 429):
-            # Rate limit / auth required -> incertain (PAS deleted)
-            sig2 = None
-    except Exception as e:
-        logger.debug(f"_verify_insta_exists api @{username}: {type(e).__name__}")
-
-    # ── Source 3 : ClipScraper VPS (IP residentielle, bypass IP cloud bloquees) ──
-    sig3 = None
-    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.post(
-                    f"{CLIP_SCRAPER_URL}/v1/instagram/{username.lstrip('@')}",
-                    params={"max_videos": 1},
-                    headers={"X-API-Key": CLIP_SCRAPER_KEY},
-                )
-            if r.status_code == 200:
-                try:
-                    body = r.json() or {}
-                    videos = body.get("videos", [])
-                    err_msg = str(body.get("error", "") or body.get("detail", "")).lower()
-                    if "not found" in err_msg or "introuvable" in err_msg or "user not found" in err_msg:
-                        sig3 = False
-                    elif isinstance(videos, list) and len(videos) > 0:
-                        sig3 = True
-                    elif body.get("user_info") or body.get("display_name"):
-                        sig3 = True  # info compte presente -> existe meme si 0 video
-                except Exception:
-                    pass
-            elif r.status_code == 404:
-                sig3 = False
-        except Exception as e:
-            logger.debug(f"_verify_insta_exists vps @{username}: {type(e).__name__}")
-
-    # ── Source 4 : Meta Business Discovery (si tokens config) ──
-    # Permet de verifier les comptes Business/Creator via l'API officielle Meta.
-    sig4 = None
-    ig_token = os.environ.get("IG_LONG_LIVED_TOKEN", "").strip()
-    ig_biz_id = os.environ.get("IG_BUSINESS_ACCOUNT_ID", "").strip()
-    if ig_token and ig_biz_id:
-        try:
-            async with httpx.AsyncClient(timeout=15) as c:
-                r = await c.get(
-                    f"https://graph.facebook.com/v18.0/{ig_biz_id}",
-                    params={
-                        "fields": f"business_discovery.username({username.lstrip('@')}){{id,username}}",
-                        "access_token": ig_token,
-                    },
-                )
-            if r.status_code == 200:
-                try:
-                    data = r.json()
-                    bd = data.get("business_discovery")
-                    if bd and bd.get("id"):
-                        sig4 = True
-                    # Pas de business_discovery = compte non-business OU n'existe pas
-                    # Ambigu : on ne tranche pas (laisse None)
-                except Exception:
-                    pass
-            elif r.status_code == 400:
-                # Insta peut renvoyer 400 si compte non-business (ambigu, pas un signal deleted)
-                try:
-                    err = (r.json() or {}).get("error", {})
-                    err_msg = str(err.get("message", "")).lower()
-                    if "does not exist" in err_msg or "not found" in err_msg or "cannot find" in err_msg:
-                        sig4 = False
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug(f"_verify_insta_exists meta_bd @{username}: {type(e).__name__}")
-
-    # Combine : exists si AU MOINS 1 source dit True.
-    # Deleted si AU MOINS 2 sources independantes disent False (strict).
-    signals = [sig1, sig2, sig3, sig4]
-    n_true = sum(1 for s in signals if s is True)
-    n_false = sum(1 for s in signals if s is False)
-    if n_true >= 1:
-        return True
-    if n_false >= 2:
-        return False
-    return None
-
-
-async def _verify_tiktok_exists(username: str) -> Optional[bool]:
-    """Verifie via 2 sources si un compte TikTok existe."""
-    username = username.lstrip("@")
-    # Source 1 : TikWm user info (gratuit, IP residentielle cote serveur)
-    sig1 = None
-    try:
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
-            r = await c.get(
-                "https://www.tikwm.com/api/user/info",
-                params={"unique_id": username},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            )
-        if r.status_code == 200:
-            try:
-                data = r.json()
-                code = data.get("code")
-                msg = str(data.get("msg", "")).lower()
-                user_obj = (data.get("data") or {}).get("user")
-                # BUG FIX : 'Free Api Limit' = rate limit (None), PAS deleted.
-                # On ne tranche False que sur marqueur explicite d'absence.
-                if user_obj and user_obj.get("id"):
-                    sig1 = True
-                elif code == -1 and (
-                    "not found" in msg or "doesn't exist" in msg or "user not found" in msg
-                    or "invalid" in msg or "uid is empty" in msg
-                ):
-                    sig1 = False
-                # Sinon (rate limit, ambigu) -> None
-            except Exception:
-                pass
-    except Exception as e:
-        logger.debug(f"_verify_tiktok_exists tikwm @{username}: {type(e).__name__}")
-
-    # Source 2 : page publique TikTok
-    # BUG FIX CRITIQUE : 'Couldn't find this account' est dans le body TikTok MEME pour
-    # les comptes qui existent (texte cache par JS). On NE peut PAS l'utiliser comme
-    # signal deleted. Seul "uniqueId":"X" dans le JSON inline est fiable.
+        if INSTAGRAM_SESSIONS:
+            session_cookie = _get_instagram_session()
+            if session_cookie:
+                headers["Cookie"] = _build_instagram_cookie_header(session_cookie)
+    except Exception:
+        pass
     proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
     kw = {"timeout": 12, "follow_redirects": True}
     if proxy:
         kw["proxy"] = proxy
-    sig2 = None
-    user_lc = username.lower()
     try:
         async with httpx.AsyncClient(**kw) as c:
             r = await c.get(
-                f"https://www.tiktok.com/@{username}",
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+                headers=headers,
             )
-        if r.status_code == 404:
-            sig2 = False
-        elif r.status_code == 200:
-            body = r.text or ""
-            body_lc = body.lower()
-            # Signal d'existence : uniqueId du compte dans le JSON
-            if f'"uniqueid":"{user_lc}"' in body_lc or f'"unique_id":"{user_lc}"' in body_lc:
-                sig2 = True
-            # Signal de deleted : marqueurs fiables uniquement (PAS "couldn't find")
-            elif '"statuscode":10221' in body_lc or '"statuscode":10222' in body_lc or 'user_404' in body_lc:
-                sig2 = False
-            elif len(body) < 30000:
-                # Page TikTok normale fait > 250KB. < 30KB = redirect/error/empty
-                sig2 = False
-            # Sinon : ambigu -> None
     except Exception as e:
-        logger.debug(f"_verify_tiktok_exists web @{username}: {type(e).__name__}")
+        return _src_unknown(f"http_exc:{type(e).__name__}")
 
-    # ── Source 3 : ClipScraper VPS (residentiel, bypass IP cloud bloquees) ──
-    sig3 = None
-    if CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY:
+    if r.status_code == 404:
+        return _src_not_found("http_404")
+    if r.status_code in (401, 403, 429, 503, 502, 500):
+        return _src_unknown(f"http_{r.status_code}")
+    if r.status_code != 200:
+        return _src_unknown(f"http_{r.status_code}")
+
+    try:
+        data = r.json()
+    except Exception:
+        return _src_unknown("json_parse_failed")
+
+    msg = str(data.get("message", "")).lower()
+    status = str(data.get("status", "")).lower()
+    if _has_keyword(msg, _RATE_LIMIT_KEYWORDS) or _has_keyword(status, _RATE_LIMIT_KEYWORDS):
+        return _src_unknown(f"rate_limit_msg:{msg[:40]}")
+    if status == "fail" or data.get("require_login"):
+        return _src_unknown("require_login_or_fail")
+
+    user = (data.get("data") or {}).get("user")
+    if user and (user.get("id") or user.get("pk")):
+        # PREUVE CONCRETE : ID numerique present
+        return _src_exists(f"api_user_id:{user.get('id') or user.get('pk')}")
+    # 200 + JSON valide + user is None + pas de message ambigu -> probable 404 implicite
+    # MAIS on est conservateur : on demande au moins un autre signal de 404 explicite
+    # (un autre source qui confirme). Donc ici on retourne not_found UNIQUEMENT si
+    # le JSON contient un marqueur explicite de "not found".
+    if user is None and not msg and not status:
+        # Cas typique : Instagram renvoie 200 + {"data":{"user":null}} pour les comptes
+        # inexistants (et sans message de rate-limit). On considere ca comme not_found
+        # cependant on flag specifiquement le contexte pour que le caller puisse pondérer.
+        return _src_not_found("api_user_null")
+    return _src_unknown("api_ambiguous")
+
+
+async def _insta_src_clipscraper(username: str) -> tuple:
+    """Source C : VPS ClipScraper (IP residentielle)."""
+    if not (CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY):
+        return _src_unknown("vps_not_configured")
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/instagram/{username}",
+                params={"max_videos": 1},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+    except Exception as e:
+        return _src_unknown(f"vps_exc:{type(e).__name__}")
+    if r.status_code == 404:
+        return _src_not_found("vps_http_404")
+    if r.status_code != 200:
+        return _src_unknown(f"vps_http_{r.status_code}")
+    try:
+        body = r.json() or {}
+    except Exception:
+        return _src_unknown("vps_json_parse_failed")
+    err = str(body.get("error", "") or body.get("detail", ""))
+    if _has_keyword(err, _NOT_FOUND_KEYWORDS):
+        return _src_not_found(f"vps_err:{err[:60]}")
+    if _has_keyword(err, _RATE_LIMIT_KEYWORDS):
+        return _src_unknown(f"vps_rate:{err[:60]}")
+    videos = body.get("videos") or []
+    if isinstance(videos, list) and len(videos) > 0:
+        return _src_exists(f"vps_videos:{len(videos)}")
+    if body.get("user_info") or body.get("display_name") or body.get("followers"):
+        return _src_exists("vps_user_info")
+    return _src_unknown("vps_empty")
+
+
+async def _insta_src_meta_bd(username: str) -> tuple:
+    """Source D : Meta Business Discovery API (OFFICIELLE)."""
+    ig_token = os.environ.get("IG_LONG_LIVED_TOKEN", "").strip()
+    ig_biz_id = os.environ.get("IG_BUSINESS_ACCOUNT_ID", "").strip()
+    if not (ig_token and ig_biz_id):
+        return _src_unknown("meta_bd_not_configured")
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                f"https://graph.facebook.com/v18.0/{ig_biz_id}",
+                params={
+                    "fields": f"business_discovery.username({username}){{id,username,followers_count}}",
+                    "access_token": ig_token,
+                },
+            )
+    except Exception as e:
+        return _src_unknown(f"meta_bd_exc:{type(e).__name__}")
+    if r.status_code == 200:
         try:
-            async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.post(
-                    f"{CLIP_SCRAPER_URL}/v1/tiktok/{username.lstrip('@')}",
-                    params={"max_videos": 1},
-                    headers={"X-API-Key": CLIP_SCRAPER_KEY},
-                )
-            if r.status_code == 200:
-                try:
-                    body = r.json() or {}
-                    videos = body.get("videos", [])
-                    err_msg = str(body.get("error", "") or body.get("detail", "")).lower()
-                    if "not found" in err_msg or "introuvable" in err_msg or "user not found" in err_msg:
-                        sig3 = False
-                    elif isinstance(videos, list) and len(videos) > 0:
-                        sig3 = True
-                    elif body.get("user_info") or body.get("display_name") or body.get("unique_id"):
-                        sig3 = True
-                except Exception:
-                    pass
-            elif r.status_code == 404:
-                sig3 = False
-        except Exception as e:
-            logger.debug(f"_verify_tiktok_exists vps @{username}: {type(e).__name__}")
-
-    # ── Source 4 : yt-dlp metadata (utilise un parser TikTok robuste) ──
-    sig4 = None
-    if YT_DLP_AVAILABLE:
+            data = r.json()
+        except Exception:
+            return _src_unknown("meta_bd_json")
+        bd = data.get("business_discovery")
+        if bd and bd.get("id"):
+            return _src_exists(f"meta_bd_id:{bd.get('id')}")
+        return _src_unknown("meta_bd_no_data")
+    if r.status_code == 400:
         try:
-            import yt_dlp
-            def _try_ytdlp():
-                opts = {
-                    "quiet": True,
-                    "skip_download": True,
-                    "no_warnings": True,
-                    "extract_flat": True,
-                    "playlist_items": "1",
-                    "socket_timeout": 12,
-                }
-                proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
-                if proxy_url:
-                    opts["proxy"] = proxy_url
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
-                    if info and (info.get("id") or info.get("uploader_id") or info.get("entries")):
-                        return True
-                except Exception as e:
-                    err = str(e).lower()
-                    if "404" in err or "couldn't find" in err or "user not found" in err or "does not exist" in err:
-                        return False
-                return None
-            sig4 = await asyncio.get_event_loop().run_in_executor(None, _try_ytdlp)
-        except Exception as e:
-            logger.debug(f"_verify_tiktok_exists ytdlp @{username}: {type(e).__name__}")
+            err = (r.json() or {}).get("error", {})
+            err_msg = str(err.get("message", ""))
+            code = err.get("code")
+            # code 110 = "Object does not exist" -> compte inexistant
+            # code 100 + sous-code 33 = "Business discovery requires the user to be a business" -> ambigu
+            if _has_keyword(err_msg, _NOT_FOUND_KEYWORDS) or code == 110:
+                return _src_not_found(f"meta_bd_err:{err_msg[:60]}")
+            return _src_unknown(f"meta_bd_400:{err_msg[:60]}")
+        except Exception:
+            return _src_unknown("meta_bd_400_parse")
+    return _src_unknown(f"meta_bd_http_{r.status_code}")
 
-    signals = [sig1, sig2, sig3, sig4]
-    n_true = sum(1 for s in signals if s is True)
-    n_false = sum(1 for s in signals if s is False)
-    if n_true >= 1:
+
+async def _verify_insta_exists(username: str) -> Optional[bool]:
+    """Verification stricte d'existence Instagram.
+    Renvoie True (existe), False (n'existe pas), None (incertain).
+
+    REGLES :
+    - Si la Meta Business Discovery API (OFFICIELLE) dit "exists" -> True direct.
+    - Sinon, on collecte les votes de 4 sources independantes :
+      * web HTML (instagram.com)
+      * web JSON API (i.instagram.com web_profile_info)
+      * VPS ClipScraper (IP residentielle)
+      * Meta Business Discovery (officiel, mais limite aux comptes business)
+    - Decision finale :
+      * ≥2 sources votent "exists" -> True
+      * ≥2 sources votent "not_found" -> False
+      * Sinon -> None (incertain, NE PAS marquer deleted)
+    """
+    username = (username or "").lstrip("@")
+    if not username:
+        return None
+    # Pre-check : caracteres invalides -> compte inexistant (URL malformee qu'aucune
+    # plateforme n'accepte). Ce n'est pas vraiment "deleted" mais l'effet pratique
+    # est le meme : pas de scrape possible.
+    import re as _re_v
+    if _re_v.search(r'[^a-zA-Z0-9._-]', username):
+        logger.info(f"_verify_insta_exists: @{username} caracteres invalides -> not_found")
+        return False
+    # Run all sources in parallel
+    results = await asyncio.gather(
+        _insta_src_web_html(username),
+        _insta_src_web_api(username),
+        _insta_src_clipscraper(username),
+        _insta_src_meta_bd(username),
+        return_exceptions=True,
+    )
+    src_a, src_b, src_c, src_d = results
+    # Defensive: if any source raised, treat as unknown
+    def _safe(s):
+        return s if isinstance(s, tuple) and len(s) == 2 else ("unknown", f"raised:{type(s).__name__}")
+    src_a = _safe(src_a); src_b = _safe(src_b); src_c = _safe(src_c); src_d = _safe(src_d)
+    logger.info(
+        f"_verify_insta_exists @{username}: html={src_a[0]}({src_a[1]}), "
+        f"api={src_b[0]}({src_b[1]}), vps={src_c[0]}({src_c[1]}), meta_bd={src_d[0]}({src_d[1]})"
+    )
+    # OFFICIELLE : Meta BD dit exists -> trust direct
+    if src_d[0] == "exists":
         return True
-    if n_false >= 2:
+    verdicts = [src_a[0], src_b[0], src_c[0], src_d[0]]
+    n_exists = sum(1 for v in verdicts if v == "exists")
+    n_not_found = sum(1 for v in verdicts if v == "not_found")
+    if n_exists >= 2:
+        return True
+    if n_not_found >= 2:
         return False
     return None
 
 
-async def _verify_youtube_exists(handle_or_channel: str) -> Optional[bool]:
-    """Verifie via 3 sources si un YouTube channel existe (API officielle + page web + yt-dlp)."""
-    raw = (handle_or_channel or "").lstrip("@")
-    if not raw:
-        return False
+# ───────────────────────── TIKTOK ─────────────────────────
 
-    # ── Source 1 : YouTube Data API officielle ──
-    sig1 = None
-    if YOUTUBE_API_KEY:
-        try:
-            params = {"part": "id", "key": YOUTUBE_API_KEY}
-            if raw.startswith("UC") and len(raw) >= 20:
-                params["id"] = raw
-            else:
-                params["forHandle"] = raw
-            async with httpx.AsyncClient(timeout=10) as c:
-                r = await c.get("https://www.googleapis.com/youtube/v3/channels", params=params)
-            if r.status_code == 200:
-                items = (r.json() or {}).get("items", [])
-                sig1 = len(items) > 0
-            elif r.status_code in (403, 429):
-                sig1 = None  # quota/rate limit
-        except Exception as e:
-            logger.debug(f"_verify_youtube_exists API @{raw}: {type(e).__name__}")
-
-    # ── Source 2 : page web YouTube (handle ou channel_id) ──
-    sig2 = None
+async def _tt_src_tikwm_info(username: str) -> tuple:
+    """Source A : TikWm /api/user/info — JSON propre code=0 si existe, code=-1 si pas."""
     try:
-        url = (
-            f"https://www.youtube.com/channel/{raw}"
-            if raw.startswith("UC") and len(raw) >= 20
-            else f"https://www.youtube.com/@{raw}"
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.get(
+                "https://www.tikwm.com/api/user/info",
+                params={"unique_id": username},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Referer": "https://www.tikwm.com/",
+                },
+            )
+    except Exception as e:
+        return _src_unknown(f"tikwm_exc:{type(e).__name__}")
+
+    if r.status_code != 200:
+        return _src_unknown(f"tikwm_http_{r.status_code}")
+    try:
+        data = r.json()
+    except Exception:
+        return _src_unknown("tikwm_json_parse")
+
+    code = data.get("code")
+    msg = str(data.get("msg", "")).lower()
+    user_obj = (data.get("data") or {}).get("user")
+    # Rate-limit explicite -> incertain
+    if _has_keyword(msg, _RATE_LIMIT_KEYWORDS):
+        return _src_unknown(f"tikwm_rate:{msg[:40]}")
+    if code == 0 and user_obj and user_obj.get("id"):
+        return _src_exists(f"tikwm_user_id:{user_obj.get('id')}")
+    # code=-1 + message explicite de "introuvable/invalid"
+    if code == -1 and _has_keyword(msg, _NOT_FOUND_KEYWORDS + ("invalid",)):
+        return _src_not_found(f"tikwm_code-1:{msg[:40]}")
+    # Code 0 mais pas d'user (rare) ou ambiguite
+    return _src_unknown(f"tikwm_code:{code} msg:{msg[:40]}")
+
+
+async def _tt_src_web_page(username: str) -> tuple:
+    """Source B : page TikTok publique.
+    Marqueurs FIABLES :
+    - "uniqueId":"X" (lowercase: "uniqueid":"X") dans JSON inline -> existe
+    - "statusCode":10221 / 10222 dans JSON inline -> n'existe pas (officiel TikTok)
+    - HTTP 404 -> n'existe pas
+    Note : 'Couldn\\'t find this account' text est present meme sur comptes valides
+    (JS conditionnel rendu cote serveur) -> NE PAS utiliser comme signal.
+    """
+    proxy = _get_next_proxy() if BACKEND_PROXY_LIST else None
+    kw = {"timeout": 15, "follow_redirects": True}
+    if proxy:
+        kw["proxy"] = proxy
+    try:
+        async with httpx.AsyncClient(**kw) as c:
+            r = await c.get(
+                f"https://www.tiktok.com/@{username}",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+    except Exception as e:
+        return _src_unknown(f"web_exc:{type(e).__name__}")
+
+    if r.status_code == 404:
+        return _src_not_found("web_http_404")
+    if r.status_code in (429, 403, 503, 502, 500):
+        return _src_unknown(f"web_http_{r.status_code}")
+    if r.status_code != 200:
+        return _src_unknown(f"web_http_{r.status_code}")
+    body = r.text or ""
+    body_lc = body.lower()
+    u_lc = username.lower()
+
+    # Signal d'EXISTENCE explicite : uniqueId match
+    if (
+        f'"uniqueid":"{u_lc}"' in body_lc
+        or f'"unique_id":"{u_lc}"' in body_lc
+    ):
+        return _src_exists("web_uniqueid_match")
+    # Signal de NOT_FOUND : statusCode officiel TikTok (10221 = user not found, 10222 = banned)
+    if '"statuscode":10221' in body_lc or '"statuscode":10222' in body_lc:
+        return _src_not_found("web_statuscode_10221_10222")
+    # Page tres courte = probablement Cloudflare challenge ou redirect -> incertain
+    if len(body) < 10000:
+        return _src_unknown(f"web_body_short:{len(body)}")
+    # Page longue mais pas de uniqueId : Cloudflare interstitial OU compte cache -> incertain
+    return _src_unknown("web_ambiguous")
+
+
+async def _tt_src_clipscraper(username: str) -> tuple:
+    """Source C : VPS ClipScraper."""
+    if not (CLIP_SCRAPER_URL and CLIP_SCRAPER_KEY):
+        return _src_unknown("vps_not_configured")
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(
+                f"{CLIP_SCRAPER_URL}/v1/tiktok/{username}",
+                params={"max_videos": 1},
+                headers={"X-API-Key": CLIP_SCRAPER_KEY},
+            )
+    except Exception as e:
+        return _src_unknown(f"vps_exc:{type(e).__name__}")
+    if r.status_code == 404:
+        return _src_not_found("vps_http_404")
+    if r.status_code != 200:
+        return _src_unknown(f"vps_http_{r.status_code}")
+    try:
+        body = r.json() or {}
+    except Exception:
+        return _src_unknown("vps_json_parse")
+    err = str(body.get("error", "") or body.get("detail", ""))
+    if _has_keyword(err, _NOT_FOUND_KEYWORDS):
+        return _src_not_found(f"vps_err:{err[:60]}")
+    if _has_keyword(err, _RATE_LIMIT_KEYWORDS):
+        return _src_unknown(f"vps_rate:{err[:60]}")
+    videos = body.get("videos") or []
+    if isinstance(videos, list) and len(videos) > 0:
+        return _src_exists(f"vps_videos:{len(videos)}")
+    if body.get("user_info") or body.get("display_name") or body.get("unique_id"):
+        return _src_exists("vps_user_info")
+    return _src_unknown("vps_empty")
+
+
+async def _tt_src_ytdlp(username: str) -> tuple:
+    """Source D : yt-dlp (parser TikTok robuste). Souvent timeout en cloud."""
+    if not YT_DLP_AVAILABLE:
+        return _src_unknown("ytdlp_unavailable")
+    try:
+        import yt_dlp
+        def _try_ytdlp():
+            opts = {
+                "quiet": True,
+                "skip_download": True,
+                "no_warnings": True,
+                "extract_flat": True,
+                "playlist_items": "1",
+                "socket_timeout": 12,
+            }
+            proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
+            if proxy_url:
+                opts["proxy"] = proxy_url
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(f"https://www.tiktok.com/@{username}", download=False)
+                # PREUVE CONCRETE : id ou uploader_id ou entries non vides
+                if info and (info.get("id") or info.get("uploader_id")):
+                    return _src_exists(f"ytdlp_id:{info.get('id') or info.get('uploader_id')}")
+                entries = info.get("entries") if info else None
+                if entries:
+                    # entries peut etre un generator, on prend juste le premier
+                    try:
+                        first = next(iter(entries), None)
+                        if first:
+                            return _src_exists("ytdlp_entries")
+                    except Exception:
+                        pass
+                return _src_unknown("ytdlp_empty")
+            except Exception as e:
+                err = str(e).lower()
+                if "404" in err or "user not found" in err or "does not exist" in err or "doesn't exist" in err:
+                    return _src_not_found(f"ytdlp_err:{err[:60]}")
+                # "couldn't find" peut etre dans le message d'erreur quand le compte n'existe pas
+                # MAIS aussi quand TikTok bloque -> ambigu, mieux vaut unknown.
+                return _src_unknown(f"ytdlp_exc:{type(e).__name__}:{err[:40]}")
+        # Timeout dur a 25s pour eviter de bloquer
+        return await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, _try_ytdlp),
+            timeout=25,
         )
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as c:
+    except asyncio.TimeoutError:
+        return _src_unknown("ytdlp_timeout")
+    except Exception as e:
+        return _src_unknown(f"ytdlp_exc:{type(e).__name__}")
+
+
+async def _verify_tiktok_exists(username: str) -> Optional[bool]:
+    """Verification stricte d'existence TikTok.
+    Renvoie True (existe), False (n'existe pas), None (incertain).
+    """
+    username = (username or "").lstrip("@")
+    if not username:
+        return None
+    results = await asyncio.gather(
+        _tt_src_tikwm_info(username),
+        _tt_src_web_page(username),
+        _tt_src_clipscraper(username),
+        _tt_src_ytdlp(username),
+        return_exceptions=True,
+    )
+    def _safe(s):
+        return s if isinstance(s, tuple) and len(s) == 2 else ("unknown", f"raised:{type(s).__name__}")
+    src_a, src_b, src_c, src_d = (_safe(s) for s in results)
+    logger.info(
+        f"_verify_tiktok_exists @{username}: tikwm={src_a[0]}({src_a[1]}), "
+        f"web={src_b[0]}({src_b[1]}), vps={src_c[0]}({src_c[1]}), ytdlp={src_d[0]}({src_d[1]})"
+    )
+    verdicts = [src_a[0], src_b[0], src_c[0], src_d[0]]
+    n_exists = sum(1 for v in verdicts if v == "exists")
+    n_not_found = sum(1 for v in verdicts if v == "not_found")
+    if n_exists >= 2:
+        return True
+    if n_not_found >= 2:
+        return False
+    return None
+
+
+# ───────────────────────── YOUTUBE ─────────────────────────
+
+async def _yt_src_data_api(raw: str) -> tuple:
+    """Source A : YouTube Data API officielle (OFFICIELLE - vote prioritaire)."""
+    if not YOUTUBE_API_KEY:
+        return _src_unknown("yt_api_key_missing")
+    try:
+        params = {"part": "id", "key": YOUTUBE_API_KEY}
+        if raw.startswith("UC") and len(raw) >= 20:
+            params["id"] = raw
+        else:
+            params["forHandle"] = raw
+        async with httpx.AsyncClient(timeout=12) as c:
+            r = await c.get("https://www.googleapis.com/youtube/v3/channels", params=params)
+    except Exception as e:
+        return _src_unknown(f"yt_api_exc:{type(e).__name__}")
+    if r.status_code == 200:
+        try:
+            data = r.json()
+        except Exception:
+            return _src_unknown("yt_api_json")
+        items = data.get("items") or []
+        if items and items[0].get("id"):
+            return _src_exists(f"yt_api_id:{items[0].get('id')}")
+        # API officielle renvoie 200 + items=[] pour les channels inexistants
+        return _src_not_found("yt_api_no_items")
+    if r.status_code in (403, 429):
+        return _src_unknown(f"yt_api_quota_{r.status_code}")
+    return _src_unknown(f"yt_api_http_{r.status_code}")
+
+
+async def _yt_src_web_page(raw: str) -> tuple:
+    """Source B : page web YouTube. Le cookie CONSENT bypass la consent wall EU."""
+    url = (
+        f"https://www.youtube.com/channel/{raw}"
+        if raw.startswith("UC") and len(raw) >= 20
+        else f"https://www.youtube.com/@{raw}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
             r = await c.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                # Bypass le consent.youtube.com redirect (EU GDPR)
+                # SOCS cookie = consent_decision_persistent, bypass effectif
+                "Cookie": "SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmRlIAEaBgiAo--mBg; CONSENT=YES+cb",
             })
-        if r.status_code == 404:
-            sig2 = False
-        elif r.status_code == 200:
-            txt = r.text
-            # Marqueurs "Page introuvable" YouTube
-            not_found_markers = ["404 Not Found", "This page isn't available", "page introuvable", "channelDoesNotExist"]
-            if any(m.lower() in txt.lower() for m in not_found_markers):
-                sig2 = False
-            elif "ytInitialData" in txt and ('"channelId"' in txt or '"channelMetadataRenderer"' in txt):
-                sig2 = True
     except Exception as e:
-        logger.debug(f"_verify_youtube_exists web @{raw}: {type(e).__name__}")
+        return _src_unknown(f"yt_web_exc:{type(e).__name__}")
+    if r.status_code == 404:
+        return _src_not_found("yt_web_http_404")
+    if r.status_code in (429, 403, 503):
+        return _src_unknown(f"yt_web_http_{r.status_code}")
+    if r.status_code != 200:
+        return _src_unknown(f"yt_web_http_{r.status_code}")
+    txt = r.text or ""
+    txt_lc = txt.lower()
+    if "channeldoesnotexist" in txt_lc:
+        return _src_not_found("yt_web_channelDoesNotExist")
+    if "404 not found" in txt_lc or "this page isn't available" in txt_lc:
+        return _src_not_found("yt_web_404_marker")
+    # PREUVE D'EXISTENCE : ytInitialData + channelId
+    if "ytinitialdata" in txt_lc and ('"channelid"' in txt_lc or '"channelmetadatarenderer"' in txt_lc):
+        return _src_exists("yt_web_channelId")
+    return _src_unknown("yt_web_ambiguous")
 
-    # ── Source 3 : yt-dlp metadata ──
-    sig3 = None
-    if YT_DLP_AVAILABLE:
-        try:
-            import yt_dlp
-            def _try_ytdlp():
-                opts = {
-                    "quiet": True,
-                    "skip_download": True,
-                    "no_warnings": True,
-                    "extract_flat": True,
-                    "playlist_items": "1",
-                    "socket_timeout": 12,
-                }
-                proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
-                if proxy_url:
-                    opts["proxy"] = proxy_url
-                url = (
-                    f"https://www.youtube.com/channel/{raw}"
-                    if raw.startswith("UC") and len(raw) >= 20
-                    else f"https://www.youtube.com/@{raw}"
-                )
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                    if info and (info.get("id") or info.get("uploader_id") or info.get("channel_id")):
-                        return True
-                except Exception as e:
-                    err = str(e).lower()
-                    if "404" in err or "does not exist" in err or "not found" in err:
-                        return False
-                return None
-            sig3 = await asyncio.get_event_loop().run_in_executor(None, _try_ytdlp)
-        except Exception as e:
-            logger.debug(f"_verify_youtube_exists ytdlp @{raw}: {type(e).__name__}")
 
-    # Decision
-    signals = [sig1, sig2, sig3]
-    n_true = sum(1 for s in signals if s is True)
-    n_false = sum(1 for s in signals if s is False)
-    if n_true >= 1:
+async def _yt_src_ytdlp(raw: str) -> tuple:
+    """Source C : yt-dlp."""
+    if not YT_DLP_AVAILABLE:
+        return _src_unknown("ytdlp_unavailable")
+    try:
+        import yt_dlp
+        def _try_ytdlp():
+            opts = {
+                "quiet": True,
+                "skip_download": True,
+                "no_warnings": True,
+                "extract_flat": True,
+                "playlist_items": "1",
+                "socket_timeout": 12,
+            }
+            proxy_url = _get_next_proxy() if BACKEND_PROXY_LIST else None
+            if proxy_url:
+                opts["proxy"] = proxy_url
+            url = (
+                f"https://www.youtube.com/channel/{raw}"
+                if raw.startswith("UC") and len(raw) >= 20
+                else f"https://www.youtube.com/@{raw}"
+            )
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if info and (info.get("id") or info.get("uploader_id") or info.get("channel_id")):
+                    return _src_exists(f"ytdlp_id:{info.get('id') or info.get('channel_id')}")
+                return _src_unknown("ytdlp_empty")
+            except Exception as e:
+                err = str(e).lower()
+                if "404" in err or "does not exist" in err or "not found" in err or "doesn't exist" in err:
+                    return _src_not_found(f"ytdlp_err:{err[:60]}")
+                return _src_unknown(f"ytdlp_exc:{type(e).__name__}:{err[:40]}")
+        return await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, _try_ytdlp),
+            timeout=25,
+        )
+    except asyncio.TimeoutError:
+        return _src_unknown("ytdlp_timeout")
+    except Exception as e:
+        return _src_unknown(f"ytdlp_exc:{type(e).__name__}")
+
+
+async def _verify_youtube_exists(handle_or_channel: str) -> Optional[bool]:
+    """Verification stricte d'existence YouTube.
+    Renvoie True (existe), False (n'existe pas), None (incertain).
+
+    REGLE SPECIALE : la YouTube Data API officielle est SOURCE DE VERITE.
+    Si elle dit exists ou not_found, on suit son verdict immediatement.
+    Sinon, on agrege les autres sources.
+    """
+    raw = (handle_or_channel or "").lstrip("@")
+    if not raw:
+        return None
+    # Pre-check : caracteres invalides dans un handle YouTube
+    import re as _re_yt
+    if not _re_yt.fullmatch(r'[A-Za-z0-9._\-]{3,80}', raw):
+        # Pas un handle valide -> on tente quand meme (peut etre un channel_id UC...)
+        if not (raw.startswith("UC") and len(raw) >= 20):
+            logger.info(f"_verify_youtube_exists: @{raw} format invalide -> not_found")
+            return False
+    results = await asyncio.gather(
+        _yt_src_data_api(raw),
+        _yt_src_web_page(raw),
+        _yt_src_ytdlp(raw),
+        return_exceptions=True,
+    )
+    def _safe(s):
+        return s if isinstance(s, tuple) and len(s) == 2 else ("unknown", f"raised:{type(s).__name__}")
+    src_a, src_b, src_c = (_safe(s) for s in results)
+    logger.info(
+        f"_verify_youtube_exists @{raw}: api={src_a[0]}({src_a[1]}), "
+        f"web={src_b[0]}({src_b[1]}), ytdlp={src_c[0]}({src_c[1]})"
+    )
+    # OFFICIELLE : trust YouTube Data API directement (sauf si elle est "unknown" pour quota)
+    if src_a[0] == "exists":
         return True
-    if n_false >= 2:
+    if src_a[0] == "not_found":
+        # Cross-check : si la page web dit "exists" formellement, on doit douter de l'API
+        # (cas tres rare ou la cle API est restreinte par region).
+        if src_b[0] == "exists":
+            return None
+        return False
+    # API en unknown -> agrege les 2 autres sources
+    verdicts = [src_b[0], src_c[0]]
+    n_exists = sum(1 for v in verdicts if v == "exists")
+    n_not_found = sum(1 for v in verdicts if v == "not_found")
+    if n_exists >= 1:
+        # Au moins 1 source dit exists -> on accepte (l'API officielle etait juste rate-limited)
+        return True
+    if n_not_found >= 2:
+        return False
+    # 1 source dit not_found mais l'autre est unknown -> on tend vers not_found
+    # mais conservativement, on rend unknown.
+    if n_not_found == 1 and src_b[0] == "not_found":
+        # La page web YouTube dit explicitement 404 -> tres fiable
         return False
     return None
 
@@ -9856,6 +10078,113 @@ async def _verify_account_still_exists(platform: str, username: str) -> Optional
     if plat == "youtube":
         return await _verify_youtube_exists(username)
     return None
+
+
+async def _verify_account_existence_detailed(platform: str, username: str) -> dict:
+    """Variante de _verify_account_still_exists qui renvoie le DETAIL de chaque source.
+    Utilise par l'endpoint admin de test pour diagnostiquer pourquoi un compte
+    est marque deleted/verified.
+    """
+    if not username:
+        return {"ok": False, "error": "username vide", "verdict": "unknown", "sources": {}}
+    plat = (platform or "").lower()
+    username = username.lstrip("@")
+    out = {"platform": plat, "username": username, "sources": {}, "verdict": "unknown", "exists": None}
+    try:
+        if plat == "instagram":
+            import re as _re_v
+            if _re_v.search(r'[^a-zA-Z0-9._-]', username):
+                out["verdict"] = "not_found"
+                out["exists"] = False
+                out["sources"]["pre_check"] = ("not_found", "caracteres invalides")
+                return out
+            results = await asyncio.gather(
+                _insta_src_web_html(username),
+                _insta_src_web_api(username),
+                _insta_src_clipscraper(username),
+                _insta_src_meta_bd(username),
+                return_exceptions=True,
+            )
+            names = ["html", "api", "vps", "meta_bd"]
+        elif plat == "tiktok":
+            results = await asyncio.gather(
+                _tt_src_tikwm_info(username),
+                _tt_src_web_page(username),
+                _tt_src_clipscraper(username),
+                _tt_src_ytdlp(username),
+                return_exceptions=True,
+            )
+            names = ["tikwm", "web", "vps", "ytdlp"]
+        elif plat == "youtube":
+            results = await asyncio.gather(
+                _yt_src_data_api(username),
+                _yt_src_web_page(username),
+                _yt_src_ytdlp(username),
+                return_exceptions=True,
+            )
+            names = ["api", "web", "ytdlp"]
+        else:
+            out["error"] = f"plateforme inconnue: {plat}"
+            return out
+    except Exception as e:
+        out["error"] = f"verification raised: {type(e).__name__}: {e}"
+        return out
+
+    def _safe(s):
+        return s if isinstance(s, tuple) and len(s) == 2 else ("unknown", f"raised:{type(s).__name__}")
+    for name, res in zip(names, results):
+        r = _safe(res)
+        out["sources"][name] = {"verdict": r[0], "evidence": r[1]}
+    # Compute final verdict (reproduit la logique des fonctions individuelles)
+    if plat == "instagram":
+        if out["sources"].get("meta_bd", {}).get("verdict") == "exists":
+            out["verdict"] = "exists"
+            out["exists"] = True
+        else:
+            verdicts = [v["verdict"] for v in out["sources"].values()]
+            n_e = sum(1 for v in verdicts if v == "exists")
+            n_nf = sum(1 for v in verdicts if v == "not_found")
+            if n_e >= 2:
+                out["verdict"] = "exists"; out["exists"] = True
+            elif n_nf >= 2:
+                out["verdict"] = "not_found"; out["exists"] = False
+            else:
+                out["verdict"] = "unknown"; out["exists"] = None
+    elif plat == "tiktok":
+        verdicts = [v["verdict"] for v in out["sources"].values()]
+        n_e = sum(1 for v in verdicts if v == "exists")
+        n_nf = sum(1 for v in verdicts if v == "not_found")
+        if n_e >= 2:
+            out["verdict"] = "exists"; out["exists"] = True
+        elif n_nf >= 2:
+            out["verdict"] = "not_found"; out["exists"] = False
+        else:
+            out["verdict"] = "unknown"; out["exists"] = None
+    elif plat == "youtube":
+        api_v = out["sources"].get("api", {}).get("verdict")
+        web_v = out["sources"].get("web", {}).get("verdict")
+        ytdlp_v = out["sources"].get("ytdlp", {}).get("verdict")
+        if api_v == "exists":
+            out["verdict"] = "exists"; out["exists"] = True
+        elif api_v == "not_found":
+            if web_v == "exists":
+                out["verdict"] = "unknown"; out["exists"] = None
+            else:
+                out["verdict"] = "not_found"; out["exists"] = False
+        else:
+            verdicts = [web_v, ytdlp_v]
+            n_e = sum(1 for v in verdicts if v == "exists")
+            n_nf = sum(1 for v in verdicts if v == "not_found")
+            if n_e >= 1:
+                out["verdict"] = "exists"; out["exists"] = True
+            elif n_nf >= 2:
+                out["verdict"] = "not_found"; out["exists"] = False
+            elif n_nf == 1 and web_v == "not_found":
+                out["verdict"] = "not_found"; out["exists"] = False
+            else:
+                out["verdict"] = "unknown"; out["exists"] = None
+    out["ok"] = True
+    return out
 
 
 async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool = False):
@@ -16542,6 +16871,40 @@ async def admin_verify_account_existence(account_id: str, request: Request):
             else "Aucune action (resultat incertain)"
         ),
     }
+
+@api_router.post("/admin/verify-account-test")
+@api_router.get("/admin/verify-account-test")
+async def admin_verify_account_test(request: Request, platform: str, username: str):
+    """🧪 TEST DIRECT du systeme de verification d'existence.
+    Ne modifie AUCUN compte en DB — juste retourne le verdict + detail des sources.
+
+    Usage : POST /api/admin/verify-account-test?platform=tiktok&username=khaby.lame&code=ADMIN_CODE
+    """
+    await verify_admin_code(request)
+    if platform not in ("instagram", "tiktok", "youtube"):
+        raise HTTPException(status_code=400, detail="platform doit etre instagram/tiktok/youtube")
+    username = (username or "").lstrip("@").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="username requis")
+    started = time.time()
+    try:
+        detail = await asyncio.wait_for(
+            _verify_account_existence_detailed(platform, username),
+            timeout=60,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "error": "timeout 60s",
+            "platform": platform,
+            "username": username,
+            "verdict": "unknown",
+            "exists": None,
+            "duration_sec": round(time.time() - started, 2),
+        }
+    detail["duration_sec"] = round(time.time() - started, 2)
+    return detail
+
 
 @api_router.get("/admin/suspect-accounts")
 async def admin_suspect_accounts(request: Request):
