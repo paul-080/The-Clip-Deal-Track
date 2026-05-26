@@ -404,7 +404,56 @@ def _classify_scrape_error(err_msg: str) -> str:
         "itemlist:[]", "empty list", "no items", "no medias",
     )):
         return "no_content"
+    # NEW : signal explicite "donnees incompletes" -> classifie en rate_limited (retry plus tard).
+    # Levé par _fetch_*_videos_async quand les sources gratuites ET Apify renvoient des données
+    # partielles (views=0 anormales, count trop bas vs known_min_count).
+    if "data_incomplete_retry_later" in e:
+        return "rate_limited"
     return "real_fail"
+
+
+def _videos_look_complete(videos: list, known_min_count: int = 0) -> tuple:
+    """
+    QUALITY GATE : decide si une liste de videos scrapees est '100% propre' ou 'partielle'.
+    Spec Paul : on ne stocke JAMAIS de donnees approximatives. Si la cascade gratuite retourne
+    du partiel -> on bascule sur la source suivante (idealement Apify si autorisee).
+    Si Apify aussi rate -> raise 'data_incomplete_retry_later' pour retry au prochain tick.
+
+    Retourne (ok: bool, raison: str).
+    Criteres 'donnees 100% propres' :
+    - Au moins 1 video retournee
+    - Au moins 80% des videos ont des vues > 0 (les videos < 1h recentes sont exemptees,
+      views=0 est normal sur un upload tout frais qui n'a pas encore d'eyeballs)
+    - Si known_min_count > 0 : on attend au moins known_min_count * 0.8 videos (tolerance 20%)
+    """
+    if not videos:
+        return (False, "0 videos retournees")
+    now = datetime.now(timezone.utc)
+
+    # 1. Check views (avec exemption < 1h)
+    views_ok = 0
+    views_total = 0
+    for v in videos:
+        try:
+            published_at = _parse_utc(v.get("published_at"))
+        except Exception:
+            published_at = None
+        # Videos tres recentes (< 1h) exemptees (views=0 normal)
+        if published_at and (now - published_at).total_seconds() < 3600:
+            continue
+        views_total += 1
+        if int(v.get("views") or 0) > 0:
+            views_ok += 1
+    if views_total > 0 and (views_ok / views_total) < 0.8:
+        return (False, f"seulement {views_ok}/{views_total} videos avec vues > 0 (<80%)")
+
+    # 2. Check count vs known_min_count (max-only, jamais diminue)
+    if known_min_count > 0:
+        threshold = int(known_min_count * 0.8)
+        if len(videos) < threshold:
+            return (False, f"{len(videos)} videos retournees < {threshold} attendus (80% de {known_min_count})")
+
+    return (True, "ok")
 
 
 async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
@@ -6463,7 +6512,7 @@ async def _fetch_tiktok_videos_rapidapi(username: str) -> list:
     return result
 
 
-async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None) -> list:
+async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_id: str = None, known_min_count: int = 0) -> list:
     """
     Fetch TikTok videos. Apify est LE DERNIER RECOURS (coute des credits).
     Priority:
@@ -6473,6 +6522,13 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     4. Playwright (si dispo)
     5. RapidAPI tiktok-scraper7
     6. Apify (DERNIER recours seulement si tout le reste a echoue)
+
+    QUALITY GATE (spec Paul) : on ne retourne JAMAIS de donnees partielles.
+    - Si une source repond avec donnees 100% propres (>=80% des videos ont vues > 0,
+      count >= 80% known_min_count) -> return immediatement.
+    - Si une source repond partielle -> on continue la cascade (Apify si autorise).
+    - Si Apify aussi rate -> raise 'data_incomplete_retry_later' (run_video_tracking
+      classifie en rate_limited et retry au prochain tick, sans stocker du partiel).
     """
     username = username.lstrip("@")
     numeric_id = user_id or ""
@@ -6493,9 +6549,15 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         try:
             cs_videos = await _fetch_via_clipscraper("tiktok", username, max_videos=dynamic_max_tt)
             if cs_videos:
-                logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username} (max_videos={dynamic_max_tt})")
-                await _log_scrape("clipscraper", "tiktok", username, True, len(cs_videos))
-                return cs_videos
+                # QUALITY GATE : ne return que si donnees 100% propres
+                ok_q, reason_q = _videos_look_complete(cs_videos, known_min_count)
+                if ok_q:
+                    logger.info(f"ClipScraper TikTok: {len(cs_videos)} videos for @{username} (max_videos={dynamic_max_tt}) [QUALITY OK]")
+                    await _log_scrape("clipscraper", "tiktok", username, True, len(cs_videos))
+                    return cs_videos
+                else:
+                    logger.warning(f"ClipScraper TikTok partial for @{username}: {reason_q} - falling through to next source")
+                    await _log_scrape("clipscraper", "tiktok", username, False, len(cs_videos), f"partial: {reason_q}")
             else:
                 logger.warning(f"ClipScraper TikTok returned 0 videos for @{username} - falling through")
                 await _log_scrape("clipscraper", "tiktok", username, False, 0, "0 videos returned")
@@ -6512,13 +6574,15 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
         logger.info(f"TikWm fetched {len(tikwm_videos)} videos for @{username}")
     except Exception as e:
         logger.warning(f"TikWm fetch failed for @{username}: {e}")
-    # Seuil abaisse 10 -> 3 : si TikWm a >= 3 videos avec vues, c'est OK (compte petit/moyen)
-    # + Log scrape pour la source TikWm (manquait avant - logging visibility audit)
-    if len(tikwm_videos) >= 3 and any((v.get("views") or 0) > 0 for v in tikwm_videos):
-        await _log_scrape("tikwm", "tiktok", username, True, len(tikwm_videos))
-        return tikwm_videos
+    # QUALITY GATE TikWm : on ne return QUE si donnees 100% propres
     if tikwm_videos:
-        await _log_scrape("tikwm", "tiktok", username, False, len(tikwm_videos), "partial (< 3 videos avec vues > 0)")
+        ok_q_tw, reason_q_tw = _videos_look_complete(tikwm_videos, known_min_count)
+        if ok_q_tw and len(tikwm_videos) >= 3:
+            await _log_scrape("tikwm", "tiktok", username, True, len(tikwm_videos))
+            return tikwm_videos
+        else:
+            _why = reason_q_tw if not ok_q_tw else f"< 3 videos ({len(tikwm_videos)})"
+            await _log_scrape("tikwm", "tiktok", username, False, len(tikwm_videos), f"partial: {_why}")
     else:
         await _log_scrape("tikwm", "tiktok", username, False, 0, "0 videos returned (proxy/IP banned ?)")
     # Strategy 2: TikTok mobile API (parser numeric_id ou sec_uid)
@@ -6541,9 +6605,12 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     for v in (tikwm_videos + mobile_videos):
         merged[v["platform_video_id"]] = v
     combined = list(merged.values())
-    # Seuil abaisse 10 -> 3 ici aussi
-    if len(combined) >= 3 and any((v.get("views") or 0) > 0 for v in combined):
-        return combined
+    # QUALITY GATE combined : ne return que si 100% propres
+    if combined:
+        ok_q_cb, reason_q_cb = _videos_look_complete(combined, known_min_count)
+        if ok_q_cb and len(combined) >= 3:
+            return combined
+        # sinon on tombe en cascade (Playwright/RapidAPI/yt-dlp/Apify)
     # Fallback: Playwright (pas de filtre de date — toutes les vidéos)
     if PLAYWRIGHT_AVAILABLE:
         try:
@@ -6555,7 +6622,11 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 pw_merged = {v["platform_video_id"]: v for v in combined}
                 for v in playwright_videos:
                     pw_merged[v["platform_video_id"]] = v
-                return list(pw_merged.values())
+                pw_list = list(pw_merged.values())
+                ok_q_pw, reason_q_pw = _videos_look_complete(pw_list, known_min_count)
+                if ok_q_pw:
+                    return pw_list
+                logger.warning(f"Playwright TikTok partial for @{username}: {reason_q_pw} - falling through")
             else:
                 logger.warning(f"Playwright returned 0 videos for @{username}")
         except Exception as e:
@@ -6570,14 +6641,17 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
                 merged_all = {v["platform_video_id"]: v for v in combined}
                 for v in rapid_videos:
                     merged_all[v["platform_video_id"]] = v
-                return list(merged_all.values())
+                merged_all_list = list(merged_all.values())
+                ok_q_ra, reason_q_ra = _videos_look_complete(merged_all_list, known_min_count)
+                if ok_q_ra:
+                    return merged_all_list
+                logger.warning(f"RapidAPI TikTok partial for @{username}: {reason_q_ra} - falling through to Apify")
         except Exception as e:
             logger.warning(f"RapidAPI TikTok failed for @{username}: {e}")
 
-    # If we have TikWm partial results, return them rather than failing completely
-    if combined:
-        logger.info(f"Returning {len(combined)} partial TikWm videos for @{username} (full scraping blocked)")
-        return combined
+    # QUALITY GATE : Bug 1 FIX (was: return combined partiel directement)
+    # On NE retourne JAMAIS de combined partiel sans avoir tente la cascade complete (yt-dlp + Apify).
+    # Cf spec Paul : "JAMAIS de données approximatives stockées".
     # Fallback: yt-dlp (try multiple strategies for cloud-blocked environments)
     if YT_DLP_AVAILABLE:
         loop = asyncio.get_event_loop()
@@ -6649,21 +6723,23 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             raise ValueError(f"TikTok bloque les requêtes depuis ce serveur pour @{username}. Le scraping TikTok est inaccessible depuis les serveurs cloud en raison des protections anti-bot de TikTok.")
         # Wrap dans asyncio.wait_for pour eviter hang indefini (yt-dlp peut bloquer sur DNS)
         try:
-            return await asyncio.wait_for(
+            ytdlp_videos = await asyncio.wait_for(
                 loop.run_in_executor(_thread_pool, _ytdlp_videos),
                 timeout=90  # max 90s pour yt-dlp TikTok
             )
+            if ytdlp_videos:
+                ok_q_yt, reason_q_yt = _videos_look_complete(ytdlp_videos, known_min_count)
+                if ok_q_yt:
+                    return ytdlp_videos
+                logger.warning(f"yt-dlp TikTok partial for @{username}: {reason_q_yt} - falling through to Apify")
         except asyncio.TimeoutError:
             logger.warning(f"yt-dlp TikTok TIMEOUT (90s) pour @{username}")
             await _log_scrape("ytdlp", "tiktok", username, False, 0, "timeout 90s")
-            if combined:
-                return combined
+            # QUALITY GATE Bug 1 FIX : on NE retourne PAS combined partiel ici - on tente Apify
         except Exception as e:
             logger.warning(f"yt-dlp TikTok failed for @{username}: {e}")
             await _log_scrape("ytdlp", "tiktok", username, False, 0, str(e)[:200])
-            if combined:
-                return combined
-            # Don't raise yet - try Apify as last resort below
+            # QUALITY GATE Bug 1 FIX : on NE retourne PAS combined partiel - on tente Apify
 
     # DERNIER RECOURS : Apify TikTok — DESACTIVE PAR DEFAUT (kill switch dedie)
     # On ne veut JAMAIS d'Apify en routine pour TikTok. La cascade gratuite (VPS,
@@ -6680,18 +6756,28 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
             logger.warning(f"⚠️ FALLBACK APIFY TikTok pour @{username} — toutes les sources gratuites ont echoue !")
             apify_videos = await _fetch_tiktok_videos_apify(username)
             if apify_videos:
-                logger.warning(f"⚠️ Apify TikTok a renvoye {len(apify_videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
-                await _log_scrape("apify", "tiktok", username, True, len(apify_videos), "USED AS LAST RESORT")
-                return apify_videos
+                # QUALITY GATE Apify : meme verif (Apify peut renvoyer partiel sur compte massif)
+                ok_q_ap, reason_q_ap = _videos_look_complete(apify_videos, known_min_count)
+                if ok_q_ap:
+                    logger.warning(f"⚠️ Apify TikTok a renvoye {len(apify_videos)} videos pour @{username} [QUALITY OK] — verifie pourquoi le VPS et autres sources ont rate")
+                    await _log_scrape("apify", "tiktok", username, True, len(apify_videos), "USED AS LAST RESORT")
+                    return apify_videos
+                else:
+                    logger.warning(f"⚠️ Apify TikTok partial for @{username}: {reason_q_ap} - data_incomplete_retry_later")
+                    await _log_scrape("apify", "tiktok", username, False, len(apify_videos), f"partial: {reason_q_ap}")
             else:
                 await _log_scrape("apify", "tiktok", username, False, 0, "0 videos returned")
         except Exception as e:
             logger.warning(f"Apify TikTok failed for @{username}: {e}")
             await _log_scrape("apify", "tiktok", username, False, 0, str(e))
 
+    # QUALITY GATE Bug 1 FIX : on a tout essaye, et soit on n'a rien, soit on n'a que du partiel.
+    # On NE retourne JAMAIS combined partiel (cf spec Paul). Si du combined existe, on raise
+    # data_incomplete_retry_later -> classifier -> rate_limited -> retry au prochain tick.
     if combined:
-        await _log_scrape("tikwm_partial", "tiktok", username, True, len(combined))
-        return combined
+        await _log_scrape("tiktok_incomplete_data", "tiktok", username, False, len(combined),
+                          f"sources gratuites + Apify ont rate ou renvoye partiel ({len(combined)} videos en combined)")
+        raise ValueError(f"data_incomplete_retry_later: TikTok @{username} - {len(combined)} videos partielles (cascade complete + Apify n'ont pas valide la quality gate)")
     # NEW : probe is_private TikTok via TikWm /api/user/info avant d'abandonner.
     # Si compte detecte comme prive (privateAccount=True) ou videoCount=0 (no_content),
     # on raise / return [] proprement (au lieu de logger 'real_fail' pour un cas legitime).
@@ -7663,7 +7749,7 @@ async def _fetch_instagram_via_apify_reel_scraper_account(username: str, max_vid
         return None
 
 
-async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650) -> list:
+async def _fetch_instagram_videos_async(username: str, platform_channel_id: str = None, since_days: int = 3650, known_min_count: int = 0) -> list:
     """
     Fetch Instagram videos/reels.
     Strategie : sources gratuites en priorite, Apify desactive par defaut.
@@ -7674,6 +7760,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     4. yt-dlp + HTML public
     5. Feed prive Instagram (cookie session)
     6. RapidAPI / instaloader / Playwright
+
+    QUALITY GATE (spec Paul) : ne retourne JAMAIS de donnees partielles.
+    - Source 100% propre -> return.
+    - Source partielle -> tombe en cascade jusqu'a Apify.
+    - Apify aussi rate -> raise 'data_incomplete_retry_later' (retry au prochain tick).
     """
     username = username.lstrip("@")
 
@@ -7704,8 +7795,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         try:
             bd_videos = await _fetch_instagram_via_business_discovery_account(username, max_videos=dynamic_max)
             if bd_videos:
-                logger.info(f"🌟 Insta Business Discovery: {len(bd_videos)} videos for @{username} (vraies vues Meta)")
-                return bd_videos
+                ok_q_bd, reason_q_bd = _videos_look_complete(bd_videos, known_min_count)
+                if ok_q_bd:
+                    logger.info(f"🌟 Insta Business Discovery: {len(bd_videos)} videos for @{username} (vraies vues Meta) [QUALITY OK]")
+                    return bd_videos
+                logger.warning(f"Business Discovery partial for @{username}: {reason_q_bd} - falling through")
         except Exception as e:
             logger.warning(f"Business Discovery failed for @{username}: {e}")
 
@@ -7754,9 +7848,13 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                 await _log_scrape("clips_graphql", "instagram", username, False, 0, f"all views=0 ({enrich_failures} enrich failures)")
                 # On NE return PAS — on tombe en cascade pour avoir les vraies vues
             else:
-                await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), f"GRATUIT clips_user+graphql ({enrich_failures} enrich failures)")
-                logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}, {views_nonzero} avec views > 0")
-                return enriched_clips
+                ok_q_cg, reason_q_cg = _videos_look_complete(enriched_clips, known_min_count)
+                if ok_q_cg:
+                    await _log_scrape("clips_graphql", "instagram", username, True, len(enriched_clips), f"GRATUIT clips_user+graphql ({enrich_failures} enrich failures) [QUALITY OK]")
+                    logger.info(f"NEW GRATUIT clips/user/ + GraphQL enriched: {len(enriched_clips)} videos for @{username}, {views_nonzero} avec views > 0")
+                    return enriched_clips
+                logger.warning(f"clips_graphql Insta partial for @{username}: {reason_q_cg} - falling through")
+                await _log_scrape("clips_graphql", "instagram", username, False, len(enriched_clips), f"partial: {reason_q_cg}")
     except Exception as e:
         logger.warning(f"Mobile Clips API failed for @{username}: {type(e).__name__}: {e}")
         await _log_scrape("clips_graphql", "instagram", username, False, 0, str(e)[:200])
@@ -7787,13 +7885,22 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                         except Exception as e:
                             logger.debug(f"GraphQL enrich failed for {shortcode_v}: {e}")
                         enriched.append(v)
-                    await _log_scrape("vps_graphql", "instagram", username, True, len(enriched), "enriched via GraphQL")
-                    return enriched
+                    ok_q_vg, reason_q_vg = _videos_look_complete(enriched, known_min_count)
+                    if ok_q_vg:
+                        await _log_scrape("vps_graphql", "instagram", username, True, len(enriched), "enriched via GraphQL [QUALITY OK]")
+                        return enriched
+                    logger.warning(f"vps_graphql Insta partial for @{username}: {reason_q_vg} - falling through")
+                    await _log_scrape("vps_graphql", "instagram", username, False, len(enriched), f"partial: {reason_q_vg}")
                 else:
                     # Sans proxy : retourne les videos VPS sans enrichissement
-                    await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos), "VPS only (no proxy for graphql enrich)")
-                    logger.info(f"VPS Insta sans enrich pour @{username}: {len(cs_videos)} videos")
-                    return cs_videos[:dynamic_max]
+                    cs_videos_trim = cs_videos[:dynamic_max]
+                    ok_q_cs, reason_q_cs = _videos_look_complete(cs_videos_trim, known_min_count)
+                    if ok_q_cs:
+                        await _log_scrape("clipscraper", "instagram", username, True, len(cs_videos_trim), "VPS only (no proxy for graphql enrich) [QUALITY OK]")
+                        logger.info(f"VPS Insta sans enrich pour @{username}: {len(cs_videos_trim)} videos")
+                        return cs_videos_trim
+                    logger.warning(f"clipscraper Insta sans enrich partial for @{username}: {reason_q_cs} - falling through")
+                    await _log_scrape("clipscraper", "instagram", username, False, len(cs_videos_trim), f"partial: {reason_q_cs}")
         except Exception as e:
             logger.warning(f"VPS+GraphQL Insta failed for @{username}: {e}")
 
@@ -7802,8 +7909,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         try:
             ytdlp_videos = await _fetch_instagram_via_ytdlp_profile(username, max_videos=dynamic_max)
             if ytdlp_videos:
-                logger.info(f"yt-dlp Insta fallback: {len(ytdlp_videos)} videos for @{username}")
-                return ytdlp_videos
+                ok_q_yi, reason_q_yi = _videos_look_complete(ytdlp_videos, known_min_count)
+                if ok_q_yi:
+                    logger.info(f"yt-dlp Insta fallback: {len(ytdlp_videos)} videos for @{username} [QUALITY OK]")
+                    return ytdlp_videos
+                logger.warning(f"yt-dlp Insta partial for @{username}: {reason_q_yi} - falling through")
         except Exception as e:
             logger.warning(f"yt-dlp Insta profile failed for @{username}: {e}")
 
@@ -7811,8 +7921,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     try:
         html_videos = await _fetch_instagram_via_public_html(username, max_videos=dynamic_max)
         if html_videos:
-            logger.info(f"Instagram public HTML fallback: {len(html_videos)} videos for @{username}")
-            return html_videos
+            ok_q_ih, reason_q_ih = _videos_look_complete(html_videos, known_min_count)
+            if ok_q_ih:
+                logger.info(f"Instagram public HTML fallback: {len(html_videos)} videos for @{username} [QUALITY OK]")
+                return html_videos
+            logger.warning(f"Instagram public HTML partial for @{username}: {reason_q_ih} - falling through")
     except Exception as e:
         logger.warning(f"Instagram public HTML failed for @{username}: {e}")
 
@@ -7830,9 +7943,12 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
             if apify_videos:
-                # ⚠️ Apify a ete utilise = bug a investiguer
-                await _alert_apify_used("instagram", username, "Toute la cascade gratuite (clips_graphql + vps_graphql + clipscraper + yt-dlp) a echoue")
-                return apify_videos
+                ok_q_aim, reason_q_aim = _videos_look_complete(apify_videos, known_min_count)
+                if ok_q_aim:
+                    # ⚠️ Apify a ete utilise = bug a investiguer
+                    await _alert_apify_used("instagram", username, "Toute la cascade gratuite (clips_graphql + vps_graphql + clipscraper + yt-dlp) a echoue")
+                    return apify_videos
+                logger.warning(f"Apify Insta mid-cascade partial for @{username}: {reason_q_aim} - falling through")
         except Exception as e:
             logger.warning(f"Apify Reel Scraper fallback failed for @{username}: {e}")
     elif _APIFY_INSTA_KILL_SWITCH:
@@ -7884,7 +8000,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                     logger.warning(f"⚠️ Instagram privé @{username}: {len(merged)} videos mais TOUTES avec views=0 — fallback aux strategies suivantes")
                     await _log_scrape("instagram_private", "instagram", username, False, len(merged), "all views=0 (blocage IP partiel)")
                 elif merged:
-                    return merged
+                    ok_q_ip, reason_q_ip = _videos_look_complete(merged, known_min_count)
+                    if ok_q_ip:
+                        return merged
+                    logger.warning(f"instagram_private partial for @{username}: {reason_q_ip} - falling through")
+                    await _log_scrape("instagram_private", "instagram", username, False, len(merged), f"partial: {reason_q_ip}")
         except Exception as e:
             logger.warning(f"Instagram private API failed for @{username}: {type(e).__name__}: {e}")
             await _log_scrape("instagram_private", "instagram", username, False, 0, str(e)[:200])
@@ -7894,8 +8014,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         try:
             videos = await _fetch_instagram_videos_rapidapi(username)
             if videos:
-                logger.info(f"Instagram RapidAPI: {len(videos)} vidéos pour @{username}")
-                return videos
+                ok_q_ra_i, reason_q_ra_i = _videos_look_complete(videos, known_min_count)
+                if ok_q_ra_i:
+                    logger.info(f"Instagram RapidAPI: {len(videos)} vidéos pour @{username} [QUALITY OK]")
+                    return videos
+                logger.warning(f"Instagram RapidAPI partial for @{username}: {reason_q_ra_i} - falling through")
         except Exception as e:
             logger.warning(f"RapidAPI Instagram videos failed for @{username}: {e}")
 
@@ -7905,8 +8028,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             data = await _scrape_instagram_api(username)
             videos = _parse_instagram_videos(data)
             if videos:
-                logger.info(f"Instagram httpx+session (web_profile_info): {len(videos)} vidéos pour @{username}")
-                return videos
+                ok_q_hs, reason_q_hs = _videos_look_complete(videos, known_min_count)
+                if ok_q_hs:
+                    logger.info(f"Instagram httpx+session (web_profile_info): {len(videos)} vidéos pour @{username} [QUALITY OK]")
+                    return videos
+                logger.warning(f"Instagram httpx+session partial for @{username}: {reason_q_hs} - falling through")
         except Exception as e:
             logger.warning(f"Instagram httpx+session videos failed for @{username}: {e}")
 
@@ -7947,8 +8073,11 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         try:
             videos = await loop.run_in_executor(_thread_pool, _il_videos_with_session)
             if videos:
-                logger.info(f"Instagram instaloader+session: {len(videos)} vidéos pour @{username}")
-                return videos
+                ok_q_ils, reason_q_ils = _videos_look_complete(videos, known_min_count)
+                if ok_q_ils:
+                    logger.info(f"Instagram instaloader+session: {len(videos)} vidéos pour @{username} [QUALITY OK]")
+                    return videos
+                logger.warning(f"Instagram instaloader+session partial for @{username}: {reason_q_ils} - falling through")
         except Exception as e:
             logger.warning(f"instaloader+session failed for @{username}: {e}")
 
@@ -7983,7 +8112,12 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
                     break
             return result
         try:
-            return await loop.run_in_executor(_thread_pool, _il_videos)
+            il_videos = await loop.run_in_executor(_thread_pool, _il_videos)
+            if il_videos:
+                ok_q_il, reason_q_il = _videos_look_complete(il_videos, known_min_count)
+                if ok_q_il:
+                    return il_videos
+                logger.warning(f"Instagram instaloader anon partial for @{username}: {reason_q_il} - falling through")
         except Exception as e:
             logger.warning(f"instaloader failed for @{username}: {e}")
 
@@ -7993,7 +8127,10 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             data = await _scrape_instagram_playwright(username)
             videos = _parse_instagram_videos(data)
             if videos:
-                return videos
+                ok_q_pwi, reason_q_pwi = _videos_look_complete(videos, known_min_count)
+                if ok_q_pwi:
+                    return videos
+                logger.warning(f"Playwright Insta partial for @{username}: {reason_q_pwi} - falling through")
         except Exception as e:
             logger.warning(f"Playwright Instagram video fetch failed for @{username}: {e}")
 
@@ -8013,9 +8150,14 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             logger.warning(f"⚠️ FALLBACK APIFY Instagram pour @{username} — toutes les sources gratuites ont echoue !")
             videos = await _fetch_instagram_videos_apify(username)
             if videos:
-                logger.warning(f"⚠️ Apify Instagram a renvoye {len(videos)} videos pour @{username} — verifie pourquoi le VPS et autres sources ont rate")
-                await _log_scrape("apify", "instagram", username, True, len(videos), "USED AS LAST RESORT")
-                return videos
+                ok_q_apif, reason_q_apif = _videos_look_complete(videos, known_min_count)
+                if ok_q_apif:
+                    logger.warning(f"⚠️ Apify Instagram a renvoye {len(videos)} videos pour @{username} [QUALITY OK] — verifie pourquoi le VPS et autres sources ont rate")
+                    await _log_scrape("apify", "instagram", username, True, len(videos), "USED AS LAST RESORT")
+                    return videos
+                else:
+                    logger.warning(f"⚠️ Apify Instagram partial for @{username}: {reason_q_apif} - data_incomplete_retry_later")
+                    await _log_scrape("apify", "instagram", username, False, len(videos), f"partial: {reason_q_apif}")
             else:
                 await _log_scrape("apify", "instagram", username, False, 0, "0 videos returned")
         except Exception as e:
@@ -8067,10 +8209,16 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         f"Cascade Instagram cassee pour @{username} : toutes sources rate-limited (rate limit, proxy sature, cookies expires)."
     )
 
-async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
+async def _fetch_youtube_videos(channel_id: str, since_days: int = 30, known_min_count: int = 0) -> list:
     """Fetch YouTube videos via Data API v3 avec full error handling.
     Erreurs explicites loggees au lieu de retourner [] silencieusement.
     Pagination via pageToken jusqu'a couvrir since_days (ou max 500 videos).
+
+    QUALITY GATE (spec Paul) : YouTube Data API officielle = source 100% propre par
+    nature (Google = vraies vues unifiees). On verifie tout de meme la quality :
+    si la pagination est tronquee (count << known_min_count) ou si la majorite des
+    videos ont views=0 (cas API en degraded mode), on tombe en yt-dlp fallback.
+    Si yt-dlp aussi rate -> raise 'data_incomplete_retry_later' (retry).
     """
     if not YOUTUBE_API_KEY:
         logger.warning(f"YouTube fetch : YOUTUBE_API_KEY manquante (channel_id={channel_id})")
@@ -8108,11 +8256,25 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
                 try:
                     ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
                     if ytdlp_videos:
-                        await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), f"Data API {r.status_code} -> ytdlp ok")
-                        return ytdlp_videos
+                        ok_q_ytdh, reason_q_ytdh = _videos_look_complete(ytdlp_videos, known_min_count)
+                        if ok_q_ytdh:
+                            await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), f"Data API {r.status_code} -> ytdlp ok [QUALITY OK]")
+                            return ytdlp_videos
+                        logger.warning(f"YouTube yt-dlp partial after API HTTP {r.status_code} for {channel_id}: {reason_q_ytdh} - data_incomplete_retry_later")
+                        await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, len(ytdlp_videos), f"partial: {reason_q_ytdh}")
+                        raise ValueError(
+                            f"data_incomplete_retry_later: YouTube {channel_id} - Data API down + ytdlp partiel"
+                        )
+                except ValueError:
+                    raise
                 except Exception as fb_err:
                     logger.error(f"YouTube ytdlp fallback failed too for {channel_id}: {fb_err}")
             await _log_scrape("youtube_api", "youtube", channel_id, False, 0, f"HTTP {r.status_code}: {err_reason}"[:200])
+            # Si quota / 4xx / 5xx + yt-dlp fail aussi -> retry plus tard (pas no_content)
+            if "quota" in (err_reason or "").lower() or r.status_code in (403, 429, 500, 502, 503):
+                raise ValueError(
+                    f"data_incomplete_retry_later: YouTube {channel_id} - Data API HTTP {r.status_code} ({err_reason[:80]}) et ytdlp KO"
+                )
             return []
         try:
             data = r.json()
@@ -8134,11 +8296,22 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
             try:
                 ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
                 if ytdlp_videos:
-                    logger.info(f"YouTube ytdlp emergency fallback: {len(ytdlp_videos)} videos pour {channel_id}")
-                    return ytdlp_videos
+                    ok_q_yte, reason_q_yte = _videos_look_complete(ytdlp_videos, known_min_count)
+                    if ok_q_yte:
+                        logger.info(f"YouTube ytdlp emergency fallback: {len(ytdlp_videos)} videos pour {channel_id} [QUALITY OK]")
+                        return ytdlp_videos
+                    logger.warning(f"YouTube ytdlp emergency partial for {channel_id}: {reason_q_yte}")
+                    raise ValueError(
+                        f"data_incomplete_retry_later: YouTube {channel_id} - emergency ytdlp partiel apres exception API"
+                    )
+            except ValueError:
+                raise
             except Exception:
                 pass
-        return []
+        # Channels API + ytdlp KO : c'est un rate_limit/timeout/quota, pas un no_content -> retry plus tard
+        raise ValueError(
+            f"data_incomplete_retry_later: YouTube {channel_id} - cascade complete down ({type(e).__name__})"
+        )
 
     # 2. Recupere les videos de la playlist (avec pagination si necessaire)
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=since_days)
@@ -8233,27 +8406,45 @@ async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
         logger.error(f"YouTube stats fetch failed for {channel_id}: {type(e).__name__}: {e}")
 
     if result:
-        logger.info(f"YouTube : {len(result)} videos for channel {channel_id} (paginated {pages_fetched+1} pages)")
-        return result
+        ok_q_yt, reason_q_yt = _videos_look_complete(result, known_min_count)
+        if ok_q_yt:
+            logger.info(f"YouTube : {len(result)} videos for channel {channel_id} (paginated {pages_fetched+1} pages) [QUALITY OK]")
+            return result
+        logger.warning(f"YouTube Data API partial for {channel_id}: {reason_q_yt} - falling through to yt-dlp")
+        await _log_scrape("youtube_api", "youtube", channel_id, False, len(result), f"partial: {reason_q_yt}")
+        # On garde result en memoire pour pouvoir merge avec ytdlp si besoin
 
     # ── FALLBACK YOUTUBE : si Data API v3 a echoue (quota / cle invalide / etc),
     # on tente yt-dlp qui ne necessite aucune cle API. Plus lent mais 100% gratuit
     # et sans quota. Garantie que YouTube ne plante JAMAIS silencieusement meme si
     # le quota Google est depasse (10 000 unites/jour par defaut, vite atteint).
     if YT_DLP_AVAILABLE:
-        logger.warning(f"YouTube Data API a retourne 0 videos pour {channel_id} -> fallback yt-dlp")
+        if not result:
+            logger.warning(f"YouTube Data API a retourne 0 videos pour {channel_id} -> fallback yt-dlp")
         try:
             ytdlp_videos = await _fetch_youtube_videos_via_ytdlp(channel_id, since_days=since_days)
             if ytdlp_videos:
-                logger.info(f"YouTube yt-dlp fallback: {len(ytdlp_videos)} videos pour {channel_id}")
-                await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), "Data API failed, ytdlp succeeded")
-                return ytdlp_videos
+                ok_q_ytd, reason_q_ytd = _videos_look_complete(ytdlp_videos, known_min_count)
+                if ok_q_ytd:
+                    logger.info(f"YouTube yt-dlp fallback: {len(ytdlp_videos)} videos pour {channel_id} [QUALITY OK]")
+                    await _log_scrape("ytdlp_fallback", "youtube", channel_id, True, len(ytdlp_videos), "Data API failed/partial, ytdlp succeeded")
+                    return ytdlp_videos
+                logger.warning(f"YouTube yt-dlp partial for {channel_id}: {reason_q_ytd}")
+                await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, len(ytdlp_videos), f"partial: {reason_q_ytd}")
             else:
                 await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, 0, "ytdlp returned 0")
         except Exception as e:
             logger.error(f"YouTube yt-dlp fallback failed for {channel_id}: {type(e).__name__}: {e}")
             await _log_scrape("ytdlp_fallback", "youtube", channel_id, False, 0, str(e)[:200])
 
+    # QUALITY GATE Bug 3 FIX : si on a un result partiel, on NE le retourne PAS.
+    # On raise data_incomplete_retry_later -> retry au prochain tick (pas de stockage partiel).
+    if result:
+        raise ValueError(
+            f"data_incomplete_retry_later: YouTube {channel_id} - {len(result)} videos partielles "
+            f"(Data API + yt-dlp n'ont pas valide la quality gate)"
+        )
+    # result vide : on retourne [] = no_content classifie correctement par run_video_tracking
     return result
 
 
@@ -9566,16 +9757,39 @@ async def fetch_videos(platform: str, username: str, account: dict, since_days: 
     # sont trackees via _log_scrape uniquement quand Apify est vraiment utilise)
     service_map = {"youtube": "youtube", "tiktok": "tiktok", "instagram": "instagram"}
     success = True
+    # QUALITY GATE : known_min_count = max video count vu lors des scrapes precedents.
+    # Permet de detecter qu'une source rend du partiel (ex compte qui a 50 videos d'habitude
+    # et qui renvoie soudain 5 = source rate-limited / IP partiellement bannie). max-only,
+    # jamais diminue (sinon une source partielle persistante baisserait le seuil).
+    known_min_count = int(account.get("last_video_count", 0) or 0)
     try:
         if platform == "youtube":
             channel_id = account.get("platform_channel_id")
-            return await _fetch_youtube_videos(channel_id, since_days)
+            videos = await _fetch_youtube_videos(channel_id, since_days, known_min_count=known_min_count)
         elif platform == "tiktok":
-            return await _fetch_tiktok_videos_async(username, since_days, account.get("platform_channel_id"))
+            videos = await _fetch_tiktok_videos_async(username, since_days, account.get("platform_channel_id"), known_min_count=known_min_count)
         elif platform == "instagram":
             platform_channel_id = account.get("platform_channel_id")
-            return await _fetch_instagram_videos_async(username, platform_channel_id, since_days)
-        return []
+            videos = await _fetch_instagram_videos_async(username, platform_channel_id, since_days, known_min_count=known_min_count)
+        else:
+            return []
+        # Update last_video_count (max-only, ne diminue JAMAIS) si on a recu des videos propres
+        if videos:
+            try:
+                account_id = account.get("account_id")
+                if account_id:
+                    new_max = max(len(videos), known_min_count)
+                    if new_max > known_min_count:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "last_video_count": new_max,
+                                "last_known_count_at": datetime.now(timezone.utc).isoformat(),
+                            }}
+                        )
+            except Exception as _e_lvc:
+                logger.debug(f"last_video_count update failed for {platform}/@{username}: {_e_lvc}")
+        return videos
     except Exception:
         success = False
         raise
@@ -10678,10 +10892,12 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                     err_msg = str(fetch_err).lower()
                     # BACKOFF INTELLIGENT : si rate-limit detecte, on n'incremente PAS failures
                     # (sinon un rate-limit temporaire = pause 24h injustifiee).
+                    # QUALITY GATE : "data_incomplete_retry_later" est traite EXACTEMENT comme rate_limit :
+                    # ne pas marquer compte deleted, ne pas ecrire les videos partielles, retry au prochain tick.
                     fetch_was_rate_limited = any(kw in err_msg for kw in [
                         "rate limited", "rate-limit", "rate limit", "429", "too many requests",
                         "checkpoint_required", "challenge_required", "login_required",
-                        "free api limit",
+                        "free api limit", "data_incomplete_retry_later",
                     ])
                     # NEW : signal compte prive explicite (Insta is_private:true, TikWm "privé")
                     fetch_was_private = any(kw in err_msg for kw in [
