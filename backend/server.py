@@ -4922,21 +4922,21 @@ async def _verify_tiktok_apify(username: str) -> dict:
         raise ValueError("APIFY_TOKEN non configuré")
     username = username.lstrip("@")
 
+    # FIX 2026-05-26 : apify~tiktok-scraper N'EXISTE PLUS (HTTP 404 record-not-found).
+    # Le payload "startUrls" sur clockworks~tiktok-scraper est REJETE par l'acteur
+    # ("Input must contain postURLs, hashtags, search queries, music references or profiles").
+    # Seul "profiles" (string username OU URL profil) est accepte par clockworks.
     attempts = [
         ("clockworks~tiktok-scraper", {
             "profiles": [username],
+            "resultsType": "details",
+            "maxProfilesPerQuery": 1,
             "resultsPerPage": 1,
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": False,
-        }),
-        ("clockworks~tiktok-scraper", {
-            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
-            "resultsPerPage": 1,
-            "shouldDownloadVideos": False,
-        }),
-        ("apify~tiktok-scraper", {
-            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
-            "maxPostsPerProfile": 1,
+            "shouldDownloadAvatars": False,
+            "shouldDownloadSubtitles": False,
+            "shouldDownloadSlideshowImages": False,
         }),
     ]
 
@@ -6307,27 +6307,25 @@ async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 10) -> list
     username = username.lstrip("@")
 
     # Actors + payloads a essayer dans l'ordre.
-    # ORDRE CORRIGE 2026-05-15 : "profiles" en PREMIER car teste OK avec token user
-    # (le payload "startUrls" sur clockworks~tiktok-scraper renvoie systematiquement
-    # 0 items chez nous, raison inconnue mais "profiles" marche).
+    # FIX 2026-05-26 : retire apify~tiktok-scraper (acteur supprime, HTTP 404 record-not-found).
+    # Retire aussi attempt "startUrls" sur clockworks : l'acteur rejette ce format
+    # ("Input must contain postURLs, hashtags, search queries, music references or profiles").
+    # Seul "profiles" (liste URL profil) est accepte par clockworks~tiktok-scraper.
     attempts = [
         ("clockworks~tiktok-scraper", {
             "profiles": [f"https://www.tiktok.com/@{username}"],
             "resultsType": "posts",
+            "maxProfilesPerQuery": 1,
+            "resultsPerPage": max_posts,
             "maxPostsPerProfile": max_posts,
+            "profileScrapeSections": ["videos"],
+            "profileSorting": "latest",
+            "excludePinnedPosts": False,
             "shouldDownloadVideos": False,
             "shouldDownloadCovers": False,
-        }),
-        ("clockworks~tiktok-scraper", {
-            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
-            "resultsType": "posts",
-            "maxPostsPerProfile": max_posts,
-            "shouldDownloadVideos": False,
-        }),
-        ("apify~tiktok-scraper", {
-            "startUrls": [{"url": f"https://www.tiktok.com/@{username}"}],
-            "resultsType": "posts",
-            "maxPostsPerProfile": max_posts,
+            "shouldDownloadAvatars": False,
+            "shouldDownloadSubtitles": False,
+            "shouldDownloadSlideshowImages": False,
         }),
     ]
 
@@ -6355,6 +6353,20 @@ async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 10) -> list
             if not items:
                 last_err = f"Apify {actor_id}: 0 items returned"
                 continue
+
+            # FIX 2026-05-26 : detecter cas "Profile is private" -- clockworks renvoie
+            # 1 item {authorMeta, input, note: "Profile is private"} sans aucune video.
+            # Ce n'est PAS une erreur Apify : c'est un compte prive. On retourne [] propre.
+            if len(items) == 1 and isinstance(items[0], dict):
+                only = items[0]
+                note = (only.get("note") or "").lower()
+                if note and ("private" in note or "not found" in note):
+                    logger.info(f"Apify {actor_id}: compte @{username} non scrappable ('{only.get('note')}')")
+                    return []
+                # Item profile-only (authorMeta sans video) -> compte vide, 0 videos
+                if only.get("authorMeta") and not only.get("id") and not only.get("webVideoUrl"):
+                    logger.info(f"Apify {actor_id}: @{username} profil seul retourne (0 video publique)")
+                    return []
 
             result = []
             for item in items:
@@ -8488,7 +8500,8 @@ async def _fetch_single_tiktok_video(url: str) -> dict:
         )
     elif APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("tiktok"):
         logger.info(f"_fetch_single_tiktok_video: ALL FREE METHODS FAILED, trying Apify (paid backup) for {url[-30:]}")
-        for actor_id in ("clockworks~tiktok-scraper", "apify~tiktok-scraper"):
+        # FIX 2026-05-26 : apify~tiktok-scraper supprime (HTTP 404). Seul clockworks~tiktok-scraper actif.
+        for actor_id in ("clockworks~tiktok-scraper",):
             try:
                 async with httpx.AsyncClient(timeout=180) as c:
                     ar = await c.post(
