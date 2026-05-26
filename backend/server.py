@@ -299,13 +299,64 @@ async def _fetch_via_clipscraper(platform: str, username: str, max_videos: int =
     return body.get("videos", [])
 
 
-async def _log_scrape(source: str, platform: str, username: str, success: bool, count: int = 0, error: str = None):
+async def _log_scrape(source: str, platform: str, username: str, success: bool, count: int = 0, error: str = None, failure_type: str = None, result_type: str = None):
     """Log un evenement de scraping dans db.scraping_history pour traquer quelle source est utilisee.
     Utile pour identifier les comptes qui forcent l'usage d'Apify (coute des credits).
     Source attendu : 'clipscraper', 'apify', 'tikwm', 'tiktok_mobile', 'rapidapi', 'instagram_private',
                      'instaloader', 'playwright', 'ytdlp', 'youtube_api'
+
+    failure_type : classification de l'echec quand success=False. Valeurs canoniques (zone CASCADE) :
+      'success'       -> on a recupere les videos
+      'private'       -> compte detecte explicitement comme prive (is_private=true)
+      'no_content'    -> compte existe + public mais 0 video (jamais poste / tout supprime)
+      'rate_limited'  -> toutes les sources rate-limited (429/403/blocked) -> retry plus tard
+      'real_fail'     -> sources OK techniquement mais cascade casee (bug code / cas non gere)
+    Quand success=True, on log automatiquement 'success' (override eventuel non bloquant).
+
+    result_type (zone CLASSIFIER) : axe d'agregation cote UI / admin panel.
+    Coexiste avec failure_type — c'est le champ qui prime pour les stats par result_type.
+    Valeurs canoniques :
+      'videos_found'    -> >=1 video remontee
+      'account_private' -> compte detecte prive (tracking inactif)
+      'account_empty'   -> compte verifie existant mais 0 video publique recente
+      'account_deleted' -> compte confirme introuvable (2+ sources)
+      'rate_limited'    -> source rejetee pour 429/quota/blocked
+      'source_error'    -> autre erreur technique (timeout, 5xx, proxy down, etc.)
+    Si non fourni, infere a partir de success/count/error/failure_type (retro-compat).
     """
     try:
+        if success:
+            ft = "success"
+        else:
+            ft = failure_type if failure_type in ("private", "no_content", "rate_limited", "real_fail") else "real_fail"
+
+        # Inference de result_type pour retro-compat sur les ~50 call sites legacy.
+        # Toujours fourni dans le doc Mongo, pour permettre l'agregation cote /admin/scrape-result-stats.
+        rt = result_type
+        if rt is None:
+            if success and int(count or 0) > 0:
+                rt = "videos_found"
+            elif ft == "private":
+                rt = "account_private"
+            elif ft == "no_content":
+                rt = "account_empty"
+            elif ft == "rate_limited":
+                rt = "rate_limited"
+            elif success and int(count or 0) == 0:
+                rt = "account_empty"
+            elif error:
+                el = str(error).lower()
+                if "429" in el or "rate" in el or "quota" in el or "too many" in el or "blocked" in el:
+                    rt = "rate_limited"
+                elif "not found" in el or "404" in el or "introuvable" in el or "n'existe pas" in el or "does not exist" in el:
+                    rt = "account_deleted"
+                elif "private" in el:
+                    rt = "account_private"
+                else:
+                    rt = "source_error"
+            else:
+                rt = "source_error"
+
         await db.scraping_history.insert_one({
             "id": f"sh_{uuid.uuid4().hex[:12]}",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -316,9 +367,44 @@ async def _log_scrape(source: str, platform: str, username: str, success: bool, 
             "video_count": int(count or 0),
             "error": (error[:200] if error else None),
             "is_apify": source.startswith("apify"),
+            "failure_type": ft,
+            "result_type": rt,
         })
     except Exception:
         pass  # ne jamais bloquer le scrape a cause du logging
+
+
+def _classify_scrape_error(err_msg: str) -> str:
+    """Classifie un message d'erreur de fetch_videos en failure_type.
+    Heuristiques basees sur les mots-cles vus en prod (TikWm, Instagram API, YouTube API).
+    Retourne : 'private', 'no_content', 'rate_limited' ou 'real_fail'.
+    """
+    if not err_msg:
+        return "real_fail"
+    e = err_msg.lower()
+    # Compte prive : detecte explicitement par les APIs (mots francais + anglais)
+    if any(kw in e for kw in ("is_private:true", '"is_private": true', "is_private=true",
+                              "compte prive", "compte privé", "account is private",
+                              "private account", "private:true")):
+        return "private"
+    # Rate limit / IP banni / cookie expire / challenge / quota -> retry plus tard
+    if any(kw in e for kw in (
+        "429", "rate limit", "rate-limit", "rate_limit", "too many request",
+        "checkpoint_required", "challenge_required", "login_required",
+        "free api limit", "limit reached", "quota", "payment required",
+        "ip banni", "ip ban", "session expir", "cookie expir",
+        "all instagram strategies failed", "all tiktok strategies failed",
+        "redirect (login)", "blocked", "cloudflare",
+        "tiktok bloque", "tiktok blocks",
+    )):
+        return "rate_limited"
+    # No content : la source a repondu OK mais 0 video (compte public sans publication recente)
+    if any(kw in e for kw in (
+        "0 video", "0 videos", "no videos", "aucune video", "aucune vidéo",
+        "itemlist:[]", "empty list", "no items", "no medias",
+    )):
+        return "no_content"
+    return "real_fail"
 
 
 async def _fetch_video_stats_via_clipscraper(url: str) -> Optional[dict]:
@@ -1239,7 +1325,16 @@ class SocialAccount(BaseModel):
     user_id: str
     platform: str  # tiktok, youtube, instagram
     username: str
-    status: str = "pending"  # pending, verified, error
+    # Status canoniques (refonte CLASSIFIER 2026-05) :
+    #   pending     : ajoute, verif initiale en cours / a refaire (tentative <5)
+    #   verifying   : verif en cours (transitoire, optionnel)
+    #   verified    : compte confirme existant, scrapable
+    #   private     : compte prive detecte (signal explicite is_private=true) — tracking inactif
+    #   no_content  : compte verifie existant mais 0 video publique recente — tracking actif mais
+    #                 on log result_type=account_empty et on N'INCREMENTE PAS consecutive_failures
+    #   deleted     : confirme 404 par 2+ sources independantes (voir _verify_account_still_exists)
+    #   error       : 5 echecs de verification incertaine (rate-limits successifs) — admin a investiger
+    status: str = "pending"
     created_at: datetime
     follower_count: Optional[int] = None
     avatar_url: Optional[str] = None
@@ -1248,6 +1343,9 @@ class SocialAccount(BaseModel):
     error_message: Optional[str] = None
     last_tracked_at: Optional[str] = None
     platform_channel_id: Optional[str] = None  # YouTube channel ID
+    # CLASSIFIER : informations complementaires sur l'etat exact du compte
+    last_scrape_zero_videos_at: Optional[str] = None  # dernier scrape qui a renvoye 0 video sur compte verifie
+    is_private: Optional[bool] = None  # signal explicite plateforme (set quand on detecte un compte prive)
 
 class SocialAccountCreate(BaseModel):
     platform: str
@@ -5021,8 +5119,12 @@ async def _scrape_instagram_api(username: str) -> dict:
                     _mark_instagram_session_good(session_cookie)
                 try:
                     data = r.json()
-                    if not data.get("data", {}).get("user"):
+                    _u = data.get("data", {}).get("user")
+                    if not _u:
                         raise ValueError(f"Compte Instagram @{username} introuvable ou privé")
+                    # Signal explicite is_private:true -> on differencie "prive" de "introuvable"
+                    if _u.get("is_private") is True:
+                        raise ValueError(f"Compte Instagram @{username} privé (is_private:true)")
                     return data
                 except ValueError:
                     raise
@@ -5814,22 +5916,72 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
     try:
         info = await verify_account(platform, username)
         channel_id = info.get("platform_channel_id")
+        # CLASSIFIER : si verify_account remonte un signal explicite is_private, classer en 'private'
+        # (le tracking sera inactif jusqu'a ce que l'utilisateur passe son compte public).
+        is_priv = bool(info.get("is_private"))
+        new_status = "private" if is_priv else "verified"
+        set_fields = {
+            "status": new_status,
+            "display_name": info.get("display_name"),
+            "avatar_url": info.get("avatar_url"),
+            "follower_count": info.get("follower_count"),
+            "platform_channel_id": channel_id,
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+            "error_message": (
+                f"Compte {platform} @{username} est PRIVÉ — passez-le en public pour activer le tracking."
+                if is_priv else None
+            ),
+            "verification_attempts": 0,
+            "is_private": is_priv,
+        }
         await db.social_accounts.update_one(
             {"account_id": account_id},
-            {"$set": {
-                "status": "verified",
-                "display_name": info.get("display_name"),
-                "avatar_url": info.get("avatar_url"),
-                "follower_count": info.get("follower_count"),
-                "platform_channel_id": channel_id,
-                "verified_at": datetime.now(timezone.utc).isoformat(),
-                "error_message": None,
-                "verification_attempts": 0,
-            }}
+            {"$set": set_fields}
         )
-        verified_ok = True
+        if is_priv:
+            logger.info(f"Account {platform}/@{username} detected PRIVATE at verification -> status=private (tracking inactif)")
+            # Log dans scraping_history pour traque admin
+            try:
+                await _log_scrape("verify_account", platform, username, False, 0, "is_private=true detected", result_type="account_private")
+            except Exception:
+                pass
+            verified_ok = False  # pas de tracking immediat sur compte prive
+        else:
+            verified_ok = True
     except Exception as e:
         logger.warning(f"Verification failed for {platform}/@{username}: {e}")
+
+        # CLASSIFIER : si le message d'erreur contient un signal EXPLICITE "private"
+        # (ex: Instagram private profile), on classe direct en 'private' sans aller
+        # plus loin — pas la peine de spammer les sources de verif.
+        err_msg_lc = str(e).lower()
+        explicit_private = (
+            "is_private" in err_msg_lc
+            or "private account" in err_msg_lc
+            or "compte privé" in err_msg_lc
+            or "compte prive" in err_msg_lc
+            or ("private" in err_msg_lc and platform == "instagram" and "follow" in err_msg_lc)
+        )
+        if explicit_private:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.social_accounts.update_one(
+                {"account_id": account_id},
+                {"$set": {
+                    "status": "private",
+                    "is_private": True,
+                    "verified_at": now_iso,
+                    "error_message": f"Compte {platform} @{username} est PRIVÉ — passez-le en public pour activer le tracking.",
+                    "verification_attempts": 0,
+                    "last_existence_check_at": now_iso,
+                    "last_existence_check_result": "private",
+                }}
+            )
+            logger.info(f"Account {platform}/@{username} detected PRIVATE from error message -> status=private")
+            try:
+                await _log_scrape("verify_account", platform, username, False, 0, "private detected in error", result_type="account_private")
+            except Exception:
+                pass
+            return
 
         # V2 (2026-05-24) : REGLE STRICTE.
         # Au lieu de la logique HTTP fallback foireuse (qui causait des faux positifs/negatifs),
@@ -5937,16 +6089,22 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
                 assignments = await db.campaign_social_accounts.find(
                     {"account_id": account_id}, {"_id": 0}
                 ).to_list(50)
+                # CLASSIFIER : compte les videos initiales pour detecter le cas
+                # "compte verifie + 0 video" (status reste verified, on tag last_scrape_zero_videos_at).
+                total_videos_initial = 0
+                attempted_any = False
                 for asn in assignments:
                     cid = asn["campaign_id"]
                     uid = asn["user_id"]
                     campaign = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0})
                     rpm = (campaign or {}).get("rpm", 0)
+                    attempted_any = True
                     try:
                         videos = await fetch_videos(platform, username, acc, since_days=90)
                     except Exception as _fe:
                         logger.warning(f"Initial fetch_videos failed for {platform}/@{username}: {_fe}")
                         videos = []
+                    total_videos_initial += len(videos or [])
                     now_iso = datetime.now(timezone.utc).isoformat()
                     for vid in videos:
                         if not vid.get("platform_video_id"):
@@ -5982,6 +6140,24 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
                     await db.social_accounts.update_one(
                         {"account_id": account_id}, {"$set": {"last_tracked_at": now_iso}}
                     )
+
+                # CLASSIFIER : si on a tente au moins une campagne et que TOUTES ont retourne 0 video,
+                # marquer last_scrape_zero_videos_at (status RESTE 'verified', le compte EXISTE).
+                if attempted_any and total_videos_initial == 0:
+                    now_iso_final = datetime.now(timezone.utc).isoformat()
+                    try:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {"last_scrape_zero_videos_at": now_iso_final}}
+                        )
+                        await _log_scrape(
+                            "verify_initial_fetch", platform, username, True, 0,
+                            "compte verifie existant mais 0 video recente au verify initial",
+                            result_type="account_empty"
+                        )
+                        logger.info(f"Account {platform}/@{username} verified but 0 videos at initial fetch -> tagged account_empty (status reste verified)")
+                    except Exception:
+                        pass
         except Exception as e:
             logger.debug(f"Post-verify tracking failed for {account_id}: {e}")
 
@@ -6504,6 +6680,34 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     if combined:
         await _log_scrape("tikwm_partial", "tiktok", username, True, len(combined))
         return combined
+    # NEW : probe is_private TikTok via TikWm /api/user/info avant d'abandonner.
+    # Si compte detecte comme prive (privateAccount=True) ou videoCount=0 (no_content),
+    # on raise / return [] proprement (au lieu de logger 'real_fail' pour un cas legitime).
+    # Pas de gaspillage Apify : TikWm /api/user/info est gratuit et 100% officiel.
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as _c_probe:
+            _r_probe = await _c_probe.get(
+                "https://www.tikwm.com/api/user/info",
+                params={"unique_id": username},
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                         "Referer": "https://www.tikwm.com/"},
+            )
+        if _r_probe.status_code == 200:
+            _data_probe = _r_probe.json()
+            if _data_probe.get("code") == 0:
+                _u_probe = (_data_probe.get("data") or {}).get("user") or {}
+                _stats_probe = (_data_probe.get("data") or {}).get("stats") or {}
+                if _u_probe.get("privateAccount") is True or _u_probe.get("secret") is True:
+                    logger.info(f"🔒 TikTok @{username} : privateAccount=True detecte -> raise 'private account'")
+                    raise ValueError(f"Compte TikTok @{username} privé (private account)")
+                _vc = int(_stats_probe.get("videoCount") or 0)
+                if _vc == 0:
+                    logger.info(f"📭 TikTok @{username} : videoCount=0 detecte -> no_content")
+                    return []
+    except ValueError:
+        raise
+    except Exception as _probe_err:
+        logger.debug(f"Probe is_private TikTok final @{username} a echoue : {_probe_err}")
     # Cascade TOTALEMENT morte sur TikTok -> alerte admin
     try:
         await db.fraud_alerts.insert_one({
@@ -7807,6 +8011,26 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
             await _log_scrape("apify", "instagram", username, False, 0, str(e))
 
     logger.error(f"🚨 IMPOSSIBLE de scraper Instagram @{username} — TOUTES les sources ont échoué")
+    # NEW : avant d'abandonner et de logger en 'real_fail', on tente UNE derniere fois
+    # de detecter si le compte est simplement PRIVE (is_private:true) ou n'a aucune video
+    # publique (compte vide). Si oui, on raise une exception classifiable -> run_video_tracking
+    # la traite comme 'private' / 'no_content' au lieu de 'real_fail'.
+    try:
+        _probe = await asyncio.wait_for(_scrape_instagram_api(username), timeout=15)
+        _user = (_probe or {}).get("data", {}).get("user") or {}
+        if _user.get("is_private") is True:
+            logger.info(f"🔒 Insta @{username} : detecte is_private:true en probe final -> raise 'private account'")
+            raise ValueError(f"Compte Instagram @{username} privé (is_private:true)")
+        # Compte public + 0 video totale = no_content : return [] (run_video_tracking -> no_content)
+        _media = _user.get("edge_owner_to_timeline_media") or {}
+        _count = int(_media.get("count") or 0)
+        if _count == 0:
+            logger.info(f"📭 Insta @{username} : probe final dit edge_owner_to_timeline_media.count=0 -> no_content")
+            return []
+    except ValueError:
+        raise
+    except Exception as _probe_err:
+        logger.debug(f"Probe is_private final Insta @{username} a echoue : {_probe_err}")
     # Alerte CRITIQUE admin : cascade totalement morte
     try:
         await db.fraud_alerts.insert_one({
@@ -7824,7 +8048,12 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
         })
     except Exception:
         pass
-    return []
+    # NEW : raise ValueError pour distinguer cascade-rate-limited (rate_limited) de "no_content".
+    # run_video_tracking attrape ca via except + classifier -> failure_type='rate_limited' (retry).
+    # Sans ce raise, le caller verrait []  -> CAS 1 (no_content) = MAUVAISE classification.
+    raise ValueError(
+        f"Cascade Instagram cassee pour @{username} : toutes sources rate-limited (rate limit, proxy sature, cookies expires)."
+    )
 
 async def _fetch_youtube_videos(channel_id: str, since_days: int = 30) -> list:
     """Fetch YouTube videos via Data API v3 avec full error handling.
@@ -10423,11 +10652,15 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         timeout=150
                     )
                     fetch_was_rate_limited = False
+                    fetch_was_private = False
+                    last_fetch_err_msg = None
                 except asyncio.TimeoutError:
                     logger.warning(f"fetch_videos TIMEOUT (150s) for {platform}/@{username} — skipped")
                     videos = []
                     fetch_failed_with_error = True
                     fetch_was_rate_limited = False
+                    fetch_was_private = False
+                    last_fetch_err_msg = "timeout_150s"
                 except Exception as fetch_err:
                     err_msg = str(fetch_err).lower()
                     # BACKOFF INTELLIGENT : si rate-limit detecte, on n'incremente PAS failures
@@ -10437,17 +10670,26 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         "checkpoint_required", "challenge_required", "login_required",
                         "free api limit",
                     ])
+                    # NEW : signal compte prive explicite (Insta is_private:true, TikWm "privé")
+                    fetch_was_private = any(kw in err_msg for kw in [
+                        "is_private:true", "is_private: true", "is_private=true",
+                        "compte prive", "compte privé", "private account",
+                        "account is private", "privé (is_private",
+                    ])
                     logger.warning(f"fetch_videos failed for {platform}/@{username}: {fetch_err}")
                     videos = []
                     fetch_failed_with_error = True
+                    last_fetch_err_msg = str(fetch_err)[:300]
                 else:
                     # fetch_videos a renvoye une liste (potentiellement vide) sans exception
                     fetch_failed_with_error = False
                     fetch_was_rate_limited = False
+                    fetch_was_private = False
+                    last_fetch_err_msg = None
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if not videos:
                     # CAS 1 : fetch_videos a renvoye [] SANS erreur = compte existe mais 0 video recente.
-                    # On NE compte PAS ca comme un echec. Log success=True dans scraping_history
+                    # On NE compte PAS ca comme un echec. Log success=True (failure_type=no_content)
                     # pour que le display soit 'ok' (pas 'ko').
                     if not fetch_failed_with_error:
                         await db.social_accounts.update_one(
@@ -10460,9 +10702,38 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                             }}
                         )
                         try:
-                            await _log_scrape("scrape_ok_zero_videos", platform, username, True, 0, "scrape reussi mais 0 video recente (probablement compte sans publications recentes)")
+                            # Classification : no_content = compte existe + public mais 0 publication recente
+                            await _log_scrape(
+                                "scrape_ok_zero_videos", platform, username, True, 0,
+                                "scrape reussi mais 0 video recente (probablement compte sans publications recentes)",
+                                failure_type="no_content",
+                            )
                         except Exception:
                             pass
+                        await asyncio.sleep(0.5)
+                        continue
+                    # CAS 1b : COMPTE PRIVE detecte explicitement (signal is_private:true ou message).
+                    # On loggue failure_type=private (panel admin -> "compte prive, non-trackable").
+                    # Pas d'echec consecutif (le compte est valide, juste non public).
+                    if fetch_was_private:
+                        await db.social_accounts.update_one(
+                            {"account_id": account_id},
+                            {"$set": {
+                                "last_tracked_at": now_iso,
+                                "consecutive_failures": 0,
+                                "tracking_paused_until": None,
+                                "last_scrape_error": "private_account",
+                            }}
+                        )
+                        try:
+                            await _log_scrape(
+                                "private_detected", platform, username, False, 0,
+                                (last_fetch_err_msg or "compte detecte prive"),
+                                failure_type="private",
+                            )
+                        except Exception:
+                            pass
+                        logger.info(f"🔒 {platform}/@{username} : compte prive detecte (failure_type=private)")
                         await asyncio.sleep(0.5)
                         continue
                     # CAS 2a : Rate-limit detecte = c'est de notre cote (IP/quota), PAS le compte.
@@ -10475,6 +10746,14 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                 "last_scrape_error": "rate_limited_skipped",
                             }}
                         )
+                        try:
+                            await _log_scrape(
+                                "rate_limited", platform, username, False, 0,
+                                (last_fetch_err_msg or "rate-limit toutes sources"),
+                                failure_type="rate_limited",
+                            )
+                        except Exception:
+                            pass
                         await asyncio.sleep(0.5)
                         continue
                     # CAS 2b : vraie erreur (timeout / exception non rate-limit)
@@ -10565,10 +10844,17 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         update_fields["tracking_paused_until"] = None
                         update_fields["last_scrape_error"] = "exists_but_scrape_failed_temporarily"
                         try:
+                            # NEW : le compte est OK mais la cascade a rate techniquement.
+                            # Classifie pour le panel admin : si l'erreur ressemble a un rate-limit,
+                            # on logge en 'rate_limited' (sera retentee), sinon en 'real_fail'.
+                            _ft_alive = _classify_scrape_error(last_fetch_err_msg or "")
+                            if _ft_alive not in ("rate_limited", "private", "no_content"):
+                                _ft_alive = "rate_limited"  # default safe : retry plus tard
                             await _log_scrape(
                                 "active_verification_exists_scrape_failed", platform, username,
-                                True, 0,
-                                "compte verifie vivant mais sources de scraping rate (proxy sature, IP bloquee)"
+                                False, 0,
+                                "compte verifie vivant mais sources de scraping rate (proxy sature, IP bloquee)",
+                                failure_type=_ft_alive,
                             )
                         except Exception:
                             pass
@@ -10587,6 +10873,23 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                         {"account_id": account_id},
                         {"$set": update_fields}
                     )
+                    # NEW : log classifie failure_type pour le panel admin.
+                    # Si verif active dit "deleted" -> real_fail (compte confirme introuvable)
+                    # Sinon classifie l'erreur via _classify_scrape_error (fallback real_fail)
+                    try:
+                        if update_fields.get("status") == "deleted":
+                            _ft = "real_fail"
+                            _src = "account_deleted"
+                        else:
+                            _ft = _classify_scrape_error(last_fetch_err_msg or "")
+                            _src = "cascade_failed"
+                        await _log_scrape(
+                            _src, platform, username, False, 0,
+                            (last_fetch_err_msg or "cascade scraping echouee"),
+                            failure_type=_ft,
+                        )
+                    except Exception:
+                        pass
                     await asyncio.sleep(0.5)
                     continue
                 # Succes : reset le compteur d'echecs et la pause auto
@@ -20588,7 +20891,11 @@ async def get_campaign_scrape_history(campaign_id: str, limit: int = 20, user: d
 
     # Groupe par "session de scrape" (timestamp arrondi à 15 min)
     from collections import defaultdict
-    sessions: dict = defaultdict(lambda: {"count": 0, "ok": 0, "ko": 0, "videos": 0, "sources": set(), "platforms": set()})
+    sessions: dict = defaultdict(lambda: {
+        "count": 0, "ok": 0, "ko": 0, "videos": 0, "sources": set(), "platforms": set(),
+        # NEW : breakdown par failure_type (panel admin)
+        "private": 0, "no_content": 0, "rate_limited": 0, "real_fail": 0,
+    })
     for s in campaign_scrapes:
         ts = s.get("timestamp", "")
         if not ts:
@@ -20596,10 +20903,18 @@ async def get_campaign_scrape_history(campaign_id: str, limit: int = 20, user: d
         # Arrondi à la 15 min près (clé de session)
         session_key = ts[:15] + "0:00"  # ex: "2026-05-12T23:0" + "0:00" → "2026-05-12T23:00:00"
         sessions[session_key]["count"] += 1
-        if s.get("success"):
+        # NEW : 'private' et 'no_content' sont des succes legitimes (compte OK juste pas trackable).
+        # 'rate_limited' n'est pas un fail (sera retentee). Seul 'real_fail' = KO veritable.
+        ft = s.get("failure_type")
+        if s.get("success") or ft in ("success", "private", "no_content"):
             sessions[session_key]["ok"] += 1
+        elif ft == "rate_limited":
+            sessions[session_key]["ok"] += 1  # retry plus tard, pas un fail
         else:
             sessions[session_key]["ko"] += 1
+        # Track les compteurs detailles independamment
+        if ft in ("private", "no_content", "rate_limited", "real_fail"):
+            sessions[session_key][ft] += 1
         sessions[session_key]["videos"] += int(s.get("video_count") or 0)
         if s.get("source"):
             sessions[session_key]["sources"].add(s["source"])
@@ -20621,6 +20936,11 @@ async def get_campaign_scrape_history(campaign_id: str, limit: int = 20, user: d
             "sources_used": list(sess["sources"]),
             "platforms": list(sess["platforms"]),
             "success_rate_pct": round(sess["ok"] / sess["count"] * 100, 1) if sess["count"] > 0 else 0,
+            # NEW : breakdown par failure_type pour le panel admin
+            "accounts_private": sess["private"],
+            "accounts_no_content": sess["no_content"],
+            "accounts_rate_limited": sess["rate_limited"],
+            "accounts_real_fail": sess["real_fail"],
         })
 
     return {
@@ -23341,6 +23661,111 @@ async def admin_get_scraping_history(
         "apify_month_count": apify_month_count,
         "apify_month_videos": apify_month_videos,
         "total": await db.scraping_history.count_documents(query),
+    }
+
+
+@api_router.get("/admin/scrape-result-stats")
+async def admin_scrape_result_stats(
+    request: Request,
+    hours: int = 24,
+    platform: Optional[str] = None,
+    _: bool = Depends(verify_admin_code),
+):
+    """CLASSIFIER : breakdown des scrapes par result_type sur les N dernieres heures.
+
+    result_type canoniques :
+      videos_found    : >=1 video remontee
+      account_private : compte detecte prive (tracking inactif)
+      account_empty   : compte verifie existant mais 0 video publique recente
+      account_deleted : compte confirme introuvable (2+ sources)
+      rate_limited    : source rejetee pour 429/quota/blocked
+      source_error    : autre erreur technique (timeout, 5xx, proxy)
+
+    Query : hours (default 24, max 720 = 30j), platform (optional: youtube/tiktok/instagram).
+
+    Retourne aussi by_failure_type (zone CASCADE) en cohabitation pour cross-check.
+    """
+    try:
+        hours = max(1, min(int(hours), 720))
+    except Exception:
+        hours = 24
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    match: dict = {"timestamp": {"$gte": cutoff}}
+    if platform in ("youtube", "tiktok", "instagram"):
+        match["platform"] = platform
+
+    pipeline_rt = [
+        {"$match": match},
+        {"$group": {
+            "_id": {"$ifNull": ["$result_type", "unknown"]},
+            "count": {"$sum": 1},
+            "videos_total": {"$sum": "$video_count"},
+            "successes": {"$sum": {"$cond": ["$success", 1, 0]}},
+        }},
+        {"$sort": {"count": -1}},
+    ]
+    by_result_type_raw = await db.scraping_history.aggregate(pipeline_rt).to_list(20)
+    by_result_type = [
+        {
+            "result_type": r["_id"],
+            "count": r["count"],
+            "videos_total": r["videos_total"],
+            "successes": r["successes"],
+        }
+        for r in by_result_type_raw
+    ]
+
+    pipeline_ft = [
+        {"$match": match},
+        {"$group": {
+            "_id": {"$ifNull": ["$failure_type", "unknown"]},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"count": -1}},
+    ]
+    by_failure_type_raw = await db.scraping_history.aggregate(pipeline_ft).to_list(20)
+    by_failure_type = [{"failure_type": r["_id"], "count": r["count"]} for r in by_failure_type_raw]
+
+    pipeline_pf = [
+        {"$match": match},
+        {"$group": {
+            "_id": {
+                "platform": "$platform",
+                "result_type": {"$ifNull": ["$result_type", "unknown"]},
+            },
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"count": -1}},
+    ]
+    by_platform_rt_raw = await db.scraping_history.aggregate(pipeline_pf).to_list(60)
+    by_platform_result_type = [
+        {
+            "platform": r["_id"].get("platform"),
+            "result_type": r["_id"].get("result_type"),
+            "count": r["count"],
+        }
+        for r in by_platform_rt_raw
+    ]
+
+    accounts_status = {}
+    for st in ("pending", "verifying", "verified", "deleted", "error", "private", "no_content"):
+        try:
+            accounts_status[st] = await db.social_accounts.count_documents({"status": st})
+        except Exception:
+            accounts_status[st] = 0
+
+    total = sum(r["count"] for r in by_result_type)
+
+    return {
+        "window_hours": hours,
+        "platform_filter": platform or "all",
+        "total_events": total,
+        "by_result_type": by_result_type,
+        "by_failure_type": by_failure_type,
+        "by_platform_result_type": by_platform_result_type,
+        "accounts_status_snapshot": accounts_status,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

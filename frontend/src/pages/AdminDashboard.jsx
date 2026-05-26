@@ -669,10 +669,74 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 // ─── ApiStatusTab ─────────────────────────────────────────────────────────────
 
 // ─── Scraping History (logs des appels par source — alerte si Apify) ──────
+
+// Classifie une entree scraping_history en categorie metier :
+//   ok          → vrai succes, vidéos récupérées
+//   alive_no_scrape → compte vivant confirme par verif active mais scrape rate (PAS un vrai fail)
+//   empty_account → scrape OK mais 0 video recente (compte sans publi récente / privé sans contenu)
+//   private     → compte prive (no public content)
+//   deleted     → compte supprime / introuvable
+//   ko_source   → vrai fail technique (rate-limited, source down, network)
+//   partial     → succes partiel (< seuil de videos, ou views=0)
+// Utilise result_type backend si dispo (futur), sinon fallback heuristique sur (source, success, error).
+// Mapping result_type canonique (backend CLASSIFIER) -> categorie UI
+// Backend renvoie : videos_found, account_private, account_empty, account_deleted,
+//                   rate_limited, source_error
+// UI utilise      : ok, alive_no_scrape, empty_account, private, deleted, ko_source, partial
+const RESULT_TYPE_TO_CATEGORY = {
+  videos_found:    "ok",
+  account_private: "private",
+  account_empty:   "empty_account",
+  account_deleted: "deleted",
+  rate_limited:    "alive_no_scrape",  // rate-limited = source rate, compte presume vivant
+  source_error:    "ko_source",
+};
+
+function classifyScrapeEntry(h) {
+  // 1) Si le backend renseigne result_type (champ CLASSIFIER), on le mappe vers la categorie UI
+  if (h.result_type && RESULT_TYPE_TO_CATEGORY[h.result_type]) {
+    return RESULT_TYPE_TO_CATEGORY[h.result_type];
+  }
+
+  const src = (h.source || "").toLowerCase();
+  const err = (h.error || "").toLowerCase();
+
+  // 2) Sources speciales semantiques (deja loguees par server.py)
+  if (src === "active_verification_exists_scrape_failed") return "alive_no_scrape";
+  if (src === "scrape_ok_zero_videos") return "empty_account";
+  if (src.endsWith("_partial") || src === "tikwm_partial") return "partial";
+
+  // 3) Heuristique sur error pour les vrais fails
+  if (!h.success) {
+    if (err.includes("not found") || err.includes("introuvable") || err.includes("404") || err.includes("deleted")) return "deleted";
+    if (err.includes("private") || err.includes("prive")) return "private";
+    if (err.includes("all views=0") || err.includes("partial")) return "partial";
+    return "ko_source";
+  }
+
+  // 4) Success avec 0 vidéos = compte vide
+  if (h.success && (h.video_count || 0) === 0) return "empty_account";
+
+  return "ok";
+}
+
+// Style + label par categorie
+const CATEGORY_STYLE = {
+  ok:               { label: "OK",           dot: "bg-[#39FF14]",       text: "text-[#39FF14]",       bg: "bg-[#39FF14]/10",      border: "border-[#39FF14]/30" },
+  alive_no_scrape:  { label: "Vivant (scrape rate)", dot: "bg-blue-400", text: "text-blue-300",        bg: "bg-blue-500/10",       border: "border-blue-500/30" },
+  empty_account:    { label: "0 vidéo publique", dot: "bg-amber-400",   text: "text-amber-300",       bg: "bg-amber-500/10",      border: "border-amber-500/30" },
+  private:          { label: "Compte privé", dot: "bg-orange-400",     text: "text-orange-300",      bg: "bg-orange-500/10",     border: "border-orange-500/30" },
+  deleted:          { label: "Supprimé",    dot: "bg-white/40",        text: "text-white/50",        bg: "bg-white/5",           border: "border-white/10" },
+  ko_source:        { label: "Échec source", dot: "bg-red-400",        text: "text-red-300",         bg: "bg-red-500/10",        border: "border-red-500/30" },
+  partial:          { label: "Partiel",     dot: "bg-purple-400",      text: "text-purple-300",      bg: "bg-purple-500/10",     border: "border-purple-500/30" },
+};
+
 function ScrapingHistoryTab() {
   const [data, setData] = useState(null);
+  const [resultStats, setResultStats] = useState(null); // optionnel : endpoint /admin/scrape-result-stats si dispo
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("all"); // all | apify_only | source-X
+  const [categoryFilter, setCategoryFilter] = useState("all"); // all | ok | ko_source | ...
   const [search, setSearch] = useState("");
 
   const refresh = useCallback(() => {
@@ -684,6 +748,11 @@ function ScrapingHistoryTab() {
       .then(setData)
       .catch((e) => toast.error(e.message))
       .finally(() => setLoading(false));
+
+    // Best-effort : endpoint futur cree par agent CLASSIFIER, on ignore 404
+    adminFetch(`/admin/scrape-result-stats?hours=24`)
+      .then(setResultStats)
+      .catch(() => { /* endpoint pas encore deploye, on degrade silencieusement */ });
   }, [filter]);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -705,6 +774,15 @@ function ScrapingHistoryTab() {
     ytdlp: "text-orange-400",
     youtube_api: "text-red-300",
     tiktok_mobile: "text-[#00E5FF]/80",
+    active_verification_exists_scrape_failed: "text-blue-300",
+    scrape_ok_zero_videos: "text-amber-300",
+    business_discovery: "text-[#39FF14]",
+    instagram_public_html: "text-[#FF007F]/80",
+    ytdlp_insta: "text-purple-300",
+    ytdlp_fallback: "text-orange-300",
+    clips_graphql: "text-[#FF007F]/70",
+    vps_graphql: "text-cyan-300",
+    auto_archive: "text-white/50",
   };
 
   const SOURCE_LABEL = {
@@ -719,10 +797,64 @@ function ScrapingHistoryTab() {
     ytdlp: "yt-dlp",
     youtube_api: "YouTube API",
     tiktok_mobile: "TikTok Mobile",
+    active_verification_exists_scrape_failed: "Vivant (verif active)",
+    scrape_ok_zero_videos: "Scrape OK, 0 vidéo",
+    business_discovery: "Meta Business",
+    instagram_public_html: "IG public HTML",
+    ytdlp_insta: "yt-dlp Insta",
+    ytdlp_fallback: "yt-dlp (fallback)",
+    clips_graphql: "Clips GraphQL",
+    vps_graphql: "VPS GraphQL",
+    auto_archive: "Auto-archive",
   };
 
-  // Filter by search (username or platform)
-  const filteredHistory = (data.history || []).filter(h => {
+  // ─── Calcul du summary global par compte (la vraie metric pour Paul) ──────
+  // Pour chaque (platform, username), on prend la categorie de la DERNIERE entree.
+  // Ca donne le statut COURANT de chaque compte (pas le bruit detaille des retries).
+  const history = data.history || [];
+  const accountStatus = new Map(); // key = "platform:username" → category
+  // history est deja trie DESC par timestamp donc le premier vu = le plus recent
+  for (const h of history) {
+    const key = `${h.platform || "?"}:${h.username || "?"}`;
+    if (!accountStatus.has(key)) {
+      accountStatus.set(key, classifyScrapeEntry(h));
+    }
+  }
+
+  // Si l'endpoint /admin/scrape-result-stats existe et renvoie des donnees, on prefere
+  // ses chiffres (calcules cote backend sur la fenetre complete, pas juste l'echantillon de 200)
+  let summary;
+  if (resultStats && typeof resultStats === "object" && Array.isArray(resultStats.by_result_type)) {
+    // Le backend renvoie by_result_type : [{result_type, count, videos_total, successes}, ...]
+    // On agrege en categories UI via RESULT_TYPE_TO_CATEGORY.
+    const counts = { ok: 0, alive_no_scrape: 0, empty_account: 0, private: 0, deleted: 0, ko_source: 0, partial: 0 };
+    for (const row of resultStats.by_result_type) {
+      const cat = RESULT_TYPE_TO_CATEGORY[row.result_type] || "ko_source";
+      counts[cat] = (counts[cat] || 0) + (row.count || 0);
+    }
+    summary = {
+      ...counts,
+      total: resultStats.total_events || 0,
+      source: "backend",
+    };
+  } else {
+    // Fallback : on agrege depuis l'echantillon en memoire
+    const counts = { ok: 0, alive_no_scrape: 0, empty_account: 0, private: 0, deleted: 0, ko_source: 0, partial: 0 };
+    for (const cat of accountStatus.values()) {
+      if (counts[cat] != null) counts[cat] += 1;
+    }
+    summary = { ...counts, total: accountStatus.size, source: "fallback" };
+  }
+  // "Vraiment OK" = comptes qui ramenent du contenu OU sont vivants OU sont vides (legitimement)
+  // Les seuls vrais problemes : ko_source + partial.
+  const healthyCount = summary.ok + summary.alive_no_scrape + summary.empty_account;
+  const problemCount = summary.ko_source + summary.partial;
+  const totalAccounts = summary.total || (healthyCount + problemCount + summary.private + summary.deleted);
+  const healthRate = totalAccounts > 0 ? Math.round((healthyCount / totalAccounts) * 100) : 0;
+
+  // Filter by search + category
+  const filteredHistory = history.filter(h => {
+    if (categoryFilter !== "all" && classifyScrapeEntry(h) !== categoryFilter) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return (h.username || "").toLowerCase().includes(s) || (h.platform || "").toLowerCase().includes(s);
@@ -739,6 +871,63 @@ function ScrapingHistoryTab() {
           className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition disabled:opacity-50 flex items-center gap-2">
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
         </button>
+      </div>
+
+      {/* ─── SUMMARY GLOBAL (prime sur le detail anxiogene) ────────────────── */}
+      <div className={`rounded-xl p-5 border-2 ${
+        healthRate >= 80 ? "bg-[#39FF14]/10 border-[#39FF14]/40" :
+        healthRate >= 50 ? "bg-amber-500/10 border-amber-500/40" :
+        "bg-red-500/10 border-red-500/40"
+      }`}>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex-1 min-w-[240px]">
+            <p className="text-white/60 text-xs uppercase tracking-wider font-medium">Santé globale des scrapes</p>
+            <div className="flex items-baseline gap-3 mt-1 flex-wrap">
+              <span className={`text-4xl font-bold ${
+                healthRate >= 80 ? "text-[#39FF14]" :
+                healthRate >= 50 ? "text-amber-400" : "text-red-400"
+              }`}>{healthyCount}/{totalAccounts}</span>
+              <span className="text-white/70 text-base">comptes en bonne santé</span>
+              <span className={`text-2xl font-mono font-bold ${
+                healthRate >= 80 ? "text-[#39FF14]" :
+                healthRate >= 50 ? "text-amber-400" : "text-red-400"
+              }`}>{healthRate}%</span>
+            </div>
+            <p className="text-white/50 text-xs mt-2 leading-relaxed">
+              "Sain" = scrape OK <span className="text-white/30">·</span> compte vivant confirmé même si proxy rate <span className="text-white/30">·</span> compte légitimement vide.<br/>
+              Les comptes privés / supprimés sont comptés à part — ce n'est pas un fail technique.
+            </p>
+          </div>
+          {/* Mini-tuiles par categorie */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 flex-1 min-w-[280px]">
+            {[
+              { key: "ok",              label: "Scrape OK",      val: summary.ok },
+              { key: "alive_no_scrape", label: "Vivant rate",    val: summary.alive_no_scrape },
+              { key: "empty_account",   label: "0 vidéo",        val: summary.empty_account },
+              { key: "private",         label: "Privé",          val: summary.private },
+              { key: "deleted",         label: "Supprimé",       val: summary.deleted },
+              { key: "partial",         label: "Partiel",        val: summary.partial },
+              { key: "ko_source",       label: "Échec source",   val: summary.ko_source },
+            ].filter(t => t.val > 0).map(t => {
+              const style = CATEGORY_STYLE[t.key];
+              return (
+                <button key={t.key} onClick={() => setCategoryFilter(categoryFilter === t.key ? "all" : t.key)}
+                  className={`rounded-lg px-3 py-2 border text-left transition ${style.bg} ${style.border} ${categoryFilter === t.key ? "ring-2 ring-white/30" : "hover:brightness-125"}`}>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${style.dot}`}/>
+                    <span className={`text-[10px] uppercase font-semibold ${style.text}`}>{t.label}</span>
+                  </div>
+                  <p className="text-white font-mono font-bold text-xl mt-0.5">{t.val}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {summary.source === "fallback" && (
+          <p className="text-white/30 text-[10px] mt-3">
+            Stats calculées sur l'échantillon en mémoire ({history.length} entrées). Quand l'endpoint <code className="text-white/50">/admin/scrape-result-stats</code> sera déployé, ces chiffres seront calculés sur la fenêtre 24h complète côté backend.
+          </p>
+        )}
       </div>
 
       {/* Alerte rouge si Apify utilisé */}
@@ -784,7 +973,7 @@ function ScrapingHistoryTab() {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
           {[
-            { id: "all", label: "Toutes" },
+            { id: "all", label: "Toutes sources" },
             { id: "apify_only", label: "🚨 Apify seulement" },
             { id: "clipscraper", label: "ClipScraper" },
             { id: "tikwm", label: "TikWm" },
@@ -795,6 +984,14 @@ function ScrapingHistoryTab() {
             </button>
           ))}
         </div>
+        {categoryFilter !== "all" && (
+          <button onClick={() => setCategoryFilter("all")}
+            className="px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/20 text-white/70 text-xs flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${CATEGORY_STYLE[categoryFilter]?.dot || "bg-white/40"}`}/>
+            {CATEGORY_STYLE[categoryFilter]?.label || categoryFilter}
+            <X className="w-3 h-3" />
+          </button>
+        )}
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher username ou plateforme..."
           className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 flex-1 max-w-xs" />
         <span className="text-white/40 text-xs">{filteredHistory.length} / {data.total} entrées</span>
@@ -810,15 +1007,17 @@ function ScrapingHistoryTab() {
                 <th className="text-left py-3 px-4">Source</th>
                 <th className="text-left py-3 px-4">Plateforme</th>
                 <th className="text-left py-3 px-4">Compte</th>
-                <th className="text-left py-3 px-4">Status</th>
+                <th className="text-left py-3 px-4">Catégorie</th>
                 <th className="text-left py-3 px-4">Vidéos</th>
-                <th className="text-left py-3 px-4">Erreur</th>
+                <th className="text-left py-3 px-4">Détail</th>
               </tr>
             </thead>
             <tbody>
               {filteredHistory.map((h) => {
                 const isApify = h.is_apify;
                 const dt = new Date(h.timestamp);
+                const cat = classifyScrapeEntry(h);
+                const style = CATEGORY_STYLE[cat] || CATEGORY_STYLE.ko_source;
                 return (
                   <tr key={h.id} className={`border-b border-white/5 ${isApify ? "bg-red-500/8 hover:bg-red-500/12" : "hover:bg-white/3"} transition-colors`}>
                     <td className="py-2.5 px-4 text-white/70 text-xs whitespace-nowrap">
@@ -832,10 +1031,10 @@ function ScrapingHistoryTab() {
                     </td>
                     <td className="py-2.5 px-4 text-white text-xs">@{h.username}</td>
                     <td className="py-2.5 px-4">
-                      {h.success
-                        ? <span className="text-[#39FF14] text-xs">✓ OK</span>
-                        : <span className="text-red-400 text-xs">✗ Échec</span>
-                      }
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-medium ${style.bg} ${style.border} ${style.text}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`}/>
+                        {style.label}
+                      </span>
                     </td>
                     <td className="py-2.5 px-4 font-mono text-white/70 text-xs">{h.video_count || 0}</td>
                     <td className="py-2.5 px-4 text-white/40 text-[11px] max-w-[300px] truncate" title={h.error}>
