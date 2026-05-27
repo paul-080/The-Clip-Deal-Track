@@ -158,9 +158,12 @@ export default function LandingPage() {
       }
       const data = await r.json();
       setUser(data.user);
-      toast.success(`Bienvenue ${displayName} !`);
+      // Use the backend-confirmed role (existing user keeps their original role)
+      const finalRole = data.user?.role || selectedRole;
+      const welcomeName = data.user?.display_name || displayName;
+      toast.success(`Bienvenue ${welcomeName} !`);
       setShowRoleModal(false);
-      navigate(`/${selectedRole}`);
+      navigate(`/${finalRole}`);
     } catch (e) {
       toast.error(e.message || "Erreur de connexion Google");
     }
@@ -271,11 +274,17 @@ export default function LandingPage() {
     if (!forgotEmail.trim()) { toast.error("Entrez votre adresse email"); return; }
     setForgotLoading(true);
     try {
-      await fetch(`${API}/auth/forgot-password`, {
+      const r = await fetch(`${API}/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: forgotEmail.trim().toLowerCase() }),
       });
+      if (r.status === 429) {
+        const data = await r.json().catch(() => ({}));
+        toast.error(data.detail || "Trop de tentatives — réessayez plus tard");
+        return;
+      }
+      // Backend renvoie toujours {sent:true} pour ne pas leaker l'existence de l'email
       setLoginView("forgot_sent");
     } catch {
       toast.error("Erreur réseau — réessayez");

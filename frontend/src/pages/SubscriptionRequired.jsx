@@ -69,11 +69,14 @@ export default function SubscriptionRequired({ reason = "trial_expired", current
         setLoading(null);
         return;
       }
-      if (data.redirect_url) {
-        window.location.href = data.redirect_url;
-      } else if (data.mandate_used) {
+      // Backend renvoie : { url, direct?: true, session_id? }
+      // - direct=true : mandat déjà signé, subscription créée directement → redirect interne
+      // - sinon : GoCardless redirect flow URL (signature mandat SEPA)
+      if (data.direct) {
         toast.success("Abonnement activé !");
-        setTimeout(() => window.location.reload(), 1500);
+        window.location.href = data.url;
+      } else if (data.url) {
+        window.location.href = data.url;
       } else {
         toast.error("Réponse inattendue du serveur");
         setLoading(null);

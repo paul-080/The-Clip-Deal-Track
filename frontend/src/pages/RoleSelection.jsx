@@ -60,7 +60,9 @@ export default function RoleSelection() {
     setIsSubmitting(false);
 
     if (updatedUser) {
-      navigate(`/${selectedRole}`);
+      navigate(`/${updatedUser.role || selectedRole}`);
+    } else {
+      toast.error("Impossible d'enregistrer votre rôle — réessayez");
     }
   };
 

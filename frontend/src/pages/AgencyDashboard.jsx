@@ -98,7 +98,7 @@ function ScrapeHistoryPanel({ campaignId }) {
     } catch { return iso; }
   };
 
-  const planLabels = { 1: "1×/jour (minuit)", 2: "2×/jour", 3: "3×/jour (9h + 16h + minuit)", 4: "4×/jour" };
+  const planLabels = { 1: "1×/jour (23h30 Paris)", 2: "2×/jour", 3: "3×/jour (8h30 + 16h30 + 23h30 Paris)", 4: "4×/jour" };
 
   return (
     <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
@@ -2545,8 +2545,8 @@ function CampaignDashboard({ campaigns }) {
                     <div className="flex items-center gap-2">
                       <Input type="number" value={addBudgetAmount} onChange={e => setAddBudgetAmount(e.target.value)}
                         placeholder="Montant €" className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/30 h-8 text-sm"
-                        onKeyDown={e => { if (e.key === "Enter") handleAddBudget(); if (e.key === "Escape") setShowAddBudget(false); }} autoFocus />
-                      <button onClick={handleAddBudget} disabled={addingBudget || !addBudgetAmount}
+                        onKeyDown={e => { if (e.key === "Enter") handleAddBudget(false); if (e.key === "Escape") setShowAddBudget(false); }} autoFocus />
+                      <button onClick={() => handleAddBudget(false)} disabled={addingBudget || !addBudgetAmount}
                         className="px-3 h-8 rounded-lg bg-[#f0c040] hover:bg-[#f0c040]/80 text-black text-xs font-semibold disabled:opacity-50">{addingBudget ? "…" : "Ajouter"}</button>
                       <button onClick={() => { setShowAddBudget(false); setAddBudgetAmount(""); }}
                         className="px-2 h-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 text-xs">✕</button>
@@ -4242,7 +4242,7 @@ function CampaignDashboard({ campaigns }) {
             </p>
             <ul className="space-y-1 pl-4 list-disc marker:text-white/30">
               <li>Le scraping est <strong className="text-white/80">automatique</strong> selon ton abonnement. Horaires fixes (Paris) :
-                <span className="text-white/70"> Starter & Pro = 23h30 (1×/jour), Business = 08h30 + 15h30 + 23h30 (3×/jour)</span>.
+                <span className="text-white/70"> Starter = 23h30 (1×/jour), Pro & Business = 08h30 + 16h30 + 23h30 (3×/jour)</span>.
               </li>
               <li>Tu peux pas le déclencher manuellement.</li>
               <li><strong className="text-white/80">Optimisation auto :</strong> quand une vidéo fait <strong className="text-[#f0c040]">moins de 50 vues en 48 heures</strong>, elle arrête d'être trackée
@@ -4488,7 +4488,7 @@ function CampaignDashboard({ campaigns }) {
                 className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-white/25"
               />
               <button
-                onClick={handleAddBudget}
+                onClick={() => handleAddBudget(false)}
                 disabled={addingBudget || !addBudgetAmount}
                 className="px-5 py-2.5 rounded-xl bg-[#39FF14]/15 border border-[#39FF14]/25 text-[#39FF14] text-sm font-semibold hover:bg-[#39FF14]/25 transition-colors disabled:opacity-40"
               >
@@ -4853,6 +4853,10 @@ function PaymentPage() {
   };
 
   const handleConfirm = async (row) => {
+    const label = row.display_name || row.name || "ce clippeur";
+    if (!window.confirm(`Confirmer le virement de €${row.owed.toFixed(2)} à ${label} pour ${row.campaign_name} ?\n\nCette action est irréversible et marque le paiement comme effectué.`)) {
+      return;
+    }
     setConfirming(`${row.user_id}_${row.campaign_id}`);
     try {
       const res = await fetch(`${API}/payments/confirm`, {
@@ -4864,7 +4868,10 @@ function PaymentPage() {
       if (res.ok) {
         toast.success(`Paiement de €${row.owed.toFixed(2)} confirmé ✓`);
         fetchOwed();
-      } else toast.error("Erreur");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.detail || "Erreur");
+      }
     } catch { toast.error("Erreur de connexion"); }
     finally { setConfirming(null); }
   };
@@ -4915,11 +4922,20 @@ function PaymentPage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-white font-medium truncate">{row.display_name || row.name}</p>
                       <p className="text-xs text-white/40 truncate">{row.campaign_name}</p>
-                      {row.payment_info && (
-                        <p className="text-xs text-[#f0c040] flex items-center gap-1 mt-0.5">
-                          <CreditCard className="w-3 h-3"/>{row.payment_info}
-                        </p>
-                      )}
+                      {row.payment_info && (() => {
+                        let bank = null;
+                        try { bank = JSON.parse(row.payment_info); } catch { bank = { iban: row.payment_info }; }
+                        const iban = bank?.iban || "";
+                        const nom = bank?.nom || "";
+                        const bic = bank?.bic || "";
+                        const maskedIban = iban ? iban.replace(/\s+/g, "").replace(/^(.{4}).*(.{4})$/, "$1 •••• $2") : "";
+                        return (
+                          <p className="text-xs text-[#f0c040] flex items-center gap-1 mt-0.5">
+                            <CreditCard className="w-3 h-3 flex-shrink-0"/>
+                            <span className="truncate">{nom ? `${nom} · ` : ""}{maskedIban}{bic ? ` · ${bic}` : ""}</span>
+                          </p>
+                        );
+                      })()}
                     </div>
                     {/* Stats */}
                     <div className="text-right flex-shrink-0 space-y-0.5">
@@ -5082,7 +5098,7 @@ function SettingsPage() {
       features: [
         "3 campagnes actives",
         "100 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 1× / jour (23h30 Paris)",
+        "Tracking vues 3× / jour (08h30, 16h30, 23h30 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",
@@ -5095,7 +5111,7 @@ function SettingsPage() {
       features: [
         "Campagnes illimitées",
         "400 comptes trackés (TikTok/Insta/YouTube)",
-        "Tracking vues 3× / jour (08h30, 15h30, 23h30 Paris)",
+        "Tracking vues 3× / jour (08h30, 16h30, 23h30 Paris)",
         "Striking automatique",
         "Stats vues complètes + RPM auto",
         "Analytics avancés",

@@ -36,6 +36,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Badge } from "../components/ui/badge";
 import ChatPanel from "../components/ChatPanel";
 import SupportPage from "../components/SupportPage";
+import OnboardingTour from "../components/OnboardingTour";
 
 const ACCENT_COLOR = "#00E5FF";
 
@@ -131,8 +132,9 @@ export default function ClipperDashboard() {
 
   return (
     <div className="flex min-h-screen bg-[#0A0A0A]">
-      <Sidebar 
-        items={sidebarItems} 
+      <OnboardingTour role="clipper" />
+      <Sidebar
+        items={sidebarItems}
         accentColor={ACCENT_COLOR}
         role="clipper"
       />
@@ -1215,10 +1217,6 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
   const [expandedAccounts, setExpandedAccounts] = useState(new Set());
   const [refreshingAccounts, setRefreshingAccounts] = useState(new Set());
   const [scrapingAccounts, setScrapingAccounts] = useState(new Set());
-  // Manual video URL submission (TikTok fallback)
-  const [manualVideoUrl, setManualVideoUrl] = useState("");
-  const [manualVideoAccount, setManualVideoAccount] = useState(null); // account_id
-  const [addingManualVideo, setAddingManualVideo] = useState(false);
 
   // Sync local accounts when parent refreshes (e.g. after adding a new account)
   useEffect(() => { setLocalAccounts(propAccounts); }, [propAccounts]);
@@ -1434,42 +1432,6 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
     }
   };
 
-  const handleAddVideoManually = async (accountId) => {
-    if (!manualVideoUrl.trim()) {
-      toast.error("Collez l'URL de votre vidéo");
-      return;
-    }
-    setAddingManualVideo(true);
-    try {
-      const res = await fetch(`${API}/social-accounts/${accountId}/add-video`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ video_url: manualVideoUrl.trim() }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(data.message || "Vidéo ajoutée ✓");
-        setManualVideoUrl("");
-        setManualVideoAccount(null);
-        // Reload videos for this account
-        const vres = await fetch(`${API}/social-accounts/${accountId}/videos`, { credentials: "include" });
-        if (vres.ok) {
-          const vdata = await vres.json();
-          setVideosByAccount((prev) => ({ ...prev, [accountId]: vdata.videos || [] }));
-        }
-        setExpandedAccounts((prev) => new Set(prev).add(accountId));
-      } else {
-        const err = await res.json();
-        toast.error(err.detail || "Erreur lors de l'ajout de la vidéo", { duration: 8000 });
-      }
-    } catch {
-      toast.error("Erreur de connexion");
-    } finally {
-      setAddingManualVideo(false);
-    }
-  };
-
   const handleRemoveFromCampaign = async (campaignId, accountId) => {
     try {
       const res = await fetch(`${API}/campaigns/${campaignId}/social-accounts/${accountId}`, {
@@ -1554,7 +1516,6 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
             const color = platformColor[account.platform] || "#00E5FF";
             const isExpanded = expandedAccounts.has(account.account_id);
             const isRefreshing = refreshingAccounts.has(account.account_id);
-            const isScraping = scrapingAccounts.has(account.account_id);
             const videos = videosByAccount[account.account_id] || [];
             return (
               <div key={account.account_id} className={idx < localAccounts.length - 1 || isExpanded ? "border-b border-white/6" : ""}>
@@ -1606,8 +1567,18 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                       </div>
                     )}
                     {account.status === "error" && (
-                      <span className="text-red-400 text-[10px] flex items-center gap-0.5">
+                      <span className="text-red-400 text-[10px] flex items-center gap-0.5" title={account.error_message || "Erreur de vérification"}>
                         <AlertTriangle className="w-2.5 h-2.5" /> Erreur
+                      </span>
+                    )}
+                    {account.status === "private" && (
+                      <span className="text-amber-400 text-[10px] flex items-center gap-0.5" title="Compte privé — impossible à tracker. Passe-le en public.">
+                        <AlertTriangle className="w-2.5 h-2.5" /> Privé
+                      </span>
+                    )}
+                    {account.status === "deleted" && (
+                      <span className="text-red-400 text-[10px] flex items-center gap-0.5" title="Compte introuvable ou supprimé sur la plateforme.">
+                        <X className="w-2.5 h-2.5" /> Introuvable
                       </span>
                     )}
                   </div>
@@ -1627,17 +1598,6 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                           <BarChart2 className="w-3 h-3" />
                         </button>
                         {/* Scraping manuel : RESERVE ADMIN — le clippeur n'a pas la main, le scraping est automatique selon l'abonnement de l'agence */}
-                        {/* Add video manually (all platforms) */}
-                        <button
-                          onClick={() => {
-                            setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id);
-                            setExpandedAccounts((prev) => new Set(prev).add(account.account_id));
-                          }}
-                          title="Ajouter une vidéo manuellement"
-                          className="w-6 h-6 rounded flex items-center justify-center text-white/30 hover:text-[#FF007F] hover:bg-[#FF007F]/10 transition-colors"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
                         {/* Re-verify */}
                         <button
                           onClick={() => handleRefreshAccount(account.account_id)}
@@ -1649,11 +1609,11 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                         </button>
                       </>
                     )}
-                    {(account.status === "error" || account.status === "pending") && (
+                    {(account.status === "error" || account.status === "pending" || account.status === "private" || account.status === "deleted") && (
                       <button
                         onClick={() => handleRefreshAccount(account.account_id)}
                         disabled={isRefreshing || account.status === "pending"}
-                        title="Réessayer"
+                        title="Re-vérifier"
                         className="w-6 h-6 rounded flex items-center justify-center text-yellow-400 hover:text-yellow-300 hover:bg-yellow-400/10 transition-colors disabled:opacity-40 text-xs"
                       >
                         ↻
@@ -1673,49 +1633,11 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                 {/* Expanded videos section */}
                 {isExpanded && (
                   <div className="px-4 pb-3 pt-2 bg-white/2">
-                    {/* Manual video URL input (all platforms) */}
-                    {manualVideoAccount === account.account_id && (
-                      <div className="mb-3 p-2.5 rounded-lg bg-[#FF007F]/5 border border-[#FF007F]/20">
-                        <p className="text-[#FF007F] text-[10px] font-semibold mb-1.5">
-                          📎 Ajouter une vidéo {account.platform === "tiktok" ? "TikTok" : account.platform === "youtube" ? "YouTube" : "Instagram"} manuellement
-                        </p>
-                        <div className="flex gap-2">
-                          <Input
-                            value={manualVideoUrl}
-                            onChange={(e) => setManualVideoUrl(e.target.value)}
-                            placeholder={
-                              account.platform === "tiktok"
-                                ? "https://www.tiktok.com/@.../video/..."
-                                : account.platform === "youtube"
-                                ? "https://www.youtube.com/watch?v=... ou https://youtu.be/..."
-                                : "https://www.instagram.com/reel/..."
-                            }
-                            className="flex-1 bg-white/5 border-white/10 text-white placeholder:text-white/20 text-xs h-7"
-                            onKeyDown={(e) => e.key === "Enter" && handleAddVideoManually(account.account_id)}
-                          />
-                          <Button
-                            size="sm"
-                            onClick={() => handleAddVideoManually(account.account_id)}
-                            disabled={addingManualVideo || !manualVideoUrl.trim()}
-                            className="bg-[#FF007F]/80 hover:bg-[#FF007F] text-white text-xs h-7 px-3"
-                          >
-                            {addingManualVideo ? <div className="w-2.5 h-2.5 border border-white border-t-transparent rounded-full animate-spin" /> : "Ajouter"}
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
                     {videos.length === 0 ? (
-                      <div className="flex items-center gap-3 py-2">
-                        <p className="text-white/30 text-xs flex-1">
+                      <div className="py-2">
+                        <p className="text-white/30 text-xs">
                           Aucune vidéo trackée pour l'instant — le scraping automatique passera selon le rythme de l'abonnement de l'agence.
                         </p>
-                        <button
-                          onClick={() => setManualVideoAccount(manualVideoAccount === account.account_id ? null : account.account_id)}
-                          className="text-[#FF007F] text-xs hover:underline"
-                        >
-                          + Ajouter manuellement
-                        </button>
                       </div>
                     ) : (
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">

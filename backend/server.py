@@ -1571,9 +1571,11 @@ async def get_current_user(request: Request) -> dict:
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Session expired")
     
+    # SECU : on EXCLUT password_hash de la projection (sinon fuite via /auth/me + n'importe
+    # quel endpoint qui retourne user). Ce hash ne doit JAMAIS sortir du backend.
     user = await db.users.find_one(
         {"user_id": session["user_id"]},
-        {"_id": 0}
+        {"_id": 0, "password_hash": 0}
     )
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -2954,13 +2956,21 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
         ans = raw_responses[i] if i < len(raw_responses) else ""
         responses_map.append({"question": q, "answer": (ans or "").strip()})
 
+    # UX FIX : si le formulaire de candidature est DESACTIVE, le clipper rejoint
+    # instantanement avec status="active" (cohérent avec accept_campaign_member qui
+    # set status="active"). Le frontend annonce "Rejoindre instantanement" -> ne pas mentir.
+    # Si form active : "pending" -> attend la validation de l'agence.
+    form_enabled = bool(campaign.get("application_form_enabled"))
+    initial_status = "pending" if form_enabled else "active"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
     member = {
         "member_id": f"mem_{uuid.uuid4().hex[:12]}",
         "campaign_id": campaign_id,
         "user_id": user["user_id"],
         "role": "clipper",
-        "status": "pending",  # toujours en attente de validation agence
-        "joined_at": datetime.now(timezone.utc).isoformat(),
+        "status": initial_status,
+        "joined_at": now_iso,
         "strikes": 0,
         "last_post_at": None,
         "responses": responses_map,
@@ -2970,17 +2980,22 @@ async def apply_to_campaign(campaign_id: str, request: Request, user: dict = Dep
         "youtube": body.get("youtube", ""),
         "example_url": body.get("example_url", ""),
     }
+    if initial_status == "active":
+        member["accepted_at"] = now_iso
     await db.campaign_members.insert_one(member)
     member.pop("_id", None)
 
+    # WebSocket : notifie l'agence (nouvelle candidature OU nouveau clipper auto-active)
     await manager.send_to_user(campaign["agency_id"], {
-        "type": "new_application",
+        "type": "new_application" if initial_status == "pending" else "new_member_joined",
         "campaign_id": campaign_id,
         "user_id": user["user_id"],
         "display_name": user.get("display_name") or user.get("name"),
     })
 
-    return {"message": "Candidature envoyée !", "member": member}
+    if initial_status == "active":
+        return {"message": "Tu as rejoint la campagne ! Tu peux commencer a poster.", "member": member, "status": "active"}
+    return {"message": "Candidature envoyée !", "member": member, "status": "pending"}
 
 @api_router.post("/campaigns/{campaign_id}/join-as-client")
 async def join_as_client(campaign_id: str, user: dict = Depends(get_current_user)):
@@ -13734,16 +13749,27 @@ async def get_account_videos(account_id: str, user: dict = Depends(get_current_u
 @api_router.post("/social-accounts/{account_id}/add-video")
 async def add_video_manually(account_id: str, request: Request, user: dict = Depends(get_current_user)):
     """
-    Clipper manually adds a video URL (TikTok, YouTube, or Instagram).
+    Add a video URL manually to a social account (TikTok, YouTube, Instagram).
     Fetches real stats and saves to tracked_videos for all campaigns where this account is assigned.
+
+    SECU : restreint a admin/agency/manager. Le bouton "ajouter une video" cote clipper a ete
+    retire car les videos doivent etre trackees automatiquement par le scheduler (sinon un
+    clipper malicieux peut ajouter une video qui n'est pas de son compte pour gonfler ses vues).
     """
+    role = user.get("role")
+    if role not in ("admin", "agency", "manager"):
+        raise HTTPException(status_code=403, detail="Reserve aux agences/managers/admins")
+
     body = await request.json()
     video_url = (body.get("video_url") or "").strip()
     if not video_url:
         raise HTTPException(status_code=400, detail="URL de vidéo manquante")
 
+    # Pour admin/agency/manager : pas de filtre user_id (on peut pousser une video sur n'importe
+    # quel compte d'un clipper qu'on gere). Le check d'autorisation fin (compte appartient a
+    # une campagne de l'agence) reste possible mais on garde simple pour ce fix.
     account = await db.social_accounts.find_one(
-        {"account_id": account_id, "user_id": user["user_id"]}, {"_id": 0}
+        {"account_id": account_id}, {"_id": 0}
     )
     if not account:
         raise HTTPException(status_code=404, detail="Compte introuvable")
@@ -14780,10 +14806,24 @@ async def get_campaign_tracked_videos(campaign_id: str, user: dict = Depends(get
 
 @api_router.post("/campaigns/{campaign_id}/refresh-tracking")
 async def force_campaign_tracking(campaign_id: str, user: dict = Depends(get_current_user)):
-    """Force immediate tracking for a campaign"""
+    """Force immediate tracking for a campaign (respects gate via run_video_tracking).
+
+    Guard avec _TRACKING_RUN_LOCK pour eviter 2 scrapes en parallele (le scheduler
+    tourne deja toutes les 5 min et utilise le meme lock). Sans ce guard, un clic
+    refresh par un manager pile pendant un tick scheduler = double passe sur les
+    memes comptes = doublons potentiels + double rate-limit Insta/TikTok.
+    """
     if user.get("role") not in ["agency", "manager"]:
         raise HTTPException(status_code=403, detail="Agency/Manager only")
-    asyncio.create_task(run_video_tracking())
+    if _TRACKING_RUN_LOCK.locked():
+        return {"message": "Un scrape est deja en cours — il prend en compte cette campagne, patientez."}
+    async def _do_refresh():
+        async with _TRACKING_RUN_LOCK:
+            try:
+                await run_video_tracking()
+            except Exception as e:
+                logger.error(f"refresh-tracking error: {type(e).__name__}: {e}", exc_info=True)
+    asyncio.create_task(_do_refresh())
     return {"message": "Tracking lancé en arrière-plan"}
 
 @api_router.post("/campaigns/{campaign_id}/import-link")
@@ -16170,18 +16210,23 @@ async def gocardless_webhook(request: Request):
         try:
             if resource_type == "payments" and action in ("confirmed", "paid_out"):
                 # Top-up confirmé : crédite le wallet
+                # IDEMPOTENCE : update atomique avec filtre status != completed -> garantit un seul credit
+                # meme si GoCardless renvoie le webhook plusieurs fois.
                 payment_id = links.get("payment")
-                pay_doc = await db.payments.find_one({"gc_payment_id": payment_id}, {"_id": 0})
-                if pay_doc and pay_doc.get("type") == "topup" and pay_doc.get("status") != "completed":
-                    await db.payments.update_one(
-                        {"gc_payment_id": payment_id},
-                        {"$set": {"status": "completed", "confirmed_at": datetime.now(timezone.utc).isoformat()}}
-                    )
-                    await db.users.update_one(
-                        {"user_id": pay_doc["user_id"]},
-                        {"$inc": {"wallet_balance": pay_doc["amount_eur"]}}
-                    )
-                    logger.info(f"Top-up confirmé pour user {pay_doc['user_id']} : {pay_doc['amount_eur']}€")
+                if not payment_id:
+                    continue
+                upd = await db.payments.update_one(
+                    {"gc_payment_id": payment_id, "type": "topup", "status": {"$ne": "completed"}},
+                    {"$set": {"status": "completed", "confirmed_at": datetime.now(timezone.utc).isoformat()}}
+                )
+                if upd.modified_count == 1:
+                    pay_doc = await db.payments.find_one({"gc_payment_id": payment_id}, {"_id": 0})
+                    if pay_doc:
+                        await db.users.update_one(
+                            {"user_id": pay_doc["user_id"]},
+                            {"$inc": {"wallet_balance": pay_doc["amount_eur"]}}
+                        )
+                        logger.info(f"Top-up confirmé pour user {pay_doc['user_id']} : {pay_doc['amount_eur']}€")
             elif resource_type == "subscriptions" and action in ("cancelled", "finished"):
                 sub_id = links.get("subscription")
                 if sub_id:
@@ -16432,6 +16477,28 @@ async def get_campaign_payment_summary(campaign_id: str, user: dict = Depends(ge
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
 
+    # SECU : verifier que le user (agency/manager) a bien le droit d'acceder a cette campagne.
+    # Sinon n'importe quelle agence pourrait lire les RIB des clippers d'une autre agence
+    # en passant un campaign_id arbitraire (fuite cross-tenant).
+    role = user.get("role")
+    if role == "agency":
+        if campaign.get("agency_id") != user["user_id"]:
+            raise HTTPException(status_code=403, detail="Acces refuse a cette campagne")
+    elif role == "manager":
+        if campaign.get("manager_id") != user["user_id"]:
+            raise HTTPException(status_code=403, detail="Acces refuse a cette campagne")
+    elif role == "clipper":
+        # Un clipper doit etre membre de la campagne pour voir SA propre ligne
+        my_membership = await db.campaign_members.find_one(
+            {"campaign_id": campaign_id, "user_id": user["user_id"]},
+            {"_id": 0, "user_id": 1}
+        )
+        if not my_membership:
+            raise HTTPException(status_code=403, detail="Vous n'etes pas membre de cette campagne")
+    else:
+        # client ou autre role : aucun acces
+        raise HTTPException(status_code=403, detail="Acces refuse")
+
     payment_model = campaign.get("payment_model", "views")
     rpm = campaign.get("rpm", 0)
     rate_per_click = campaign.get("rate_per_click", 0.0)
@@ -16554,11 +16621,33 @@ async def confirm_payment(body: dict, user: dict = Depends(get_current_user)):
     if not clipper_user_id or not campaign_id or amount <= 0:
         raise HTTPException(status_code=400, detail="Paramètres invalides")
 
+    # SECU : vérifier que la campagne appartient bien a l'agence/manager courant
+    campaign = await db.campaigns.find_one(
+        {"campaign_id": campaign_id},
+        {"_id": 0, "agency_id": 1, "manager_id": 1}
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
+    if user.get("role") == "agency":
+        if campaign.get("agency_id") != user["user_id"]:
+            raise HTTPException(status_code=403, detail="Cette campagne n'appartient pas a votre agence")
+    elif user.get("role") == "manager":
+        if campaign.get("manager_id") != user["user_id"]:
+            raise HTTPException(status_code=403, detail="Vous n'etes pas manager de cette campagne")
+
+    # SECU : verifier que le clipper est bien membre de la campagne
+    membership = await db.campaign_members.find_one(
+        {"campaign_id": campaign_id, "user_id": clipper_user_id, "role": "clipper"},
+        {"_id": 0}
+    )
+    if not membership:
+        raise HTTPException(status_code=404, detail="Ce clippeur n'est pas membre de la campagne")
+
     now = datetime.now(timezone.utc).isoformat()
     record = {
         "payment_id": f"pay_{uuid.uuid4().hex[:12]}",
         "user_id": clipper_user_id,
-        "agency_id": user["user_id"],
+        "agency_id": campaign.get("agency_id") or user["user_id"],
         "campaign_id": campaign_id,
         "type": "direct_payment",
         "amount_eur": amount,
@@ -17020,6 +17109,18 @@ async def create_subscription_checkout(body: dict, user: dict = Depends(get_curr
                 # Vérifie que le mandat est toujours actif
                 mandate = client.mandates.get(existing_mandate)
                 if mandate.status in ("active", "pending_submission", "submitted"):
+                    # ANTI-DOUBLE-PRELEVEMENT : si une subscription existe deja, l'annuler AVANT d'en creer une nouvelle.
+                    # Sinon l'utilisateur serait preleve 2x par mois (ancienne + nouvelle).
+                    old_sub_id = user.get("gc_subscription_id")
+                    if old_sub_id:
+                        try:
+                            client.subscriptions.cancel(old_sub_id)
+                            logger.info(f"Ancienne subscription {old_sub_id} annulee avant changement de plan pour user {user['user_id']}")
+                        except Exception as e:
+                            logger.warning(f"Cancel ancienne subscription {old_sub_id} a echoue : {e}")
+                            # Ne pas creer une nouvelle subscription si on n'a pas pu annuler l'ancienne (anti double-prelevement)
+                            raise HTTPException(status_code=409, detail="Impossible d'annuler votre abonnement actuel. Contactez le support.")
+
                     sub = client.subscriptions.create(
                         params={
                             "amount": plan["amount"],

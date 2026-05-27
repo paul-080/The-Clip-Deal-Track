@@ -3,7 +3,8 @@ import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { GoogleLogin } from "@react-oauth/google";
 
-const API = process.env.REACT_APP_BACKEND_URL || "";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
+const API = BACKEND_URL;
 
 export default function ClaimPage({ type = "agency" }) {
   const { token } = useParams();

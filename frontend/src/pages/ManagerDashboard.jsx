@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 import {
   Bell, Settings, MessageCircle, Video, ClipboardList,
   Users, Send, AlertTriangle, Check, HelpCircle,
-  Search, X, Home, ChevronRight, BarChart3,
+  Search, X, Home, ChevronRight, BarChart3, Lightbulb,
   RefreshCw, ArrowUpDown, ChevronUp, ChevronDown, Play, ExternalLink, TrendingUp
 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -102,6 +102,7 @@ export default function ManagerDashboard() {
       ],
     })),
     ...(campaigns.length > 0 ? [{ type: "divider" }] : []),
+    { id: "advices", label: "Conseils", icon: Lightbulb, path: "/manager/advices", notification: reminderStatus.show_reminder },
     { id: "support", label: "Support", icon: HelpCircle, path: "/manager/support", badge: supportUnread },
     { id: "settings", label: "Paramètres", icon: Settings, path: "/manager/settings" },
   ];
