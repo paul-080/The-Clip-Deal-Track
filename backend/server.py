@@ -9404,6 +9404,20 @@ async def _scrape_one_account_into_campaign(
     # Si compte est en error/pending, refuse direct (pour force-scrape sans wait)
     if account.get("status") == "error":
         return {**base_result, "ok": False, "error": f"compte en erreur : {account.get('error_message') or 'inconnu'}"}
+    # EARLY-SKIP : compte prive ou supprime -> ne JAMAIS spam les sources de scraping
+    # (gaspille clipscraper + Apify + proxies pour rien, pollue scraping_history)
+    if account.get("status") in ("private", "deleted") or account.get("is_private") is True:
+        status = account.get("status") or "private"
+        try:
+            await _log_scrape(
+                f"early_skip_{status}", plat, uname, True, 0,
+                f"Compte {status} - skip scrape (impossible techniquement)",
+                result_type=f"account_{status}"
+            )
+        except Exception:
+            pass
+        return {**base_result, "ok": True, "fetched": 0, "skipped_private_or_deleted": True,
+                "message": f"Compte {status} — pas de tracking possible"}
     if account.get("status") == "pending":
         # Tente de relancer la vérification puis abandonne
         try:
