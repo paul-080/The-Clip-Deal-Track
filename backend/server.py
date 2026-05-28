@@ -12470,6 +12470,50 @@ async def add_social_account(account_data: SocialAccountCreate, user: dict = Dep
 
     await db.social_accounts.insert_one(account)
     account.pop("_id", None)
+
+    # AUTO-LINK : le compte est automatiquement assigne a TOUTES les campagnes
+    # actives ou ce clipper est membre actif ET dont la plateforme du compte
+    # est dans les plateformes autorisees de la campagne.
+    # Sans cela, le compte reste orphelin et n'est JAMAIS scrape (bug pre-2026-05-28).
+    try:
+        active_memberships = await db.campaign_members.find(
+            {"user_id": user["user_id"], "role": "clipper", "status": "active"},
+            {"_id": 0, "campaign_id": 1}
+        ).to_list(200)
+        linked_count = 0
+        for m in active_memberships:
+            cid = m.get("campaign_id")
+            if not cid:
+                continue
+            camp = await db.campaigns.find_one(
+                {"campaign_id": cid, "is_active": {"$ne": False}},
+                {"_id": 0, "platforms": 1, "status": 1}
+            )
+            if not camp:
+                continue
+            if camp.get("status") == "paused":
+                continue
+            allowed = camp.get("platforms") or []
+            if allowed and account_data.platform not in allowed:
+                continue
+            # Upsert l'assignment (idempotent)
+            await db.campaign_social_accounts.update_one(
+                {"campaign_id": cid, "account_id": account_id, "user_id": user["user_id"]},
+                {"$setOnInsert": {
+                    "campaign_id": cid,
+                    "account_id": account_id,
+                    "user_id": user["user_id"],
+                    "assigned_at": datetime.now(timezone.utc).isoformat(),
+                    "auto_linked": True,
+                }},
+                upsert=True
+            )
+            linked_count += 1
+        if linked_count > 0:
+            logger.info(f"add_social_account: auto-link @{username} ({account_data.platform}) a {linked_count} campagnes actives pour user {user['user_id']}")
+    except Exception as e:
+        logger.warning(f"add_social_account auto-link failed for {account_id}: {e}")
+
     asyncio.create_task(_verify_and_update_account(account_id, account_data.platform, username, via_url=via_url))
     return account
 
@@ -17292,6 +17336,84 @@ async def verify_admin_code(request: Request):
     if not code or not hmac.compare_digest(code, ADMIN_SECRET_CODE):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
+
+@api_router.post("/admin/relink-orphan-accounts")
+async def admin_relink_orphan_accounts(request: Request, _: bool = Depends(verify_admin_code)):
+    """Retro-link les comptes social verifies non-assignes a leur campagne active.
+    Bug pre-2026-05-28 : POST /social-accounts ne creait pas d'entree dans
+    campaign_social_accounts, donc les comptes des clippeurs n'etaient jamais
+    scrapes. Cet endpoint corrige retroactivement les comptes existants."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    verified = await db.social_accounts.find(
+        {"status": "verified"},
+        {"_id": 0, "account_id": 1, "user_id": 1, "username": 1, "platform": 1}
+    ).to_list(2000)
+    processed = 0
+    linked_total = 0
+    skipped_plat = 0
+    skipped_no_camp = 0
+    skipped_already_assigned = 0
+    details = []
+    for a in verified:
+        aid = a["account_id"]
+        uid = a.get("user_id")
+        plat = a.get("platform")
+        if not uid:
+            continue
+        processed += 1
+        existing = await db.campaign_social_accounts.count_documents({"account_id": aid})
+        if existing > 0:
+            skipped_already_assigned += 1
+            continue
+        members = await db.campaign_members.find(
+            {"user_id": uid, "role": "clipper", "status": "active"},
+            {"_id": 0, "campaign_id": 1}
+        ).to_list(50)
+        if not members:
+            skipped_no_camp += 1
+            continue
+        for m in members:
+            cid = m.get("campaign_id")
+            if not cid:
+                continue
+            camp = await db.campaigns.find_one(
+                {"campaign_id": cid, "is_active": {"$ne": False}},
+                {"_id": 0, "platforms": 1, "status": 1, "name": 1}
+            )
+            if not camp:
+                continue
+            if camp.get("status") == "paused":
+                continue
+            allowed = camp.get("platforms") or []
+            if allowed and plat not in allowed:
+                skipped_plat += 1
+                continue
+            result = await db.campaign_social_accounts.update_one(
+                {"campaign_id": cid, "account_id": aid, "user_id": uid},
+                {"$setOnInsert": {
+                    "campaign_id": cid,
+                    "account_id": aid,
+                    "user_id": uid,
+                    "assigned_at": now_iso,
+                    "auto_linked": True,
+                    "retroactive_fix": "2026-05-28",
+                }},
+                upsert=True
+            )
+            if result.upserted_id:
+                linked_total += 1
+                details.append(f"@{a.get('username')} ({plat}) -> {camp.get('name')}")
+    return {
+        "ok": True,
+        "verified_total": len(verified),
+        "processed": processed,
+        "new_links_created": linked_total,
+        "skipped_already_assigned": skipped_already_assigned,
+        "skipped_no_active_campaign": skipped_no_camp,
+        "skipped_platform_not_allowed": skipped_plat,
+        "sample_links": details[:30],
+    }
+
 
 @api_router.get("/admin/diag-instagram")
 async def admin_diag_instagram(request: Request, url: str = "https://www.instagram.com/p/DVju4UNCle9/"):
