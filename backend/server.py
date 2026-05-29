@@ -17339,61 +17339,94 @@ async def verify_admin_code(request: Request):
 
 @api_router.post("/admin/relink-orphan-accounts")
 async def admin_relink_orphan_accounts(request: Request, _: bool = Depends(verify_admin_code)):
-    """Retro-link les comptes social verifies non-assignes a leur campagne active.
-    Bug pre-2026-05-28 : POST /social-accounts ne creait pas d'entree dans
-    campaign_social_accounts, donc les comptes des clippeurs n'etaient jamais
-    scrapes. Cet endpoint corrige retroactivement les comptes existants."""
+    """Retro-link les comptes social verifies non-assignes a une campagne active.
+    Deux strategies selon le proprietaire du compte :
+      A) Compte avec user_id (clippeur owner) -> link aux campagnes ou ce clippeur
+         est member active + plateforme autorisee
+      B) Compte sans user_id (agency-owned) ou added_by_role=agency/manager
+         -> link aux campagnes de l'agence/manager qui l'a ajoute (champ added_by)
+         + plateforme autorisee. Sinon, link a TOUTES les campagnes actives
+         (1 seule campagne attendu en general).
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
     verified = await db.social_accounts.find(
         {"status": "verified"},
-        {"_id": 0, "account_id": 1, "user_id": 1, "username": 1, "platform": 1}
+        {"_id": 0, "account_id": 1, "user_id": 1, "username": 1, "platform": 1,
+         "added_by": 1, "added_by_role": 1}
     ).to_list(2000)
+    has_user_id = sum(1 for a in verified if a.get("user_id"))
+    no_user_id = sum(1 for a in verified if not a.get("user_id"))
+    by_added_role = {}
+    for a in verified:
+        r = a.get("added_by_role") or "unknown"
+        by_added_role[r] = by_added_role.get(r, 0) + 1
+
     processed = 0
     linked_total = 0
     skipped_plat = 0
     skipped_no_camp = 0
     skipped_already_assigned = 0
     details = []
+
+    # Charge toutes les campagnes actives une fois (perf)
+    active_camps_all = await db.campaigns.find(
+        {"is_active": {"$ne": False}, "status": {"$ne": "paused"}},
+        {"_id": 0, "campaign_id": 1, "platforms": 1, "name": 1, "agency_id": 1}
+    ).to_list(500)
+
     for a in verified:
         aid = a["account_id"]
         uid = a.get("user_id")
         plat = a.get("platform")
-        if not uid:
-            continue
         processed += 1
         existing = await db.campaign_social_accounts.count_documents({"account_id": aid})
         if existing > 0:
             skipped_already_assigned += 1
             continue
-        members = await db.campaign_members.find(
-            {"user_id": uid, "role": "clipper", "status": "active"},
-            {"_id": 0, "campaign_id": 1}
-        ).to_list(50)
-        if not members:
+
+        target_campaigns = []
+        if uid:
+            # Strategy A : compte d'un clippeur
+            members = await db.campaign_members.find(
+                {"user_id": uid, "role": "clipper", "status": "active"},
+                {"_id": 0, "campaign_id": 1}
+            ).to_list(50)
+            cids = {m.get("campaign_id") for m in members if m.get("campaign_id")}
+            target_campaigns = [c for c in active_camps_all if c["campaign_id"] in cids]
+        else:
+            # Strategy B : compte agency-owned ou orphelin
+            added_by = a.get("added_by")
+            if added_by:
+                # Trouve campagnes de cette agence/manager
+                target_campaigns = [c for c in active_camps_all if c.get("agency_id") == added_by]
+                if not target_campaigns:
+                    # Peut-etre c'est un manager : on regarde ses memberships agency
+                    mgr_memberships = await db.campaign_members.find(
+                        {"user_id": added_by, "status": "active"},
+                        {"_id": 0, "campaign_id": 1}
+                    ).to_list(50)
+                    mgr_cids = {m.get("campaign_id") for m in mgr_memberships}
+                    target_campaigns = [c for c in active_camps_all if c["campaign_id"] in mgr_cids]
+            # Si toujours rien, fallback : toutes les campagnes actives (1 seule en general)
+            if not target_campaigns:
+                target_campaigns = active_camps_all
+
+        if not target_campaigns:
             skipped_no_camp += 1
             continue
-        for m in members:
-            cid = m.get("campaign_id")
-            if not cid:
-                continue
-            camp = await db.campaigns.find_one(
-                {"campaign_id": cid, "is_active": {"$ne": False}},
-                {"_id": 0, "platforms": 1, "status": 1, "name": 1}
-            )
-            if not camp:
-                continue
-            if camp.get("status") == "paused":
-                continue
+
+        for camp in target_campaigns:
+            cid = camp["campaign_id"]
             allowed = camp.get("platforms") or []
             if allowed and plat not in allowed:
                 skipped_plat += 1
                 continue
             result = await db.campaign_social_accounts.update_one(
-                {"campaign_id": cid, "account_id": aid, "user_id": uid},
+                {"campaign_id": cid, "account_id": aid},
                 {"$setOnInsert": {
                     "campaign_id": cid,
                     "account_id": aid,
-                    "user_id": uid,
+                    "user_id": uid,  # peut etre None (agency-owned)
                     "assigned_at": now_iso,
                     "auto_linked": True,
                     "retroactive_fix": "2026-05-28",
@@ -17402,16 +17435,21 @@ async def admin_relink_orphan_accounts(request: Request, _: bool = Depends(verif
             )
             if result.upserted_id:
                 linked_total += 1
-                details.append(f"@{a.get('username')} ({plat}) -> {camp.get('name')}")
+                if len(details) < 50:
+                    details.append(f"@{a.get('username')} ({plat}) -> {camp.get('name')}")
     return {
         "ok": True,
         "verified_total": len(verified),
+        "verified_with_user_id": has_user_id,
+        "verified_without_user_id": no_user_id,
+        "added_role_breakdown": by_added_role,
+        "active_campaigns_count": len(active_camps_all),
         "processed": processed,
         "new_links_created": linked_total,
         "skipped_already_assigned": skipped_already_assigned,
-        "skipped_no_active_campaign": skipped_no_camp,
+        "skipped_no_target_campaign": skipped_no_camp,
         "skipped_platform_not_allowed": skipped_plat,
-        "sample_links": details[:30],
+        "sample_links": details,
     }
 
 
