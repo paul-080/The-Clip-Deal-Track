@@ -17355,9 +17355,10 @@ async def verify_admin_code(request: Request):
 @api_router.get("/admin/diag-campaign")
 async def admin_diag_campaign(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
     """Diagnostic complet d'une campagne par nom (regex insensitive)."""
+    import re as _re_diag
     if not name:
         return {"error": "param 'name' requis"}
-    camp = await db.campaigns.find_one({"name": {"$regex": f"^{re.escape(name)}", "$options": "i"}}, {"_id": 0})
+    camp = await db.campaigns.find_one({"name": {"$regex": f"^{_re_diag.escape(name)}", "$options": "i"}}, {"_id": 0})
     if not camp:
         camps_all = await db.campaigns.find({}, {"_id": 0, "campaign_id": 1, "name": 1, "status": 1}).to_list(50)
         return {"error": f"campagne '{name}' introuvable", "available": [{"name": c.get("name"), "status": c.get("status")} for c in camps_all]}
