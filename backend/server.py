@@ -17337,6 +17337,39 @@ async def verify_admin_code(request: Request):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
 
+@api_router.get("/admin/scrape-sources-breakdown")
+async def admin_scrape_sources_breakdown(request: Request, hours: int = 48, _: bool = Depends(verify_admin_code)):
+    """Breakdown precis des sources de scraping (clipscraper/apify/tikwm/etc.)
+    Pour savoir lesquelles marchent vraiment vs sont mortes."""
+    now_utc = datetime.now(timezone.utc)
+    cutoff = (now_utc - timedelta(hours=int(hours))).isoformat()
+    docs = await db.scraping_history.find({"timestamp": {"$gte": cutoff}}, {"_id": 0}).to_list(10000)
+    by_src = {}
+    for d in docs:
+        src = d.get("source", "unknown")
+        plat = d.get("platform", "?")
+        key = f"{src}|{plat}"
+        if key not in by_src:
+            by_src[key] = {"source": src, "platform": plat, "total": 0, "success": 0, "fail": 0, "videos_total": 0}
+        by_src[key]["total"] += 1
+        if d.get("success"):
+            by_src[key]["success"] += 1
+            by_src[key]["videos_total"] += d.get("video_count", 0) or 0
+        else:
+            by_src[key]["fail"] += 1
+    results = []
+    for v in by_src.values():
+        v["success_rate"] = round((v["success"] / v["total"] * 100), 1) if v["total"] else 0
+        results.append(v)
+    results.sort(key=lambda x: -x["total"])
+    return {
+        "window_hours": hours,
+        "total_events": len(docs),
+        "by_source": results,
+        "generated_at": now_utc.isoformat(),
+    }
+
+
 @api_router.post("/admin/relink-orphan-accounts")
 async def admin_relink_orphan_accounts(request: Request, _: bool = Depends(verify_admin_code)):
     """Retro-link les comptes social verifies non-assignes a une campagne active.
