@@ -1083,9 +1083,10 @@ def _get_instagram_session() -> str:
 # - curl_cffi avec impersonate Chrome131 + 20 proxies en rotation
 # - HTML public + headers browser complets
 # - Cookies Insta (1 actuellement, rotation si plus)
-APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'true').strip().lower() in ('true', '1', 'yes'))
-# Kill switch TikTok : reste ON par defaut (VPS Hostinger marche pour TikTok)
-_APIFY_TIKTOK_KILL_SWITCH = (os.environ.get('APIFY_TIKTOK_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
+APIFY_DISABLED = (os.environ.get('APIFY_DISABLED', 'false').strip().lower() in ('true', '1', 'yes'))
+# Kill switch TikTok : FIX 2026-05-30 — default OFF (Apify est un backup paye, doit s'activer
+# en auto si VPS Hostinger fail). Le budget plafond (50/jour) protege deja de l'explosion couts.
+_APIFY_TIKTOK_KILL_SWITCH = (os.environ.get('APIFY_TIKTOK_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes'))
 # Budget circuit breaker : nb max d'appels Apify/jour par plateforme (anti-explosion budget)
 # Insta 50/jour = ~10$/mois MAX si toute la cascade gratuite plante chaque jour
 APIFY_INSTA_DAILY_BUDGET = int(os.environ.get('APIFY_INSTA_DAILY_BUDGET', '50'))
@@ -5339,8 +5340,8 @@ async def _apify_get_dataset(dataset_id: str) -> list:
 
 
 async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> list:
-    # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+    # KILL SWITCH global Apify Insta — FIX 2026-05-30 default OFF (Apify backup paye)
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _fetch_instagram_videos_apify desactive pour @{username}")
         return []
     """
@@ -5368,10 +5369,13 @@ async def _fetch_instagram_videos_apify(username: str, max_posts: int = 10) -> l
     for actor_id, payload in attempts:
         try:
             logger.info(f"Apify Instagram run-sync {actor_id} pour @{username}")
-            async with httpx.AsyncClient(timeout=120) as c:
+            # FIX 2026-05-30 : Apify Insta est lent (180s+) sur des comptes massifs.
+            # timeout httpx=240, actor timeout=180s, memory=512 (1024 par defaut etait OK mais
+            # 512 suffit pour 10-20 posts). Sans ces marges, run-sync TIMED-OUT en plein milieu.
+            async with httpx.AsyncClient(timeout=240) as c:
                 r = await c.post(
                     f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items",
-                    params={"token": APIFY_TOKEN, "timeout": 90, "memory": 128},
+                    params={"token": APIFY_TOKEN, "timeout": 180, "memory": 512},
                     json=payload,
                 )
             logger.info(f"Apify Instagram {actor_id} sync @{username}: HTTP {r.status_code}")
@@ -5790,8 +5794,8 @@ def _parse_instagram_videos(data: dict) -> list:
 
 async def _verify_instagram_apify(username: str) -> dict:
     """Verify Instagram account via Apify — uses residential proxies, cloud-safe."""
-    # KILL SWITCH global Apify Insta
-    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes')):
+    # KILL SWITCH global Apify Insta — FIX 2026-05-30 default OFF
+    if (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes')):
         logger.info(f"[APIFY KILL SWITCH] _verify_instagram_apify desactive pour @{username}")
         raise ValueError("Apify Insta desactive (kill switch APIFY_INSTA_FORCE_OFF)")
     if not APIFY_TOKEN:
@@ -6421,8 +6425,18 @@ async def _fetch_tiktok_videos_apify(username: str, max_posts: int = 10) -> list
             # FIX 2026-05-26 : detecter cas "Profile is private" -- clockworks renvoie
             # 1 item {authorMeta, input, note: "Profile is private"} sans aucune video.
             # Ce n'est PAS une erreur Apify : c'est un compte prive. On retourne [] propre.
+            # FIX 2026-05-30 : detecter aussi cas "NOT_FOUND" -- clockworks renvoie
+            # {error: "This profile/hashtag does not exist.", errorCode: "NOT_FOUND", url, input}
+            # quand le compte n'existe pas sur TikTok. On raise une erreur classifiable
+            # pour que run_video_tracking marque le compte comme 'not_found' et arrete de le tracker.
             if len(items) == 1 and isinstance(items[0], dict):
                 only = items[0]
+                # Cas NOT_FOUND : compte inexistant sur TikTok
+                err_code = (only.get("errorCode") or "").upper()
+                err_msg = (only.get("error") or "").lower()
+                if err_code == "NOT_FOUND" or "does not exist" in err_msg or "not found" in err_msg:
+                    logger.info(f"Apify {actor_id}: compte @{username} INEXISTANT sur TikTok (errorCode={err_code})")
+                    raise ValueError(f"account_not_found: @{username} n'existe pas sur TikTok (Apify NOT_FOUND)")
                 note = (only.get("note") or "").lower()
                 if note and ("private" in note or "not found" in note):
                     logger.info(f"Apify {actor_id}: compte @{username} non scrappable ('{only.get('note')}')")
@@ -6841,10 +6855,11 @@ async def _fetch_tiktok_videos_async(username: str, since_days: int = 30, user_i
     raise ValueError("Toutes les sources de scraping TikTok ont echoue (ClipScraper VPS, TikWm, mobile API, Playwright, RapidAPI, yt-dlp, Apify bloque)")
 
 
-# Kill switch Insta : reste ON par defaut. User refuse Apify.
-_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'true').strip().lower() in ('true', '1', 'yes'))
-# Mode emergency desactive : user refuse Apify last-resort
-APIFY_INSTA_EMERGENCY_FALLBACK = (os.environ.get('APIFY_INSTA_EMERGENCY_FALLBACK', 'false').strip().lower() in ('true', '1', 'yes'))
+# Kill switch Insta : FIX 2026-05-30 — default OFF (Apify est un backup paye, doit s'activer en
+# auto si la cascade gratuite plante). Paul paie 30$/mois Apify, c'est cense etre un filet de secours.
+_APIFY_INSTA_KILL_SWITCH = (os.environ.get('APIFY_INSTA_FORCE_OFF', 'false').strip().lower() in ('true', '1', 'yes'))
+# Mode emergency ACTIVE par defaut : Apify last-resort si cascade gratuite KO
+APIFY_INSTA_EMERGENCY_FALLBACK = (os.environ.get('APIFY_INSTA_EMERGENCY_FALLBACK', 'true').strip().lower() in ('true', '1', 'yes'))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -7950,10 +7965,10 @@ async def _fetch_instagram_videos_async(username: str, platform_channel_id: str 
     #   - VPS clipscraper a echoue (VPS down)
     #   - yt-dlp fallback aussi a echoue (Insta vraiment HS)
     # ⇒ ALERTE CRITIQUE admin pour qu'on investigue
-    # Apify Insta DESACTIVE PAR DEFAUT — kill switch _APIFY_INSTA_KILL_SWITCH (env APIFY_INSTA_FORCE_OFF, default 'true')
-    # MEME si APIFY_FOR_INSTA_ACCOUNT=true et APIFY_TOKEN set, le kill switch bloque.
-    # Triple barriere : kill switch + APIFY_DISABLED + APIFY_FOR_INSTA_ACCOUNT + budget
-    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'false').strip().lower() in ('true', '1', 'yes'))
+    # Apify Insta : FIX 2026-05-30 — kill switch OFF par defaut.
+    # APIFY_FOR_INSTA_ACCOUNT default TRUE (autorise l'acteur instagram-reel-scraper).
+    # Triple barriere : kill switch + APIFY_DISABLED + budget (50/jour).
+    APIFY_INSTA_ALLOWED_ACCOUNT = (os.environ.get('APIFY_FOR_INSTA_ACCOUNT', 'true').strip().lower() in ('true', '1', 'yes'))
     if (not _APIFY_INSTA_KILL_SWITCH) and APIFY_INSTA_ALLOWED_ACCOUNT and APIFY_TOKEN and not APIFY_DISABLED and await _apify_budget_ok("instagram"):
         try:
             apify_videos = await _fetch_instagram_via_apify_reel_scraper_account(username, max_videos=dynamic_max)
@@ -21689,6 +21704,45 @@ async def admin_debug_apify_tiktok(request: Request, username: str, _: bool = De
 
     try:
         videos = await asyncio.wait_for(_fetch_tiktok_videos_apify(username, max_posts=3), timeout=120)
+        out["videos_count"] = len(videos)
+        out["first_video"] = videos[0] if videos else None
+        out["result"] = "SUCCESS" if videos else "EMPTY"
+    except Exception as e:
+        out["result"] = "EXCEPTION"
+        out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    return out
+
+
+@api_router.post("/admin/debug-apify-instagram")
+async def admin_debug_apify_instagram(request: Request, username: str, _: bool = Depends(verify_admin_code)):
+    """Debug : test direct _fetch_instagram_videos_apify pour voir ce qui sort.
+    Retourne le nombre de videos + premier message d'erreur si echec.
+    """
+    username = (username or "").lstrip("@")
+    if not username:
+        raise HTTPException(status_code=400, detail="username requis")
+
+    out = {
+        "username": username,
+        "APIFY_DISABLED": APIFY_DISABLED,
+        "APIFY_TOKEN_set": bool(APIFY_TOKEN),
+        "APIFY_INSTA_FORCE_OFF": _APIFY_INSTA_KILL_SWITCH,
+        "APIFY_INSTA_DAILY_BUDGET": APIFY_INSTA_DAILY_BUDGET,
+    }
+    try:
+        out["budget_ok"] = await _apify_budget_ok("instagram")
+    except Exception as e:
+        out["budget_ok_error"] = str(e)
+
+    if not APIFY_TOKEN or APIFY_DISABLED:
+        out["result"] = "ABORTED: Apify token missing or disabled"
+        return out
+    if _APIFY_INSTA_KILL_SWITCH:
+        out["result"] = "ABORTED: APIFY_INSTA_FORCE_OFF kill switch is ON"
+        return out
+
+    try:
+        videos = await asyncio.wait_for(_fetch_instagram_videos_apify(username, max_posts=3), timeout=180)
         out["videos_count"] = len(videos)
         out["first_video"] = videos[0] if videos else None
         out["result"] = "SUCCESS" if videos else "EMPTY"
