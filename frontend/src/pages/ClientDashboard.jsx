@@ -350,7 +350,8 @@ function CampaignView({ campaigns }) {
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                   <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
                     interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
-                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)} />
+                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)}
+                    domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (!active || !payload || !payload.length) return null;

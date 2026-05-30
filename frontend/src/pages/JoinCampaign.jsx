@@ -173,7 +173,8 @@ function ClientStatsPage({ token }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
                     <XAxis dataKey="label" tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false}
-                      tickFormatter={v => v >= 1000 ? `${Math.round(v/1000)}K` : v} />
+                      tickFormatter={v => v >= 1000 ? `${Math.round(v/1000)}K` : v}
+                      domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
                     <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
                       labelStyle={{ color: "#fff" }} itemStyle={{ color: ACCENT }}
                       formatter={v => [v?.toLocaleString("fr-FR"), "Vues"]} />

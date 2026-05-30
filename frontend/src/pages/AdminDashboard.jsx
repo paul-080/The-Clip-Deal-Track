@@ -388,7 +388,8 @@ function OverviewTab() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v}
+                  domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
                 <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
                 <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#gradViews)" strokeWidth={2} dot={false} name="Vues" />
               </AreaChart>
@@ -406,7 +407,8 @@ function OverviewTab() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false}
+                  domain={[0, dataMax => Math.max(5, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
                 <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
                 <Area type="monotone" dataKey="clicks" stroke="#f0c040" fill="url(#gradClicks)" strokeWidth={2} dot={false} name="Clics totaux" />
                 <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" fill="url(#gradUniq)" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="Clics uniques" />
