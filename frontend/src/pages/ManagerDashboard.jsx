@@ -924,6 +924,11 @@ function CampaignDashboard({ campaigns }) {
                   label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
                 };
               });
+              // Trim les 0 leading : evite la courbe '6 jours a 0 puis pic vertical'
+              const firstNonZeroIdxM = tlData.findIndex(d => (d.views || 0) > 0);
+              if (firstNonZeroIdxM > 1) {
+                tlData = tlData.slice(firstNonZeroIdxM - 1);
+              }
               // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
               if (tlData.length === 0) {
                 const now = new Date();

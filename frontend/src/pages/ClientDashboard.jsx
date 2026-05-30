@@ -223,7 +223,7 @@ function CampaignView({ campaigns }) {
 
   // ── Chart data (same format as agency) ───────────────────────────────────
   const isHourly = viewsTimeline?.granularity === "hourly";
-  const tlData = (viewsTimeline?.timeline || []).map(d => {
+  let tlData = (viewsTimeline?.timeline || []).map(d => {
     const dateKey = (d.date || "").length >= 10 ? (d.date || "").slice(0, 10) : (d.date || "");
     const videosPosted = isHourly
       ? allVideos.filter(v => v.published_at && v.published_at.slice(0, 13) === dateKey.slice(0, 13)).length
@@ -234,6 +234,11 @@ function CampaignView({ campaigns }) {
       label: new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }),
     };
   });
+  // Trim les 0 leading : evite la courbe '6 jours a 0 puis pic vertical'
+  const firstNonZeroIdxCli = tlData.findIndex(d => (d.views || 0) > 0);
+  if (firstNonZeroIdxCli > 1) {
+    tlData = tlData.slice(firstNonZeroIdxCli - 1);
+  }
   const hasChartData = tlData.some(d => d.views > 0);
 
   // ── Filtered + sorted videos ──────────────────────────────────────────────

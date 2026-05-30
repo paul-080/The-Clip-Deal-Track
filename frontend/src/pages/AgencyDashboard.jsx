@@ -2793,6 +2793,13 @@ function CampaignDashboard({ campaigns }) {
                     : new Date(d.date + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })),
                 };
               });
+              // Trim les 0 leading : la campagne est recente, pas la peine d'afficher 6 jours
+              // a 0 avec un pic vertical sur le dernier jour. On garde 1 seul point 0 leading
+              // (pour ancrer la courbe au sol au depart).
+              const firstNonZeroIdx = tlData.findIndex(d => (d.views || 0) > 0);
+              if (firstNonZeroIdx > 1) {
+                tlData = tlData.slice(firstNonZeroIdx - 1);
+              }
               // ── TOUJOURS afficher la courbe : si pas de donnees, on remplit avec des points a 0
               if (tlData.length === 0) {
                 const now = new Date();
