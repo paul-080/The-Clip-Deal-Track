@@ -17352,6 +17352,73 @@ async def verify_admin_code(request: Request):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
 
+@api_router.get("/admin/diag-campaign")
+async def admin_diag_campaign(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
+    """Diagnostic complet d'une campagne par nom (regex insensitive)."""
+    if not name:
+        return {"error": "param 'name' requis"}
+    camp = await db.campaigns.find_one({"name": {"$regex": f"^{re.escape(name)}", "$options": "i"}}, {"_id": 0})
+    if not camp:
+        camps_all = await db.campaigns.find({}, {"_id": 0, "campaign_id": 1, "name": 1, "status": 1}).to_list(50)
+        return {"error": f"campagne '{name}' introuvable", "available": [{"name": c.get("name"), "status": c.get("status")} for c in camps_all]}
+    cid = camp.get("campaign_id")
+    assignments = await db.campaign_social_accounts.find({"campaign_id": cid}, {"_id": 0}).to_list(500)
+    account_ids = [a.get("account_id") for a in assignments]
+    accounts = await db.social_accounts.find({"account_id": {"$in": account_ids}}, {"_id": 0}).to_list(500) if account_ids else []
+    now_utc = datetime.now(timezone.utc)
+    status_counts = {}
+    last_tracked_buckets = {"jamais": 0, "<1h": 0, "1-6h": 0, "6-24h": 0, ">24h": 0}
+    account_details = []
+    for a in accounts:
+        st = a.get("status", "unknown")
+        status_counts[st] = status_counts.get(st, 0) + 1
+        lt = a.get("last_tracked_at")
+        bucket = "jamais"
+        if lt:
+            try:
+                if isinstance(lt, str):
+                    dt = datetime.fromisoformat(lt.replace("Z", "+00:00"))
+                else:
+                    dt = lt
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                delta_h = (now_utc - dt).total_seconds() / 3600
+                if delta_h < 1: bucket = "<1h"
+                elif delta_h < 6: bucket = "1-6h"
+                elif delta_h < 24: bucket = "6-24h"
+                else: bucket = ">24h"
+            except Exception:
+                bucket = "jamais"
+        last_tracked_buckets[bucket] += 1
+        account_details.append({
+            "username": a.get("username"),
+            "platform": a.get("platform"),
+            "status": st,
+            "last_tracked_at": a.get("last_tracked_at"),
+            "bucket": bucket,
+            "error_message": (a.get("error_message") or "")[:120],
+        })
+    videos = await db.tracked_videos.find({"campaign_id": cid}, {"_id": 0, "views": 1}).to_list(2000)
+    total_views = sum(int(v.get("views") or 0) for v in videos)
+    return {
+        "campaign_name": camp.get("name"),
+        "campaign_id": cid,
+        "status": camp.get("status"),
+        "is_active": camp.get("is_active", True),
+        "platforms": camp.get("platforms"),
+        "tracking_per_day": camp.get("tracking_per_day"),
+        "last_scraped_at": camp.get("last_scraped_at"),
+        "next_scrape_at": camp.get("next_scrape_at"),
+        "assignments_count": len(assignments),
+        "accounts_count": len(accounts),
+        "status_breakdown": status_counts,
+        "last_tracked_buckets": last_tracked_buckets,
+        "videos_count": len(videos),
+        "total_views": total_views,
+        "account_details": account_details[:50],
+    }
+
+
 @api_router.get("/admin/scrape-sources-breakdown")
 async def admin_scrape_sources_breakdown(request: Request, hours: int = 48, _: bool = Depends(verify_admin_code)):
     """Breakdown precis des sources de scraping (clipscraper/apify/tikwm/etc.)
