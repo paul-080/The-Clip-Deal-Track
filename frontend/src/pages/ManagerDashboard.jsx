@@ -938,7 +938,7 @@ function CampaignDashboard({ campaigns }) {
               }
               return (
                 <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: 15, bottom: 0 }}>
                     <defs>
                       <linearGradient id="mgr-viewsGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor={ACCENT} stopOpacity={0.3} />

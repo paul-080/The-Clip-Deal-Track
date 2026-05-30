@@ -379,7 +379,7 @@ function OverviewTab() {
         {chartHasData ? (
           <ResponsiveContainer width="100%" height={200}>
             {activeChart === "views" ? (
-              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gradViews" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
@@ -393,7 +393,7 @@ function OverviewTab() {
                 <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#gradViews)" strokeWidth={2} dot={false} name="Vues" />
               </AreaChart>
             ) : (
-              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+              <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gradClicks" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />

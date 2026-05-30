@@ -2465,7 +2465,7 @@ function CampaignDashboard({ campaigns }) {
               });
               return (
                 <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 15, bottom: 0 }}>
                     <defs>
                       <linearGradient id="clicksGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
@@ -2687,14 +2687,14 @@ function CampaignDashboard({ campaigns }) {
             return (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                 {[
-                  { label: `Nouvelles vues sur ${lbl}`, value: `+${fmt(pViews)}`, color: "text-white", hint: "Vues gagnees sur la periode (delta)" },
-                  { label: `Nouveaux likes sur ${lbl}`, value: `+${fmt(pLikes)}`, color: "text-[#FF007F]", hint: "Likes gagnes sur la periode (delta)" },
-                  { label: `Nouveaux commentaires sur ${lbl}`, value: `+${fmt(pComments)}`, color: "text-white/70", hint: "Commentaires gagnes sur la periode (delta)" },
-                  { label: `Engagement (${lbl})`, value: `${pEngagement}%`, color: "text-[#39FF14]", hint: "(likes + commentaires) / vues x 100" },
-                  { label: `Moy. vues/video (${lbl})`, value: fmt(pAvgViews), color: "text-[#00E5FF]", hint: "Moyenne de vues par video active" },
-                  { label: `Gains generes sur ${lbl}`, value: `+€${pEarnings.toFixed(0)}`, color: "text-[#f0c040]", hint: "Gains lies aux nouvelles vues (delta x RPM/1000)" },
+                  { label: `Vues (${lbl})`, value: fmt(pViews), color: "text-white" },
+                  { label: `Likes (${lbl})`, value: fmt(pLikes), color: "text-[#FF007F]" },
+                  { label: `Commentaires (${lbl})`, value: fmt(pComments), color: "text-white/70" },
+                  { label: `Engagement (${lbl})`, value: `${pEngagement}%`, color: "text-[#39FF14]" },
+                  { label: `Moy. vues/vidéo (${lbl})`, value: fmt(pAvgViews), color: "text-[#00E5FF]" },
+                  { label: `Gains générés (${lbl})`, value: `€${pEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
                 ].map((kpi) => (
-                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4" title={kpi.hint}>
+                  <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
                     <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
                     <p className={`font-mono font-bold text-xl ${kpi.color}`}>
                       {kpiStatsLoading && !kpiStats ? <span className="text-white/30">…</span> : kpi.value}
@@ -2820,7 +2820,7 @@ function CampaignDashboard({ campaigns }) {
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart
                     data={tlData}
-                    margin={{ top: 5, right: 5, left: -20, bottom: 0 }}
+                    margin={{ top: 5, right: 5, left: 15, bottom: 0 }}
                     onClick={(e) => {
                       if (e && e.activePayload && e.activePayload[0]) {
                         const p = e.activePayload[0].payload;

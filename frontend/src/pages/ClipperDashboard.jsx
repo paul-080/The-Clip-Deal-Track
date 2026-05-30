@@ -2298,7 +2298,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
           <CardContent className="pt-0">
             {clickStats?.chart?.some(d => d.clicks > 0) ? (
               <ResponsiveContainer width="100%" height={160}>
-                <AreaChart data={clickStats.chart} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                <AreaChart data={clickStats.chart} margin={{ top: 5, right: 5, left: 15, bottom: 0 }}>
                   <defs>
                     <linearGradient id="myClicksGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#f0c040" stopOpacity={0.3} />
@@ -2408,7 +2408,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
               }
               return (
                 <ResponsiveContainer width="100%" height={180}>
-                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                  <AreaChart data={tlData} margin={{ top: 5, right: 5, left: 15, bottom: 0 }}>
                     <defs>
                       <linearGradient id="myViewsGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />

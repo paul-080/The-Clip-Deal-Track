@@ -340,7 +340,7 @@ function CampaignView({ campaigns }) {
             </div>
             {hasChartData ? (
               <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={tlData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+                <AreaChart data={tlData} margin={{ top: 5, right: 5, left: 15, bottom: 0 }}>
                   <defs>
                     <linearGradient id="clientViewsGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#FFB300" stopOpacity={0.3} />
