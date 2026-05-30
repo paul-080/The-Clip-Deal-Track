@@ -11,6 +11,7 @@ import { Badge } from "../components/ui/badge";
 import ChatPanel from "../components/ChatPanel";
 import SupportPage from "../components/SupportPage";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { niceAxisMax } from "../lib/chartUtils";
 
 const ACCENT_COLOR = "#FFB300";
 
@@ -356,7 +357,7 @@ function CampaignView({ campaigns }) {
                   <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
                     interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
                   <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)}
-                    domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                    domain={[0, niceAxisMax]} allowDataOverflow={false} />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (!active || !payload || !payload.length) return null;

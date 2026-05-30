@@ -32,6 +32,7 @@ import {
   X, Building2
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from "recharts";
+import { niceAxisMax } from "../lib/chartUtils";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -2480,7 +2481,7 @@ function CampaignDashboard({ campaigns }) {
                     <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
                       interval={Math.max(0, Math.floor(chartData.length / 10) - 1)} />
                     <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
-                      domain={[0, dataMax => Math.max(5, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                      domain={[0, niceAxisMax]} allowDataOverflow={false} />
                     <Tooltip
                       content={({ active, payload, label }) => {
                         if (!active || !payload || !payload.length) return null;
@@ -2850,7 +2851,7 @@ function CampaignDashboard({ campaigns }) {
                     <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false}
                       interval={Math.max(0, Math.floor(tlData.length / 10) - 1)} />
                     <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => fmt(v)}
-                      domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                      domain={[0, niceAxisMax]} allowDataOverflow={false} />
                     <Tooltip
                       content={({ active, payload, label }) => {
                         if (!active || !payload || !payload.length) return null;

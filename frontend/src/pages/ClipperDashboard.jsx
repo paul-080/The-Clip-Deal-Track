@@ -31,6 +31,7 @@ import {
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { niceAxisMax } from "../lib/chartUtils";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
@@ -2313,7 +2314,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                   <XAxis dataKey="label" tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
                     interval={Math.max(0, Math.floor((clickStats.chart?.length || 1) / 8) - 1)} />
                   <YAxis tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
-                    domain={[0, dataMax => Math.max(5, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                    domain={[0, niceAxisMax]} allowDataOverflow={false} />
                   <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
                     formatter={(v, name) => [v.toLocaleString("fr-FR"), name === "clicks" ? "Clics" : "Clics uniques"]} />
                   <Area type="monotone" dataKey="clicks" stroke="#f0c040" strokeWidth={2} fill="url(#myClicksGrad)" dot={false} />
@@ -2426,7 +2427,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                       interval={Math.max(0, Math.floor(tlData.length / 8) - 1)} />
                     <YAxis tick={{ fill: "rgba(255,255,255,0.25)", fontSize: 9 }} tickLine={false} axisLine={false}
                       tickFormatter={v => v >= 1000000 ? `${(v/1000000).toFixed(1)}M` : v >= 1000 ? `${Math.round(v/1000)}K` : v}
-                      domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                      domain={[0, niceAxisMax]} allowDataOverflow={false} />
                     <Tooltip
                       content={({ active, payload, label }) => {
                         if (!active || !payload || !payload.length) return null;

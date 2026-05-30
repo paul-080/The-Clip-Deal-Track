@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
+import { niceAxisMax } from "../lib/chartUtils";
 import { Input } from "../components/ui/input";
 import { toast } from "sonner";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
@@ -174,7 +175,7 @@ function ClientStatsPage({ token }) {
                     <XAxis dataKey="label" tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false}
                       tickFormatter={v => v >= 1000 ? `${Math.round(v/1000)}K` : v}
-                      domain={[0, dataMax => Math.max(10, Math.ceil((dataMax || 0) * 1.08))]} allowDataOverflow={false} />
+                      domain={[0, niceAxisMax]} allowDataOverflow={false} />
                     <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8 }}
                       labelStyle={{ color: "#fff" }} itemStyle={{ color: ACCENT }}
                       formatter={v => [v?.toLocaleString("fr-FR"), "Vues"]} />
