@@ -17453,6 +17453,211 @@ async def admin_scrape_sources_breakdown(request: Request, hours: int = 48, _: b
     }
 
 
+@api_router.get("/admin/diag-scrape-timing")
+async def admin_diag_scrape_timing(
+    request: Request,
+    days: int = 5,
+    campaign_name: str = "",
+    _: bool = Depends(verify_admin_code),
+):
+    """Verifie la regularite du scheduler pour une campagne.
+
+    Pour les N derniers jours (timezone Paris), regroupe les timestamps de
+    db.scraping_history des comptes de la campagne en "batches" (gap > 60 min
+    entre 2 events = nouveau batch). Compare l'heure de demarrage de chaque
+    batch aux horaires prevus selon tracking_per_day du plan (Paris).
+
+    Retourne par jour : nb batches detectes, heure de debut/fin de chaque batch,
+    et l'ancre prevue la plus proche avec son ecart en minutes. Statut OK si
+    ecart <= 30 min, OFF sinon, MISS si ancre non couverte.
+    """
+    import re as _re_tim
+    if not campaign_name:
+        return {"error": "param 'campaign_name' requis"}
+    camp = await db.campaigns.find_one(
+        {"name": {"$regex": f"^{_re_tim.escape(campaign_name)}", "$options": "i"}},
+        {"_id": 0},
+    )
+    if not camp:
+        return {"error": f"campagne '{campaign_name}' introuvable"}
+    cid = camp.get("campaign_id")
+    tracking_per_day = int(camp.get("tracking_per_day") or 1)
+    schedule = _get_schedule_for_plan(tracking_per_day)  # ex: [(8,30),(16,30),(23,30)]
+
+    # Comptes de la campagne -> usernames+plateformes -> filtre scraping_history
+    assignments = await db.campaign_social_accounts.find(
+        {"campaign_id": cid}, {"_id": 0, "account_id": 1}
+    ).to_list(2000)
+    account_ids = [a.get("account_id") for a in assignments]
+    accounts = await db.social_accounts.find(
+        {"account_id": {"$in": account_ids}},
+        {"_id": 0, "username": 1, "platform": 1},
+    ).to_list(2000) if account_ids else []
+    usernames = sorted({(a.get("username") or "").lower() for a in accounts if a.get("username")})
+
+    if not usernames:
+        return {
+            "campaign_name": camp.get("name"),
+            "campaign_id": cid,
+            "tracking_per_day": tracking_per_day,
+            "error": "aucun compte assigne",
+        }
+
+    now_utc = datetime.now(timezone.utc)
+    cutoff_utc = now_utc - timedelta(days=int(days) + 1)  # +1 pour marge fuseau
+    cutoff_iso = cutoff_utc.isoformat()
+
+    # On filtre par username (insensitive). Le scraping_history ne stocke pas
+    # campaign_id, donc l'intersection username+platform est la cle.
+    raw = await db.scraping_history.find(
+        {
+            "timestamp": {"$gte": cutoff_iso},
+            "username": {"$in": list(usernames) + [u.upper() for u in usernames]},
+        },
+        {"_id": 0, "timestamp": 1, "username": 1, "platform": 1, "success": 1},
+    ).to_list(20000)
+
+    # Garde le matching insensitive cote python aussi
+    uset = set(usernames)
+    events = []
+    for d in raw:
+        u = (d.get("username") or "").lower()
+        if u not in uset:
+            continue
+        ts = d.get("timestamp")
+        if not ts:
+            continue
+        try:
+            dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if dt_utc.tzinfo is None:
+                dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        events.append(dt_utc)
+    events.sort()
+
+    # Regroupe en batches : gap > 60 min entre 2 events = nouveau batch
+    batches = []
+    cur = None
+    for dt in events:
+        if cur is None:
+            cur = {"start": dt, "end": dt, "count": 1}
+            continue
+        if (dt - cur["end"]).total_seconds() > 3600:
+            batches.append(cur)
+            cur = {"start": dt, "end": dt, "count": 1}
+        else:
+            cur["end"] = dt
+            cur["count"] += 1
+    if cur is not None:
+        batches.append(cur)
+
+    # Bucket par jour Paris (sur start)
+    by_day: dict = {}
+    for b in batches:
+        start_paris = b["start"].astimezone(PARIS_TZ)
+        day_key = start_paris.strftime("%Y-%m-%d")
+        by_day.setdefault(day_key, []).append({
+            "start_paris": start_paris.strftime("%H:%M"),
+            "end_paris": b["end"].astimezone(PARIS_TZ).strftime("%H:%M"),
+            "start_utc": b["start"].isoformat(),
+            "events": b["count"],
+        })
+
+    # Borne aux N derniers jours Paris (de J-N+1 a J)
+    today_paris = now_utc.astimezone(PARIS_TZ).date()
+    day_list = [(today_paris - timedelta(days=i)).strftime("%Y-%m-%d")
+                for i in range(int(days))]
+    day_list.sort()
+
+    # Pour chaque jour, evalue par ancre prevue
+    days_report = []
+    summary = {"3_of_3": 0, "2_of_3": 0, "1_of_3": 0, "0_of_3": 0, "expected_per_day": len(schedule)}
+    for day in day_list:
+        day_batches = by_day.get(day, [])
+        anchors_status = []
+        used = [False] * len(day_batches)
+        for (h, m) in schedule:
+            anchor_min = h * 60 + m
+            best_idx = -1
+            best_diff = 10**9
+            for idx, b in enumerate(day_batches):
+                if used[idx]:
+                    continue
+                hh, mm = b["start_paris"].split(":")
+                bmin = int(hh) * 60 + int(mm)
+                diff = abs(bmin - anchor_min)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_idx = idx
+            if best_idx == -1 or best_diff > 90:  # tolerance 90 min pour matcher une ancre
+                anchors_status.append({
+                    "anchor": f"{h:02d}:{m:02d}",
+                    "matched_batch": None,
+                    "diff_min": None,
+                    "status": "MISS",
+                })
+            else:
+                used[best_idx] = True
+                b = day_batches[best_idx]
+                status = "OK" if best_diff <= 30 else "OFF"
+                anchors_status.append({
+                    "anchor": f"{h:02d}:{m:02d}",
+                    "matched_batch": b["start_paris"],
+                    "diff_min": best_diff,
+                    "status": status,
+                })
+        ok_count = sum(1 for a in anchors_status if a["status"] == "OK")
+        off_count = sum(1 for a in anchors_status if a["status"] == "OFF")
+        miss_count = sum(1 for a in anchors_status if a["status"] == "MISS")
+        if len(schedule) == 3:
+            covered = ok_count + off_count
+            if covered == 3:
+                summary["3_of_3"] += 1
+            elif covered == 2:
+                summary["2_of_3"] += 1
+            elif covered == 1:
+                summary["1_of_3"] += 1
+            else:
+                summary["0_of_3"] += 1
+        if ok_count == len(schedule) and miss_count == 0 and off_count == 0:
+            verdict = "OK"
+        elif ok_count + off_count == len(schedule):
+            verdict = "PARTIAL_OFF"
+        elif miss_count == len(schedule):
+            verdict = "MISS"
+        else:
+            verdict = "PARTIAL"
+        extra_batches = [b for idx, b in enumerate(day_batches) if not used[idx]]
+        days_report.append({
+            "day_paris": day,
+            "expected": len(schedule),
+            "real_batches": len(day_batches),
+            "ok": ok_count,
+            "off": off_count,
+            "miss": miss_count,
+            "verdict": verdict,
+            "batches": day_batches,
+            "anchors": anchors_status,
+            "extra_unmatched_batches": extra_batches,
+        })
+
+    return {
+        "campaign_name": camp.get("name"),
+        "campaign_id": cid,
+        "tracking_per_day": tracking_per_day,
+        "schedule_paris": [f"{h:02d}:{m:02d}" for (h, m) in schedule],
+        "days": int(days),
+        "usernames_count": len(usernames),
+        "total_events": len(events),
+        "total_batches": len(batches),
+        "summary": summary,
+        "days_report": days_report,
+        "generated_at": now_utc.isoformat(),
+        "notes": "batch = events groupes (gap > 60min). status: OK <=30min, OFF >30min mais <=90min, MISS sinon.",
+    }
+
+
 @api_router.post("/admin/relink-orphan-accounts")
 async def admin_relink_orphan_accounts(request: Request, _: bool = Depends(verify_admin_code)):
     """Retro-link les comptes social verifies non-assignes a une campagne active.
