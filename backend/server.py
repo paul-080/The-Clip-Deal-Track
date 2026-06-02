@@ -17420,8 +17420,10 @@ async def verify_admin_code(request: Request):
     return True
 
 @api_router.get("/admin/diag-account")
-async def admin_diag_account(request: Request, username: str = "", platform: str = "", _: bool = Depends(verify_admin_code)):
-    """Etat complet d'un compte par username (+platform optionnel)."""
+async def admin_diag_account(request: Request, username: str = "", platform: str = "", fuzzy: bool = True, _: bool = Depends(verify_admin_code)):
+    """Etat complet d'un compte par username (+platform optionnel).
+    Si fuzzy=true (defaut), fait aussi un regex partiel insensitive si exact match echoue."""
+    import re as _re_diag_acc
     if not username:
         return {"error": "param 'username' requis"}
     u = username.lstrip("@").strip()
@@ -17429,8 +17431,16 @@ async def admin_diag_account(request: Request, username: str = "", platform: str
     if platform:
         q["platform"] = platform.lower()
     accounts = await db.social_accounts.find(q, {"_id": 0}).to_list(20)
+    if not accounts and fuzzy:
+        # Recherche regex partielle insensitive
+        q2 = {"username": {"$regex": _re_diag_acc.escape(u), "$options": "i"}}
+        if platform:
+            q2["platform"] = platform.lower()
+        accounts = await db.social_accounts.find(q2, {"_id": 0}).to_list(20)
     if not accounts:
-        return {"error": f"compte @{u} introuvable en DB", "match_query": q}
+        # Liste sample des usernames TikTok pour debug
+        sample = await db.social_accounts.find({"platform": platform or "tiktok"}, {"_id": 0, "username": 1}).limit(30).to_list(30)
+        return {"error": f"compte @{u} introuvable en DB", "match_query": q, "sample_usernames": [s.get("username") for s in sample]}
     now_utc = datetime.now(timezone.utc)
     out = []
     for a in accounts:
