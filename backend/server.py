@@ -17352,6 +17352,49 @@ async def verify_admin_code(request: Request):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
 
+@api_router.get("/admin/diag-campaign-videos")
+async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
+    """Detail des videos trackees d'une campagne (last fetched, vues, plateforme)."""
+    import re as _re_diag2
+    if not name:
+        return {"error": "param 'name' requis"}
+    camp = await db.campaigns.find_one({"name": {"$regex": f"^{_re_diag2.escape(name)}", "$options": "i"}}, {"_id": 0})
+    if not camp:
+        return {"error": f"campagne '{name}' introuvable"}
+    cid = camp.get("campaign_id")
+    videos = await db.tracked_videos.find({"campaign_id": cid}, {"_id": 0}).to_list(500)
+    now_utc = datetime.now(timezone.utc)
+    enriched = []
+    for v in videos:
+        fetched = v.get("fetched_at")
+        delta_h = None
+        try:
+            if fetched:
+                dt = datetime.fromisoformat(fetched.replace("Z", "+00:00")) if isinstance(fetched, str) else fetched
+                if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+                delta_h = round((now_utc - dt).total_seconds() / 3600, 1)
+        except Exception: pass
+        enriched.append({
+            "username": v.get("username"),
+            "platform": v.get("platform"),
+            "views": v.get("views", 0),
+            "likes": v.get("likes", 0),
+            "published_at": (v.get("published_at") or "")[:19],
+            "fetched_at": (v.get("fetched_at") or "")[:19],
+            "fetched_h_ago": delta_h,
+            "tracking_active": v.get("tracking_active", True),
+        })
+    enriched.sort(key=lambda x: x.get("fetched_at") or "", reverse=True)
+    return {
+        "campaign_name": camp.get("name"),
+        "campaign_id": cid,
+        "videos_count": len(videos),
+        "total_views": sum(int(v.get("views") or 0) for v in videos),
+        "total_likes": sum(int(v.get("likes") or 0) for v in videos),
+        "videos": enriched[:50],
+    }
+
+
 @api_router.get("/admin/diag-campaign")
 async def admin_diag_campaign(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
     """Diagnostic complet d'une campagne par nom (regex insensitive)."""
