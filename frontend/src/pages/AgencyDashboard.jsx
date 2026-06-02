@@ -1474,8 +1474,15 @@ function CampaignDashboard({ campaigns }) {
       fetchPendingMembers();
       fetchAllVideos();
       fetchTopClips();
-      const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
-      return () => clearInterval(interval);
+      // Auto-refresh toutes les 60s pour voir le scrape se faire en live
+      const topInterval = setInterval(fetchTopClips, 5 * 60 * 1000);
+      const refreshInterval = setInterval(() => {
+        fetchAllVideos();
+        fetchCampaign();
+        fetchViewsTimeline();
+        fetchKpiStats();
+      }, 60 * 1000);
+      return () => { clearInterval(topInterval); clearInterval(refreshInterval); };
     }
   }, [campaignId]);
 

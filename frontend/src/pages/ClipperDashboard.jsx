@@ -1868,8 +1868,12 @@ function CampaignDashboard({ campaigns, clipperStats }) {
     fetchMyVideos();
     fetchTopClips();
     // Auto-refresh Clip Winner every 5 minutes
-    const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
-    return () => clearInterval(interval);
+    const topInt = setInterval(fetchTopClips, 5 * 60 * 1000);
+    const refreshInt = setInterval(() => {
+      fetchMyVideos();
+      if (hasViews) fetchViewsTimeline();
+    }, 60 * 1000);
+    return () => { clearInterval(topInt); clearInterval(refreshInt); };
   }, [campaignId, hasClicks, hasViews]);
 
   const fetchMyVideos = async () => {

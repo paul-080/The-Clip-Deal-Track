@@ -177,8 +177,12 @@ function CampaignView({ campaigns }) {
       fetchAllVideos();
       fetchViewsTimeline("30");
       fetchTopClips();
-      const interval = setInterval(fetchTopClips, 5 * 60 * 1000);
-      return () => clearInterval(interval);
+      const topInt = setInterval(fetchTopClips, 5 * 60 * 1000);
+      const refreshInt = setInterval(() => {
+        fetchAllVideos();
+        fetchViewsTimeline();
+      }, 60 * 1000);
+      return () => { clearInterval(topInt); clearInterval(refreshInt); };
     }
   }, [campaignId]);
 
