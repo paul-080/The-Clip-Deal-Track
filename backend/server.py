@@ -17419,6 +17419,63 @@ async def verify_admin_code(request: Request):
         raise HTTPException(status_code=403, detail="Code admin invalide")
     return True
 
+@api_router.get("/admin/diag-account")
+async def admin_diag_account(request: Request, username: str = "", platform: str = "", _: bool = Depends(verify_admin_code)):
+    """Etat complet d'un compte par username (+platform optionnel)."""
+    if not username:
+        return {"error": "param 'username' requis"}
+    u = username.lstrip("@").strip()
+    q = {"username": u}
+    if platform:
+        q["platform"] = platform.lower()
+    accounts = await db.social_accounts.find(q, {"_id": 0}).to_list(20)
+    if not accounts:
+        return {"error": f"compte @{u} introuvable en DB", "match_query": q}
+    now_utc = datetime.now(timezone.utc)
+    out = []
+    for a in accounts:
+        aid = a.get("account_id")
+        assigns = await db.campaign_social_accounts.find({"account_id": aid}, {"_id": 0}).to_list(50)
+        camp_names = []
+        for asg in assigns:
+            cid = asg.get("campaign_id")
+            camp = await db.campaigns.find_one({"campaign_id": cid}, {"_id": 0, "name": 1, "status": 1, "is_active": 1})
+            if camp:
+                camp_names.append({"campaign_id": cid, "name": camp.get("name"), "status": camp.get("status"), "is_active": camp.get("is_active")})
+        videos = await db.tracked_videos.find({"account_id": aid}, {"_id": 0}).to_list(100)
+        events = await db.scraping_history.find(
+            {"username": u, "platform": a.get("platform")},
+            {"_id": 0}
+        ).sort("_id", -1).limit(20).to_list(20)
+        last_tracked = a.get("last_tracked_at")
+        delta_h = None
+        try:
+            if last_tracked:
+                dt = datetime.fromisoformat(last_tracked.replace("Z", "+00:00")) if isinstance(last_tracked, str) else last_tracked
+                if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+                delta_h = round((now_utc - dt).total_seconds() / 3600, 2)
+        except Exception: pass
+        out.append({
+            "account_id": aid,
+            "username": a.get("username"),
+            "platform": a.get("platform"),
+            "status": a.get("status"),
+            "last_tracked_at": last_tracked,
+            "last_tracked_h_ago": delta_h,
+            "error_message": (a.get("error_message") or "")[:200],
+            "verification_attempts": a.get("verification_attempts"),
+            "platform_channel_id": a.get("platform_channel_id"),
+            "deleted_at": a.get("deleted_at"),
+            "deleted_reason": (a.get("deleted_reason") or "")[:200],
+            "deleted_type": a.get("deleted_type"),
+            "campaigns": camp_names,
+            "videos_count": len(videos),
+            "videos_sample": [{"views": v.get("views"), "likes": v.get("likes"), "published_at": (v.get("published_at") or "")[:19], "fetched_at": (v.get("fetched_at") or "")[:19], "tracking_active": v.get("tracking_active")} for v in videos[:20]],
+            "recent_events": [{"timestamp": (e.get("timestamp") or "")[:19], "source": e.get("source"), "success": e.get("success"), "video_count": e.get("video_count"), "error": (e.get("error") or "")[:120], "result_type": e.get("result_type")} for e in events],
+        })
+    return {"username": u, "matches": len(out), "accounts": out}
+
+
 @api_router.get("/admin/diag-campaign-videos")
 async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
     """Detail des videos trackees d'une campagne (last fetched, vues, plateforme).
