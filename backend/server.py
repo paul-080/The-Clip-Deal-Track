@@ -6110,6 +6110,8 @@ async def _verify_and_update_account_inner(account_id: str, platform: str, usern
                     "last_existence_check_result": "deleted",
                 }}
             )
+            # FIX 2026-06-02 : archive auto videos du compte supprime
+            await _archive_videos_for_deleted_account(account_id, platform, username)
             logger.info(f"Account {platform}/@{username} confirmed NOT_FOUND via active check -> deleted")
         else:
             # Incertain : on incremente le compteur, JAMAIS marque deleted
@@ -10580,6 +10582,60 @@ async def _verify_account_still_exists(platform: str, username: str) -> Optional
     return None
 
 
+async def _archive_videos_for_deleted_account(account_id: str, platform: str = "", username: str = "") -> int:
+    """FIX 2026-06-02 : quand un compte passe status="deleted" (404 confirme sur la
+    plateforme), ses tracked_videos restent dans la collection avec tracking_active=True
+    et fetched_at fige. Resultat : l'endpoint /admin/diag-campaign-videos signale ces
+    videos comme "orphan_in_feed" (fetched_h_ago > 12h alors que le compte n'a meme
+    plus de fetch possible), et Paul croit que le scrape est casse.
+
+    Ce helper archive proprement toutes les videos actives du compte supprime :
+    - tracking_active -> False
+    - archived_at -> now (UTC iso)
+    - archived_reason -> "Compte source <plat>/@<user> supprime"
+
+    Doit etre appele JUSTE APRES tout update qui set status="deleted" sur un
+    social_account. Idempotent et non-bloquant (try/except englobant).
+
+    Args:
+        account_id : account_id du social_account passe a deleted.
+        platform / username : pour le message archived_reason (facultatif).
+
+    Returns:
+        Nombre de videos archivees (0 si erreur ou aucune).
+    """
+    if not account_id:
+        return 0
+    try:
+        reason_parts = []
+        if platform:
+            reason_parts.append(str(platform))
+        if username:
+            reason_parts.append(f"@{str(username).lstrip('@')}")
+        reason_who = "/".join(reason_parts) if reason_parts else "(inconnu)"
+        res = await db.tracked_videos.update_many(
+            {"account_id": account_id, "tracking_active": True},
+            {"$set": {
+                "tracking_active": False,
+                "archived_at": datetime.now(timezone.utc).isoformat(),
+                "archived_reason": f"Compte source {reason_who} supprime",
+            }}
+        )
+        n = getattr(res, "modified_count", 0) or 0
+        if n:
+            try:
+                logger.info(f"_archive_videos_for_deleted_account : {n} videos archivees pour {reason_who} (account_id={account_id})")
+            except Exception:
+                pass
+        return n
+    except Exception as e:
+        try:
+            logger.warning(f"_archive_videos_for_deleted_account failed for {account_id}: {e}")
+        except Exception:
+            pass
+        return 0
+
+
 async def _verify_account_existence_detailed(platform: str, username: str) -> dict:
     """Variante de _verify_account_still_exists qui renvoie le DETAIL de chaque source.
     Utilise par l'endpoint admin de test pour diagnostiquer pourquoi un compte
@@ -10790,6 +10846,15 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
     for campaign in campaigns:
         campaign_id = campaign["campaign_id"]
         rpm = campaign.get("rpm", 0)
+        # NOTE: `is_clicks_campaign` ciblait a l'origine TOUTES les campagnes "clicks"
+        # ou "both", avec un skip 24h dans la boucle des comptes ci-dessous. Mais en
+        # mode "both", on TRACKE AUSSI les vues (CPM) -> il FAUT scraper a chaque
+        # cycle Pro (8h30/16h30/23h30). Le skip 24h ne doit s'appliquer qu'aux
+        # campagnes PUREMENT clicks (oules vues ne sont pas remunerees).
+        # FIX 2026-06-02 : 6/41 comptes rates au scrape 8h30 => campagnes "both"
+        # qui sautaient le matin parce que elapsed_hours < 24 depuis le 23h30
+        # de la veille.
+        is_clicks_only_campaign = campaign.get("payment_model") == "clicks"
         is_clicks_campaign = campaign.get("payment_model") in ("clicks", "both")
 
         # Get all assignments for this campaign
@@ -10856,9 +10921,11 @@ async def run_video_tracking(scheduled_hour_paris: int = None, force_all: bool =
                                 days_since_growth = (datetime.now(timezone.utc) - lg_dt).total_seconds() / 86400
                         except Exception:
                             pass
-                    if is_clicks_campaign:
+                    # FIX 2026-06-02 : skip 24h SEULEMENT pour campagnes PUREMENT clicks
+                    # (avant : "clicks" OU "both" -> "both" rate aussi le scrape 8h30 le matin).
+                    if is_clicks_only_campaign:
                         if elapsed_hours < 24:
-                            logger.info(f"Skip {platform}/@{username} — clicks campaign (24h soft) - last {elapsed_hours:.1f}h")
+                            logger.info(f"Skip {platform}/@{username} — clicks-only campaign (24h soft) - last {elapsed_hours:.1f}h")
                             continue
                     # SPEC PAUL : Pro = 3 scrapes/jour, TOUS les comptes verified scrapés à chaque cycle.
                     # AUCUN smart cache compte (very cold / cold / stagnant) — retiré.
@@ -17354,7 +17421,9 @@ async def verify_admin_code(request: Request):
 
 @api_router.get("/admin/diag-campaign-videos")
 async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool = Depends(verify_admin_code)):
-    """Detail des videos trackees d'une campagne (last fetched, vues, plateforme)."""
+    """Detail des videos trackees d'une campagne (last fetched, vues, plateforme).
+    Inclut maintenant account_id + username + last_tracked_at compte pour identifier
+    quels comptes laissent des videos non-rescrapees (scrape compte OK mais video orpheline)."""
     import re as _re_diag2
     if not name:
         return {"error": "param 'name' requis"}
@@ -17363,6 +17432,12 @@ async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool =
         return {"error": f"campagne '{name}' introuvable"}
     cid = camp.get("campaign_id")
     videos = await db.tracked_videos.find({"campaign_id": cid}, {"_id": 0}).to_list(500)
+    # Pre-fetch comptes pour mapping account_id -> username + last_tracked_at
+    account_ids = list({v.get("account_id") for v in videos if v.get("account_id")})
+    accounts_map = {}
+    if account_ids:
+        accs = await db.social_accounts.find({"account_id": {"$in": account_ids}}, {"_id": 0}).to_list(500)
+        accounts_map = {a["account_id"]: a for a in accs}
     now_utc = datetime.now(timezone.utc)
     enriched = []
     for v in videos:
@@ -17374,15 +17449,37 @@ async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool =
                 if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
                 delta_h = round((now_utc - dt).total_seconds() / 3600, 1)
         except Exception: pass
+        acc = accounts_map.get(v.get("account_id")) or {}
+        acc_last_tracked = acc.get("last_tracked_at")
+        acc_delta_h = None
+        try:
+            if acc_last_tracked:
+                adt = datetime.fromisoformat(acc_last_tracked.replace("Z", "+00:00")) if isinstance(acc_last_tracked, str) else acc_last_tracked
+                if adt.tzinfo is None: adt = adt.replace(tzinfo=timezone.utc)
+                acc_delta_h = round((now_utc - adt).total_seconds() / 3600, 1)
+        except Exception: pass
         enriched.append({
+            "video_id": v.get("video_id"),
+            "platform_video_id": v.get("platform_video_id"),
+            "account_id": v.get("account_id"),
+            "account_username": acc.get("username") or v.get("username"),
+            "account_status": acc.get("status"),
+            "account_last_tracked_at": acc_last_tracked,
+            "account_last_tracked_h_ago": acc_delta_h,
+            "account_last_scrape_error": acc.get("last_scrape_error"),
             "username": v.get("username"),
             "platform": v.get("platform"),
             "views": v.get("views", 0),
             "likes": v.get("likes", 0),
+            "url": (v.get("url") or "")[:200],
             "published_at": (v.get("published_at") or "")[:19],
             "fetched_at": (v.get("fetched_at") or "")[:19],
             "fetched_h_ago": delta_h,
             "tracking_active": v.get("tracking_active", True),
+            # FLAG critique : compte scrapé recemment MAIS video pas rafraichie
+            # = video sortie du feed (fetch_videos retourne liste partielle)
+            "orphan_in_feed": (acc_delta_h is not None and delta_h is not None
+                              and acc_delta_h < 12 and delta_h > 12),
         })
     enriched.sort(key=lambda x: x.get("fetched_at") or "", reverse=True)
     return {
@@ -17391,7 +17488,233 @@ async def admin_diag_campaign_videos(request: Request, name: str = "", _: bool =
         "videos_count": len(videos),
         "total_views": sum(int(v.get("views") or 0) for v in videos),
         "total_likes": sum(int(v.get("likes") or 0) for v in videos),
+        "orphans_count": sum(1 for e in enriched if e.get("orphan_in_feed")),
         "videos": enriched[:50],
+    }
+
+
+@api_router.post("/admin/fix-orphan-videos")
+async def admin_fix_orphan_videos(
+    request: Request,
+    name: str = "",
+    max_age_hours: float = 12.0,
+    dry_run: bool = True,
+    _: bool = Depends(verify_admin_code),
+):
+    """
+    FIX BUG ORPHAN VIDEOS (2026-06-02) — root cause :
+    `run_video_tracking` ne met a jour les `tracked_videos` que pour les videos
+    retournees par `fetch_videos(account)`. Mais sur TikTok, la cascade renvoie
+    souvent les N dernieres publications du compte. Les videos plus anciennes
+    (mais toujours actives) restent en DB avec un `fetched_at` figé.
+    Ex Gaspard Grosjean : 6 videos TikTok bloquees a 29h, 1 a 53.8h, alors que
+    leurs comptes ont ete scrapes a 15:08-15:28 UTC ce matin.
+
+    Ce fix iterre sur les videos orphelines (fetched_at > max_age_hours alors que
+    le compte parent a last_tracked_at < max_age_hours) et les rescrape une-par-une
+    via `fetch_single_video_by_url`.
+
+    Args:
+        name: prefixe nom campagne (regex). Vide = TOUTES les campagnes actives.
+        max_age_hours: seuil fetched_h_ago au-dela duquel video = orpheline (default 12).
+        dry_run: True = liste seulement, False = applique le fix.
+    """
+    import re as _re_fix
+    query = {"tracking_active": True}
+    if name:
+        camp = await db.campaigns.find_one(
+            {"name": {"$regex": f"^{_re_fix.escape(name)}", "$options": "i"}}, {"_id": 0}
+        )
+        if not camp:
+            return {"error": f"campagne '{name}' introuvable"}
+        query["campaign_id"] = camp.get("campaign_id")
+
+    videos = await db.tracked_videos.find(query, {"_id": 0}).to_list(2000)
+    now_utc = datetime.now(timezone.utc)
+    account_ids = list({v.get("account_id") for v in videos if v.get("account_id")})
+    accs = await db.social_accounts.find({"account_id": {"$in": account_ids}}, {"_id": 0}).to_list(1000) if account_ids else []
+    acc_map = {a["account_id"]: a for a in accs}
+
+    orphans = []
+    for v in videos:
+        try:
+            f = v.get("fetched_at")
+            if not f: continue
+            dt = datetime.fromisoformat(f.replace("Z", "+00:00")) if isinstance(f, str) else f
+            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+            video_age_h = (now_utc - dt).total_seconds() / 3600
+            if video_age_h <= max_age_hours:
+                continue
+            acc = acc_map.get(v.get("account_id"))
+            if not acc: continue
+            lt = acc.get("last_tracked_at")
+            if not lt: continue
+            adt = datetime.fromisoformat(lt.replace("Z", "+00:00")) if isinstance(lt, str) else lt
+            if adt.tzinfo is None: adt = adt.replace(tzinfo=timezone.utc)
+            acc_age_h = (now_utc - adt).total_seconds() / 3600
+            # Orphan = video stale + compte scrape recemment
+            if acc_age_h <= max_age_hours:
+                orphans.append({
+                    "video_id": v.get("video_id"),
+                    "platform_video_id": v.get("platform_video_id"),
+                    "platform": v.get("platform"),
+                    "account_id": v.get("account_id"),
+                    "username": acc.get("username"),
+                    "url": v.get("url"),
+                    "views": v.get("views"),
+                    "fetched_h_ago": round(video_age_h, 1),
+                    "account_last_tracked_h_ago": round(acc_age_h, 1),
+                })
+        except Exception:
+            pass
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "orphans_count": len(orphans),
+            "orphans": orphans[:200],
+            "message": f"{len(orphans)} videos orphelines trouvees (compte scrape <{max_age_hours}h mais video figee >{max_age_hours}h). Passe dry_run=false pour rescraper.",
+        }
+
+    # APPLY : rescrape une-par-une
+    fixed = []
+    failed = []
+    for o in orphans:
+        url = o.get("url")
+        plat = o.get("platform")
+        vid_doc_id = o.get("video_id")
+        if not url or not plat or not vid_doc_id:
+            failed.append({**o, "reason": "missing_url_or_platform_or_id"})
+            continue
+        try:
+            existing = await db.tracked_videos.find_one({"video_id": vid_doc_id}, {"_id": 0})
+            fresh = await asyncio.wait_for(
+                fetch_single_video_by_url(url, plat, existing_video=existing),
+                timeout=45
+            )
+            new_views = max(int(fresh.get("views") or 0), int((existing or {}).get("views") or 0))
+            new_likes = max(int(fresh.get("likes") or 0), int((existing or {}).get("likes") or 0))
+            new_comments = max(int(fresh.get("comments") or 0), int((existing or {}).get("comments") or 0))
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.tracked_videos.update_one(
+                {"video_id": vid_doc_id},
+                {"$set": {
+                    "views": new_views,
+                    "likes": new_likes,
+                    "comments": new_comments,
+                    "fetched_at": now_iso,
+                    "_orphan_fix_at": now_iso,
+                }}
+            )
+            fixed.append({**o, "new_views": new_views})
+        except asyncio.TimeoutError:
+            failed.append({**o, "reason": "timeout_45s"})
+        except Exception as e:
+            failed.append({**o, "reason": str(e)[:200]})
+        await asyncio.sleep(0.5)  # jitter anti rate-limit
+
+    return {
+        "dry_run": False,
+        "orphans_count": len(orphans),
+        "fixed_count": len(fixed),
+        "failed_count": len(failed),
+        "fixed": fixed,
+        "failed": failed,
+    }
+
+
+@api_router.post("/admin/archive-orphan-videos-for-deleted-accounts")
+async def admin_archive_orphan_videos_for_deleted_accounts(
+    request: Request,
+    include_error: bool = True,
+    dry_run: bool = False,
+    _: bool = Depends(verify_admin_code),
+):
+    """
+    FIX RETROACTIF 2026-06-02 — archive les videos qui sont restees actives
+    (`tracking_active=True`) alors que leur compte parent a deja ete passe en
+    `status=deleted` (et optionnellement `status=error`).
+
+    Root cause : avant le fix, marquer un social_account comme deleted ne touchait
+    PAS ses tracked_videos. Resultat : videos figees a un vieux `fetched_at`,
+    /admin/diag-campaign-videos signale `orphan_in_feed=True`, et Paul croit que
+    le scrape est casse alors que le compte source n'existe simplement plus.
+
+    Le nouveau helper `_archive_videos_for_deleted_account` est appele aux 7
+    call-sites qui set status=deleted ; cet endpoint nettoie l'historique
+    accumule avant le deploiement du fix.
+
+    Args:
+        include_error: True (defaut) = inclut aussi status="error" (echec de verif).
+                       False = seulement status="deleted".
+        dry_run: True = liste seulement, n'archive rien (default False : archive).
+
+    Returns:
+        {
+          "dry_run": bool,
+          "accounts_scanned": int,
+          "accounts_with_orphans": int,
+          "total_videos_archived": int,
+          "by_account": [ {account_id, platform, username, status, archived} ]
+        }
+    """
+    statuses = ["deleted"] + (["error"] if include_error else [])
+    accounts = await db.social_accounts.find(
+        {"status": {"$in": statuses}},
+        {"_id": 0, "account_id": 1, "platform": 1, "username": 1, "status": 1}
+    ).to_list(5000)
+
+    total_archived = 0
+    by_account = []
+    accounts_with_orphans = 0
+
+    for acc in accounts:
+        acc_id = acc.get("account_id")
+        plat = acc.get("platform") or ""
+        uname = acc.get("username") or ""
+        stat = acc.get("status") or ""
+        if not acc_id:
+            continue
+        # Compte les videos encore actives sur ce compte
+        n_active = await db.tracked_videos.count_documents({
+            "account_id": acc_id,
+            "tracking_active": True,
+        })
+        if n_active == 0:
+            continue
+        accounts_with_orphans += 1
+        if dry_run:
+            by_account.append({
+                "account_id": acc_id,
+                "platform": plat,
+                "username": uname,
+                "status": stat,
+                "would_archive": n_active,
+            })
+            total_archived += n_active
+        else:
+            n = await _archive_videos_for_deleted_account(acc_id, plat, uname)
+            by_account.append({
+                "account_id": acc_id,
+                "platform": plat,
+                "username": uname,
+                "status": stat,
+                "archived": n,
+            })
+            total_archived += n
+
+    return {
+        "dry_run": dry_run,
+        "include_error": include_error,
+        "accounts_scanned": len(accounts),
+        "accounts_with_orphans": accounts_with_orphans,
+        "total_videos_archived": total_archived,
+        "by_account": by_account[:500],
+        "message": (
+            f"DRY RUN : {total_archived} videos seraient archivees sur {accounts_with_orphans} comptes deleted/error."
+            if dry_run
+            else f"OK : {total_archived} videos archivees sur {accounts_with_orphans} comptes deleted/error."
+        ),
     }
 
 
@@ -18030,12 +18353,17 @@ async def admin_verify_account_existence(account_id: str, request: Request):
             "not_found_count": 0,
         })
     await db.social_accounts.update_one({"account_id": account_id}, {"$set": update_fields})
+    # FIX 2026-06-02 : archive auto videos du compte supprime
+    archived_videos = 0
+    if exists is False:
+        archived_videos = await _archive_videos_for_deleted_account(account_id, platform, username)
     return {
         "ok": True,
         "platform": platform,
         "username": username,
         "exists": exists,
         "result": update_fields.get("last_existence_check_result"),
+        "archived_videos": archived_videos,
         "action_taken": (
             "Marque comme supprime" if exists is False
             else "Compteurs d'echec reset" if exists is True
@@ -18198,11 +18526,16 @@ async def admin_bulk_verify_pending(request: Request, max_accounts: int = 100):
             else:
                 results["uncertain"] += 1
             await db.social_accounts.update_one({"account_id": account_id}, {"$set": update_fields})
+            # FIX 2026-06-02 : archive auto videos du compte supprime
+            archived_videos = 0
+            if exists is False:
+                archived_videos = await _archive_videos_for_deleted_account(account_id, platform, username)
             results["details"].append({
                 "account_id": account_id,
                 "platform": platform,
                 "username": username,
                 "result": update_fields["last_existence_check_result"],
+                "archived_videos": archived_videos,
             })
         except Exception as ex:
             results["errors"] += 1
@@ -18498,6 +18831,8 @@ async def admin_purge_dead_accounts(
                         "not_found_count": 99,
                     }}
                 )
+                # FIX 2026-06-02 : archive auto videos du compte supprime
+                await _archive_videos_for_deleted_account(account_id, platform, username)
         else:
             results["uncertain"] += 1
             # Si min_failures >= 7 et la verif est uncertain, on marque deleted force
@@ -18519,6 +18854,8 @@ async def admin_purge_dead_accounts(
                             "not_found_count": 99,
                         }}
                     )
+                    # FIX 2026-06-02 : archive auto videos du compte supprime (force)
+                    await _archive_videos_for_deleted_account(account_id, platform, username)
             else:
                 action = "kept_uncertain"
                 if not dry_run:
@@ -19401,6 +19738,8 @@ async def admin_reclassify_campaign_accounts(request: Request, body: dict = None
                                     "not_found_count": 99,
                                 }}
                             )
+                            # FIX 2026-06-02 : archive auto videos du compte supprime
+                            await _archive_videos_for_deleted_account(account_id, platform, username)
                 else:
                     entry["note"] = "verif=uncertain -> reset pause uniquement"
                     results["uncertain_kept"].append(entry)
@@ -19536,6 +19875,8 @@ async def admin_recheck_failing(request: Request, body: dict = None):
                             "not_found_count": 99,
                         }}
                     )
+                    # FIX 2026-06-02 : archive auto videos du compte supprime
+                    await _archive_videos_for_deleted_account(account_id, platform, username)
         elif exists is True:
             entry["note"] = "verif=exists -> reset failures + pause"
             results["restored_alive"].append(entry)
