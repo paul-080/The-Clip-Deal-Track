@@ -9,7 +9,7 @@ const TOURS = {
     { icon: "📊", title: "Vidéos & Analytics", desc: "Toutes les vidéos trackées automatiquement : vues, likes, commentaires, gains par vidéo et par clippeur. Courbe d'évolution par période." },
     { icon: "💬", title: "Chat de campagne", desc: "Communiquez directement avec vos clippeurs dans chaque campagne. Onglet Questions, Conseils et Paiement intégrés." },
     { icon: "💰", title: "Paiement & Portefeuille", desc: "Visualisez ce que vous devez à chaque clippeur (vues × RPM). Marquez comme payé une fois le virement effectué — aucune transaction ne passe par le site." },
-    { icon: "⚙️", title: "Paramètres & Abonnement", desc: "Gérez votre profil, votre abonnement (Starter 249€, Pro 549€, Business 449€) et vos préférences de strikes automatiques." },
+    { icon: "⚙️", title: "Paramètres & Abonnement", desc: "Gérez votre profil, votre abonnement (Starter 149€, Pro 349€, Business 449€) et vos préférences de strikes automatiques." },
   ],
   clipper: [
     { icon: "👤", title: "Mes comptes sociaux", desc: "Ajoutez vos comptes TikTok, Instagram ou YouTube. Ils seront vérifiés et trackés automatiquement dès que vous rejoignez une campagne." },

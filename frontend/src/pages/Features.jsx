@@ -221,7 +221,7 @@ export default function Features() {
             icon={Building2}
             color={ROLE_COLORS.agency}
             role="Agence"
-            tagline="Pilote toutes les campagnes — payante (249€ / 549€ / 449€)"
+            tagline="Pilote toutes les campagnes — payante (149€ / 349€ / 449€)"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card

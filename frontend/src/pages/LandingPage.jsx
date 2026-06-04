@@ -810,7 +810,7 @@ export default function LandingPage() {
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Starter</p>
-                <p className="text-3xl font-bold text-white">249€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-3xl font-bold text-white">149€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business</p>
               </div>
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
@@ -830,7 +830,7 @@ export default function LandingPage() {
             <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Pro</p>
-                <p className="text-3xl font-bold text-white">549€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-3xl font-bold text-white">349€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business · 1×/jour à 23h30</p>
               </div>
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">

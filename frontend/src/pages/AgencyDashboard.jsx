@@ -5099,7 +5099,7 @@ function SettingsPage() {
   // ===== Plans VUES (tracking vues seulement, AUCUN tracking de clics) =====
   const PLANS_FULL = [
     {
-      id: "plan_small", name: "Starter", price: "249€/mois",
+      id: "plan_small", name: "Starter", price: "149€/mois",
       features: [
         "1 campagne active",
         "30 comptes trackés (TikTok/Insta/YouTube)",
@@ -5111,7 +5111,7 @@ function SettingsPage() {
       ]
     },
     {
-      id: "plan_medium", name: "Pro", price: "549€/mois", featured: true,
+      id: "plan_medium", name: "Pro", price: "349€/mois", featured: true,
       features: [
         "3 campagnes actives",
         "100 comptes trackés (TikTok/Insta/YouTube)",

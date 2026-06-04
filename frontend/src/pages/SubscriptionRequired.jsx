@@ -9,7 +9,7 @@ const PLANS = [
   {
     id: "plan_small",
     name: "Starter",
-    price: "249€",
+    price: "149€",
     color: "white/10",
     features: [
       "1 campagne active",
@@ -22,7 +22,7 @@ const PLANS = [
   {
     id: "plan_medium",
     name: "Pro",
-    price: "549€",
+    price: "349€",
     color: "#39FF14",
     featured: false,
     features: [

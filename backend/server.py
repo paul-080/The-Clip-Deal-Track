@@ -17032,9 +17032,9 @@ async def contact_devis(req: ContactDevisRequest, request: Request):
 
 SUBSCRIPTION_PLANS = {
     # ===== Plans VUES UNIQUEMENT (tracking de vues, AUCUN tracking de clics) =====
-    "plan_small":     {"name": "Starter",   "amount": 24900,  "label": "249€/mois",
+    "plan_small":     {"name": "Starter",   "amount": 14900,  "label": "149€/mois",
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
-    "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
+    "plan_medium":    {"name": "Pro",        "amount": 34900,  "label": "349€/mois",
                        "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_unlimited": {"name": "Business",   "amount": 44900,  "label": "449€/mois",
                        "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 3, "click_only": False, "view_only": True},
@@ -17050,7 +17050,7 @@ SUBSCRIPTION_PLANS = {
     "plan_unlimited_click": {"name": "Business Clic",  "amount": 22500,  "label": "225€/mois",
                              "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 0, "click_only": True, "view_only": False},
     # Legacy aliases (compat ancien code)
-    "plan_full":      {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
+    "plan_full":      {"name": "Pro",        "amount": 34900,  "label": "349€/mois",
                        "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 3, "click_only": False, "view_only": True},
 }
 
