@@ -17036,7 +17036,7 @@ SUBSCRIPTION_PLANS = {
                        "max_campaigns": 1,    "max_tracked_accounts": 30,   "tracking_per_day": 1, "click_only": False, "view_only": True},
     "plan_medium":    {"name": "Pro",        "amount": 54900,  "label": "549€/mois",
                        "max_campaigns": 3,    "max_tracked_accounts": 100,  "tracking_per_day": 3, "click_only": False, "view_only": True},
-    "plan_unlimited": {"name": "Business",   "amount": 74900,  "label": "749€/mois",
+    "plan_unlimited": {"name": "Business",   "amount": 44900,  "label": "449€/mois",
                        "max_campaigns": None, "max_tracked_accounts": 400,  "tracking_per_day": 3, "click_only": False, "view_only": True},
     "plan_custom":    {"name": "Enterprise", "amount": 0,      "label": "Sur mesure",
                        "max_campaigns": None, "max_tracked_accounts": None, "tracking_per_day": 6,

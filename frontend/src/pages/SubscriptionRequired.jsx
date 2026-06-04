@@ -36,7 +36,7 @@ const PLANS = [
   {
     id: "plan_unlimited",
     name: "Business",
-    price: "749€",
+    price: "449€",
     color: "#FF007F",
     featured: true,
     features: [

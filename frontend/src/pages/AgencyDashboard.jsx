@@ -5124,7 +5124,7 @@ function SettingsPage() {
       ]
     },
     {
-      id: "plan_unlimited", name: "Business", price: "749€/mois",
+      id: "plan_unlimited", name: "Business", price: "449€/mois",
       features: [
         "Campagnes illimitées",
         "400 comptes trackés (TikTok/Insta/YouTube)",
@@ -5330,7 +5330,7 @@ function SettingsPage() {
                   <p className="text-[#00E5FF] font-semibold text-sm">🎁 Essai gratuit — plan Business activé</p>
                   <p className="text-white/60 text-xs mt-0.5">
                     {subStatus.trial_days_remaining > 0
-                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 749€/mois`
+                      ? `${subStatus.trial_days_remaining} jour${subStatus.trial_days_remaining > 1 ? "s" : ""} restant${subStatus.trial_days_remaining > 1 ? "s" : ""} — toutes les fonctionnalités du plan Business 449€/mois`
                       : "Dernier jour — choisis un plan ci-dessous pour continuer"}
                   </p>
                   {subStatus.usage && subStatus.limits && (

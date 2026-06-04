@@ -221,7 +221,7 @@ export default function Features() {
             icon={Building2}
             color={ROLE_COLORS.agency}
             role="Agence"
-            tagline="Pilote toutes les campagnes — payante (249€ / 549€ / 749€)"
+            tagline="Pilote toutes les campagnes — payante (249€ / 549€ / 449€)"
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card
@@ -457,7 +457,7 @@ export default function Features() {
             <StepCard
               num={2}
               title="Essai 14 jours auto"
-              desc="L'agence reçoit automatiquement 14 jours d'accès au plan Business 749€/mois sans carte bancaire."
+              desc="L'agence reçoit automatiquement 14 jours d'accès au plan Business 449€/mois sans carte bancaire."
             />
             <StepCard
               num={3}

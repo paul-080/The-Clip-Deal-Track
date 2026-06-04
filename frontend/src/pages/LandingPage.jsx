@@ -854,7 +854,7 @@ export default function LandingPage() {
               </div>
               <div>
                 <p className="text-white/50 text-sm font-medium mb-1">Business</p>
-                <p className="text-3xl font-bold text-white">749€<span className="text-base text-white/40 font-normal">/mois</span></p>
+                <p className="text-3xl font-bold text-white">449€<span className="text-base text-white/40 font-normal">/mois</span></p>
                 <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits ici</p>
               </div>
               <ul className="space-y-1.5 text-sm text-white/60 flex-1">
