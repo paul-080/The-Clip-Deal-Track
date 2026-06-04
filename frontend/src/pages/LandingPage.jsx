@@ -296,14 +296,15 @@ export default function LandingPage() {
   const selectedRoleData = roles.find(r => r.id === selectedRole);
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] overflow-hidden relative">
-      {/* Background grain texture */}
-      <div className="grain absolute inset-0 pointer-events-none" />
-      
+    <div className="min-h-screen bg-[#0E0D0B] overflow-hidden relative">
+      {/* Background warm radial + grain subtle */}
+      <div className="bg-warm-radial absolute inset-0 pointer-events-none" />
+      <div className="noise-bg absolute inset-0 pointer-events-none" />
+
       {/* Hero Section */}
       <header className="relative">
         {/* Navigation */}
-        <nav className="relative z-20 flex items-center justify-between gap-2 px-4 sm:px-6 lg:px-16 py-4 sm:py-6">
+        <nav className="relative z-20 flex items-center justify-between gap-2 px-4 sm:px-6 lg:px-16 py-4 sm:py-6 border-b border-warm">
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
@@ -314,8 +315,7 @@ export default function LandingPage() {
               alt="The Clip Deal Track"
               className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex-shrink-0"
             />
-            {/* Texte logo : version compacte sur mobile, complet sur sm+ */}
-            <span className="font-display font-bold text-base sm:text-xl tracking-tight text-white truncate">
+            <span className="font-display font-semibold text-base sm:text-lg tracking-tight text-[#F5F4F1] truncate">
               <span className="hidden sm:inline">The Clip Deal Track</span>
               <span className="sm:hidden">Clip Deal</span>
             </span>
@@ -330,24 +330,23 @@ export default function LandingPage() {
               <Button
                 onClick={handleGetStarted}
                 data-testid="nav-login-btn"
-                className="bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-full px-4 sm:px-6 py-2 text-sm sm:text-base font-medium transition-colors duration-200"
+                className="bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1] border border-warm rounded-lg px-4 sm:px-5 py-2 text-sm font-medium transition-all duration-200"
               >
                 Dashboard
               </Button>
             ) : (
               <>
-                {/* Se connecter : cache sur tres petit ecran (< sm) */}
                 <Button
                   onClick={() => setShowLoginModal(true)}
                   variant="ghost"
                   data-testid="nav-login-btn"
-                  className="hidden sm:inline-flex text-white/70 hover:text-white hover:bg-white/10 rounded-full px-5 py-2 font-medium transition-colors duration-200"
+                  className="hidden sm:inline-flex text-[#F5F4F1]/70 hover:text-[#F5F4F1] hover:bg-white/[0.04] rounded-lg px-4 py-2 font-medium transition-colors duration-200"
                 >
                   Se connecter
                 </Button>
                 <Button
                   onClick={handleGetStarted}
-                  className="bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black rounded-full px-4 sm:px-5 py-2 text-sm sm:text-base font-semibold transition-colors duration-200 whitespace-nowrap"
+                  className="bg-[#F5F4F1] hover:bg-white text-[#0E0D0B] rounded-lg px-4 sm:px-5 py-2 text-sm font-semibold transition-all duration-200 whitespace-nowrap shadow-sm"
                 >
                   <span className="hidden sm:inline">Créer un compte</span>
                   <span className="sm:hidden">S'inscrire</span>
@@ -358,115 +357,113 @@ export default function LandingPage() {
         </nav>
 
         {/* Hero Content */}
-        <div className="relative z-10 px-6 lg:px-16 pt-16 lg:pt-24 pb-32">
+        <div className="relative z-10 px-6 lg:px-16 pt-20 lg:pt-28 pb-32">
           <div className="max-w-6xl mx-auto">
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="inline-flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-4 py-2 mb-8"
+              transition={{ delay: 0.05, duration: 0.5 }}
+              className="inline-flex items-center gap-2 bg-[#1C1A17]/60 border border-warm rounded-full px-3.5 py-1.5 mb-8 backdrop-blur-sm"
             >
-              <span className="w-2 h-2 rounded-full bg-[#39FF14] animate-pulse" />
-              <span className="text-sm text-white/70">En route pour devenir l'app #1 du clipping</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14] animate-pulse" />
+              <span className="text-xs font-medium text-[#F5F4F1]/70 tracking-wide">En route pour devenir l'app #1 du clipping</span>
             </motion.div>
 
             <motion.h1
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="font-display font-black text-5xl sm:text-6xl lg:text-7xl tracking-tighter text-white mb-6 leading-[1.1]"
+              transition={{ delay: 0.15, duration: 0.55 }}
+              className="font-display font-bold text-[clamp(2.5rem,7vw,5.5rem)] tracking-[-0.035em] text-[#F5F4F1] mb-6 leading-[1.02]"
             >
               Gérez vos campagnes
               <br />
-              <span className="gradient-text">de clipping vidéo</span>
+              <span className="bg-gradient-to-r from-[#00E5FF] via-[#F5F4F1] to-[#FF007F] bg-clip-text text-transparent">
+                de clipping vidéo
+              </span>
             </motion.h1>
 
             <motion.p
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-              className="text-lg text-white/60 max-w-xl mb-10 leading-relaxed"
+              transition={{ delay: 0.25, duration: 0.55 }}
+              className="text-base sm:text-lg text-[#F5F4F1]/60 max-w-xl mb-10 leading-relaxed"
             >
               Tracking auto TikTok / Instagram / YouTube, paiement aux clippeurs en 1 clic, anti-fraude intégré.
             </motion.p>
 
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-              className="flex flex-col sm:flex-row gap-4"
+              transition={{ delay: 0.35, duration: 0.5 }}
+              className="flex flex-col sm:flex-row gap-3"
             >
               <Button
                 onClick={handleGetStarted}
                 data-testid="hero-cta-btn"
-                className="bg-[#00E5FF] hover:bg-[#00d4eb] text-black font-bold rounded-full px-8 py-6 text-lg transition-colors duration-200 flex items-center gap-2"
+                className="bg-[#F5F4F1] hover:bg-white text-[#0E0D0B] font-semibold rounded-lg px-7 py-6 text-base transition-all duration-200 flex items-center gap-2 shadow-sm hover:shadow-md"
               >
-                Commencer ici
-                <ChevronRight className="w-5 h-5" />
+                Commencer maintenant
+                <ChevronRight className="w-4 h-4" />
               </Button>
               <Button
                 onClick={() => navigate("/decouvrir")}
                 variant="outline"
                 data-testid="hero-learn-more-btn"
-                className="bg-transparent border-white/20 hover:bg-white/5 text-white rounded-full px-8 py-6 text-lg transition-colors duration-200 flex items-center gap-2"
+                className="bg-transparent border border-warm hover:bg-[#1C1A17] text-[#F5F4F1] rounded-lg px-7 py-6 text-base transition-all duration-200 flex items-center gap-2"
               >
-                Découvrir toutes les fonctionnalités
-                <ChevronRight className="w-5 h-5" />
+                Voir les fonctionnalités
+                <ChevronRight className="w-4 h-4" />
               </Button>
             </motion.div>
 
             {/* Stats */}
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5 }}
-              className="grid grid-cols-3 gap-8 mt-20 max-w-2xl"
+              transition={{ delay: 0.5, duration: 0.55 }}
+              className="grid grid-cols-3 gap-6 mt-24 max-w-2xl"
             >
               {[
-                { value: "🚀", label: "Lancement en cours" },
+                { value: "Beta", label: "Lancement en cours" },
                 { value: "100%", label: "Tracking automatique" },
                 { value: "0€", label: "Commission plateforme" },
               ].map((stat, i) => (
                 <div key={i} className="text-left">
-                  <div className="font-display font-black text-3xl lg:text-4xl text-white tracking-tight">
+                  <div className="font-display font-semibold text-2xl lg:text-3xl text-[#F5F4F1] tracking-tight tabular-nums">
                     {stat.value}
                   </div>
-                  <div className="text-sm text-white/50 mt-1">{stat.label}</div>
+                  <div className="text-xs text-[#F5F4F1]/50 mt-1 tracking-wide">{stat.label}</div>
                 </div>
               ))}
             </motion.div>
           </div>
         </div>
-
-        {/* Gradient orbs */}
-        <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-[#00E5FF]/20 rounded-full blur-[150px] -translate-y-1/2 translate-x-1/3" />
-        <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-[#FF007F]/20 rounded-full blur-[120px] translate-y-1/2 -translate-x-1/3" />
       </header>
 
       {/* Video Section — Lancement SaaS */}
-      <section className="relative z-10 px-6 lg:px-16 py-20 bg-[#0A0A0A]">
+      <section className="relative z-10 px-6 lg:px-16 py-20 bg-[#0E0D0B] border-t border-warm">
         <div className="max-w-5xl mx-auto">
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
+            transition={{ duration: 0.5 }}
             className="text-center mb-10"
           >
-            <h2 className="text-3xl lg:text-4xl font-display font-bold text-white mb-4 tracking-tight">
+            <h2 className="text-3xl lg:text-4xl font-display font-semibold text-[#F5F4F1] mb-3 tracking-tight">
               Voir la plateforme en action
             </h2>
-            <p className="text-white/50 text-lg">
+            <p className="text-[#F5F4F1]/55 text-base">
               2 minutes, tout est dit.
             </p>
           </motion.div>
 
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            whileInView={{ opacity: 1, scale: 1 }}
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            transition={{ duration: 0.5 }}
-            className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10"
-            style={{ boxShadow: "0 0 80px rgba(255, 0, 127, 0.15), 0 0 120px rgba(0, 229, 255, 0.10)" }}
+            transition={{ duration: 0.55 }}
+            className="relative w-full aspect-video rounded-2xl overflow-hidden border border-warm bg-[#1C1A17]"
           >
             <iframe
               src="https://www.youtube.com/embed/sWCEX7Q8gDo?rel=0&modestbranding=1"
@@ -480,71 +477,70 @@ export default function LandingPage() {
       </section>
 
       {/* Features Section */}
-      <section className="relative z-10 px-6 lg:px-16 py-24 bg-[#0A0A0A]">
+      <section className="relative z-10 px-6 lg:px-16 py-24 bg-[#0E0D0B] border-t border-warm">
         <div className="max-w-6xl mx-auto">
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            className="text-center mb-16"
+            transition={{ duration: 0.5 }}
+            className="text-center mb-14"
           >
-            <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-4">
+            <h2 className="font-display font-semibold text-3xl lg:text-4xl text-[#F5F4F1] tracking-tight mb-3">
               4 rôles, 1 plateforme
             </h2>
-            <p className="text-white/50 max-w-lg mx-auto">
+            <p className="text-[#F5F4F1]/55 max-w-lg mx-auto text-base">
               Chaque acteur du clipping a son espace dédié.
             </p>
           </motion.div>
 
-          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               {
                 icon: Users,
                 title: "Agences",
                 description: "Créez des campagnes, gérez vos clippeurs et suivez les performances",
                 color: "#FF007F",
-                gradient: "from-[#FF007F]/20 to-transparent",
               },
               {
                 icon: Video,
                 title: "Clippeurs",
                 description: "Rejoignez des campagnes, postez vos clips et soyez rémunérés",
                 color: "#00E5FF",
-                gradient: "from-[#00E5FF]/20 to-transparent",
               },
               {
                 icon: BarChart3,
                 title: "Managers",
                 description: "Supervisez les équipes et envoyez des conseils personnalisés",
                 color: "#39FF14",
-                gradient: "from-[#39FF14]/20 to-transparent",
               },
               {
                 icon: TrendingUp,
                 title: "Clients",
                 description: "Suivez vos campagnes et communiquez avec les agences",
                 color: "#FFB300",
-                gradient: "from-[#FFB300]/20 to-transparent",
               },
             ].map((feature, i) => (
               <motion.div
                 key={i}
-                initial={{ opacity: 0, y: 30 }}
+                initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
-                transition={{ delay: i * 0.1 }}
-                className="group relative bg-[#121212] border border-white/5 rounded-xl p-6 hover:border-white/10 transition-colors duration-200"
+                transition={{ delay: i * 0.07, duration: 0.45 }}
+                className="group relative bg-[#1C1A17]/85 border border-warm rounded-xl p-6 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200"
               >
-                <div className={`absolute inset-0 bg-gradient-to-b ${feature.gradient} rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
                 <div className="relative">
-                  <div 
-                    className="w-12 h-12 rounded-lg flex items-center justify-center mb-4"
-                    style={{ backgroundColor: `${feature.color}20` }}
+                  <div
+                    className="w-10 h-10 rounded-lg flex items-center justify-center mb-4 border"
+                    style={{
+                      backgroundColor: `${feature.color}10`,
+                      borderColor: `${feature.color}24`,
+                    }}
                   >
-                    <feature.icon className="w-6 h-6" style={{ color: feature.color }} />
+                    <feature.icon className="w-5 h-5" style={{ color: feature.color }} />
                   </div>
-                  <h3 className="font-display font-bold text-lg text-white mb-2">{feature.title}</h3>
-                  <p className="text-sm text-white/50 leading-relaxed">{feature.description}</p>
+                  <h3 className="font-display font-semibold text-base text-[#F5F4F1] mb-1.5">{feature.title}</h3>
+                  <p className="text-sm text-[#F5F4F1]/55 leading-relaxed">{feature.description}</p>
                 </div>
               </motion.div>
             ))}
@@ -553,89 +549,101 @@ export default function LandingPage() {
       </section>
 
       {/* RPM Section */}
-      <section className="relative z-10 px-6 lg:px-16 py-24 bg-[#0d0d0d]">
+      <section className="relative z-10 px-6 lg:px-16 py-24 bg-[#0A0907] border-t border-warm">
         <div className="max-w-6xl mx-auto">
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
+          <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
             <motion.div
-              initial={{ opacity: 0, x: -30 }}
-              whileInView={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
+              transition={{ duration: 0.55 }}
             >
-              <div className="inline-flex items-center gap-2 bg-[#00E5FF]/10 border border-[#00E5FF]/20 rounded-full px-4 py-2 mb-6">
-                <DollarSign className="w-4 h-4 text-[#00E5FF]" />
-                <span className="text-sm text-[#00E5FF]">Système RPM</span>
+              <div className="inline-flex items-center gap-2 bg-[#1C1A17]/80 border border-warm rounded-full px-3.5 py-1.5 mb-6">
+                <DollarSign className="w-3.5 h-3.5 text-[#00E5FF]" />
+                <span className="text-xs font-medium text-[#F5F4F1]/75 tracking-wide">Système RPM</span>
               </div>
-              <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-6">
+              <h2 className="font-display font-semibold text-3xl lg:text-4xl text-[#F5F4F1] tracking-tight mb-5 leading-[1.1]">
                 Payé au RPM,
                 <br />
                 <span className="text-[#00E5FF]">pas à l'estimation</span>
               </h2>
-              <p className="text-white/50 mb-8 leading-relaxed">
+              <p className="text-[#F5F4F1]/55 mb-8 leading-relaxed text-base">
                 Vues récupérées direct depuis TikTok, Instagram, YouTube. Tu fixes le RPM, on calcule, tu valides.
               </p>
-              <ul className="space-y-4">
+              <ul className="space-y-3">
                 {[
                   "RPM personnalisable par campagne",
                   "Tracking vues 1× ou 3×/jour",
                   "Paiement validé en 1 clic",
                   "Historique détaillé des gains",
                 ].map((item, i) => (
-                  <li key={i} className="flex items-center gap-3 text-white/70">
-                    <div className="w-5 h-5 rounded-full bg-[#00E5FF]/20 flex items-center justify-center">
+                  <motion.li
+                    key={i}
+                    initial={{ opacity: 0, x: -10 }}
+                    whileInView={{ opacity: 1, x: 0 }}
+                    viewport={{ once: true }}
+                    transition={{ delay: 0.1 + i * 0.07 }}
+                    className="flex items-center gap-3 text-[#F5F4F1]/75 text-sm"
+                  >
+                    <div className="w-5 h-5 rounded-md bg-[#00E5FF]/10 border border-[#00E5FF]/25 flex items-center justify-center flex-shrink-0">
                       <Zap className="w-3 h-3 text-[#00E5FF]" />
                     </div>
                     {item}
-                  </li>
+                  </motion.li>
                 ))}
               </ul>
             </motion.div>
 
             <motion.div
-              initial={{ opacity: 0, x: 30 }}
-              whileInView={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
+              transition={{ duration: 0.55, delay: 0.1 }}
               className="relative"
             >
-              <div className="bg-[#121212] border border-white/10 rounded-2xl p-8">
-                <div className="flex items-center justify-between mb-8">
-                  <span className="text-white/50 text-sm">Exemple de campagne</span>
-                  <span className="bg-[#39FF14]/20 text-[#39FF14] text-xs font-medium px-3 py-1 rounded-full">Active</span>
+              <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl p-7">
+                <div className="flex items-center justify-between mb-7">
+                  <span className="text-[#F5F4F1]/50 text-xs uppercase tracking-wide">Exemple de campagne</span>
+                  <span className="inline-flex items-center gap-1.5 border border-[#39FF14]/30 bg-[#39FF14]/10 text-[#39FF14] text-[11px] font-medium px-2.5 py-0.5 rounded-full">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
+                    Active
+                  </span>
                 </div>
-                
+
                 <div className="space-y-6">
                   <div>
-                    <div className="text-sm text-white/50 mb-2">RPM configuré</div>
-                    <div className="font-mono font-bold text-4xl text-white">€3.50</div>
+                    <div className="text-xs text-[#F5F4F1]/50 mb-1.5 tracking-wide">RPM configuré</div>
+                    <div className="font-display font-semibold text-4xl text-[#F5F4F1] tabular-nums tracking-tight">€3,50</div>
                   </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-white/5 rounded-lg p-4">
-                      <div className="text-xs text-white/50 mb-1">Vues totales</div>
-                      <div className="font-mono font-bold text-xl text-white">1.2M</div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-[#0E0D0B]/60 border border-warm rounded-lg p-3.5">
+                      <div className="text-[11px] text-[#F5F4F1]/50 mb-1 tracking-wide">Vues totales</div>
+                      <div className="font-mono font-semibold text-lg text-[#F5F4F1] tabular-nums">1,2M</div>
                     </div>
-                    <div className="bg-white/5 rounded-lg p-4">
-                      <div className="text-xs text-white/50 mb-1">Gains distribués</div>
-                      <div className="font-mono font-bold text-xl text-[#00E5FF]">€4,200</div>
+                    <div className="bg-[#0E0D0B]/60 border border-warm rounded-lg p-3.5">
+                      <div className="text-[11px] text-[#F5F4F1]/50 mb-1 tracking-wide">Gains distribués</div>
+                      <div className="font-mono font-semibold text-lg text-[#00E5FF] tabular-nums">€4 200</div>
                     </div>
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between text-sm mb-2">
-                      <span className="text-white/50">Budget utilisé</span>
-                      <span className="text-white">84%</span>
+                    <div className="flex items-center justify-between text-xs mb-2">
+                      <span className="text-[#F5F4F1]/50 tracking-wide">Budget utilisé</span>
+                      <span className="text-[#F5F4F1] font-medium tabular-nums">84%</span>
                     </div>
-                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-[#0E0D0B] border border-warm rounded-full overflow-hidden">
                       <div className="h-full w-[84%] bg-gradient-to-r from-[#00E5FF] to-[#FF007F] rounded-full" />
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Floating cards */}
-              <div className="absolute -top-4 -right-4 bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-2 shadow-xl">
+              {/* Floating card */}
+              <div className="absolute -top-3 -right-3 bg-[#1C1A17] border border-warm rounded-lg px-3 py-1.5 shadow-lg">
                 <div className="flex items-center gap-2">
-                  <div className="w-6 h-6 rounded-full bg-[#FF007F]" />
-                  <span className="text-sm text-white">+12 clippeurs</span>
+                  <div className="w-5 h-5 rounded-full bg-[#FF007F]/20 border border-[#FF007F]/40" />
+                  <span className="text-xs text-[#F5F4F1] font-medium">+12 clippeurs</span>
                 </div>
               </div>
             </motion.div>
@@ -644,45 +652,48 @@ export default function LandingPage() {
       </section>
 
       {/* Coming Soon Section — Roadmap */}
-      <section className="relative z-10 px-6 lg:px-16 py-20">
+      <section className="relative z-10 px-6 lg:px-16 py-20 border-t border-warm">
         <div className="max-w-5xl mx-auto">
           <motion.div
-            initial={{ opacity: 0, y: 30 }}
+            initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
-            className="text-center mb-10"
+            transition={{ duration: 0.5 }}
+            className="text-center mb-12"
           >
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 mb-4">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#1C1A17]/60 border border-warm mb-4">
               <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14] animate-pulse" />
-              <span className="text-[11px] uppercase tracking-widest text-white/60 font-medium">À venir prochainement</span>
+              <span className="text-[11px] uppercase tracking-widest text-[#F5F4F1]/60 font-medium">À venir prochainement</span>
             </div>
-            <h2 className="font-display font-bold text-3xl lg:text-4xl text-white tracking-tight mb-3">
+            <h2 className="font-display font-semibold text-3xl lg:text-4xl text-[#F5F4F1] tracking-tight mb-3">
               Notre roadmap
             </h2>
-            <p className="text-white/50 text-base lg:text-lg">
+            <p className="text-[#F5F4F1]/55 text-base">
               Les prochaines features qui arrivent sur The Clip Deal Track.
             </p>
           </motion.div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* App mobile */}
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ delay: 0.1 }}
-              className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#00E5FF]/8 to-transparent border border-[#00E5FF]/20 p-7"
+              transition={{ delay: 0.05, duration: 0.5 }}
+              className="relative overflow-hidden rounded-2xl bg-[#1C1A17]/85 border border-warm hover:border-[#00E5FF]/30 hover:-translate-y-0.5 transition-all duration-200 p-6"
             >
-              <div className="absolute top-4 right-4">
-                <span className="text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 rounded-full bg-[#00E5FF]/20 text-[#00E5FF] border border-[#00E5FF]/40">
+              <div className="absolute top-5 right-5">
+                <span className="text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded-md bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30">
                   Soon
                 </span>
               </div>
-              <div className="text-4xl mb-4">📱</div>
-              <h3 className="text-xl lg:text-2xl font-display font-bold text-white mb-2 tracking-tight">
+              <div className="w-10 h-10 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/24 flex items-center justify-center mb-4">
+                <Video className="w-5 h-5 text-[#00E5FF]" />
+              </div>
+              <h3 className="text-lg lg:text-xl font-display font-semibold text-[#F5F4F1] mb-1.5 tracking-tight">
                 Application mobile
               </h3>
-              <p className="text-white/55 text-sm leading-relaxed">
+              <p className="text-[#F5F4F1]/55 text-sm leading-relaxed">
                 iOS et Android. Suivre tes campagnes, valider tes clips, et toucher tes paiements
                 directement depuis ton téléphone. Notifications push en temps réel.
               </p>
@@ -690,22 +701,24 @@ export default function LandingPage() {
 
             {/* Paiement automatique clippeurs */}
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
+              initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
-              transition={{ delay: 0.2 }}
-              className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#39FF14]/8 to-transparent border border-[#39FF14]/20 p-7"
+              transition={{ delay: 0.12, duration: 0.5 }}
+              className="relative overflow-hidden rounded-2xl bg-[#1C1A17]/85 border border-warm hover:border-[#39FF14]/30 hover:-translate-y-0.5 transition-all duration-200 p-6"
             >
-              <div className="absolute top-4 right-4">
-                <span className="text-[10px] uppercase tracking-widest font-bold px-2.5 py-1 rounded-full bg-[#39FF14]/20 text-[#39FF14] border border-[#39FF14]/40">
+              <div className="absolute top-5 right-5">
+                <span className="text-[10px] uppercase tracking-widest font-semibold px-2 py-1 rounded-md bg-[#39FF14]/10 text-[#39FF14] border border-[#39FF14]/30">
                   Soon
                 </span>
               </div>
-              <div className="text-4xl mb-4">⚡</div>
-              <h3 className="text-xl lg:text-2xl font-display font-bold text-white mb-2 tracking-tight">
+              <div className="w-10 h-10 rounded-lg bg-[#39FF14]/10 border border-[#39FF14]/24 flex items-center justify-center mb-4">
+                <Zap className="w-5 h-5 text-[#39FF14]" />
+              </div>
+              <h3 className="text-lg lg:text-xl font-display font-semibold text-[#F5F4F1] mb-1.5 tracking-tight">
                 Paiement automatique aux clippeurs
               </h3>
-              <p className="text-white/55 text-sm leading-relaxed">
+              <p className="text-[#F5F4F1]/55 text-sm leading-relaxed">
                 Virement automatique aux clippeurs quand les paliers sont atteints. Plus de relances,
                 plus de fichiers Excel. L'agence valide une fois, on s'occupe du reste.
               </p>
@@ -715,181 +728,181 @@ export default function LandingPage() {
       </section>
 
       {/* Pricing Section */}
-      <section className="py-20 px-6 lg:px-16 bg-[#0A0A0A] border-t border-white/5">
+      <section className="py-24 px-6 lg:px-16 bg-[#0E0D0B] border-t border-warm">
         <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-8">
-            <h2 className="text-3xl lg:text-4xl font-bold text-white mb-3">
+          <div className="text-center mb-10">
+            <h2 className="text-3xl lg:text-4xl font-display font-semibold text-[#F5F4F1] mb-3 tracking-tight">
               Tarifs <span className="text-[#f0c040]">agence</span>
             </h2>
-            <p className="text-white/50 text-base mb-6">HT · 2 semaines offertes à l'inscription</p>
+            <p className="text-[#F5F4F1]/55 text-base mb-7">HT · 2 semaines offertes à l'inscription</p>
             {/* Toggle Vues & Clics / Clics */}
-            <div className="inline-flex bg-white/5 border border-white/10 rounded-xl p-1 gap-1">
+            <div className="inline-flex bg-[#1C1A17]/60 border border-warm rounded-lg p-1 gap-1">
               <button onClick={() => setPricingMode("full")}
-                className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "full" ? "bg-[#FF007F] text-white" : "text-white/50 hover:text-white"}`}>
+                className={`px-5 py-2 rounded-md text-sm font-medium transition-all ${pricingMode === "full" ? "bg-[#FF007F] text-white" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1]"}`}>
                 Vues & Clics
               </button>
               <button onClick={() => setPricingMode("click")}
-                className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${pricingMode === "click" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}>
+                className={`px-5 py-2 rounded-md text-sm font-medium transition-all ${pricingMode === "click" ? "bg-[#f0c040] text-black" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1]"}`}>
                 Au clic uniquement
               </button>
             </div>
-            <p className="text-white/40 text-xs mt-3 max-w-md mx-auto">
+            <p className="text-[#F5F4F1]/40 text-xs mt-3 max-w-md mx-auto">
               {pricingMode === "full"
                 ? "Tracking complet : vues, likes, commentaires, gains au RPM + clics"
                 : "Tracking au clic uniquement (sans suivi des vues) — moins cher, idéal pour campagnes focus liens en bio"}
             </p>
           </div>
           {pricingMode === "click" ? (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 max-w-5xl mx-auto">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-5xl mx-auto">
               {/* Starter Click */}
-              <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+              <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl p-6 space-y-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
                 <div>
-                  <p className="text-white/50 text-sm font-medium mb-1">Starter Clic</p>
-                  <p className="text-3xl font-bold text-white">89€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                  <p className="text-[#F5F4F1]/55 text-sm font-medium mb-1.5 tracking-wide">Starter Clic</p>
+                  <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">89€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                  <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · Au clic uniquement</p>
                 </div>
-                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> 1 campagne active</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 15 clippeurs</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support standard</li>
-                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
+                <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> 1 campagne active</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Jusqu'à 15 clippeurs</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Support standard</li>
+                  <li className="flex items-start gap-2"><span className="text-[#F5F4F1]/30 flex-shrink-0 mt-px">×</span> <span className="text-[#F5F4F1]/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
-                <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+                <Button onClick={handleGetStarted} className="w-full bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1] rounded-lg py-2.5 text-sm font-medium transition-colors border border-warm">
                   Choisir ce plan
                 </Button>
               </div>
-              {/* Pro Click */}
-              <div className="bg-[#121212] border-2 border-[#f0c040] rounded-2xl p-5 space-y-4 relative flex flex-col">
+              {/* Pro Click — Featured */}
+              <div className="bg-[#1C1A17]/95 border border-[#f0c040]/60 rounded-2xl p-6 space-y-4 relative flex flex-col shadow-[0_0_0_1px_rgba(240,192,64,0.10)]">
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#f0c040] text-black text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
                   Recommandé
                 </div>
                 <div>
-                  <p className="text-white/50 text-sm font-medium mb-1">Pro Clic</p>
-                  <p className="text-3xl font-bold text-white">149€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                  <p className="text-[#f0c040] text-sm font-medium mb-1.5 tracking-wide">Pro Clic</p>
+                  <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">149€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                  <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · Au clic uniquement</p>
                 </div>
-                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> 3 campagnes actives</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support prioritaire</li>
-                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
+                <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> 3 campagnes actives</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Jusqu'à 45 clippeurs (total)</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Analytics clics avancés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Support prioritaire</li>
+                  <li className="flex items-start gap-2"><span className="text-[#F5F4F1]/30 flex-shrink-0 mt-px">×</span> <span className="text-[#F5F4F1]/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
-                <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#f0c040]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
+                <Button onClick={handleGetStarted} className="w-full bg-[#f0c040] hover:bg-[#e6b630] text-black rounded-lg py-2.5 text-sm font-semibold transition-colors">
                   Choisir ce plan
                 </Button>
               </div>
               {/* Business Click */}
-              <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+              <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl p-6 space-y-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
                 <div>
-                  <p className="text-white/50 text-sm font-medium mb-1">Business Clic</p>
-                  <p className="text-3xl font-bold text-white">225€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                  <p className="text-white/30 text-xs mt-1">HT · Au clic uniquement</p>
+                  <p className="text-[#F5F4F1]/55 text-sm font-medium mb-1.5 tracking-wide">Business Clic</p>
+                  <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">225€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                  <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · Au clic uniquement</p>
                 </div>
-                <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Campagnes illimitées</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Jusqu'à 200 clippeurs</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Tracking clics temps réel</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Liens bio personnalisés</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Analytics clics avancés</li>
-                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0">✓</span> Support premium 24/7</li>
-                  <li className="flex items-start gap-2"><span className="text-white/30 flex-shrink-0">✗</span> <span className="text-white/40">Pas de tracking vues ni striking auto</span></li>
+                <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Campagnes illimitées</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Jusqu'à 200 clippeurs</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Tracking clics temps réel</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Liens bio personnalisés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Analytics clics avancés</li>
+                  <li className="flex items-start gap-2"><span className="text-[#f0c040] flex-shrink-0 mt-px">✓</span> Support premium 24/7</li>
+                  <li className="flex items-start gap-2"><span className="text-[#F5F4F1]/30 flex-shrink-0 mt-px">×</span> <span className="text-[#F5F4F1]/40">Pas de tracking vues ni striking auto</span></li>
                 </ul>
-                <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+                <Button onClick={handleGetStarted} className="w-full bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1] rounded-lg py-2.5 text-sm font-medium transition-colors border border-warm">
                   Choisir ce plan
                 </Button>
               </div>
             </div>
           ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 max-w-7xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 max-w-7xl mx-auto">
             {/* Starter */}
-            <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+            <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl p-6 space-y-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Starter</p>
-                <p className="text-3xl font-bold text-white">149€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business</p>
+                <p className="text-[#F5F4F1]/55 text-sm font-medium mb-1.5 tracking-wide">Starter</p>
+                <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">149€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · 14j gratuits en Business</p>
               </div>
-              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 1 campagne active</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 15 clippeurs</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 1×/jour à 23h30</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Striking automatique</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Chat avec les clippeurs</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support standard</li>
+              <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> 1 campagne active</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Jusqu'à 15 clippeurs</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Tracking vues 1×/jour à 23h30</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Striking automatique</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Chat avec les clippeurs</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Support standard</li>
               </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+              <Button onClick={handleGetStarted} className="w-full bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1] rounded-lg py-2.5 text-sm font-medium transition-colors border border-warm">
                 Commencer l'essai gratuit
               </Button>
             </div>
 
             {/* Pro */}
-            <div className="bg-[#121212] border border-white/10 rounded-2xl p-5 space-y-4 hover:border-white/20 transition-all flex flex-col">
+            <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl p-6 space-y-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Pro</p>
-                <p className="text-3xl font-bold text-white">349€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14j gratuits en Business · 1×/jour à 23h30</p>
+                <p className="text-[#F5F4F1]/55 text-sm font-medium mb-1.5 tracking-wide">Pro</p>
+                <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">349€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · 14j gratuits en Business</p>
               </div>
-              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> 3 campagnes actives</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Jusqu'à 45 clippeurs (total)</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Tracking vues 1×/jour à 23h30 Paris</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Striking automatique</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Analytics avancés</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Liens de tracking bio</li>
-                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0">✓</span> Support prioritaire</li>
+              <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> 3 campagnes actives</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Jusqu'à 45 clippeurs (total)</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Tracking vues 1×/jour à 23h30 Paris</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Striking automatique</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Analytics avancés</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Liens de tracking bio</li>
+                <li className="flex items-start gap-2"><span className="text-[#39FF14] flex-shrink-0 mt-px">✓</span> Support prioritaire</li>
               </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-white/10 hover:bg-white/20 text-white rounded-lg py-2 text-sm font-medium transition-colors border border-white/10">
+              <Button onClick={handleGetStarted} className="w-full bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1] rounded-lg py-2.5 text-sm font-medium transition-colors border border-warm">
                 Commencer l'essai gratuit
               </Button>
             </div>
 
             {/* Business — FEATURED */}
-            <div className="bg-[#121212] border-2 border-[#FF007F] rounded-2xl p-5 space-y-4 relative flex flex-col">
+            <div className="bg-[#1C1A17]/95 border border-[#FF007F]/60 rounded-2xl p-6 space-y-4 relative flex flex-col shadow-[0_0_0_1px_rgba(255,0,127,0.10)]">
               <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-[#FF007F] text-white text-xs px-3 py-1 rounded-full font-semibold whitespace-nowrap">
                 Recommandé · Essai 14j
               </div>
               <div>
-                <p className="text-white/50 text-sm font-medium mb-1">Business</p>
-                <p className="text-3xl font-bold text-white">449€<span className="text-base text-white/40 font-normal">/mois</span></p>
-                <p className="text-white/30 text-xs mt-1">HT · 14 jours gratuits ici</p>
+                <p className="text-[#FF007F] text-sm font-medium mb-1.5 tracking-wide">Business</p>
+                <p className="text-3xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">449€<span className="text-base text-[#F5F4F1]/40 font-normal ml-0.5">/mois</span></p>
+                <p className="text-[#F5F4F1]/35 text-xs mt-1">HT · 14 jours gratuits ici</p>
               </div>
-              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Campagnes illimitées</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Jusqu'à 400 comptes trackés</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Tracking vues 3×/jour (08h30, 15h30, 23h30 Paris)</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Striking automatique</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Analytics avancés</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Liens de tracking bio</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Support premium 24/7</li>
-                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0">✓</span> Accès API</li>
+              <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Campagnes illimitées</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Jusqu'à 400 comptes trackés</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Tracking vues 3×/jour (08h30, 15h30, 23h30 Paris)</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Striking automatique</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Analytics avancés</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Liens de tracking bio</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Support premium 24/7</li>
+                <li className="flex items-start gap-2"><span className="text-[#FF007F] flex-shrink-0 mt-px">✓</span> Accès API</li>
               </ul>
-              <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#FF007F]/80 text-white rounded-lg py-2 text-sm font-semibold transition-colors">
+              <Button onClick={handleGetStarted} className="w-full bg-[#FF007F] hover:bg-[#E50073] text-white rounded-lg py-2.5 text-sm font-semibold transition-colors">
                 Commencer l'essai gratuit
               </Button>
             </div>
 
             {/* Enterprise */}
-            <div className="bg-[#121212] border border-[#00E5FF]/40 rounded-2xl p-5 space-y-4 hover:border-[#00E5FF]/70 transition-all flex flex-col">
+            <div className="bg-[#1C1A17]/85 border border-[#00E5FF]/35 rounded-2xl p-6 space-y-4 hover:border-[#00E5FF]/60 hover:-translate-y-0.5 transition-all duration-200 flex flex-col">
               <div>
-                <p className="text-[#00E5FF] text-sm font-medium mb-1">Enterprise</p>
-                <p className="text-3xl font-bold text-white">Sur devis</p>
-                <p className="text-white/30 text-xs mt-1">Serveur dédié sur mesure</p>
+                <p className="text-[#00E5FF] text-sm font-medium mb-1.5 tracking-wide">Enterprise</p>
+                <p className="text-3xl font-display font-semibold text-[#F5F4F1] tracking-tight">Sur devis</p>
+                <p className="text-[#F5F4F1]/35 text-xs mt-1">Serveur dédié sur mesure</p>
               </div>
-              <ul className="space-y-1.5 text-sm text-white/60 flex-1">
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Campagnes illimitées</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Clippeurs illimités</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Serveur dédié sur mesure</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Tracking personnalisé</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Striking automatique</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Intégrations sur mesure</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> Account manager dédié</li>
-                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0">✓</span> SLA garanti</li>
+              <ul className="space-y-2 text-sm text-[#F5F4F1]/65 flex-1">
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Campagnes illimitées</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Clippeurs illimités</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Serveur dédié sur mesure</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Tracking personnalisé</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Striking automatique</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Intégrations sur mesure</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> Account manager dédié</li>
+                <li className="flex items-start gap-2"><span className="text-[#00E5FF] flex-shrink-0 mt-px">✓</span> SLA garanti</li>
               </ul>
-              <Button onClick={() => navigate("/contact-devis")} className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black rounded-lg py-2 text-sm font-semibold transition-colors">
+              <Button onClick={() => navigate("/contact-devis")} className="w-full bg-[#00E5FF] hover:bg-[#00d4eb] text-black rounded-lg py-2.5 text-sm font-semibold transition-colors">
                 Nous contacter
               </Button>
             </div>
@@ -899,7 +912,7 @@ export default function LandingPage() {
       </section>
 
       {/* Footer */}
-      <footer className="relative z-10 px-6 lg:px-16 py-8 border-t border-white/5">
+      <footer className="relative z-10 px-6 lg:px-16 py-10 border-t border-warm bg-[#0A0907]">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <img
@@ -907,20 +920,20 @@ export default function LandingPage() {
               alt="The Clip Deal Track"
               className="w-8 h-8 rounded-lg"
             />
-            <span className="font-display font-bold text-white">The Clip Deal Track</span>
+            <span className="font-display font-semibold text-[#F5F4F1] tracking-tight">The Clip Deal Track</span>
           </div>
-          <div className="flex items-center gap-5 text-sm text-white/40">
-            <button onClick={() => navigate("/features")} className="hover:text-white transition-colors">Fonctionnalités</button>
-            <button onClick={() => navigate("/contact-devis")} className="hover:text-white transition-colors">Contact</button>
-            <button onClick={() => navigate("/cgu")} className="hover:text-white transition-colors">CGU</button>
-            <span className="text-white/30">© 2025</span>
+          <div className="flex items-center gap-6 text-sm text-[#F5F4F1]/45">
+            <button onClick={() => navigate("/features")} className="hover:text-[#F5F4F1] transition-colors">Fonctionnalités</button>
+            <button onClick={() => navigate("/contact-devis")} className="hover:text-[#F5F4F1] transition-colors">Contact</button>
+            <button onClick={() => navigate("/cgu")} className="hover:text-[#F5F4F1] transition-colors">CGU</button>
+            <span className="text-[#F5F4F1]/30">© 2026</span>
           </div>
         </div>
       </footer>
 
       {/* Role Selection Modal */}
       <Dialog open={showRoleModal} onOpenChange={setShowRoleModal}>
-        <DialogContent className="bg-[#121212] border-white/10 max-w-2xl">
+        <DialogContent className="bg-[#1C1A17] border-warm max-w-2xl">
           <AnimatePresence mode="wait">
             {step === 1 ? (
               <motion.div
@@ -930,47 +943,47 @@ export default function LandingPage() {
                 exit={{ opacity: 0, x: -20 }}
               >
                 <DialogHeader>
-                  <DialogTitle className="font-display font-bold text-2xl text-white text-center">
+                  <DialogTitle className="font-display font-semibold text-2xl text-[#F5F4F1] text-center tracking-tight">
                     Qui êtes-vous ?
                   </DialogTitle>
-                  <p className="text-white/50 text-center mt-2">
+                  <p className="text-[#F5F4F1]/55 text-center text-sm mt-2">
                     Choisissez votre rôle pour commencer
                   </p>
                 </DialogHeader>
-                
-                <div className="grid sm:grid-cols-2 gap-4 mt-6">
+
+                <div className="grid sm:grid-cols-2 gap-3 mt-6">
                   {roles.map((role) => (
                     <button
                       key={role.id}
                       onClick={() => handleRoleSelect(role.id)}
                       data-testid={`modal-role-${role.id}`}
-                      className={`relative p-5 rounded-xl border text-left transition-all duration-200 ${
+                      className={`relative p-4 rounded-xl border text-left transition-all duration-200 ${
                         selectedRole === role.id
-                          ? "bg-white/10 scale-[1.02]"
-                          : "bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/[0.07]"
+                          ? "bg-[#262320]"
+                          : "bg-[#0E0D0B]/60 border-warm hover:border-[#F5F4F1]/16 hover:bg-[#1C1A17]"
                       }`}
                       style={{
-                        borderColor: selectedRole === role.id ? role.color : undefined,
-                        boxShadow: selectedRole === role.id ? `0 0 20px ${role.color}30` : undefined,
+                        borderColor: selectedRole === role.id ? `${role.color}80` : undefined,
+                        boxShadow: selectedRole === role.id ? `0 0 0 1px ${role.color}40` : undefined,
                       }}
                     >
                       <div
-                        className="w-10 h-10 rounded-lg flex items-center justify-center mb-3"
-                        style={{ backgroundColor: `${role.color}20` }}
+                        className="w-9 h-9 rounded-lg flex items-center justify-center mb-3 border"
+                        style={{ backgroundColor: `${role.color}14`, borderColor: `${role.color}30` }}
                       >
-                        <role.icon className="w-5 h-5" style={{ color: role.color }} />
+                        <role.icon className="w-4.5 h-4.5" style={{ color: role.color }} />
                       </div>
-                      <h3 className="font-display font-bold text-white mb-1">
+                      <h3 className="font-display font-semibold text-[#F5F4F1] text-sm mb-1">
                         {role.title}
                       </h3>
-                      <p className="text-sm text-white/50 leading-relaxed">
+                      <p className="text-xs text-[#F5F4F1]/55 leading-relaxed">
                         {role.description}
                       </p>
                       {selectedRole === role.id && (
                         <motion.div
                           initial={{ scale: 0 }}
                           animate={{ scale: 1 }}
-                          className="absolute top-3 right-3 w-5 h-5 rounded-full flex items-center justify-center"
+                          className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full flex items-center justify-center"
                           style={{ backgroundColor: role.color }}
                         >
                           <ChevronRight className="w-3 h-3 text-black" />
@@ -984,14 +997,14 @@ export default function LandingPage() {
                   onClick={handleNextStep}
                   disabled={!selectedRole}
                   data-testid="modal-next-btn"
-                  className={`w-full mt-6 py-6 font-bold rounded-xl text-lg transition-all duration-200 ${
-                    selectedRole 
-                      ? "bg-white text-black hover:bg-white/90" 
-                      : "bg-white/10 text-white/50 cursor-not-allowed"
+                  className={`w-full mt-6 py-5 font-semibold rounded-lg text-base transition-all duration-200 ${
+                    selectedRole
+                      ? "bg-[#F5F4F1] text-[#0E0D0B] hover:bg-white shadow-sm"
+                      : "bg-[#1C1A17] text-[#F5F4F1]/40 cursor-not-allowed border border-warm"
                   }`}
                 >
                   Suivant
-                  <ChevronRight className="w-5 h-5 ml-2" />
+                  <ChevronRight className="w-4 h-4 ml-1.5" />
                 </Button>
               </motion.div>
             ) : step === 2 ? (
@@ -1005,34 +1018,37 @@ export default function LandingPage() {
                   <div className="flex items-center gap-3 mb-2">
                     <button
                       onClick={handleBackStep}
-                      className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                      className="p-2 rounded-md hover:bg-[#262320] text-[#F5F4F1]/55 hover:text-[#F5F4F1] transition-colors"
                     >
-                      <ArrowLeft className="w-5 h-5" />
+                      <ArrowLeft className="w-4 h-4" />
                     </button>
-                    <div 
-                      className="w-10 h-10 rounded-lg flex items-center justify-center"
-                      style={{ backgroundColor: `${selectedRoleData?.color}20` }}
+                    <div
+                      className="w-9 h-9 rounded-lg flex items-center justify-center border"
+                      style={{
+                        backgroundColor: `${selectedRoleData?.color}14`,
+                        borderColor: `${selectedRoleData?.color}30`,
+                      }}
                     >
-                      {selectedRoleData && <selectedRoleData.icon className="w-5 h-5" style={{ color: selectedRoleData.color }} />}
+                      {selectedRoleData && <selectedRoleData.icon className="w-4.5 h-4.5" style={{ color: selectedRoleData.color }} />}
                     </div>
-                    <DialogTitle className="font-display font-bold text-xl text-white">
+                    <DialogTitle className="font-display font-semibold text-lg text-[#F5F4F1] tracking-tight">
                       Inscription {selectedRoleData?.title}
                     </DialogTitle>
                   </div>
-                  <p className="text-white/50 text-sm ml-14">
+                  <p className="text-[#F5F4F1]/55 text-xs ml-14">
                     Complétez vos informations pour continuer
                   </p>
                 </DialogHeader>
-                
+
                 <div className="space-y-3 mt-6">
                   {/* Photo de profil */}
-                  <div className="flex flex-col items-center gap-3 mb-2">
+                  <div className="flex flex-col items-center gap-2 mb-3">
                     <label className="cursor-pointer group relative">
-                      <div className="w-20 h-20 rounded-full bg-white/10 border-2 border-dashed border-white/20 group-hover:border-white/40 transition-colors flex items-center justify-center overflow-hidden">
+                      <div className="w-20 h-20 rounded-full bg-[#0E0D0B] border-2 border-dashed border-[#F5F4F1]/20 group-hover:border-[#F5F4F1]/35 transition-colors flex items-center justify-center overflow-hidden">
                         {profilePicture ? (
                           <img src={profilePicture} alt="" className="w-full h-full object-cover" />
                         ) : (
-                          <span className="text-white/30 text-3xl">+</span>
+                          <span className="text-[#F5F4F1]/30 text-2xl font-light">+</span>
                         )}
                       </div>
                       <input
@@ -1048,18 +1064,18 @@ export default function LandingPage() {
                         }}
                       />
                     </label>
-                    <p className="text-xs text-white/40">Photo de profil (optionnel)</p>
+                    <p className="text-xs text-[#F5F4F1]/40">Photo de profil (optionnel)</p>
                   </div>
 
                   {/* Nom de l'agence (agency only) */}
                   {selectedRole === "agency" && (
                     <div>
-                      <label className="block text-sm text-white/70 mb-2">Nom de l'agence *</label>
+                      <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Nom de l'agence *</label>
                       <Input
                         value={formData.agencyName}
                         onChange={(e) => handleFormChange("agencyName", e.target.value)}
                         placeholder="Ex: Clip Factory"
-                        className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-6"
+                        className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                         data-testid="input-agency-name"
                       />
                     </div>
@@ -1068,22 +1084,22 @@ export default function LandingPage() {
                   {/* Prénom + Nom — tous les rôles */}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-sm text-white/70 mb-2">Prénom *</label>
+                      <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Prénom *</label>
                       <Input
                         value={formData.firstName}
                         onChange={(e) => handleFormChange("firstName", e.target.value)}
                         placeholder="Jean"
-                        className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-6"
+                        className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                         data-testid="input-first-name"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm text-white/70 mb-2">Nom *</label>
+                      <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Nom *</label>
                       <Input
                         value={formData.lastName}
                         onChange={(e) => handleFormChange("lastName", e.target.value)}
                         placeholder="Dupont"
-                        className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-6"
+                        className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                         data-testid="input-last-name"
                       />
                     </div>
@@ -1093,13 +1109,13 @@ export default function LandingPage() {
                 {/* Mot de passe commun (Google + Email) */}
                 <div className="mt-4 space-y-3">
                   <div>
-                    <label className="block text-sm text-white/70 mb-2">Mot de passe *</label>
+                    <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Mot de passe *</label>
                     <Input
                       type="password"
                       placeholder="Ex: MonMotDePasse1!"
                       value={emailForm.password}
                       onChange={(e) => setEmailForm(f => ({ ...f, password: e.target.value }))}
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                      className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                     />
                     {/* Checklist des règles — visible dès qu'on commence à taper */}
                     {emailForm.password.length > 0 && (() => {
@@ -1112,10 +1128,10 @@ export default function LandingPage() {
                             { ok: r.special, label: "1 caractère spécial (!@#$%...)" },
                           ].map(({ ok, label }) => (
                             <div key={label} className="flex items-center gap-1.5">
-                              <span className={`text-xs font-bold ${ok ? "text-[#39FF14]" : "text-white/25"}`}>
+                              <span className={`text-xs font-bold ${ok ? "text-[#39FF14]" : "text-[#F5F4F1]/25"}`}>
                                 {ok ? "✓" : "×"}
                               </span>
-                              <span className={`text-xs ${ok ? "text-[#39FF14]/80" : "text-white/35"}`}>{label}</span>
+                              <span className={`text-xs ${ok ? "text-[#39FF14]/80" : "text-[#F5F4F1]/35"}`}>{label}</span>
                             </div>
                           ))}
                         </div>
@@ -1123,13 +1139,13 @@ export default function LandingPage() {
                     })()}
                   </div>
                   <div>
-                    <label className="block text-sm text-white/70 mb-2">Confirmer le mot de passe *</label>
+                    <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Confirmer le mot de passe *</label>
                     <Input
                       type="password"
                       placeholder="Répétez votre mot de passe"
                       value={emailForm.confirmPassword}
                       onChange={(e) => setEmailForm(f => ({ ...f, confirmPassword: e.target.value }))}
-                      className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                      className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                     />
                     {emailForm.confirmPassword && emailForm.password !== emailForm.confirmPassword && (
                       <p className="text-red-400 text-xs mt-1">Les mots de passe ne correspondent pas</p>
@@ -1138,7 +1154,7 @@ export default function LandingPage() {
                 </div>
 
                 {/* CGU checkbox */}
-                <label className="flex items-start gap-2 cursor-pointer text-xs text-white/50 mt-4">
+                <label className="flex items-start gap-2 cursor-pointer text-xs text-[#F5F4F1]/50 mt-4">
                   <input
                     type="checkbox"
                     checked={cguAccepted}
@@ -1175,9 +1191,9 @@ export default function LandingPage() {
 
                     {/* Divider */}
                     <div className="flex items-center gap-3">
-                      <div className="flex-1 h-px bg-white/10" />
-                      <span className="text-xs text-white/30">ou</span>
-                      <div className="flex-1 h-px bg-white/10" />
+                      <div className="flex-1 h-px bg-[#F5F4F1]/10" />
+                      <span className="text-xs text-[#F5F4F1]/30">ou</span>
+                      <div className="flex-1 h-px bg-[#F5F4F1]/10" />
                     </div>
 
                     {/* Option Email avec code */}
@@ -1187,12 +1203,12 @@ export default function LandingPage() {
                         placeholder="votre@email.com"
                         value={emailForm.email}
                         onChange={(e) => setEmailForm(f => ({ ...f, email: e.target.value }))}
-                        className="bg-white/5 border-white/10 text-white placeholder:text-white/30"
+                        className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                       />
                       <Button
                         onClick={handleEmailRegister}
                         disabled={emailLoading || !emailForm.email}
-                        className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold"
+                        className="w-full bg-[#00E5FF] hover:bg-[#00d4eb] text-black font-semibold py-5 rounded-lg"
                       >
                         <Mail className="w-4 h-4 mr-2" />
                         {emailLoading ? "Envoi en cours..." : "Continuer avec Email"}
@@ -1200,7 +1216,7 @@ export default function LandingPage() {
                     </div>
                   </div>
                   ) : (
-                  <div className="w-full py-4 rounded-xl text-center text-sm text-white/30 border border-white/10 mt-4">
+                  <div className="w-full py-3.5 rounded-lg text-center text-xs text-[#F5F4F1]/40 border border-warm bg-[#0E0D0B] mt-4">
                     {!isFormValid() ? "Remplissez tous les champs pour continuer" :
                      !cguAccepted ? "Acceptez les CGU pour continuer" :
                      !pwdValid(emailForm.password) ? "Mot de passe non conforme (voir règles ci-dessus)" :
@@ -1221,26 +1237,26 @@ export default function LandingPage() {
                   <div className="flex items-center gap-3 mb-2">
                     <button
                       onClick={() => setStep(2)}
-                      className="p-2 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                      className="p-2 rounded-md hover:bg-[#262320] text-[#F5F4F1]/55 hover:text-[#F5F4F1] transition-colors"
                     >
-                      <ArrowLeft className="w-5 h-5" />
+                      <ArrowLeft className="w-4 h-4" />
                     </button>
-                    <div className="w-10 h-10 rounded-lg bg-[#00E5FF]/20 flex items-center justify-center">
-                      <Mail className="w-5 h-5 text-[#00E5FF]" />
+                    <div className="w-9 h-9 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30 flex items-center justify-center">
+                      <Mail className="w-4.5 h-4.5 text-[#00E5FF]" />
                     </div>
-                    <DialogTitle className="font-display font-bold text-xl text-white">
+                    <DialogTitle className="font-display font-semibold text-lg text-[#F5F4F1] tracking-tight">
                       Vérification email
                     </DialogTitle>
                   </div>
                 </DialogHeader>
                 <div className="mt-3 ml-14 mb-6">
-                  <p className="text-white/50 text-sm">
+                  <p className="text-[#F5F4F1]/55 text-xs">
                     Un code à 6 chiffres a été envoyé à
                   </p>
-                  <p className="text-white font-medium text-sm mt-1">{emailPending}</p>
-                  <p className="text-white/30 text-xs mt-2">Vérifiez aussi votre dossier Spam.</p>
+                  <p className="text-[#F5F4F1] font-medium text-sm mt-0.5">{emailPending}</p>
+                  <p className="text-[#F5F4F1]/35 text-xs mt-2">Vérifiez aussi votre dossier Spam.</p>
                 </div>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <Input
                     type="text"
                     inputMode="numeric"
@@ -1248,12 +1264,12 @@ export default function LandingPage() {
                     placeholder="_ _ _ _ _ _"
                     value={verificationCode}
                     onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                    className="bg-white/5 border-white/10 text-white placeholder:text-white/20 text-center text-3xl tracking-[1rem] font-mono h-16"
+                    className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/20 text-center text-3xl tracking-[1rem] font-mono h-16 rounded-lg"
                   />
                   <Button
                     onClick={handleVerifyCode}
                     disabled={emailLoading || verificationCode.length !== 6}
-                    className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black font-semibold py-6"
+                    className="w-full bg-[#00E5FF] hover:bg-[#00d4eb] text-black font-semibold py-5 rounded-lg"
                   >
                     {emailLoading ? "Vérification..." : "Confirmer mon compte"}
                   </Button>
@@ -1274,7 +1290,7 @@ export default function LandingPage() {
                         toast.error(e.message || "Erreur lors du renvoi");
                       }
                     }}
-                    className="w-full text-center text-sm text-white/40 hover:text-white/70 transition-colors"
+                    className="w-full text-center text-xs text-[#F5F4F1]/45 hover:text-[#F5F4F1]/70 transition-colors py-1"
                   >
                     Renvoyer le code
                   </button>
@@ -1287,76 +1303,76 @@ export default function LandingPage() {
 
       {/* ── Modal Se connecter ── */}
       <Dialog open={showLoginModal} onOpenChange={(o) => { setShowLoginModal(o); if (!o) { setLoginView("login"); setForgotEmail(""); } }}>
-        <DialogContent className="bg-[#121212] border-white/10 max-w-md">
+        <DialogContent className="bg-[#1C1A17] border-warm max-w-md">
           <DialogHeader>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-10 h-10 rounded-lg bg-[#00E5FF]/20 flex items-center justify-center">
-                <LogIn className="w-5 h-5 text-[#00E5FF]" />
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-9 h-9 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30 flex items-center justify-center">
+                <LogIn className="w-4.5 h-4.5 text-[#00E5FF]" />
               </div>
-              <DialogTitle className="font-display font-bold text-xl text-white">
+              <DialogTitle className="font-display font-semibold text-lg text-[#F5F4F1] tracking-tight">
                 Se connecter
               </DialogTitle>
             </div>
           </DialogHeader>
           {loginView === "forgot_sent" ? (
             /* ── Email envoyé ── */
-            <div className="mt-4 text-center space-y-4">
-              <div className="w-14 h-14 rounded-full bg-[#39FF14]/10 flex items-center justify-center mx-auto">
-                <svg className="w-7 h-7 text-[#39FF14]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+            <div className="mt-4 text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-[#39FF14]/10 border border-[#39FF14]/30 flex items-center justify-center mx-auto">
+                <svg className="w-6 h-6 text-[#39FF14]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
               </div>
-              <p className="text-white font-semibold">Email envoyé !</p>
-              <p className="text-white/40 text-sm">Vérifie ta boîte <span className="text-white/70">{forgotEmail}</span> (et les spams). Le lien expire dans 1 heure.</p>
+              <p className="text-[#F5F4F1] font-medium">Email envoyé !</p>
+              <p className="text-[#F5F4F1]/40 text-sm">Vérifie ta boîte <span className="text-[#F5F4F1]/75">{forgotEmail}</span> (et les spams). Le lien expire dans 1 heure.</p>
               <button onClick={() => { setLoginView("login"); setForgotEmail(""); }} className="text-sm text-[#00E5FF] hover:underline">
                 Retour à la connexion
               </button>
             </div>
           ) : loginView === "forgot" ? (
             /* ── Mot de passe oublié ── */
-            <div className="space-y-4 mt-4">
-              <p className="text-white/50 text-sm">Entre ton email — tu recevras un lien pour choisir un nouveau mot de passe.</p>
+            <div className="space-y-3 mt-4">
+              <p className="text-[#F5F4F1]/55 text-sm">Entre ton email — tu recevras un lien pour choisir un nouveau mot de passe.</p>
               <div>
-                <label className="block text-sm text-white/70 mb-2">Email</label>
+                <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Email</label>
                 <Input
                   type="email"
                   placeholder="votre@email.com"
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleForgotPassword()}
-                  className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+                  className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
                   autoFocus
                 />
               </div>
               <Button
                 onClick={handleForgotPassword}
                 disabled={forgotLoading || !forgotEmail.trim()}
-                className="w-full bg-[#f0c040] text-black hover:bg-[#f0c040]/90 font-semibold py-6"
+                className="w-full bg-[#f0c040] text-black hover:bg-[#e6b630] font-semibold py-5 rounded-lg"
               >
                 {forgotLoading ? "Envoi..." : "Envoyer le lien"}
               </Button>
-              <button onClick={() => setLoginView("login")} className="w-full text-center text-sm text-white/40 hover:text-white/70 transition-colors">
+              <button onClick={() => setLoginView("login")} className="w-full text-center text-xs text-[#F5F4F1]/45 hover:text-[#F5F4F1]/70 transition-colors py-1">
                 ← Retour à la connexion
               </button>
             </div>
           ) : (
           /* ── Connexion normale ── */
-          <div className="space-y-4 mt-4">
+          <div className="space-y-3 mt-4">
             <div>
-              <label className="block text-sm text-white/70 mb-2">Email</label>
+              <label className="block text-xs font-medium text-[#F5F4F1]/70 mb-1.5 tracking-wide">Email</label>
               <Input
                 type="email"
                 placeholder="votre@email.com"
                 value={loginForm.email}
                 onChange={(e) => setLoginForm(f => ({ ...f, email: e.target.value }))}
                 onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+                className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
               />
             </div>
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm text-white/70">Mot de passe</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-medium text-[#F5F4F1]/70 tracking-wide">Mot de passe</label>
                 <button
                   onClick={() => { setForgotEmail(loginForm.email); setLoginView("forgot"); }}
-                  className="text-xs text-white/30 hover:text-[#00E5FF] transition-colors"
+                  className="text-xs text-[#F5F4F1]/40 hover:text-[#00E5FF] transition-colors"
                 >
                   Mot de passe oublié ?
                 </button>
@@ -1367,17 +1383,17 @@ export default function LandingPage() {
                 value={loginForm.password}
                 onChange={(e) => setLoginForm(f => ({ ...f, password: e.target.value }))}
                 onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                className="bg-white/5 border-white/10 text-white placeholder:text-white/30 py-5"
+                className="bg-[#0E0D0B] border-warm text-[#F5F4F1] placeholder:text-[#F5F4F1]/30 py-5 rounded-lg"
               />
             </div>
             <Button
               onClick={handleLogin}
               disabled={loginLoading || !loginForm.email || !loginForm.password}
-              className="w-full bg-white text-black hover:bg-white/90 font-semibold py-6 mt-2"
+              className="w-full bg-[#F5F4F1] text-[#0E0D0B] hover:bg-white font-semibold py-5 mt-2 rounded-lg shadow-sm"
             >
               {loginLoading ? "Connexion..." : "Se connecter"}
             </Button>
-            <p className="text-center text-sm text-white/40">
+            <p className="text-center text-sm text-[#F5F4F1]/45">
               Pas encore de compte ?{" "}
               <button
                 onClick={() => { setShowLoginModal(false); handleGetStarted(); }}

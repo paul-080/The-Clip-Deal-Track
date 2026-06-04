@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Chivo:wght@300;400;500;700;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -25,32 +25,32 @@ select option:disabled {
 
 @layer base {
     :root {
-        --background: 0 0% 4%;
-        --foreground: 0 0% 100%;
-        --card: 0 0% 7%;
-        --card-foreground: 0 0% 100%;
-        --popover: 0 0% 7%;
-        --popover-foreground: 0 0% 100%;
+        --background: 36 12% 5%;
+        --foreground: 36 8% 96%;
+        --card: 36 10% 8%;
+        --card-foreground: 36 8% 96%;
+        --popover: 36 10% 8%;
+        --popover-foreground: 36 8% 96%;
         --primary: 186 100% 50%;
         --primary-foreground: 0 0% 0%;
-        --secondary: 0 0% 12%;
-        --secondary-foreground: 0 0% 100%;
-        --muted: 0 0% 12%;
-        --muted-foreground: 0 0% 65%;
+        --secondary: 36 8% 13%;
+        --secondary-foreground: 36 8% 96%;
+        --muted: 36 8% 13%;
+        --muted-foreground: 36 6% 65%;
         --accent: 186 100% 50%;
         --accent-foreground: 0 0% 0%;
         --destructive: 0 84% 60%;
         --destructive-foreground: 0 0% 100%;
-        --border: 0 0% 15%;
-        --input: 0 0% 15%;
+        --border: 36 8% 16%;
+        --input: 36 8% 16%;
         --ring: 186 100% 50%;
         --chart-1: 186 100% 50%;
         --chart-2: 328 100% 50%;
         --chart-3: 105 100% 54%;
         --chart-4: 41 100% 50%;
         --chart-5: 0 84% 55%;
-        --radius: 0.5rem;
-        
+        --radius: 0.75rem;
+
         /* Role colors */
         --clipper: 186 100% 50%;
         --agency: 328 100% 50%;
@@ -70,13 +70,13 @@ html {
 
 body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif;
+    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #0A0A0A;
-    color: #FFFFFF;
+    background-color: #0E0D0B;
+    color: #F5F4F1;
     letter-spacing: -0.011em;
-    font-feature-settings: "cv11", "ss01", "ss03";
+    font-feature-settings: "ss01", "ss03", "cv11";
     min-height: 100vh;
 }
 
@@ -116,53 +116,59 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   STYLE WHOP-LIKE : epure, premium, contours fins, AUCUN glow/gradient/blur
-   Inspiration : whop.com (dark mode propre)
-   - Fond uniforme noir profond
-   - Cards opaques tres legerement plus claires
-   - Bordures ultra-fines (5-7% blanc max)
-   - Pas de backdrop-filter, pas d'ombre, pas de neon
+   STYLE STOCKAPP-DARK : warm, concret, cards bordées nettes, hover lift subtil
+   Inspiration : stockapp (oklch warm transpose en dark)
+   - Fond noir warm (#0E0D0B = chaleur, pas noir pur)
+   - Cards solides un peu plus claires (#16151320) avec border crémeuse
+   - Bordures cremeuses (warm white 6-10% au lieu de pur blanc)
+   - Hover : translate-y-[-1px] + border opacity bump
+   - Pas de neon, pas de glow, focus ring discret
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* Cards dashboard - opaques avec contour fin (style Whop) */
+/* Cards dashboard - solides warm avec bordure crémeuse */
 body .bg-\[\#121212\],
 body div[class*="bg-[#121212]"] {
-    background-color: #111114 !important;
-    border-color: rgba(255, 255, 255, 0.06) !important;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
+    background-color: #16151320 !important;
+    background-color: rgba(28, 26, 23, 0.85) !important;
+    border-color: rgba(245, 244, 241, 0.08) !important;
+    transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
 }
 body .bg-\[\#121212\]:hover,
 body div[class*="bg-[#121212]"]:hover {
-    border-color: rgba(255, 255, 255, 0.10) !important;
+    border-color: rgba(245, 244, 241, 0.14) !important;
 }
 
-/* Sidebar - fond legerement plus sombre que le body */
+/* Sidebar - fond legerement plus sombre que le body, ton warm */
 body .bg-\[\#0d0d0d\],
 body aside[class*="bg-[#0d0d0d]"] {
-    background-color: #060608 !important;
-    border-right-color: rgba(255, 255, 255, 0.05) !important;
+    background-color: #0A0907 !important;
+    border-right-color: rgba(245, 244, 241, 0.06) !important;
 }
 
 /* Card variantes (inputs / panels) */
 body .bg-\[\#1a1a1a\] {
-    background-color: #16161A !important;
+    background-color: #1C1A17 !important;
 }
 
-/* Bordures fines partout (style Whop) */
+/* Bordures fines partout (warm, pas pures blanches) */
 body .border-white\/10 {
-    border-color: rgba(255, 255, 255, 0.06) !important;
+    border-color: rgba(245, 244, 241, 0.08) !important;
 }
 body .border-white\/5 {
-    border-color: rgba(255, 255, 255, 0.04) !important;
+    border-color: rgba(245, 244, 241, 0.05) !important;
+}
+body .border-white\/20 {
+    border-color: rgba(245, 244, 241, 0.16) !important;
 }
 
-/* Chiffres mono : weight 700, letter-spacing serre, PAS de glow */
+/* Chiffres mono : weight 600, letter-spacing serre, tabular */
 body .font-mono.font-bold {
-    font-weight: 700;
-    letter-spacing: -0.025em;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
 }
 
-/* Boutons primaires : couleur solide, PAS de glow/gradient */
+/* Boutons accent : pas de glow, hover assombrit la couleur */
 body button[class*="bg-[#FF007F]"],
 body .bg-\[\#FF007F\] {
     transition: background-color 0.15s ease, transform 0.05s ease;
@@ -176,42 +182,47 @@ body .bg-\[\#FF007F\]:active {
     transform: scale(0.98);
 }
 
-/* Tableaux : lignes hover discretes */
+/* Tableaux : lignes hover discretes warm */
 body tbody tr:hover {
-    background-color: rgba(255, 255, 255, 0.02) !important;
+    background-color: rgba(245, 244, 241, 0.025) !important;
 }
 
-/* Inputs / textareas focus : border accent au lieu de glow */
+/* Inputs / textareas focus : ring crémeux subtil, pas de glow cyan */
 body input:focus, body textarea:focus, body select:focus {
-    border-color: rgba(255, 255, 255, 0.20) !important;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+    border-color: rgba(245, 244, 241, 0.22) !important;
+    box-shadow: 0 0 0 1px rgba(245, 244, 241, 0.10) !important;
 }
 
-/* Coins arrondis legerement plus prononces (style Whop) */
+/* Coins arrondis stockapp : 12px cards / 16px modals / 8px buttons */
 body .rounded-xl {
     border-radius: 12px !important;
 }
 body .rounded-2xl {
     border-radius: 16px !important;
 }
+body .rounded-3xl {
+    border-radius: 20px !important;
+}
 
 h1, h2, h3, h4, h5, h6 {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     letter-spacing: -0.022em;
     font-weight: 600;
 }
 
 .font-display {
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     letter-spacing: -0.022em;
+    font-feature-settings: "ss01", "ss03";
 }
 
 .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Geist Mono', 'JetBrains Mono', monospace;
+    font-feature-settings: "tnum", "ss01";
 }
 
 code {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Geist Mono', 'JetBrains Mono', monospace;
 }
 
 /* ─── Anti-copy / Security ───────────────────────────────────────────────── */
@@ -226,23 +237,23 @@ img.clickable {
 }
 
 /* ─── Scrollbar styling ───────────────────────────────────────────────────── */
-/* Scrollbar styling */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #121212;
+    background: #0E0D0B;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #333;
-    border-radius: 3px;
+    background: #2A2723;
+    border-radius: 4px;
+    border: 2px solid #0E0D0B;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #444;
+    background: #3A3631;
 }
 
 /* Role accent utilities */
@@ -262,52 +273,41 @@ img.clickable {
     --accent-color: #FFB300;
 }
 
-/* Glass morphism */
+/* Glass morphism (toujours utilisé par d'anciens écrans, mais ton warm) */
 .glass {
-    background: rgba(18, 18, 18, 0.8);
+    background: rgba(22, 21, 19, 0.85);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
 }
 
 .glass-darker {
-    background: rgba(10, 10, 10, 0.9);
+    background: rgba(14, 13, 11, 0.92);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
 }
 
-/* Neon glow effects */
+/* Glow effects désaturés (ne sont quasi pas visibles, gardés pour compat) */
 .glow-clipper {
-    box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
+    box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.18);
 }
 
 .glow-agency {
-    box-shadow: 0 0 20px rgba(255, 0, 127, 0.3);
+    box-shadow: 0 0 0 1px rgba(255, 0, 127, 0.18);
 }
 
 .glow-manager {
-    box-shadow: 0 0 20px rgba(57, 255, 20, 0.3);
+    box-shadow: 0 0 0 1px rgba(57, 255, 20, 0.18);
 }
 
 .glow-client {
-    box-shadow: 0 0 20px rgba(255, 179, 0, 0.3);
+    box-shadow: 0 0 0 1px rgba(255, 179, 0, 0.18);
 }
 
-/* Text glow */
-.text-glow-clipper {
-    text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
-}
-
-.text-glow-agency {
-    text-shadow: 0 0 10px rgba(255, 0, 127, 0.5);
-}
-
-.text-glow-manager {
-    text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
-}
-
-.text-glow-client {
-    text-shadow: 0 0 10px rgba(255, 179, 0, 0.5);
-}
+/* Text glow neutralisé : on garde la couleur, on retire la shadow */
+.text-glow-clipper { color: #00E5FF; }
+.text-glow-agency { color: #FF007F; }
+.text-glow-manager { color: #39FF14; }
+.text-glow-client { color: #FFB300; }
 
 /* Gradient text */
 .gradient-text {
@@ -366,32 +366,41 @@ img.clickable {
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* Card hover effect */
+/* Card hover effect : lift subtil stockapp-style */
 .card-hover {
-    transition: transform 200ms ease, border-color 200ms ease;
+    transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
 }
 
 .card-hover:hover {
-    transform: translateY(-2px);
+    transform: translateY(-1px);
+    border-color: rgba(245, 244, 241, 0.16) !important;
 }
 
 /* Button animations */
 .btn-primary {
-    transition: background-color 200ms ease, transform 100ms ease;
+    transition: background-color 180ms ease, transform 90ms ease;
 }
 
 .btn-primary:hover {
-    transform: scale(1.02);
+    transform: translateY(-0.5px);
 }
 
 .btn-primary:active {
     transform: scale(0.98);
 }
 
-/* Input focus ring */
+/* Input focus ring : crémeux discret, plus de glow cyan */
 input:focus, textarea:focus, select:focus {
     outline: none;
-    box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.3);
+    box-shadow: 0 0 0 1px rgba(245, 244, 241, 0.18);
+}
+
+/* Hover lift utilitaire stockapp */
+.hover-lift {
+    transition: transform 180ms ease, border-color 180ms ease;
+}
+.hover-lift:hover {
+    transform: translateY(-1px);
 }
 
 /* Chat bubble animation */
@@ -484,4 +493,65 @@ input:focus, textarea:focus, select:focus {
     [data-debug-wrapper="true"] {
         display: contents !important;
     }
+}
+
+/* ─── Stockapp-dark utilities ──────────────────────────────────────────────
+   Texture warm subtile pour les hero / sections featured.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Gradient radial très subtil (chaleur en haut) */
+.bg-warm-radial {
+    background-image:
+        radial-gradient(ellipse 1200px 600px at 50% -200px, rgba(255, 165, 100, 0.06), transparent 60%),
+        radial-gradient(ellipse 800px 400px at 90% 0%, rgba(255, 0, 127, 0.04), transparent 60%),
+        radial-gradient(ellipse 800px 400px at 10% 100%, rgba(0, 229, 255, 0.035), transparent 60%);
+}
+
+/* Noise grain plus subtil que .grain (3% au lieu de 3% complet sur tout) */
+.noise-bg {
+    position: relative;
+}
+.noise-bg::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    opacity: 0.025;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+}
+
+/* Border crémeux warm — utilisable directement */
+.border-warm {
+    border-color: rgba(245, 244, 241, 0.09) !important;
+}
+.border-warm:hover {
+    border-color: rgba(245, 244, 241, 0.16) !important;
+}
+
+/* Card stockapp standard : prêt à l'emploi */
+.card-stock {
+    background-color: rgba(28, 26, 23, 0.85);
+    border: 1px solid rgba(245, 244, 241, 0.08);
+    border-radius: 12px;
+    transition: transform 180ms ease, border-color 180ms ease;
+}
+.card-stock:hover {
+    border-color: rgba(245, 244, 241, 0.16);
+    transform: translateY(-1px);
+}
+
+/* Pill / badge style stockapp (border + bg subtil) */
+.pill-stock {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    border: 1px solid rgba(245, 244, 241, 0.09);
+    background-color: rgba(28, 26, 23, 0.6);
+    color: rgba(245, 244, 241, 0.7);
 }
