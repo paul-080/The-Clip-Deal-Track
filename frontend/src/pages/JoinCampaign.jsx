@@ -89,11 +89,11 @@ function ClientStatsPage({ token }) {
   const platforms = Object.keys(stats.platforms || {});
 
   const kpis = [
-    { label: "Vues totales",    value: fmt(stats.total_views),    color: "text-white" },
-    { label: "Likes",           value: fmt(stats.total_likes),    color: "text-[#FFB300]" },
-    { label: "Commentaires",    value: fmt(stats.total_comments), color: "text-white/70" },
-    { label: "Engagement",      value: `${stats.engagement}%`,   color: "text-[#39FF14]" },
-    { label: "Moy. vues/vidéo", value: fmt(stats.avg_views),     color: "text-[#00E5FF]" },
+    { label: "Vues totales",    value: fmt(stats.total_views),    color: "text-white",       hint: "Total des vues de toutes les vidéos de la campagne" },
+    { label: "Likes",           value: fmt(stats.total_likes),    color: "text-[#FFB300]",   hint: "Total des likes" },
+    { label: "Commentaires",    value: fmt(stats.total_comments), color: "text-white/70",    hint: "Total des commentaires" },
+    { label: "Engagement",      value: `${stats.engagement}%`,    color: "text-[#39FF14]",   hint: "Taux d'engagement = (likes + commentaires) ÷ vues. Plus c'est haut, plus l'audience réagit." },
+    { label: "Moy. vues/vidéo", value: fmt(stats.avg_views),      color: "text-[#00E5FF]",   hint: "Vues moyennes par vidéo" },
   ];
 
   return (
@@ -121,8 +121,8 @@ function ClientStatsPage({ token }) {
 
         {/* 5 KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {kpis.map(({ label, value, color }) => (
-            <div key={label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+          {kpis.map(({ label, value, color, hint }) => (
+            <div key={label} className="bg-[#121212] border border-white/10 rounded-xl p-4" title={hint}>
               <p className={`font-mono font-black text-2xl ${color}`}>{value}</p>
               <p className="text-xs text-white/40 mt-1">{label}</p>
             </div>
@@ -162,7 +162,7 @@ function ClientStatsPage({ token }) {
                   ))}
                 </div>
               </div>
-              {tlData.length > 0 ? (
+              {tlData.length > 0 && tlData.some(d => (d.views || 0) > 0) ? (
                 <ResponsiveContainer width="100%" height={200}>
                   <AreaChart data={tlData}>
                     <defs>
@@ -184,8 +184,8 @@ function ClientStatsPage({ token }) {
                   </AreaChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="h-[200px] flex items-center justify-center text-white/30 text-sm">
-                  Aucune donnée disponible
+                <div className="h-[200px] flex items-center justify-center text-center px-4">
+                  <p className="text-white/40 text-sm">Pas encore de données — les vues s'accumulent à mesure que les vidéos sont publiées.</p>
                 </div>
               )}
             </div>
@@ -242,7 +242,11 @@ function ClientStatsPage({ token }) {
             </div>
 
             {filteredVideos.length === 0 ? (
-              <div className="text-center py-12 text-white/30">Aucune vidéo</div>
+              <div className="text-center py-14 bg-[#121212] rounded-xl border border-white/10">
+                <Video className="w-10 h-10 text-white/20 mx-auto mb-3" />
+                <p className="text-white/60 font-medium mb-1">Aucune vidéo pour l'instant</p>
+                <p className="text-white/35 text-sm max-w-sm mx-auto">Les vidéos de la campagne s'afficheront ici dès leur détection.</p>
+              </div>
             ) : (
               <div className="space-y-2">
                 {filteredVideos.map((v, i) => {

@@ -109,12 +109,20 @@ function ClientHome({ campaigns, loading }) {
       ) : campaigns.length === 0 ? (
         <Card className="bg-[#121212] border-white/10">
           <CardContent className="p-12 text-center">
-            <Film className="w-12 h-12 text-white/20 mx-auto mb-4" />
-            <p className="text-white/50">Vous n'avez pas encore de campagnes.</p>
-            <p className="text-white/30 text-sm mt-1 mb-6">Découvrez les campagnes actives et rejoignez-en une pour voir les stats en temps réel.</p>
+            <div className="w-16 h-16 rounded-2xl bg-[#FFB300]/15 flex items-center justify-center mx-auto mb-5">
+              <Compass className="w-8 h-8 text-[#FFB300]" />
+            </div>
+            <h3 className="text-white font-bold text-xl mb-2">Aucune campagne pour l'instant</h3>
+            <p className="text-white/50 text-sm max-w-md mx-auto mb-2">
+              Une campagne, c'est un projet où des clippeurs publient des vidéos pour vous.
+            </p>
+            <p className="text-white/40 text-sm max-w-md mx-auto mb-6">
+              Rejoignez une campagne pour voir en direct les vues, likes et performances de chaque vidéo.
+            </p>
             <button onClick={() => navigate("/client/discover")}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm transition-all"
-              style={{ background: "#FFB300", color: "#000" }}>
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all hover:scale-105"
+              style={{ background: "#FFB300", color: "#000" }}
+              title="Voir les campagnes disponibles à rejoindre">
               <Compass className="w-4 h-4" /> Découvrir les campagnes
             </button>
           </CardContent>
@@ -305,13 +313,13 @@ function CampaignView({ campaigns }) {
           {/* KPI row — same as agency (5 cards, no gains estimés) */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             {[
-              { label: "Vues totales",    value: fmt(totalViews),      color: "text-white" },
-              { label: "Likes",           value: fmt(totalLikes),      color: "text-[#FFB300]" },
-              { label: "Commentaires",    value: fmt(totalComments),   color: "text-white/70" },
-              { label: "Engagement",      value: `${engagementRate}%`, color: "text-[#39FF14]" },
-              { label: "Moy. vues/vidéo", value: fmt(avgViews),        color: "text-[#00E5FF]" },
+              { label: "Vues totales",    value: fmt(totalViews),      color: "text-white",       hint: "Total des vues de toutes les vidéos de la campagne" },
+              { label: "Likes",           value: fmt(totalLikes),      color: "text-[#FFB300]",   hint: "Total des likes sur toutes les vidéos" },
+              { label: "Commentaires",    value: fmt(totalComments),   color: "text-white/70",    hint: "Total des commentaires sur toutes les vidéos" },
+              { label: "Engagement",      value: `${engagementRate}%`, color: "text-[#39FF14]",   hint: "Taux d'engagement = (likes + commentaires) ÷ vues. Plus c'est haut, plus l'audience réagit." },
+              { label: "Moy. vues/vidéo", value: fmt(avgViews),        color: "text-[#00E5FF]",   hint: "Vues moyennes par vidéo dans la campagne" },
             ].map(kpi => (
-              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4" title={kpi.hint}>
                 <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
                 <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
               </div>
@@ -429,9 +437,12 @@ function CampaignView({ campaigns }) {
               <div className="w-6 h-6 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />
             </div>
           ) : displayVideos.length === 0 ? (
-            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
-              <Film className="w-10 h-10 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">Aucune vidéo trackée pour le moment</p>
+            <div className="text-center py-16 bg-[#121212] rounded-xl border border-white/10">
+              <Film className="w-12 h-12 text-white/20 mx-auto mb-4" />
+              <p className="text-white/60 font-medium mb-1">Aucune vidéo pour l'instant</p>
+              <p className="text-white/35 text-sm max-w-sm mx-auto">
+                Les vidéos publiées par les clippeurs apparaîtront ici dès qu'elles seront détectées. Patientez quelques heures après la publication.
+              </p>
             </div>
           ) : (
             /* ── même style que Clip Winner ── */
@@ -548,9 +559,12 @@ function ClientClipWinner({ clips, loading, onRefresh }) {
           <div className="w-8 h-8 border-2 border-[#FFB300]/30 border-t-[#FFB300] rounded-full animate-spin" />
         </div>
       ) : clips.length === 0 ? (
-        <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
-          <p className="text-4xl mb-3">🏆</p>
-          <p className="text-sm">Aucun clip tracké pour l'instant</p>
+        <div className="text-center py-16 bg-[#121212] rounded-xl border border-white/10">
+          <p className="text-5xl mb-4">🏆</p>
+          <p className="text-white/60 font-medium mb-1">Pas encore de classement</p>
+          <p className="text-white/35 text-sm max-w-sm mx-auto">
+            Le top 10 des meilleurs clips de la campagne apparaîtra ici dès les premières vues comptabilisées.
+          </p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -697,9 +711,18 @@ function DiscoverCampaigns({ onJoin }) {
           {[1,2,3,4,5,6].map((i) => <div key={i} className="h-56 bg-white/5 rounded-2xl animate-pulse" />)}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-20 text-white/30 bg-[#121212] rounded-xl border border-white/10">
-          <Compass className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="text-sm">{search ? "Aucune campagne ne correspond à votre recherche" : "Aucune campagne disponible pour le moment"}</p>
+        <div className="text-center py-20 bg-[#121212] rounded-xl border border-white/10">
+          <div className="w-16 h-16 rounded-2xl bg-[#FFB300]/15 flex items-center justify-center mx-auto mb-5">
+            <Compass className="w-8 h-8 text-[#FFB300]" />
+          </div>
+          <p className="text-white/70 font-medium mb-2">
+            {search ? "Aucun résultat" : "Aucune campagne disponible pour l'instant"}
+          </p>
+          <p className="text-white/40 text-sm max-w-md mx-auto">
+            {search
+              ? "Essayez un autre nom de campagne ou d'agence."
+              : "Les campagnes apparaîtront ici dès qu'une agence en lance une nouvelle. Revenez bientôt."}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -718,17 +741,20 @@ function DiscoverCampaigns({ onJoin }) {
                     {c.agency_name && <p className="text-white/40 text-xs truncate">{c.agency_name}</p>}
                   </div>
                   {status === "active" ? (
-                    <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
+                    <span title="Votre demande a été validée par l'agence — vous pouvez voir toutes les stats."
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
                       style={{ background: "#22c55e20", color: "#22c55e", border: "1px solid #22c55e30" }}>
                       <CheckCircle className="w-2.5 h-2.5" /> Accès autorisé
                     </span>
                   ) : status === "pending" ? (
-                    <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
+                    <span title="Votre demande a été envoyée — l'agence va la valider sous peu."
+                      className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
                       style={{ background: "#f5a62320", color: "#f5a623", border: "1px solid #f5a62330" }}>
                       <Clock className="w-2.5 h-2.5" /> En attente
                     </span>
                   ) : (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
+                    <span title="Cette campagne accepte de nouveaux clients — cliquez pour demander l'accès."
+                      className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0"
                       style={{ background: "#ffffff10", color: "rgba(255,255,255,0.35)", border: "1px solid rgba(255,255,255,0.1)" }}>
                       Ouvert
                     </span>

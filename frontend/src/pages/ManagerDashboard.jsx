@@ -205,7 +205,7 @@ function HomePage({ reminderStatus, campaigns }) {
       </div>
 
       {/* Campaign shortcuts */}
-      {campaigns.length > 0 && (
+      {campaigns.length > 0 ? (
         <Card className="bg-[#121212] border-white/10">
           <CardHeader>
             <CardTitle className="text-white flex items-center gap-2 text-base">
@@ -219,11 +219,34 @@ function HomePage({ reminderStatus, campaigns }) {
                 key={c.campaign_id}
                 onClick={() => navigate(`/manager/campaign/${c.campaign_id}`)}
                 className="w-full flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/8 border border-white/8 hover:border-[#39FF14]/30 transition-all text-left"
+                title="Ouvrir le tableau de bord de cette campagne"
               >
                 <span className="text-white text-sm font-medium">{c.name}</span>
                 <ChevronRight className="w-4 h-4 text-white/30" />
               </button>
             ))}
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="bg-[#121212] border-white/10">
+          <CardContent className="p-10 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-[#39FF14]/15 flex items-center justify-center mx-auto mb-5">
+              <Users className="w-8 h-8 text-[#39FF14]" />
+            </div>
+            <h3 className="text-white font-bold text-xl mb-2">Tu n'es pas encore manager d'une campagne</h3>
+            <p className="text-white/50 text-sm max-w-md mx-auto mb-2">
+              En tant que manager, tu supervises les clippeurs d'une campagne : conseils, motivation, suivi des performances.
+            </p>
+            <p className="text-white/40 text-sm max-w-md mx-auto mb-6">
+              Trouve une campagne qui te plaît et postule pour devenir son manager.
+            </p>
+            <button
+              onClick={() => navigate("/manager/discover")}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all hover:scale-105"
+              style={{ background: "#39FF14", color: "#000" }}
+              title="Voir les campagnes ouvertes aux managers">
+              <Search className="w-4 h-4" /> Découvrir les campagnes
+            </button>
           </CardContent>
         </Card>
       )}
@@ -350,8 +373,8 @@ function DiscoverCampaigns({ onJoin }) {
             </div>
 
             <div className="bg-[#39FF14]/8 border border-[#39FF14]/20 rounded-xl p-4 space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-white/50">RPM</span>
+              <div className="flex justify-between text-sm" title="Rémunération par 1000 vues">
+                <span className="text-white/50">RPM <span className="text-white/30 text-xs">(€/1K vues)</span></span>
                 <span className="font-mono text-[#39FF14] font-bold">€{selectedCampaign.rpm}</span>
               </div>
               <div className="flex justify-between text-sm">
@@ -430,12 +453,18 @@ function DiscoverCampaigns({ onJoin }) {
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4">
-            <Search className="w-8 h-8 text-white/20" />
+        <div className="text-center py-16 bg-[#121212] rounded-2xl border border-white/10">
+          <div className="w-16 h-16 rounded-2xl bg-[#39FF14]/15 flex items-center justify-center mx-auto mb-5">
+            <Search className="w-8 h-8 text-[#39FF14]" />
           </div>
-          <p className="text-white/40 text-lg font-medium">Aucune campagne disponible</p>
-          <p className="text-white/20 text-sm mt-2">Revenez plus tard ou contactez une agence</p>
+          <p className="text-white font-semibold text-lg mb-2">
+            {searchQuery ? "Aucun résultat" : "Aucune campagne ouverte pour le moment"}
+          </p>
+          <p className="text-white/40 text-sm max-w-md mx-auto">
+            {searchQuery
+              ? "Essayez un autre nom de campagne ou d'agence."
+              : "Les campagnes apparaîtront ici dès qu'une agence en publie une nouvelle. Reviens plus tard."}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -469,7 +498,7 @@ function DiscoverCampaigns({ onJoin }) {
 
                     {/* Stats row */}
                     <div className="flex items-center gap-3 text-xs">
-                      <span className="font-mono font-bold text-[#39FF14]">€{campaign.rpm} RPM</span>
+                      <span className="font-mono font-bold text-[#39FF14]" title="RPM = Rémunération par 1000 vues">€{campaign.rpm} / 1K vues</span>
                       {campaign.platforms?.map(p => (
                         <span key={p} className="px-1.5 py-0.5 rounded-md bg-white/8 text-white/50 capitalize">{p}</span>
                       ))}
@@ -872,14 +901,14 @@ function CampaignDashboard({ campaigns }) {
           {/* KPI row */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {[
-              { label: "Vues totales",    value: fmt(totalViews),            color: "text-white" },
-              { label: "Likes",           value: fmt(totalLikes),            color: "text-[#FF007F]" },
-              { label: "Commentaires",    value: fmt(totalComments),         color: "text-white/70" },
-              { label: "Engagement",      value: `${engagementRate}%`,       color: "text-[#39FF14]" },
-              { label: "Moy. vues/vidéo", value: fmt(avgViews),              color: "text-[#00E5FF]" },
-              { label: "Gains estimés",   value: `€${totalEarnings.toFixed(0)}`, color: "text-[#f0c040]" },
+              { label: "Vues totales",    value: fmt(totalViews),                  color: "text-white",     hint: "Total des vues de toutes les vidéos de la campagne" },
+              { label: "Likes",           value: fmt(totalLikes),                  color: "text-[#FF007F]", hint: "Total des likes sur toutes les vidéos" },
+              { label: "Commentaires",    value: fmt(totalComments),               color: "text-white/70",  hint: "Total des commentaires sur toutes les vidéos" },
+              { label: "Engagement",      value: `${engagementRate}%`,             color: "text-[#39FF14]", hint: "Taux d'engagement = (likes + commentaires) ÷ vues. Plus c'est haut, plus l'audience réagit." },
+              { label: "Moy. vues/vidéo", value: fmt(avgViews),                    color: "text-[#00E5FF]", hint: "Vues moyennes par vidéo dans la campagne" },
+              { label: "Gains estimés",   value: `€${totalEarnings.toFixed(0)}`,   color: "text-[#f0c040]", hint: "Total que les clippeurs vont toucher (RPM × vues ÷ 1000)" },
             ].map(kpi => (
-              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4">
+              <div key={kpi.label} className="bg-[#121212] border border-white/10 rounded-xl p-4" title={kpi.hint}>
                 <p className="text-xs text-white/40 mb-1">{kpi.label}</p>
                 <p className={`font-mono font-bold text-xl ${kpi.color}`}>{kpi.value}</p>
               </div>
@@ -1014,7 +1043,11 @@ function CampaignDashboard({ campaigns }) {
             <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
               <p className="text-white font-medium mb-3">Classement des clippeurs</p>
               {activeMembers.length === 0 ? (
-                <p className="text-white/30 text-sm text-center py-4">Aucun clippeur actif</p>
+                <div className="text-center py-6">
+                  <Users className="w-8 h-8 text-white/15 mx-auto mb-2" />
+                  <p className="text-white/40 text-sm font-medium">Aucun clippeur actif</p>
+                  <p className="text-white/25 text-xs mt-1">Les clippeurs apparaîtront ici dès qu'ils rejoindront.</p>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {activeMembers.map((member, index) => {
@@ -1253,10 +1286,12 @@ function CampaignDashboard({ campaigns }) {
 
           {/* Table header */}
           {displayVideos.length === 0 ? (
-            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
-              <TrendingUp className="w-10 h-10 mx-auto mb-3 opacity-20" />
-              <p className="text-sm">Aucune vidéo trackée</p>
-              <p className="text-xs mt-1">Le tracking démarre dès qu'un clippeur connecte son compte social.</p>
+            <div className="text-center py-16 bg-[#121212] rounded-xl border border-white/10">
+              <Video className="w-12 h-12 text-white/20 mx-auto mb-4" />
+              <p className="text-white/60 font-medium mb-1">Aucune vidéo pour l'instant</p>
+              <p className="text-white/35 text-sm max-w-md mx-auto">
+                Le suivi des vues démarre dès qu'un clippeur ajoute son compte et publie une vidéo. Patientez quelques minutes après publication.
+              </p>
             </div>
           ) : (
             <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
@@ -1328,9 +1363,11 @@ function CampaignDashboard({ campaigns }) {
                 </div>
               ) : allAccountsByClipper.length === 0 ? (
                 <div className="text-center py-20 bg-[#121212] border border-white/10 rounded-xl">
-                  <Users className="w-12 h-12 text-white/10 mx-auto mb-3" />
-                  <p className="text-white/40">Aucun compte assigné</p>
-                  <p className="text-white/20 text-sm mt-1">Les clippeurs doivent attribuer leurs comptes depuis leur dashboard</p>
+                  <Users className="w-12 h-12 text-white/20 mx-auto mb-4" />
+                  <p className="text-white/60 font-medium mb-1">Aucun compte connecté</p>
+                  <p className="text-white/35 text-sm max-w-md mx-auto">
+                    Les clippeurs doivent connecter leurs comptes (TikTok, Instagram, YouTube) depuis leur dashboard pour que leurs vidéos soient suivies.
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1469,10 +1506,12 @@ function CampaignDashboard({ campaigns }) {
               <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: "#f0c04040", borderTopColor: "#f0c040" }} />
             </div>
           ) : topClips.length === 0 ? (
-            <div className="text-center py-16 text-white/30 bg-[#121212] rounded-xl border border-white/10">
-              <p className="text-4xl mb-3">🏆</p>
-              <p className="text-sm">Aucun clip tracké pour l'instant</p>
-              <p className="text-xs mt-1">Les clips apparaîtront ici dès que le tracking sera actif.</p>
+            <div className="text-center py-16 bg-[#121212] rounded-xl border border-white/10">
+              <p className="text-5xl mb-4">🏆</p>
+              <p className="text-white/60 font-medium mb-1">Pas encore de top clips</p>
+              <p className="text-white/35 text-sm max-w-sm mx-auto">
+                Le classement des meilleures vidéos apparaîtra ici dès les premières vues comptabilisées.
+              </p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -1708,7 +1747,11 @@ function AdvicesPage({ campaigns }) {
         </CardHeader>
         <CardContent>
           {advices.length === 0 ? (
-            <p className="text-white/50 text-center py-8">Aucun conseil envoyé</p>
+            <div className="text-center py-10">
+              <Lightbulb className="w-10 h-10 text-white/20 mx-auto mb-3" />
+              <p className="text-white/60 font-medium mb-1">Aucun conseil envoyé</p>
+              <p className="text-white/35 text-sm">Tes conseils s'afficheront ici une fois envoyés.</p>
+            </div>
           ) : (
             <div className="space-y-4">
               {advices.map((advice) => (

@@ -77,10 +77,13 @@ export default function RoleSelection() {
           className="text-center mb-12"
         >
           <h1 className="font-display font-bold text-3xl text-white mb-3">
-            Choisissez votre rôle
+            Bienvenue {user?.name} !
           </h1>
-          <p className="text-white/50">
-            Bienvenue {user?.name} ! Sélectionnez comment vous souhaitez utiliser la plateforme.
+          <p className="text-white/50 mb-1">
+            Choisissez votre rôle pour commencer.
+          </p>
+          <p className="text-white/30 text-sm">
+            Vous pourrez toujours en changer plus tard depuis vos paramètres.
           </p>
         </motion.div>
 
@@ -93,6 +96,7 @@ export default function RoleSelection() {
               transition={{ delay: index * 0.1 }}
               onClick={() => setSelectedRole(role.id)}
               data-testid={`role-${role.id}-btn`}
+              title={role.description}
               className={`relative p-6 rounded-xl border text-left transition-colors duration-200 ${
                 selectedRole === role.id
                   ? "bg-white/5 border-white/20"

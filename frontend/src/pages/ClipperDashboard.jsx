@@ -526,24 +526,60 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
 
   const displayFeed = feed;
 
+  const navigate = useNavigate();
+  const noCampaigns = !stats?.campaign_stats || stats.campaign_stats.length === 0;
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6" data-testid="clipper-home">
+      {/* Onboarding hero — pas de campagne */}
+      {noCampaigns && (
+        <Card className="bg-gradient-to-br from-[#00E5FF]/10 to-[#FF007F]/5 border-[#00E5FF]/20">
+          <CardContent className="p-8 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-[#00E5FF]/20 flex items-center justify-center mx-auto mb-5">
+              <Search className="w-8 h-8 text-[#00E5FF]" />
+            </div>
+            <h2 className="text-white font-bold text-2xl mb-2">Bienvenue !</h2>
+            <p className="text-white/60 text-sm max-w-md mx-auto mb-2">
+              Pour commencer à gagner : rejoins une campagne, connecte tes comptes (TikTok / Insta / YouTube), publie tes vidéos.
+            </p>
+            <p className="text-white/40 text-sm max-w-md mx-auto mb-6">
+              Plus tes vidéos font de vues, plus tu touches.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => navigate("/clipper/discover")}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all hover:scale-105"
+                style={{ background: "#00E5FF", color: "#000" }}
+                title="Voir les campagnes ouvertes aux clippeurs">
+                <Search className="w-4 h-4" /> Trouver une campagne
+              </button>
+              <button
+                onClick={() => navigate("/clipper/accounts")}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl font-medium text-sm transition-all border border-white/15 text-white hover:bg-white/5"
+                title="Ajouter tes comptes TikTok, Instagram ou YouTube">
+                <Smartphone className="w-4 h-4" /> Ajouter mes comptes
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stats strip */}
       {stats && (
         <div className="grid grid-cols-3 gap-4">
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Ce que tu as gagné au total sur toutes les campagnes (RPM × vues ÷ 1000)">
             <CardContent className="p-5">
               <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Gains</p>
               <p className="font-mono font-bold text-xl text-[#00E5FF]">€{stats.total_earnings?.toFixed(2) || "0.00"}</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Nombre de campagnes que tu as rejointes">
             <CardContent className="p-5">
               <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Campagnes</p>
               <p className="font-mono font-bold text-xl text-white">{stats.campaign_stats?.length || 0}</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Total des vues sur toutes tes vidéos toutes campagnes confondues">
             <CardContent className="p-5">
               <p className="text-xs text-white/40 uppercase tracking-wide mb-1">Vues totales</p>
               <p className="font-mono font-bold text-xl text-white">
@@ -579,17 +615,17 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
                     )}
                   </div>
                   {cs.status === "pending" && (
-                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
+                    <span title="Ta candidature a été envoyée — l'agence va te répondre bientôt." className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
                       ⏳ En attente
                     </span>
                   )}
                   {cs.status === "active" && (
-                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-green-500/15 text-green-400 border border-green-500/30 font-medium">
+                    <span title="Tu es accepté — tu peux poster tes vidéos et gagner sur cette campagne." className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-green-500/15 text-green-400 border border-green-500/30 font-medium">
                       ✅ Actif
                     </span>
                   )}
                   {cs.status === "rejected" && (
-                    <span className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-medium">
+                    <span title="L'agence n'a pas accepté ta candidature cette fois." className="flex-shrink-0 text-xs px-2.5 py-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-medium">
                       ❌ Refusée
                     </span>
                   )}
@@ -636,10 +672,14 @@ function ClipperHome({ announcements: initialAnnouncements, stats }) {
               <PostCard key={ann.announcement_id} ann={ann} currentUser={user} />
             ))
           ) : (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <MessageCircle className="w-10 h-10 text-white/10 mb-3" />
-              <p className="text-white/30 text-sm">Aucune annonce pour le moment</p>
-              <p className="text-white/20 text-xs mt-1">Les annonces de tes agences apparaissent ici</p>
+            <div className="flex flex-col items-center justify-center py-14 text-center px-6">
+              <div className="w-14 h-14 rounded-2xl bg-[#FF007F]/15 flex items-center justify-center mb-4">
+                <MessageCircle className="w-7 h-7 text-[#FF007F]" />
+              </div>
+              <p className="text-white font-semibold mb-1">Pas d'annonce pour le moment</p>
+              <p className="text-white/40 text-sm max-w-xs">
+                Les agences postent ici leurs briefs, tarifs et conseils. Rejoins une campagne pour voir apparaître leurs annonces.
+              </p>
             </div>
           )}
         </div>
@@ -819,7 +859,7 @@ function DiscoverCampaigns({ onJoin }) {
                     <p>+ <span className="text-[#f0c040] font-mono font-bold">€{selectedCampaign.rate_per_click || 0}</span> / 1K clics</p>
                   </div>
                 ) : (
-                  <p className="text-sm text-white/50 mt-1">RPM : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm}</span></p>
+                  <p className="text-sm text-white/50 mt-1" title="Rémunération par 1000 vues">RPM <span className="text-white/30 text-xs">(€/1K vues)</span> : <span className="text-[#00E5FF] font-mono">€{selectedCampaign.rpm}</span></p>
                 )}
               </div>
               <button onClick={() => setSelectedCampaign(null)} className="text-white/40 hover:text-white transition-colors">
@@ -897,8 +937,18 @@ function DiscoverCampaigns({ onJoin }) {
         </div>
       ) : campaigns.length === 0 ? (
         <Card className="bg-[#121212] border-white/10">
-          <CardContent className="p-8 text-center">
-            <p className="text-white/50">Aucune campagne disponible</p>
+          <CardContent className="p-12 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-[#00E5FF]/15 flex items-center justify-center mx-auto mb-5">
+              <Search className="w-8 h-8 text-[#00E5FF]" />
+            </div>
+            <h3 className="text-white font-bold text-xl mb-2">
+              {search ? "Aucun résultat" : "Pas de campagne ouverte pour l'instant"}
+            </h3>
+            <p className="text-white/50 text-sm max-w-md mx-auto">
+              {search
+                ? "Essaie un autre mot-clé, ou retire ton filtre."
+                : "Les nouvelles campagnes apparaîtront ici dès qu'une agence en publie une. Reviens plus tard !"}
+            </p>
           </CardContent>
         </Card>
       ) : (
@@ -1134,13 +1184,17 @@ function AllVideosPage() {
           <div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-20">
-          <Video className="w-16 h-16 text-white/10 mx-auto mb-4" />
-          <p className="text-white/40 text-lg mb-2">{videos.length === 0 ? "Aucune vidéo trackée" : "Aucune vidéo pour ce filtre"}</p>
-          <p className="text-white/20 text-sm">
+        <div className="text-center py-20 bg-[#121212] rounded-2xl border border-white/10">
+          <div className="w-16 h-16 rounded-2xl bg-[#00E5FF]/15 flex items-center justify-center mx-auto mb-5">
+            <Video className="w-8 h-8 text-[#00E5FF]" />
+          </div>
+          <p className="text-white font-semibold text-lg mb-2">
+            {videos.length === 0 ? "Aucune vidéo pour l'instant" : "Aucune vidéo avec ce filtre"}
+          </p>
+          <p className="text-white/45 text-sm max-w-md mx-auto">
             {videos.length === 0
-              ? "Ajoutez vos comptes réseaux sociaux et lancez un scraping pour voir vos vidéos ici"
-              : "Essayez un autre filtre"}
+              ? "Tes vidéos apparaîtront ici une fois que tu auras ajouté tes comptes et publié des vidéos sur tes campagnes. Le suivi des vues est automatique."
+              : "Essaie un autre filtre pour voir d'autres vidéos."}
           </p>
         </div>
       ) : (
@@ -1549,15 +1603,15 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                   {/* Status + followers */}
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {account.status === "pending" && (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1" title="On vérifie ton compte sur la plateforme — patiente quelques secondes.">
                         <div className="w-2.5 h-2.5 border border-yellow-400 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-yellow-400 text-[10px]">Vérif…</span>
+                        <span className="text-yellow-400 text-[10px]">Vérification…</span>
                       </div>
                     )}
                     {account.status === "verified" && (
                       <div className="flex items-center gap-2">
-                        <span className="text-[#39FF14] text-[10px] flex items-center gap-0.5">
-                          <Check className="w-2.5 h-2.5" /> OK
+                        <span className="text-[#39FF14] text-[10px] flex items-center gap-0.5" title="Compte vérifié — le suivi des vues est actif.">
+                          <Check className="w-2.5 h-2.5" /> Validé
                         </span>
                         {account.follower_count != null && (
                           <span className="text-white/35 text-[10px]">{fmt(account.follower_count)} abn</span>
@@ -1636,8 +1690,8 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                   <div className="px-4 pb-3 pt-2 bg-white/2">
                     {videos.length === 0 ? (
                       <div className="py-2">
-                        <p className="text-white/30 text-xs">
-                          Aucune vidéo trackée pour l'instant — le scraping automatique passera selon le rythme de l'abonnement de l'agence.
+                        <p className="text-white/40 text-xs">
+                          Aucune vidéo pour l'instant — tes prochaines publications seront détectées automatiquement (quelques heures de délai).
                         </p>
                       </div>
                     ) : (
@@ -1678,8 +1732,14 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
         <h2 className="font-display font-bold text-xl text-white mb-4">Attribution par campagne</h2>
         {campaigns.length === 0 ? (
           <Card className="bg-[#121212] border-white/10">
-            <CardContent className="p-8 text-center">
-              <p className="text-white/50">Rejoignez une campagne pour attribuer vos comptes</p>
+            <CardContent className="p-10 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-[#00E5FF]/15 flex items-center justify-center mx-auto mb-4">
+                <Video className="w-7 h-7 text-[#00E5FF]" />
+              </div>
+              <p className="text-white font-semibold mb-1">Aucune campagne pour l'instant</p>
+              <p className="text-white/45 text-sm max-w-md mx-auto">
+                Pour attribuer tes comptes à une campagne, tu dois d'abord en rejoindre une. Va dans "Découvrir" pour en trouver.
+              </p>
             </CardContent>
           </Card>
         ) : (
@@ -1718,7 +1778,7 @@ function AccountsPage({ accounts: propAccounts, campaigns, onUpdate }) {
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {assignedAccounts.length === 0 ? (
-                      <p className="text-white/50 text-sm">Aucun compte assigné</p>
+                      <p className="text-white/45 text-sm italic">Aucun compte attribué à cette campagne — ajoute tes comptes ci-dessus.</p>
                     ) : (
                       assignedAccounts.map((account) => (
                         <div key={account.account_id}
@@ -2067,10 +2127,14 @@ function CampaignDashboard({ campaigns, clipperStats }) {
       {activeTab === "mes-videos" && (
         <div className="space-y-4">
           {myVideos.length === 0 ? (
-            <div className="bg-[#121212] border border-white/10 rounded-xl p-10 text-center">
-              <p className="text-4xl mb-3">🎬</p>
-              <p className="text-white/40 text-sm">Aucune vidéo trackée pour l'instant</p>
-              <p className="text-white/20 text-xs mt-1">Tes vidéos apparaîtront ici après le prochain tracking (toutes les 6h)</p>
+            <div className="bg-[#121212] border border-white/10 rounded-2xl p-12 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-[#00E5FF]/15 flex items-center justify-center mx-auto mb-4">
+                <Video className="w-7 h-7 text-[#00E5FF]" />
+              </div>
+              <p className="text-white font-semibold mb-1">Pas encore de vidéo</p>
+              <p className="text-white/45 text-sm max-w-md mx-auto">
+                Publie une vidéo depuis ton compte connecté à cette campagne. Elle apparaîtra ici dès qu'on l'aura détectée (quelques heures après publication).
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -2216,7 +2280,7 @@ function CampaignDashboard({ campaigns, clipperStats }) {
       {/* Stats cards */}
       {isClickCampaign ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Nombre total de clics sur ton lien (toutes IP confondues).">
             <CardContent className="p-6">
               <p className="text-sm text-white/50 mb-1">Clics totaux</p>
               <p className="font-mono font-bold text-3xl text-white">
@@ -2224,16 +2288,16 @@ function CampaignDashboard({ campaigns, clipperStats }) {
               </p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Clics uniques par IP — c'est ceux-là qui te rapportent de l'argent.">
             <CardContent className="p-6">
               <p className="text-sm text-white/50 mb-1">Clics uniques</p>
               <p className="font-mono font-bold text-3xl text-[#f0c040]">
                 {(clickLink?.unique_click_count ?? myStats?.unique_clicks ?? 0).toLocaleString("fr-FR")}
               </p>
-              <p className="text-xs text-white/30 mt-1">Facturables</p>
+              <p className="text-xs text-white/30 mt-1">Payants</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Ce que tu as gagné sur cette campagne au clic.">
             <CardContent className="p-6">
               <p className="text-sm text-white/50 mb-1">Gains générés</p>
               <p className="font-mono font-bold text-3xl text-[#00E5FF]">
@@ -2244,25 +2308,25 @@ function CampaignDashboard({ campaigns, clipperStats }) {
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Ta position dans le classement des clippeurs de cette campagne (par vues).">
             <CardContent className="p-5">
               <p className="text-xs text-white/50 mb-1">Classement</p>
               <p className="font-mono font-bold text-2xl text-white">#{myStats?.rank || "-"}</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Vues cumulées sur toutes tes vidéos de cette campagne.">
             <CardContent className="p-5">
               <p className="text-xs text-white/50 mb-1">Mes vues</p>
               <p className="font-mono font-bold text-2xl text-white">{fmtViews(myStats?.views || 0)}</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Ce que tu as gagné sur cette campagne (RPM × vues ÷ 1000).">
             <CardContent className="p-5">
               <p className="text-xs text-white/50 mb-1">Mes gains</p>
               <p className="font-mono font-bold text-2xl text-[#00E5FF]">€{(myStats?.earnings || 0).toFixed(2)}</p>
             </CardContent>
           </Card>
-          <Card className="bg-[#121212] border-white/10">
+          <Card className="bg-[#121212] border-white/10" title="Budget que l'agence n'a pas encore utilisé pour cette campagne.">
             <CardContent className="p-5">
               <p className="text-xs text-white/50 mb-1">Budget restant</p>
               {budgetUnlimited
@@ -2326,8 +2390,8 @@ function CampaignDashboard({ campaigns, clipperStats }) {
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-32 flex items-center justify-center">
-                <p className="text-white/20 text-sm">Aucun clic enregistré sur cette période</p>
+              <div className="h-32 flex items-center justify-center text-center px-4">
+                <p className="text-white/40 text-sm">Aucun clic encore — les clics apparaîtront ici dès que des gens cliqueront sur ton lien.</p>
               </div>
             )}
             <div className="flex items-center gap-4 mt-2">
@@ -2562,9 +2626,10 @@ function ClipWinnerTab({ clips, loading, onRefresh, accentColor = "#f0c040" }) {
           <div className="w-6 h-6 border-2 border-white/10 border-t-white/50 rounded-full animate-spin mx-auto" />
         </div>
       ) : clips.length === 0 ? (
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-10 text-center">
-          <p className="text-3xl mb-3">🏆</p>
-          <p className="text-white/40 text-sm">Aucun clip encore — le classement apparaîtra dès les premières vues</p>
+        <div className="bg-[#121212] border border-white/10 rounded-2xl p-12 text-center">
+          <p className="text-5xl mb-4">🏆</p>
+          <p className="text-white font-semibold mb-1">Pas encore de classement</p>
+          <p className="text-white/45 text-sm max-w-sm mx-auto">Le top 10 des meilleurs clips apparaîtra ici dès les premières vues. Continue à publier !</p>
         </div>
       ) : (
         <div className="space-y-2">
