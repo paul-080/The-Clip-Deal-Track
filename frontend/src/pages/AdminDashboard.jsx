@@ -48,14 +48,14 @@ function formatDate(iso) {
 
 function roleBadge(role) {
   const colors = {
-    clipper: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    agency: "bg-purple-500/20 text-purple-300 border-purple-500/30",
-    manager: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-    client: "bg-green-500/20 text-green-300 border-green-500/30",
-    admin: "bg-red-500/20 text-red-300 border-red-500/30",
+    clipper: "bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/25",
+    agency: "bg-[#FF007F]/10 text-[#FF007F] border-[#FF007F]/25",
+    manager: "bg-[#39FF14]/10 text-[#39FF14] border-[#39FF14]/25",
+    client: "bg-[#FFB300]/10 text-[#FFB300] border-[#FFB300]/25",
+    admin: "bg-red-500/10 text-red-400 border-red-500/25",
   };
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${colors[role] || "bg-white/10 text-white/60 border-white/10"}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide border ${colors[role] || "bg-[#1C1A17] text-[#F5F4F1]/55 border-warm"}`}>
       {role || "—"}
     </span>
   );
@@ -89,23 +89,25 @@ function CodeGate({ onUnlock }) {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-      <div className="w-full max-w-sm p-8">
+    <div className="min-h-screen bg-[#0E0D0B] text-[#F5F4F1] flex items-center justify-center relative">
+      <div className="bg-warm-radial absolute inset-0 pointer-events-none" />
+      <div className="w-full max-w-sm p-8 relative z-10">
         {/* Logo */}
         <div className="text-center mb-10">
-          <div className="inline-flex items-center gap-2 mb-6">
-            <Shield className="w-8 h-8 text-[#00E5FF]" />
-            <span className="text-2xl font-bold">
-              <span className="text-[#00E5FF]">The Clip</span>
-              <span className="text-white"> Deal</span>
+          <div className="inline-flex items-center gap-2.5 mb-6">
+            <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+              <Shield className="w-4.5 h-4.5 text-[#FF007F]" />
+            </div>
+            <span className="text-base font-display font-semibold tracking-tight text-[#F5F4F1]">
+              The Clip Deal Track
             </span>
           </div>
-          <p className="text-white/40 text-sm">Accès administrateur restreint</p>
+          <p className="text-[#F5F4F1]/55 text-sm">Accès administrateur restreint</p>
         </div>
 
-        <form onSubmit={handleSubmit} className={shake ? "animate-shake" : ""}>
+        <form onSubmit={handleSubmit} className={`bg-[#1C1A17]/85 border border-warm rounded-2xl p-6 ${shake ? "animate-shake" : ""}`}>
           <div className="mb-4">
-            <label className="block text-xs text-white/40 mb-2 uppercase tracking-wider">
+            <label className="block text-[11px] text-[#F5F4F1]/55 mb-2 uppercase tracking-widest font-medium">
               Code d'accès
             </label>
             <input
@@ -113,21 +115,25 @@ function CodeGate({ onUnlock }) {
               value={code}
               onChange={(e) => setCode(e.target.value)}
               placeholder="••••••••••••"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/50 transition-colors text-center tracking-widest text-lg"
+              className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-4 py-3 text-[#F5F4F1] placeholder-[#F5F4F1]/20 focus:outline-none focus:border-[#F5F4F1]/22 transition-colors text-center tracking-widest text-lg"
               autoFocus
             />
           </div>
           <button
             type="submit"
             disabled={loading || !code}
-            className="w-full bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black font-semibold py-3 rounded-lg transition-all"
+            className="w-full bg-[#FF007F] hover:bg-[#E50073] disabled:opacity-40 text-white font-semibold py-3 rounded-lg transition-all duration-200"
           >
-            {loading ? "Vérification..." : "Entrer"}
+            {loading ? "Vérification…" : "Entrer"}
           </button>
           {shake && (
             <p className="text-red-400 text-sm text-center mt-3">Code incorrect</p>
           )}
         </form>
+
+        <p className="text-[#F5F4F1]/30 text-[11px] text-center mt-6">
+          Accès réservé — toute tentative est journalisée.
+        </p>
       </div>
 
       <style>{`
@@ -220,28 +226,32 @@ function OverviewTab() {
 
   const xInterval = chartPeriod === "1" ? 3 : chartPeriod === "7" ? 0 : chartPeriod === "30" ? 4 : 0;
 
-  if (loading) return <div className="text-white/40 text-sm">Chargement...</div>;
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+    </div>
+  );
   if (!stats) return null;
 
   const topCards = [
-    { label: "Utilisateurs", value: stats.users, icon: Users, color: "text-blue-400", bg: "bg-blue-400/10" },
-    { label: "Campagnes (total)", value: stats.campaigns, icon: Play, color: "text-purple-400", bg: "bg-purple-400/10" },
-    { label: "Campagnes au clic", value: stats.click_campaigns || 0, icon: MousePointerClick, color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
-    { label: "Membres campagne", value: stats.campaign_members, icon: UserCircle, color: "text-cyan-400", bg: "bg-cyan-400/10" },
-    { label: "Revenus total", value: `${(stats.total_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-green-400", bg: "bg-green-400/10" },
-    { label: "Messages", value: stats.messages, icon: MessageCircle, color: "text-pink-400", bg: "bg-pink-400/10" },
+    { label: "Utilisateurs", value: stats.users, icon: Users, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10", border: "border-[#00E5FF]/20" },
+    { label: "Campagnes (total)", value: stats.campaigns, icon: Play, color: "text-[#FF007F]", bg: "bg-[#FF007F]/10", border: "border-[#FF007F]/20" },
+    { label: "Campagnes au clic", value: stats.click_campaigns || 0, icon: MousePointerClick, color: "text-[#FFB300]", bg: "bg-[#FFB300]/10", border: "border-[#FFB300]/20" },
+    { label: "Membres campagne", value: stats.campaign_members, icon: UserCircle, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10", border: "border-[#00E5FF]/20" },
+    { label: "Revenus total", value: `${(stats.total_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-[#39FF14]", bg: "bg-[#39FF14]/10", border: "border-[#39FF14]/20" },
+    { label: "Messages", value: stats.messages, icon: MessageCircle, color: "text-[#FF007F]", bg: "bg-[#FF007F]/10", border: "border-[#FF007F]/20" },
   ];
 
   const viewsCards = [
-    { label: "Vues totales", value: fmtNum(stats.total_views || 0), icon: Eye, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
-    { label: "Vidéos trackées", value: stats.tracked_videos, icon: TrendingUp, color: "text-indigo-400", bg: "bg-indigo-400/10" },
-    { label: "Comptes sociaux", value: stats.social_accounts, icon: Globe, color: "text-amber-400", bg: "bg-amber-400/10" },
+    { label: "Vues totales", value: fmtNum(stats.total_views || 0), icon: Eye, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/8", border: "border-[#00E5FF]/15" },
+    { label: "Vidéos trackées", value: stats.tracked_videos, icon: TrendingUp, color: "text-[#F5F4F1]", bg: "bg-[#0E0D0B]", border: "border-warm" },
+    { label: "Comptes sociaux", value: stats.social_accounts, icon: Globe, color: "text-[#FFB300]", bg: "bg-[#FFB300]/8", border: "border-[#FFB300]/15" },
   ];
 
   const clickCards = [
-    { label: "Clics totaux", value: fmtNum(stats.total_clicks || 0), icon: MousePointerClick, color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
-    { label: "Clics uniques", value: fmtNum(stats.total_unique_clicks || 0), icon: Shield, color: "text-green-400", bg: "bg-green-400/10" },
-    { label: "Revenus au clic", value: `${(stats.click_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-purple-400", bg: "bg-purple-400/10" },
+    { label: "Clics totaux", value: fmtNum(stats.total_clicks || 0), icon: MousePointerClick, color: "text-[#FFB300]", bg: "bg-[#FFB300]/8", border: "border-[#FFB300]/15" },
+    { label: "Clics uniques", value: fmtNum(stats.total_unique_clicks || 0), icon: Shield, color: "text-[#39FF14]", bg: "bg-[#39FF14]/8", border: "border-[#39FF14]/15" },
+    { label: "Revenus au clic", value: `${(stats.click_earnings_eur || 0).toFixed(2)} €`, icon: CreditCard, color: "text-[#FF007F]", bg: "bg-[#FF007F]/8", border: "border-[#FF007F]/15" },
   ];
 
   const hasViews = viewsTimeline.some(d => d.views > 0);
@@ -251,46 +261,59 @@ function OverviewTab() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-white mb-6">Vue d'ensemble</h2>
+      {/* Header */}
+      <div className="mb-7">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+            <LayoutDashboard className="w-4.5 h-4.5 text-[#FF007F]" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Vue d'ensemble</h2>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">État global de la plateforme — chiffres réels en base.</p>
+      </div>
 
       {/* Top row — general stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
         {topCards.map((card) => (
-          <div key={card.label} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
-            <div className={`w-8 h-8 rounded-lg ${card.bg} flex items-center justify-center mb-3`}>
-              <card.icon className={`w-4 h-4 ${card.color}`} />
+          <div key={card.label} className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200" title={card.label}>
+            <div className={`w-7 h-7 rounded-lg ${card.bg} border ${card.border} flex items-center justify-center mb-3`}>
+              <card.icon className={`w-3.5 h-3.5 ${card.color}`} />
             </div>
-            <div className="text-xl font-bold text-white">{typeof card.value === "number" ? card.value.toLocaleString("fr-FR") : card.value}</div>
-            <div className="text-white/40 text-xs mt-1">{card.label}</div>
+            <div className="text-xl font-display font-semibold tracking-tight text-[#F5F4F1] tabular-nums">{typeof card.value === "number" ? card.value.toLocaleString("fr-FR") : card.value}</div>
+            <div className="text-[#F5F4F1]/55 text-[11px] mt-1 truncate">{card.label}</div>
           </div>
         ))}
       </div>
 
       {/* Second row — views vs clicks */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
         {/* Views section */}
-        <div className="bg-[#1a1a1a] border border-[#00E5FF]/20 rounded-xl p-5">
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
           <div className="flex items-center gap-2 mb-4">
-            <Eye className="w-4 h-4 text-[#00E5FF]" />
-            <p className="text-white font-medium text-sm">Statistiques Vues</p>
+            <div className="w-7 h-7 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/25 flex items-center justify-center">
+              <Eye className="w-3.5 h-3.5 text-[#00E5FF]" />
+            </div>
+            <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">Statistiques vues</p>
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-2.5">
             {viewsCards.map(c => (
-              <div key={c.label} className={`${c.bg} rounded-lg p-3`}>
-                <c.icon className={`w-4 h-4 ${c.color} mb-2`} />
-                <div className="text-lg font-bold text-white">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
-                <div className="text-white/40 text-[10px] mt-0.5">{c.label}</div>
+              <div key={c.label} className={`${c.bg} border ${c.border} rounded-lg p-3`}>
+                <c.icon className={`w-3.5 h-3.5 ${c.color} mb-2`} />
+                <div className="text-base md:text-lg font-display font-semibold tabular-nums text-[#F5F4F1] tracking-tight">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                <div className="text-[#F5F4F1]/55 text-[10px] mt-0.5">{c.label}</div>
               </div>
             ))}
           </div>
         </div>
 
         {/* Clicks section */}
-        <div className="bg-[#1a1a1a] border border-[#f0c040]/20 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <MousePointerClick className="w-4 h-4 text-[#f0c040]" />
-            <p className="text-white font-medium text-sm">Statistiques Clics</p>
-            <span className="ml-auto text-[10px] text-white/30 bg-white/5 px-2 py-0.5 rounded-full">Anti-spam actif</span>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            <div className="w-7 h-7 rounded-lg bg-[#FFB300]/10 border border-[#FFB300]/25 flex items-center justify-center">
+              <MousePointerClick className="w-3.5 h-3.5 text-[#FFB300]" />
+            </div>
+            <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">Statistiques clics</p>
+            <span className="ml-auto text-[10px] text-[#F5F4F1]/55 bg-[#0E0D0B] border border-warm px-2 py-0.5 rounded-full">Anti-spam actif</span>
             <button
               onClick={async () => {
                 if (!window.confirm(`Réinitialiser TOUS les clics (events + counters + earnings) ?\n\nUtile pour purger les clics de test.\n\nIRRÉVERSIBLE.`)) return;
@@ -302,7 +325,7 @@ function OverviewTab() {
                   });
                   if (res.ok) {
                     const d = await res.json();
-                    toast.success(`✓ ${d.deleted_click_events} events purgés, ${d.reset_click_links} liens réinitialisés`);
+                    toast.success(`${d.deleted_click_events} events purgés, ${d.reset_click_links} liens réinitialisés`);
                     setTimeout(() => window.location.reload(), 1500);
                   } else {
                     const e = await res.json();
@@ -310,16 +333,17 @@ function OverviewTab() {
                   }
                 } catch (e) { toast.error(e.message); }
               }}
-              className="text-[10px] px-2 py-0.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition">
+              title="Reset complet des stats de clics (events + counters + earnings)"
+              className="text-[10px] px-2 py-0.5 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 transition-all duration-150">
               Reset clics test
             </button>
           </div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-3 gap-2.5">
             {clickCards.map(c => (
-              <div key={c.label} className={`${c.bg} rounded-lg p-3`}>
-                <c.icon className={`w-4 h-4 ${c.color} mb-2`} />
-                <div className="text-lg font-bold text-white">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
-                <div className="text-white/40 text-[10px] mt-0.5">{c.label}</div>
+              <div key={c.label} className={`${c.bg} border ${c.border} rounded-lg p-3`}>
+                <c.icon className={`w-3.5 h-3.5 ${c.color} mb-2`} />
+                <div className="text-base md:text-lg font-display font-semibold tabular-nums text-[#F5F4F1] tracking-tight">{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                <div className="text-[#F5F4F1]/55 text-[10px] mt-0.5">{c.label}</div>
               </div>
             ))}
           </div>
@@ -327,15 +351,15 @@ function OverviewTab() {
       </div>
 
       {/* Chart — toggle views / clicks + period selector */}
-      <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-6">
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 md:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           {/* Title + loading dot */}
           <div className="flex items-center gap-2">
-            <p className="text-white font-medium">
-              Activité —&nbsp;
-              <span className="text-white/50">{PERIODS.find(p => p.key === chartPeriod)?.label}</span>
+            <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">
+              Activité <span className="text-[#F5F4F1]/40">·</span>{" "}
+              <span className="text-[#F5F4F1]/55 font-normal">{PERIODS.find(p => p.key === chartPeriod)?.label}</span>
             </p>
-            {timelineLoading && <div className="w-3 h-3 border-2 border-white/20 border-t-white/70 rounded-full animate-spin" />}
+            {timelineLoading && <div className="w-3 h-3 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />}
           </div>
 
           <div className="flex items-center gap-2">
@@ -345,32 +369,34 @@ function OverviewTab() {
               return (
                 <div className="flex items-center gap-1">
                   <button onClick={() => idx > 0 && handlePeriodChange(PERIODS[idx-1].key)} disabled={idx === 0}
-                    className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">‹</button>
-                  <div className="flex gap-0.5 bg-white/5 border border-white/10 rounded-lg p-0.5">
+                    title="Période précédente"
+                    className="w-6 h-6 flex items-center justify-center rounded-md text-sm font-semibold text-[#F5F4F1]/55 hover:text-[#F5F4F1] disabled:opacity-20 transition-all">‹</button>
+                  <div className="flex gap-0.5 bg-[#0E0D0B] border border-warm rounded-lg p-0.5">
                     {PERIODS.map(p => (
                       <button key={p.key} onClick={() => handlePeriodChange(p.key)}
-                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${chartPeriod === p.key ? "bg-white/20 text-white" : "text-white/40 hover:text-white"}`}>
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all duration-150 ${chartPeriod === p.key ? "bg-[#1C1A17] text-[#F5F4F1]" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1]"}`}>
                         {p.label}
                       </button>
                     ))}
                   </div>
                   <button onClick={() => idx < PERIODS.length-1 && handlePeriodChange(PERIODS[idx+1].key)} disabled={idx === PERIODS.length-1}
-                    className="w-6 h-6 flex items-center justify-center rounded text-sm font-bold text-white/40 hover:text-white disabled:opacity-20 transition-all">›</button>
+                    title="Période suivante"
+                    className="w-6 h-6 flex items-center justify-center rounded-md text-sm font-semibold text-[#F5F4F1]/55 hover:text-[#F5F4F1] disabled:opacity-20 transition-all">›</button>
                 </div>
               );
             })()}
 
             {/* Views / Clicks toggle */}
-            <div className="flex gap-1 bg-white/5 rounded-lg p-1 border border-white/10">
+            <div className="flex gap-0.5 bg-[#0E0D0B] rounded-lg p-0.5 border border-warm">
               <button
                 onClick={() => setActiveChart("views")}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "views" ? "bg-[#00E5FF] text-black" : "text-white/50 hover:text-white"}`}
+                className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 flex items-center gap-1.5 ${activeChart === "views" ? "bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/25" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1] border border-transparent"}`}
               >
                 <Eye className="w-3 h-3" /> Vues
               </button>
               <button
                 onClick={() => setActiveChart("clicks")}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${activeChart === "clicks" ? "bg-[#f0c040] text-black" : "text-white/50 hover:text-white"}`}
+                className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 flex items-center gap-1.5 ${activeChart === "clicks" ? "bg-[#FFB300]/15 text-[#FFB300] border border-[#FFB300]/25" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1] border border-transparent"}`}
               >
                 <MousePointerClick className="w-3 h-3" /> Clics
               </button>
@@ -378,47 +404,55 @@ function OverviewTab() {
           </div>
         </div>
         {chartHasData ? (
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={220}>
             {activeChart === "views" ? (
               <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gradViews" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.25} />
+                    <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.22} />
                     <stop offset="95%" stopColor="#00E5FF" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v}
-                  domain={[0, niceAxisMax]} allowDataOverflow={false} />
-                <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(245,244,241,0.05)" />
+                <XAxis dataKey="date" tick={{ fill: "rgba(245,244,241,0.4)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} stroke="rgba(245,244,241,0.08)" />
+                <YAxis tick={{ fill: "rgba(245,244,241,0.4)", fontSize: 10 }} allowDecimals={false} tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}K` : v}
+                  domain={[0, niceAxisMax]} allowDataOverflow={false} stroke="rgba(245,244,241,0.08)" />
+                <Tooltip contentStyle={{ background: "#1C1A17", border: "1px solid rgba(245,244,241,0.12)", borderRadius: "8px", color: "#F5F4F1", fontSize: 12 }} />
                 <Area type="monotone" dataKey="views" stroke="#00E5FF" fill="url(#gradViews)" strokeWidth={2} dot={false} name="Vues" />
               </AreaChart>
             ) : (
               <AreaChart data={chartData} margin={{ top: 5, right: 10, left: 15, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gradClicks" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f0c040" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#f0c040" stopOpacity={0} />
+                    <stop offset="5%" stopColor="#FFB300" stopOpacity={0.22} />
+                    <stop offset="95%" stopColor="#FFB300" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="gradUniq" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#39FF14" stopOpacity={0.15} />
                     <stop offset="95%" stopColor="#39FF14" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10 }} allowDecimals={false}
-                  domain={[0, niceAxisMax]} allowDataOverflow={false} />
-                <Tooltip contentStyle={{ background: "#111", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", color: "#fff", fontSize: 12 }} />
-                <Area type="monotone" dataKey="clicks" stroke="#f0c040" fill="url(#gradClicks)" strokeWidth={2} dot={false} name="Clics totaux" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(245,244,241,0.05)" />
+                <XAxis dataKey="date" tick={{ fill: "rgba(245,244,241,0.4)", fontSize: 10 }} tickFormatter={xTickFormatter} interval={xInterval} stroke="rgba(245,244,241,0.08)" />
+                <YAxis tick={{ fill: "rgba(245,244,241,0.4)", fontSize: 10 }} allowDecimals={false}
+                  domain={[0, niceAxisMax]} allowDataOverflow={false} stroke="rgba(245,244,241,0.08)" />
+                <Tooltip contentStyle={{ background: "#1C1A17", border: "1px solid rgba(245,244,241,0.12)", borderRadius: "8px", color: "#F5F4F1", fontSize: 12 }} />
+                <Area type="monotone" dataKey="clicks" stroke="#FFB300" fill="url(#gradClicks)" strokeWidth={2} dot={false} name="Clics totaux" />
                 <Area type="monotone" dataKey="unique_clicks" stroke="#39FF14" fill="url(#gradUniq)" strokeWidth={1.5} dot={false} strokeDasharray="4 2" name="Clics uniques" />
               </AreaChart>
             )}
           </ResponsiveContainer>
         ) : (
-          <div className="h-[200px] flex items-center justify-center text-white/20 text-sm">
-            {activeChart === "views" ? "Les données apparaîtront après le premier tracking" : "Aucun clic enregistré pour l'instant"}
+          <div className="h-[220px] flex flex-col items-center justify-center text-center">
+            <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mb-3">
+              {activeChart === "views" ? <Eye className="w-4 h-4 text-[#F5F4F1]/30" /> : <MousePointerClick className="w-4 h-4 text-[#F5F4F1]/30" />}
+            </div>
+            <p className="text-[#F5F4F1]/55 text-sm font-medium">
+              {activeChart === "views" ? "Pas encore de vues" : "Pas encore de clics"}
+            </p>
+            <p className="text-[#F5F4F1]/35 text-xs mt-1">
+              {activeChart === "views" ? "Les données apparaîtront après le premier tracking." : "Aucun clic enregistré sur la période sélectionnée."}
+            </p>
           </div>
         )}
       </div>
@@ -481,19 +515,31 @@ function UsersTab() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-        <h2 className="text-xl font-semibold text-white">Utilisateurs ({filtered.length}/{users.length})</h2>
-        <div className="flex gap-3 flex-wrap">
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30 flex items-center justify-center">
+            <Users className="w-4.5 h-4.5 text-[#00E5FF]" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Utilisateurs</h2>
+          <span className="text-[#F5F4F1]/40 text-sm tabular-nums ml-1">({filtered.length}/{users.length})</span>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Tous les comptes inscrits — modération, bannissement, suppression.</p>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+        <div className="flex gap-2.5 flex-wrap flex-1">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Rechercher..."
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-48"
+            placeholder="Rechercher email, nom…"
+            className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22 w-56"
           />
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30 cursor-pointer"
+            className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm focus:outline-none focus:border-[#F5F4F1]/22 cursor-pointer"
           >
             <option value="all">Tous les rôles</option>
             <option value="clipper">Clippeur</option>
@@ -504,75 +550,93 @@ function UsersTab() {
           <select
             value={sortOrder}
             onChange={(e) => setSortOrder(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30 cursor-pointer"
+            className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm focus:outline-none focus:border-[#F5F4F1]/22 cursor-pointer"
           >
             <option value="newest">Plus récents</option>
             <option value="oldest">Plus anciens</option>
           </select>
-          <button onClick={fetchUsers} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
-            <RefreshCw className="w-4 h-4" />
-          </button>
         </div>
+        <button onClick={fetchUsers} title="Recharger la liste" className="p-2 bg-[#1C1A17] hover:bg-[#262320] border border-warm rounded-lg text-[#F5F4F1]/70 hover:text-[#F5F4F1] transition-all duration-150">
+          <RefreshCw className="w-4 h-4" />
+        </button>
       </div>
 
       {loading ? (
-        <div className="text-white/40 text-sm">Chargement...</div>
+        <div className="flex items-center justify-center h-40">
+          <div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+        </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
-                <th className="text-left py-3 px-4">Nom</th>
-                <th className="text-left py-3 px-4">Email</th>
-                <th className="text-left py-3 px-4">Rôle</th>
-                <th className="text-left py-3 px-4">Inscription</th>
-                <th className="text-left py-3 px-4">Statut</th>
-                <th className="text-right py-3 px-4">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((user) => (
-                <tr key={user.user_id} className="border-b border-white/5 hover:bg-white/3 transition-colors">
-                  <td className="py-3 px-4 text-white font-medium">
-                    {user.display_name || user.name || "—"}
-                  </td>
-                  <td className="py-3 px-4 text-white/60">{user.email}</td>
-                  <td className="py-3 px-4">{roleBadge(user.role)}</td>
-                  <td className="py-3 px-4 text-white/40">{formatDate(user.created_at)}</td>
-                  <td className="py-3 px-4">
-                    {user.banned ? (
-                      <span className="text-red-400 text-xs">Banni</span>
-                    ) : (
-                      <span className="text-green-400 text-xs">Actif</span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        onClick={() => setConfirmBan(user)}
-                        className="p-1.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 transition-all"
-                        title="Bannir"
-                      >
-                        <Ban className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(user)}
-                        className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
-                        title="Supprimer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </td>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-warm text-[#F5F4F1]/55 text-[11px] uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 font-medium">Nom</th>
+                  <th className="text-left py-3 px-4 font-medium">Email</th>
+                  <th className="text-left py-3 px-4 font-medium">Rôle</th>
+                  <th className="text-left py-3 px-4 font-medium">Inscription</th>
+                  <th className="text-left py-3 px-4 font-medium">Statut</th>
+                  <th className="text-right py-3 px-4 font-medium">Actions</th>
                 </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-white/30 text-sm">Aucun utilisateur</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((user) => (
+                  <tr key={user.user_id} className="border-b border-warm last:border-b-0 transition-colors">
+                    <td className="py-3 px-4 text-[#F5F4F1] font-medium">
+                      {user.display_name || user.name || "—"}
+                    </td>
+                    <td className="py-3 px-4 text-[#F5F4F1]/65 text-xs">{user.email}</td>
+                    <td className="py-3 px-4">{roleBadge(user.role)}</td>
+                    <td className="py-3 px-4 text-[#F5F4F1]/45 text-xs tabular-nums">{formatDate(user.created_at)}</td>
+                    <td className="py-3 px-4">
+                      {user.banned ? (
+                        <span className="inline-flex items-center gap-1.5 text-red-400 text-xs font-medium">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                          Banni
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-[#39FF14] text-xs font-medium">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#39FF14]" />
+                          Actif
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex gap-1.5 justify-end">
+                        <button
+                          onClick={() => setConfirmBan(user)}
+                          className="p-1.5 rounded-md bg-[#FFB300]/10 hover:bg-[#FFB300]/20 text-[#FFB300] border border-[#FFB300]/20 transition-all duration-150"
+                          title="Bannir cet utilisateur"
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDelete(user)}
+                          className="p-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all duration-150"
+                          title="Supprimer définitivement"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-16 text-center">
+                      <div className="flex flex-col items-center">
+                        <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mb-3">
+                          <Users className="w-4 h-4 text-[#F5F4F1]/30" />
+                        </div>
+                        <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun utilisateur</p>
+                        <p className="text-[#F5F4F1]/35 text-xs mt-1">Aucun résultat avec les filtres actuels.</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -631,36 +695,49 @@ function PreviewTab({ role, label, icon: Icon, color }) {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-white mb-6">Preview — {label}</h2>
-      <div className="max-w-xl">
-        <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-8">
-          <div className={`w-16 h-16 rounded-2xl ${color} flex items-center justify-center mb-6`}>
-            <Icon className="w-8 h-8 text-white" />
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+            <Icon className="w-4.5 h-4.5 text-[#FF007F]" />
           </div>
-          <h3 className="text-lg font-semibold text-white mb-2">Dashboard {label}</h3>
-          <p className="text-white/50 text-sm mb-6">{roleDescriptions[role]}</p>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Preview — {label}</h2>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Voir l'application comme la verrait un compte {label.toLowerCase()}.</p>
+      </div>
 
-          <div className="bg-white/5 border border-white/10 rounded-lg p-4 mb-6 text-xs text-white/40">
-            <p className="font-medium text-white/60 mb-1">Compte de démonstration</p>
-            <p>Email : <span className="text-white/70">{role}@demo.clipdeal.local</span></p>
-            <p>Rôle : <span className="text-white/70">{role}</span></p>
-            <p className="mt-2 text-white/50">⚠️ La session preview durera 24h. Le clic droit admin est actif dans ce contexte.</p>
+      <div className="max-w-xl space-y-4">
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-6 md:p-8">
+          <div className={`w-14 h-14 rounded-2xl ${color} border border-warm flex items-center justify-center mb-5`}>
+            <Icon className="w-7 h-7 text-[#F5F4F1]" />
+          </div>
+          <h3 className="text-lg font-display font-semibold tracking-tight text-[#F5F4F1] mb-2">Dashboard {label}</h3>
+          <p className="text-[#F5F4F1]/60 text-sm mb-6 leading-relaxed">{roleDescriptions[role]}</p>
+
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-4 mb-6 text-xs space-y-1">
+            <p className="font-display font-semibold text-[#F5F4F1] mb-2 text-[13px]">Compte de démonstration</p>
+            <p className="text-[#F5F4F1]/55">Email <span className="text-[#F5F4F1]/80 font-mono ml-1">{role}@demo.clipdeal.local</span></p>
+            <p className="text-[#F5F4F1]/55">Rôle <span className="text-[#F5F4F1]/80 font-mono ml-1">{role}</span></p>
+            <p className="mt-3 text-[#FFB300] text-[11px] flex items-start gap-1.5">
+              <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>Session preview valable 24 h. Le clic droit admin est actif dans ce contexte.</span>
+            </p>
           </div>
 
           <button
             onClick={openPreview}
             disabled={loading}
-            className="flex items-center gap-2 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-50 text-black font-semibold px-6 py-3 rounded-lg transition-all"
+            className="w-full flex items-center justify-center gap-2 bg-[#F5F4F1] hover:bg-white disabled:opacity-50 text-[#0E0D0B] font-semibold px-6 py-2.5 rounded-lg transition-all duration-150"
           >
             <ExternalLink className="w-4 h-4" />
-            {loading ? "Connexion..." : `Ouvrir le dashboard ${label}`}
+            {loading ? "Connexion…" : `Ouvrir le dashboard ${label}`}
           </button>
         </div>
 
-        <div className="mt-4 bg-[#1a1a1a] border border-white/10 rounded-xl p-5">
-          <p className="text-xs text-white/40 mb-3 uppercase tracking-wider font-medium">Clic droit admin</p>
-          <p className="text-sm text-white/60">
-            Dans les pages preview, faites un <strong className="text-white/80">clic droit</strong> sur une
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+          <p className="text-[11px] text-[#F5F4F1]/55 mb-2 uppercase tracking-widest font-medium">Clic droit admin</p>
+          <p className="text-sm text-[#F5F4F1]/70 leading-relaxed">
+            Dans les pages preview, fais un <strong className="text-[#F5F4F1]">clic droit</strong> sur une
             campagne ou une vidéo pour accéder aux options de modération admin (suppression + message automatique).
           </p>
         </div>
@@ -725,13 +802,13 @@ function classifyScrapeEntry(h) {
 
 // Style + label par categorie
 const CATEGORY_STYLE = {
-  ok:               { label: "OK",           dot: "bg-[#39FF14]",       text: "text-[#39FF14]",       bg: "bg-[#39FF14]/10",      border: "border-[#39FF14]/30" },
-  alive_no_scrape:  { label: "Vivant (scrape rate)", dot: "bg-blue-400", text: "text-blue-300",        bg: "bg-blue-500/10",       border: "border-blue-500/30" },
-  empty_account:    { label: "0 vidéo publique", dot: "bg-amber-400",   text: "text-amber-300",       bg: "bg-amber-500/10",      border: "border-amber-500/30" },
-  private:          { label: "Compte privé", dot: "bg-orange-400",     text: "text-orange-300",      bg: "bg-orange-500/10",     border: "border-orange-500/30" },
-  deleted:          { label: "Supprimé",    dot: "bg-white/40",        text: "text-white/50",        bg: "bg-white/5",           border: "border-white/10" },
-  ko_source:        { label: "Échec source", dot: "bg-red-400",        text: "text-red-300",         bg: "bg-red-500/10",        border: "border-red-500/30" },
-  partial:          { label: "Partiel",     dot: "bg-purple-400",      text: "text-purple-300",      bg: "bg-purple-500/10",     border: "border-purple-500/30" },
+  ok:               { label: "OK",                       dot: "bg-[#39FF14]",       text: "text-[#39FF14]",  bg: "bg-[#39FF14]/10",  border: "border-[#39FF14]/25" },
+  alive_no_scrape:  { label: "Vivant (scrape rate)",     dot: "bg-[#00E5FF]",       text: "text-[#00E5FF]",  bg: "bg-[#00E5FF]/10",  border: "border-[#00E5FF]/25" },
+  empty_account:    { label: "0 vidéo publique",         dot: "bg-[#FFB300]",       text: "text-[#FFB300]",  bg: "bg-[#FFB300]/10",  border: "border-[#FFB300]/25" },
+  private:          { label: "Compte privé",             dot: "bg-[#FFB300]",       text: "text-[#FFB300]",  bg: "bg-[#FFB300]/10",  border: "border-[#FFB300]/25" },
+  deleted:          { label: "Supprimé",                 dot: "bg-[#F5F4F1]/40",    text: "text-[#F5F4F1]/55", bg: "bg-[#0E0D0B]",   border: "border-warm" },
+  ko_source:        { label: "Échec source",             dot: "bg-red-400",         text: "text-red-400",    bg: "bg-red-500/10",    border: "border-red-500/25" },
+  partial:          { label: "Partiel",                  dot: "bg-[#FF007F]",       text: "text-[#FF007F]",  bg: "bg-[#FF007F]/10",  border: "border-[#FF007F]/25" },
 };
 
 function ScrapingHistoryTab() {
@@ -761,31 +838,36 @@ function ScrapingHistoryTab() {
   useEffect(() => { refresh(); }, [refresh]);
 
   if (!data && loading) {
-    return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" /></div>;
+    return <div className="flex items-center justify-center h-64"><div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" /></div>;
   }
-  if (!data) return <div className="text-white/40 p-8">Aucune donnée. <button onClick={refresh} className="text-[#00E5FF] underline">Réessayer</button></div>;
+  if (!data) return (
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-8 text-center">
+      <p className="text-[#F5F4F1]/55 text-sm">Aucune donnée.</p>
+      <button onClick={refresh} className="mt-3 text-[#00E5FF] text-xs hover:underline">Réessayer</button>
+    </div>
+  );
 
   const SOURCE_COLORS = {
     clipscraper: "text-[#39FF14]",
     apify: "text-red-400",
     tikwm: "text-[#00E5FF]",
     tikwm_partial: "text-[#00E5FF]/70",
-    rapidapi: "text-amber-400",
+    rapidapi: "text-[#FFB300]",
     instagram_private: "text-[#FF007F]",
-    instaloader: "text-purple-400",
-    playwright: "text-cyan-400",
-    ytdlp: "text-orange-400",
-    youtube_api: "text-red-300",
+    instaloader: "text-[#FF007F]/80",
+    playwright: "text-[#00E5FF]/80",
+    ytdlp: "text-[#FFB300]/80",
+    youtube_api: "text-red-400/80",
     tiktok_mobile: "text-[#00E5FF]/80",
-    active_verification_exists_scrape_failed: "text-blue-300",
-    scrape_ok_zero_videos: "text-amber-300",
+    active_verification_exists_scrape_failed: "text-[#00E5FF]/70",
+    scrape_ok_zero_videos: "text-[#FFB300]/80",
     business_discovery: "text-[#39FF14]",
     instagram_public_html: "text-[#FF007F]/80",
-    ytdlp_insta: "text-purple-300",
-    ytdlp_fallback: "text-orange-300",
+    ytdlp_insta: "text-[#FF007F]/70",
+    ytdlp_fallback: "text-[#FFB300]/60",
     clips_graphql: "text-[#FF007F]/70",
-    vps_graphql: "text-cyan-300",
-    auto_archive: "text-white/50",
+    vps_graphql: "text-[#00E5FF]/70",
+    auto_archive: "text-[#F5F4F1]/55",
   };
 
   const SOURCE_LABEL = {
@@ -865,40 +947,45 @@ function ScrapingHistoryTab() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-2xl font-bold text-white">Historique Scraping</h2>
-          <p className="text-sm text-white/50 mt-1">Toutes les tentatives de scraping triées par source. Apify est en rouge.</p>
+          <div className="flex items-center gap-2.5 mb-2">
+            <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+              <RefreshCw className="w-4.5 h-4.5 text-[#FF007F]" />
+            </div>
+            <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Historique scraping</h2>
+          </div>
+          <p className="text-[#F5F4F1]/55 text-sm">Toutes les tentatives de scraping triées par source. Apify est en rouge.</p>
         </div>
         <button onClick={refresh} disabled={loading}
-          className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition disabled:opacity-50 flex items-center gap-2">
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
+          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1] text-sm transition-all duration-150 disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Actualiser
         </button>
       </div>
 
       {/* ─── SUMMARY GLOBAL (prime sur le detail anxiogene) ────────────────── */}
-      <div className={`rounded-xl p-5 border-2 ${
-        healthRate >= 80 ? "bg-[#39FF14]/10 border-[#39FF14]/40" :
-        healthRate >= 50 ? "bg-amber-500/10 border-amber-500/40" :
-        "bg-red-500/10 border-red-500/40"
+      <div className={`rounded-xl p-5 border ${
+        healthRate >= 80 ? "bg-[#39FF14]/8 border-[#39FF14]/30" :
+        healthRate >= 50 ? "bg-[#FFB300]/8 border-[#FFB300]/30" :
+        "bg-red-500/8 border-red-500/30"
       }`}>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex-1 min-w-[240px]">
-            <p className="text-white/60 text-xs uppercase tracking-wider font-medium">Santé globale des scrapes</p>
-            <div className="flex items-baseline gap-3 mt-1 flex-wrap">
-              <span className={`text-4xl font-bold ${
+            <p className="text-[#F5F4F1]/60 text-[11px] uppercase tracking-widest font-medium">Santé globale des scrapes</p>
+            <div className="flex items-baseline gap-3 mt-1.5 flex-wrap">
+              <span className={`text-3xl md:text-4xl font-display font-semibold tabular-nums tracking-tight ${
                 healthRate >= 80 ? "text-[#39FF14]" :
-                healthRate >= 50 ? "text-amber-400" : "text-red-400"
+                healthRate >= 50 ? "text-[#FFB300]" : "text-red-400"
               }`}>{healthyCount}/{totalAccounts}</span>
-              <span className="text-white/70 text-base">comptes en bonne santé</span>
-              <span className={`text-2xl font-mono font-bold ${
+              <span className="text-[#F5F4F1]/70 text-sm">comptes en bonne santé</span>
+              <span className={`text-xl md:text-2xl font-mono font-semibold tabular-nums ${
                 healthRate >= 80 ? "text-[#39FF14]" :
-                healthRate >= 50 ? "text-amber-400" : "text-red-400"
+                healthRate >= 50 ? "text-[#FFB300]" : "text-red-400"
               }`}>{healthRate}%</span>
             </div>
-            <p className="text-white/50 text-xs mt-2 leading-relaxed">
-              "Sain" = scrape OK <span className="text-white/30">·</span> compte vivant confirmé même si proxy rate <span className="text-white/30">·</span> compte légitimement vide.<br/>
-              Les comptes privés / supprimés sont comptés à part — ce n'est pas un fail technique.
+            <p className="text-[#F5F4F1]/55 text-xs mt-2 leading-relaxed">
+              "Sain" = scrape OK <span className="text-[#F5F4F1]/30">·</span> compte vivant confirmé même si proxy rate <span className="text-[#F5F4F1]/30">·</span> compte légitimement vide.<br/>
+              Les comptes privés/supprimés sont comptés à part — ce n'est pas un fail technique.
             </p>
           </div>
           {/* Mini-tuiles par categorie */}
@@ -915,104 +1002,111 @@ function ScrapingHistoryTab() {
               const style = CATEGORY_STYLE[t.key];
               return (
                 <button key={t.key} onClick={() => setCategoryFilter(categoryFilter === t.key ? "all" : t.key)}
-                  className={`rounded-lg px-3 py-2 border text-left transition ${style.bg} ${style.border} ${categoryFilter === t.key ? "ring-2 ring-white/30" : "hover:brightness-125"}`}>
+                  title={`Filtrer par ${style.label}`}
+                  className={`rounded-lg px-3 py-2 border text-left transition-all duration-150 ${style.bg} ${style.border} ${categoryFilter === t.key ? "ring-2 ring-[#F5F4F1]/30" : "hover:brightness-125"}`}>
                   <div className="flex items-center gap-1.5">
                     <span className={`w-2 h-2 rounded-full ${style.dot}`}/>
-                    <span className={`text-[10px] uppercase font-semibold ${style.text}`}>{t.label}</span>
+                    <span className={`text-[10px] uppercase font-semibold tracking-wider ${style.text}`}>{t.label}</span>
                   </div>
-                  <p className="text-white font-mono font-bold text-xl mt-0.5">{t.val}</p>
+                  <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-xl mt-1">{t.val}</p>
                 </button>
               );
             })}
           </div>
         </div>
         {summary.source === "fallback" && (
-          <p className="text-white/30 text-[10px] mt-3">
-            Stats calculées sur l'échantillon en mémoire ({history.length} entrées). Quand l'endpoint <code className="text-white/50">/admin/scrape-result-stats</code> sera déployé, ces chiffres seront calculés sur la fenêtre 24h complète côté backend.
+          <p className="text-[#F5F4F1]/40 text-[10px] mt-3 leading-relaxed">
+            Stats calculées sur l'échantillon en mémoire ({history.length} entrées). Quand l'endpoint <code className="text-[#F5F4F1]/65 font-mono">/admin/scrape-result-stats</code> sera déployé, ces chiffres seront calculés sur la fenêtre 24 h complète côté backend.
           </p>
         )}
       </div>
 
       {/* Alerte rouge si Apify utilisé */}
       {data.apify_today_count > 0 && (
-        <div className="bg-red-500/15 border-2 border-red-500/50 rounded-xl p-4">
-          <div className="flex items-center gap-3 mb-2">
-            <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0" />
-            <p className="text-red-400 font-bold text-base">⚠️ APIFY UTILISÉ AUJOURD'HUI</p>
+        <div className="bg-red-500/8 border border-red-500/30 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+              <AlertTriangle className="w-4.5 h-4.5 text-red-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-red-400 font-display font-semibold text-base tracking-tight">Apify utilisé aujourd'hui</p>
+              <p className="text-[#F5F4F1]/80 text-sm mt-1 tabular-nums">
+                <span className="font-display font-semibold text-red-400 text-lg">{data.apify_today_count}</span> appels aujourd'hui
+                <span className="mx-2 text-[#F5F4F1]/25">·</span>
+                <span className="font-display font-semibold text-red-400 text-lg">{data.apify_month_count}</span> ce mois ({data.apify_month_videos} vidéos)
+              </p>
+              <p className="text-[#F5F4F1]/55 text-xs mt-2 leading-relaxed">
+                Apify est censé être le dernier recours. Si ce compteur monte vite, c'est que ClipScraper VPS et les autres sources échouent — vérifie la config <code className="text-[#F5F4F1] font-mono">CLIP_SCRAPER_URL/KEY</code> sur Railway et l'état du VPS.
+              </p>
+            </div>
           </div>
-          <p className="text-white/80 text-sm">
-            <span className="font-bold text-red-400 text-lg">{data.apify_today_count}</span> appels Apify aujourd'hui
-            · <span className="font-bold text-red-400 text-lg">{data.apify_month_count}</span> ce mois ({data.apify_month_videos} vidéos)
-          </p>
-          <p className="text-white/50 text-xs mt-2">
-            Apify est censé être le tout dernier recours. Si ce compteur monte vite, c'est que ClipScraper VPS et les autres sources échouent — vérifie la config CLIP_SCRAPER_URL/KEY sur Railway et l'état du VPS.
-          </p>
         </div>
       )}
 
       {/* Stats par source sur 24h */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
-        <p className="text-white font-medium mb-3 text-sm">Sources utilisées (dernières 24h)</p>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+        <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight mb-3">Sources utilisées (dernières 24 h)</p>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5">
           {(data.stats_24h || []).map(s => {
             const isApify = s._id?.startsWith("apify");
             return (
-              <div key={s._id} className={`rounded-lg p-3 border ${isApify ? "bg-red-500/10 border-red-500/30" : "bg-white/5 border-white/10"}`}>
-                <p className={`text-xs font-medium mb-1 ${SOURCE_COLORS[s._id] || "text-white/60"}`}>
+              <div key={s._id} className={`rounded-lg p-3 border ${isApify ? "bg-red-500/8 border-red-500/25" : "bg-[#0E0D0B] border-warm"}`}>
+                <p className={`text-[11px] font-medium mb-1 truncate ${SOURCE_COLORS[s._id] || "text-[#F5F4F1]/60"}`}>
                   {SOURCE_LABEL[s._id] || s._id}
                 </p>
-                <p className="text-white font-mono font-bold text-lg">{s.count}</p>
-                <p className="text-[10px] text-white/40">{s.successes} OK · {s.videos_total} vidéos</p>
+                <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-lg tracking-tight">{s.count}</p>
+                <p className="text-[10px] text-[#F5F4F1]/45 tabular-nums">{s.successes} OK <span className="text-[#F5F4F1]/25">·</span> {s.videos_total} vidéos</p>
               </div>
             );
           })}
           {(!data.stats_24h || data.stats_24h.length === 0) && (
-            <p className="text-white/30 text-sm col-span-full">Aucune activité de scraping dans les 24h</p>
+            <p className="text-[#F5F4F1]/40 text-sm col-span-full">Aucune activité de scraping dans les 24 h.</p>
           )}
         </div>
       </div>
 
       {/* Filtres + recherche */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex bg-white/5 border border-white/10 rounded-lg p-1 gap-1">
+        <div className="flex bg-[#0E0D0B] border border-warm rounded-lg p-1 gap-0.5">
           {[
             { id: "all", label: "Toutes sources" },
-            { id: "apify_only", label: "🚨 Apify seulement" },
+            { id: "apify_only", label: "Apify seulement" },
             { id: "clipscraper", label: "ClipScraper" },
             { id: "tikwm", label: "TikWm" },
           ].map(f => (
             <button key={f.id} onClick={() => setFilter(f.id)}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${filter === f.id ? (f.id === "apify_only" ? "bg-red-500/30 text-red-300" : "bg-white/15 text-white") : "text-white/40 hover:text-white"}`}>
+              className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 ${filter === f.id ? (f.id === "apify_only" ? "bg-red-500/25 text-red-400 border border-red-500/30" : "bg-[#1C1A17] text-[#F5F4F1] border border-warm") : "text-[#F5F4F1]/55 hover:text-[#F5F4F1] border border-transparent"}`}>
               {f.label}
             </button>
           ))}
         </div>
         {categoryFilter !== "all" && (
           <button onClick={() => setCategoryFilter("all")}
-            className="px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/20 text-white/70 text-xs flex items-center gap-1.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${CATEGORY_STYLE[categoryFilter]?.dot || "bg-white/40"}`}/>
+            title="Retirer le filtre catégorie"
+            className="px-2.5 py-1 rounded-md bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1]/70 text-xs flex items-center gap-1.5 transition-all duration-150">
+            <span className={`w-1.5 h-1.5 rounded-full ${CATEGORY_STYLE[categoryFilter]?.dot || "bg-[#F5F4F1]/40"}`}/>
             {CATEGORY_STYLE[categoryFilter]?.label || categoryFilter}
             <X className="w-3 h-3" />
           </button>
         )}
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher username ou plateforme..."
-          className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 flex-1 max-w-xs" />
-        <span className="text-white/40 text-xs">{filteredHistory.length} / {data.total} entrées</span>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher username ou plateforme…"
+          className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22 flex-1 max-w-xs" />
+        <span className="text-[#F5F4F1]/45 text-xs tabular-nums">{filteredHistory.length} / {data.total} entrées</span>
       </div>
 
       {/* Table historique */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl overflow-hidden">
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
-                <th className="text-left py-3 px-4">Date</th>
-                <th className="text-left py-3 px-4">Source</th>
-                <th className="text-left py-3 px-4">Plateforme</th>
-                <th className="text-left py-3 px-4">Compte</th>
-                <th className="text-left py-3 px-4">Catégorie</th>
-                <th className="text-left py-3 px-4">Vidéos</th>
-                <th className="text-left py-3 px-4">Détail</th>
+              <tr className="border-b border-warm text-[#F5F4F1]/55 text-[11px] uppercase tracking-wider">
+                <th className="text-left py-3 px-4 font-medium">Date</th>
+                <th className="text-left py-3 px-4 font-medium">Source</th>
+                <th className="text-left py-3 px-4 font-medium">Plateforme</th>
+                <th className="text-left py-3 px-4 font-medium">Compte</th>
+                <th className="text-left py-3 px-4 font-medium">Catégorie</th>
+                <th className="text-left py-3 px-4 font-medium">Vidéos</th>
+                <th className="text-left py-3 px-4 font-medium">Détail</th>
               </tr>
             </thead>
             <tbody>
@@ -1022,32 +1116,40 @@ function ScrapingHistoryTab() {
                 const cat = classifyScrapeEntry(h);
                 const style = CATEGORY_STYLE[cat] || CATEGORY_STYLE.ko_source;
                 return (
-                  <tr key={h.id} className={`border-b border-white/5 ${isApify ? "bg-red-500/8 hover:bg-red-500/12" : "hover:bg-white/3"} transition-colors`}>
-                    <td className="py-2.5 px-4 text-white/70 text-xs whitespace-nowrap">
+                  <tr key={h.id} className={`border-b border-warm last:border-b-0 ${isApify ? "bg-red-500/5" : ""} transition-colors`}>
+                    <td className="py-2.5 px-4 text-[#F5F4F1]/70 text-xs whitespace-nowrap tabular-nums">
                       {dt.toLocaleDateString("fr-FR")} {dt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
                     </td>
-                    <td className={`py-2.5 px-4 font-medium ${SOURCE_COLORS[h.source] || "text-white/60"} ${isApify ? "font-bold" : ""}`}>
+                    <td className={`py-2.5 px-4 font-medium text-xs ${SOURCE_COLORS[h.source] || "text-[#F5F4F1]/65"} ${isApify ? "font-semibold" : ""}`}>
                       {SOURCE_LABEL[h.source] || h.source}
                     </td>
-                    <td className="py-2.5 px-4 text-white/70 text-xs">
+                    <td className="py-2.5 px-4 text-[#F5F4F1]/70 text-xs">
                       {h.platform === "tiktok" ? "🎵" : h.platform === "instagram" ? "📸" : h.platform === "youtube" ? "▶️" : ""} {h.platform}
                     </td>
-                    <td className="py-2.5 px-4 text-white text-xs">@{h.username}</td>
+                    <td className="py-2.5 px-4 text-[#F5F4F1] text-xs">@{h.username}</td>
                     <td className="py-2.5 px-4">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[11px] font-medium ${style.bg} ${style.border} ${style.text}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`}/>
                         {style.label}
                       </span>
                     </td>
-                    <td className="py-2.5 px-4 font-mono text-white/70 text-xs">{h.video_count || 0}</td>
-                    <td className="py-2.5 px-4 text-white/40 text-[11px] max-w-[300px] truncate" title={h.error}>
+                    <td className="py-2.5 px-4 font-mono text-[#F5F4F1]/70 text-xs tabular-nums">{h.video_count || 0}</td>
+                    <td className="py-2.5 px-4 text-[#F5F4F1]/45 text-[11px] max-w-[300px] truncate" title={h.error}>
                       {h.error || "—"}
                     </td>
                   </tr>
                 );
               })}
               {filteredHistory.length === 0 && (
-                <tr><td colSpan={7} className="text-center py-8 text-white/30 text-sm">Aucune entrée</td></tr>
+                <tr><td colSpan={7} className="text-center py-12">
+                  <div className="flex flex-col items-center">
+                    <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mb-3">
+                      <RefreshCw className="w-4 h-4 text-[#F5F4F1]/30" />
+                    </div>
+                    <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucune entrée</p>
+                    <p className="text-[#F5F4F1]/35 text-xs mt-1">Aucun résultat avec les filtres actuels.</p>
+                  </div>
+                </td></tr>
               )}
             </tbody>
           </table>
@@ -1085,87 +1187,94 @@ function FraudAlertsTab() {
     } catch (e) { toast.error(e.message || "Erreur réseau"); }
   };
 
-  const sevColor = (sev) => sev === "high" ? "text-red-400" : sev === "medium" ? "text-amber-400" : "text-white/60";
-  const sevBg = (sev) => sev === "high" ? "bg-red-500/10 border-red-500/30" : sev === "medium" ? "bg-amber-500/10 border-amber-500/30" : "bg-white/5 border-white/10";
+  const sevColor = (sev) => sev === "high" ? "text-red-400" : sev === "medium" ? "text-[#FFB300]" : "text-[#F5F4F1]/60";
+  const sevBg = (sev) => sev === "high" ? "bg-red-500/8 border-red-500/25" : sev === "medium" ? "bg-[#FFB300]/8 border-[#FFB300]/25" : "bg-[#0E0D0B] border-warm";
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-          <AlertTriangle className="w-6 h-6 text-red-400" /> Alertes Fraude
-        </h2>
-        <p className="text-sm text-white/50 mt-1">Détection automatique : comptes revendiqués par plusieurs utilisateurs, fake views, bot clicks.</p>
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+            <AlertTriangle className="w-4.5 h-4.5 text-red-400" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Alertes fraude</h2>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Détection automatique : comptes revendiqués par plusieurs utilisateurs, fake views, bot clicks.</p>
       </div>
 
-      <div className="flex gap-2">
-        {["pending", "resolved", "all"].map(s => (
-          <button key={s} onClick={() => setStatusFilter(s)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium ${statusFilter === s ? "bg-red-500/20 text-red-400 border border-red-500/30" : "bg-white/5 text-white/50"}`}>
-            {s === "pending" ? "En attente" : s === "resolved" ? "Résolues" : "Toutes"}
-          </button>
-        ))}
+      <div className="flex gap-2 items-center flex-wrap">
+        <div className="flex bg-[#0E0D0B] border border-warm rounded-lg p-1 gap-0.5">
+          {["pending", "resolved", "all"].map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 ${statusFilter === s ? "bg-red-500/15 text-red-400 border border-red-500/25" : "text-[#F5F4F1]/55 hover:text-[#F5F4F1] border border-transparent"}`}>
+              {s === "pending" ? "En attente" : s === "resolved" ? "Résolues" : "Toutes"}
+            </button>
+          ))}
+        </div>
         <button onClick={refresh} disabled={loading}
-          className="ml-auto px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 text-xs">
-          {loading ? "Chargement..." : "↻ Rafraîchir"}
+          title="Rafraîchir la liste"
+          className="ml-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1]/70 hover:text-[#F5F4F1] text-xs transition-all duration-150 disabled:opacity-50">
+          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+          {loading ? "Chargement…" : "Rafraîchir"}
         </button>
       </div>
 
-      {loading && <div className="text-center py-12 text-white/40">Chargement...</div>}
+      {loading && <div className="flex items-center justify-center py-12"><div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" /></div>}
 
       {data && (
         <>
           <div className="grid grid-cols-3 gap-3">
-            <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
-              <p className="text-white/40 text-xs">Stockées</p>
-              <p className="text-2xl font-bold text-white">{data.stored_alerts_count}</p>
+            <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4">
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-wider">Stockées</p>
+              <p className="text-2xl font-display font-semibold tabular-nums text-[#F5F4F1] tracking-tight mt-1">{data.stored_alerts_count}</p>
             </div>
-            <div className="bg-[#1a1a1a] border border-amber-500/20 rounded-xl p-4">
-              <p className="text-amber-400/80 text-xs">Détectées (live)</p>
-              <p className="text-2xl font-bold text-amber-400">{data.live_alerts_count}</p>
+            <div className="bg-[#1C1A17]/85 border border-[#FFB300]/25 rounded-xl p-4">
+              <p className="text-[11px] text-[#FFB300]/80 uppercase tracking-wider">Détectées (live)</p>
+              <p className="text-2xl font-display font-semibold tabular-nums text-[#FFB300] tracking-tight mt-1">{data.live_alerts_count}</p>
             </div>
-            <div className="bg-[#1a1a1a] border border-red-500/20 rounded-xl p-4">
-              <p className="text-red-400/80 text-xs">Total</p>
-              <p className="text-2xl font-bold text-red-400">{data.total}</p>
+            <div className="bg-[#1C1A17]/85 border border-red-500/25 rounded-xl p-4">
+              <p className="text-[11px] text-red-400/80 uppercase tracking-wider">Total</p>
+              <p className="text-2xl font-display font-semibold tabular-nums text-red-400 tracking-tight mt-1">{data.total}</p>
             </div>
           </div>
 
           {/* Stockées */}
           {data.stored_alerts?.length > 0 && (
             <div>
-              <h3 className="text-sm font-semibold text-white/70 mb-2">Alertes stockées ({data.stored_alerts.length})</h3>
+              <h3 className="text-[11px] font-display font-semibold tracking-tight text-[#F5F4F1]/70 mb-2 uppercase tracking-wider">Alertes stockées ({data.stored_alerts.length})</h3>
               <div className="space-y-2">
                 {data.stored_alerts.map(a => (
                   <div key={a.alert_id} className={`rounded-xl p-4 border ${sevBg(a.severity)}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <span className={`text-xs font-bold uppercase ${sevColor(a.severity)}`}>{a.severity}</span>
-                          <span className="text-white/40 text-xs">{a.type}</span>
-                          {a.platform && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/60">{a.platform}</span>}
+                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                          <span className={`text-[10px] font-display font-semibold uppercase tracking-wider ${sevColor(a.severity)}`}>{a.severity}</span>
+                          <span className="text-[#F5F4F1]/45 text-xs">{a.type}</span>
+                          {a.platform && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-[#0E0D0B] border border-warm text-[#F5F4F1]/60">{a.platform}</span>}
                         </div>
-                        <p className="text-white text-sm">{a.details}</p>
-                        <div className="text-white/40 text-xs mt-1.5 space-y-0.5">
-                          {a.username && <p>📱 @{a.username}</p>}
-                          {a.existing_user_email && <p>👤 Existant: <span className="text-white/60">{a.existing_user_name || a.existing_user_email}</span></p>}
-                          {a.attempted_user_email && <p>🆕 Tentative: <span className="text-white/60">{a.attempted_user_name || a.attempted_user_email}</span></p>}
-                          {a.campaign_name && <p>📂 Campagne: <span className="text-white/60">{a.campaign_name}</span></p>}
-                          <p className="text-white/30">{new Date(a.created_at).toLocaleString("fr-FR")}</p>
+                        <p className="text-[#F5F4F1] text-sm leading-relaxed">{a.details}</p>
+                        <div className="text-[#F5F4F1]/45 text-xs mt-2 space-y-0.5">
+                          {a.username && <p>Compte @{a.username}</p>}
+                          {a.existing_user_email && <p>Existant <span className="text-[#F5F4F1]/65 ml-1">{a.existing_user_name || a.existing_user_email}</span></p>}
+                          {a.attempted_user_email && <p>Tentative <span className="text-[#F5F4F1]/65 ml-1">{a.attempted_user_name || a.attempted_user_email}</span></p>}
+                          {a.campaign_name && <p>Campagne <span className="text-[#F5F4F1]/65 ml-1">{a.campaign_name}</span></p>}
+                          <p className="text-[#F5F4F1]/35 tabular-nums mt-1">{new Date(a.created_at).toLocaleString("fr-FR")}</p>
                         </div>
                       </div>
                       {a.status === "pending" && (
                         <div className="flex flex-col gap-1 flex-shrink-0">
                           <button onClick={() => resolve(a.alert_id, "confirmed")}
-                            className="px-2.5 py-1 rounded text-[10px] bg-red-500/20 hover:bg-red-500/30 text-red-300 font-medium">
-                            🚫 Confirmer fraude
+                            className="px-2.5 py-1 rounded-md text-[10px] bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/25 font-medium transition-all duration-150">
+                            Confirmer fraude
                           </button>
                           <button onClick={() => resolve(a.alert_id, "false_positive")}
-                            className="px-2.5 py-1 rounded text-[10px] bg-white/5 hover:bg-white/10 text-white/60">
-                            ✓ Faux positif
+                            className="px-2.5 py-1 rounded-md text-[10px] bg-[#0E0D0B] hover:bg-[#262320] border border-warm text-[#F5F4F1]/65 transition-all duration-150">
+                            Faux positif
                           </button>
                         </div>
                       )}
                       {a.status === "resolved" && (
-                        <span className={`px-2 py-1 rounded text-[10px] ${a.decision === "confirmed" ? "bg-red-500/20 text-red-400" : "bg-white/10 text-white/50"}`}>
+                        <span className={`px-2 py-1 rounded-md text-[10px] font-medium border ${a.decision === "confirmed" ? "bg-red-500/15 text-red-400 border-red-500/25" : "bg-[#0E0D0B] text-[#F5F4F1]/55 border-warm"}`}>
                           {a.decision === "confirmed" ? "Fraude" : "Faux positif"}
                         </span>
                       )}
@@ -1179,15 +1288,15 @@ function FraudAlertsTab() {
           {/* Live detected */}
           {data.live_detected_alerts?.length > 0 && (
             <div>
-              <h3 className="text-sm font-semibold text-white/70 mb-2">Détection live ({data.live_detected_alerts.length})</h3>
+              <h3 className="text-[11px] font-display font-semibold tracking-tight text-[#F5F4F1]/70 mb-2 uppercase tracking-wider">Détection live ({data.live_detected_alerts.length})</h3>
               <div className="space-y-2">
                 {data.live_detected_alerts.map((a, i) => (
                   <div key={i} className={`rounded-xl p-3 border ${sevBg(a.severity)}`}>
                     <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className={`text-xs font-bold uppercase ${sevColor(a.severity)}`}>{a.severity}</span>
-                      <span className="text-white/40 text-xs">{a.type}</span>
+                      <span className={`text-[10px] font-display font-semibold uppercase tracking-wider ${sevColor(a.severity)}`}>{a.severity}</span>
+                      <span className="text-[#F5F4F1]/45 text-xs">{a.type}</span>
                     </div>
-                    <p className="text-white text-sm">{a.details}</p>
+                    <p className="text-[#F5F4F1] text-sm leading-relaxed">{a.details}</p>
                   </div>
                 ))}
               </div>
@@ -1195,10 +1304,12 @@ function FraudAlertsTab() {
           )}
 
           {data.total === 0 && (
-            <div className="text-center py-16 bg-[#1a1a1a] border border-white/10 rounded-xl">
-              <CheckCircle2 className="w-12 h-12 text-[#39FF14]/50 mx-auto mb-3" />
-              <p className="text-white/60">Aucune alerte de fraude</p>
-              <p className="text-white/30 text-sm mt-1">Le système surveille automatiquement les patterns suspects.</p>
+            <div className="text-center py-16 bg-[#1C1A17]/85 border border-warm rounded-xl">
+              <div className="w-12 h-12 rounded-xl bg-[#39FF14]/10 border border-[#39FF14]/25 flex items-center justify-center mx-auto mb-3">
+                <CheckCircle2 className="w-6 h-6 text-[#39FF14]" />
+              </div>
+              <p className="text-[#F5F4F1] text-sm font-display font-semibold tracking-tight">Aucune alerte de fraude</p>
+              <p className="text-[#F5F4F1]/45 text-xs mt-1">Le système surveille automatiquement les patterns suspects.</p>
             </div>
           )}
         </>
@@ -1360,60 +1471,67 @@ function ProspectsTab() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-2xl font-bold text-white">Prospects</h2>
-          <p className="text-sm text-white/50 mt-1">Crée des campagnes pré-remplies pour démarcher des agences</p>
+          <div className="flex items-center gap-2.5 mb-2">
+            <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+              <Building2 className="w-4.5 h-4.5 text-[#FF007F]" />
+            </div>
+            <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Prospects</h2>
+          </div>
+          <p className="text-[#F5F4F1]/55 text-sm">Crée des campagnes pré-remplies pour démarcher des agences.</p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="px-4 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 text-white text-sm font-medium transition">+ Nouvelle campagne prospect</button>
+        <button onClick={() => setShowCreate(true)} title="Créer une nouvelle campagne prospect" className="px-4 py-2 rounded-lg bg-[#FF007F] hover:bg-[#E50073] text-white text-sm font-semibold transition-all duration-150">+ Nouvelle campagne prospect</button>
       </div>
 
       {showCreate && (
-        <div className="bg-[#0d0d0d] border border-white/10 rounded-2xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-white/8 flex items-center justify-between">
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-warm flex items-center justify-between bg-[#0E0D0B]">
             <div>
-              <h3 className="text-white font-semibold text-base">Nouvelle campagne prospect</h3>
-              <p className="text-white/40 text-xs mt-0.5">Mêmes options qu'une vraie campagne agence</p>
+              <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">Nouvelle campagne prospect</h3>
+              <p className="text-[#F5F4F1]/45 text-xs mt-0.5">Mêmes options qu'une vraie campagne agence.</p>
             </div>
-            <button onClick={() => setShowCreate(false)} className="text-white/30 hover:text-white text-lg">✕</button>
+            <button onClick={() => setShowCreate(false)} title="Fermer" className="p-1.5 rounded-md bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1]/55 hover:text-[#F5F4F1] transition-all duration-150">
+              <X className="w-4 h-4" />
+            </button>
           </div>
           <div className="p-5 space-y-6 max-h-[75vh] overflow-y-auto">
 
             {/* ── Section : Informations de base ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Informations</p>
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Informations</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="md:col-span-2">
-                  <label className="text-xs text-white/50 block mb-1">Nom de la campagne *</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Nom de la campagne *</label>
                   <input value={newCamp.name} onChange={e => setNewCamp(p => ({...p, name: e.target.value}))}
                     placeholder="Ex: Campagne MrBeast Highlights"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Nom de l'agence cible *</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Nom de l'agence cible *</label>
                   <input value={newCamp.agency_name} onChange={e => setNewCamp(p => ({...p, agency_name: e.target.value}))}
                     placeholder="Ex: Marcus Lawrence Agency"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">URL image de couverture (optionnel)</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">URL image de couverture (optionnel)</label>
                   <input value={newCamp.image_url} onChange={e => setNewCamp(p => ({...p, image_url: e.target.value}))}
                     placeholder="https://..."
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div className="md:col-span-2">
-                  <label className="text-xs text-white/50 block mb-1">Description</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Description</label>
                   <textarea value={newCamp.description} onChange={e => setNewCamp(p => ({...p, description: e.target.value}))}
                     placeholder="Décris la campagne en quelques phrases..."
                     rows={2}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30 resize-none" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22 resize-none" />
                 </div>
               </div>
             </section>
 
             {/* ── Section : Modèle de paiement ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Modèle de paiement</p>
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Modèle de paiement</p>
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { id: "views", label: "💰 Vues", desc: "RPM (€ / 1000 vues)" },
@@ -1421,39 +1539,39 @@ function ProspectsTab() {
                   { id: "both", label: "Vues + Clics", desc: "Cumul des deux" },
                 ].map(m => (
                   <button key={m.id} onClick={() => setNewCamp(p => ({...p, payment_model: m.id}))}
-                    className={`p-3 rounded-xl text-left transition-all border ${newCamp.payment_model === m.id ? "bg-[#FF007F]/10 border-[#FF007F]/40 text-white" : "bg-white/3 border-white/10 text-white/60 hover:bg-white/5"}`}>
+                    className={`p-3 rounded-lg text-left transition-all duration-150 border ${newCamp.payment_model === m.id ? "bg-[#FF007F]/10 border-[#FF007F]/40 text-[#F5F4F1]" : "bg-[#0E0D0B] border-warm text-[#F5F4F1]/60 hover:border-[#F5F4F1]/14 hover:text-[#F5F4F1]"}`}>
                     <p className="text-sm font-medium">{m.label}</p>
-                    <p className="text-[10px] text-white/40 mt-0.5">{m.desc}</p>
+                    <p className="text-[10px] text-[#F5F4F1]/45 mt-0.5">{m.desc}</p>
                   </button>
                 ))}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {(newCamp.payment_model === "views" || newCamp.payment_model === "both") && (
                   <div>
-                    <label className="text-xs text-white/50 block mb-1">RPM (€ / 1000 vues) *</label>
+                    <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">RPM (€ / 1000 vues) *</label>
                     <input type="number" step="0.1" value={newCamp.rpm} onChange={e => setNewCamp(p => ({...p, rpm: e.target.value}))}
                       placeholder="Ex: 5"
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                      className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                   </div>
                 )}
                 {(newCamp.payment_model === "clicks" || newCamp.payment_model === "both") && (
                   <>
                     <div>
-                      <label className="text-xs text-white/50 block mb-1">Tarif (€ / 1000 clics) *</label>
+                      <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Tarif (€ / 1000 clics) *</label>
                       <input type="number" step="0.1" value={newCamp.rate_per_click} onChange={e => setNewCamp(p => ({...p, rate_per_click: e.target.value}))}
                         placeholder="Ex: 5"
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                        className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                     </div>
                     <div className="md:col-span-2">
-                      <label className="text-xs text-white/50 block mb-1">URL de destination *</label>
+                      <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">URL de destination *</label>
                       <input value={newCamp.destination_url} onChange={e => setNewCamp(p => ({...p, destination_url: e.target.value}))}
                         placeholder="https://..."
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                        className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                     </div>
                     <div>
-                      <label className="text-xs text-white/50 block mb-1">Comptage des clics</label>
+                      <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Comptage des clics</label>
                       <select value={newCamp.click_billing_mode} onChange={e => setNewCamp(p => ({...p, click_billing_mode: e.target.value}))}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30">
+                        className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm focus:outline-none focus:border-[#F5F4F1]/22">
                         <option value="all">Tous les clics</option>
                         <option value="unique_24h">Uniques / 24h (recommandé)</option>
                         <option value="unique_lifetime">Uniques à vie</option>
@@ -1466,11 +1584,11 @@ function ProspectsTab() {
 
             {/* ── Section : Plateformes ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Plateformes acceptées</p>
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Plateformes acceptées</p>
               <div className="flex gap-2">
                 {[["tiktok", "🎵 TikTok"], ["instagram", "📸 Instagram"], ["youtube", "▶️ YouTube"]].map(([id, label]) => (
                   <button key={id} onClick={() => togglePlatform(id)}
-                    className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all border ${newCamp.platforms.includes(id) ? "bg-white/15 border-white/30 text-white" : "bg-white/3 border-white/10 text-white/40 hover:text-white/70"}`}>
+                    className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 border ${newCamp.platforms.includes(id) ? "bg-[#F5F4F1]/10 border-[#F5F4F1]/30 text-[#F5F4F1]" : "bg-[#0E0D0B] border-warm text-[#F5F4F1]/55 hover:border-[#F5F4F1]/14 hover:text-[#F5F4F1]"}`}>
                     {label}
                   </button>
                 ))}
@@ -1479,8 +1597,8 @@ function ProspectsTab() {
 
             {/* ── Section : Budget ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Budget</p>
-              <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer">
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Budget</p>
+              <label className="flex items-center gap-2 text-sm text-[#F5F4F1]/70 cursor-pointer">
                 <input type="checkbox" checked={newCamp.budget_unlimited}
                   onChange={e => setNewCamp(p => ({...p, budget_unlimited: e.target.checked}))}
                   className="w-4 h-4 accent-[#FF007F]" />
@@ -1488,71 +1606,71 @@ function ProspectsTab() {
               </label>
               {!newCamp.budget_unlimited && (
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Budget total (€)</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Budget total (€)</label>
                   <input type="number" value={newCamp.budget_total} onChange={e => setNewCamp(p => ({...p, budget_total: e.target.value}))}
                     placeholder="Ex: 1000"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
               )}
             </section>
 
             {/* ── Section : Règles & Strikes ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Règles de la campagne</p>
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Règles de la campagne</p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Max clippeurs</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Max clippeurs</label>
                   <input type="number" value={newCamp.max_clippers} onChange={e => setNewCamp(p => ({...p, max_clippers: e.target.value}))}
                     placeholder="Illimité"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Posts/jour min</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Posts/jour min</label>
                   <input type="number" value={newCamp.cadence} onChange={e => setNewCamp(p => ({...p, cadence: e.target.value}))}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Max strikes</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Max strikes</label>
                   <input type="number" value={newCamp.max_strikes} onChange={e => setNewCamp(p => ({...p, max_strikes: e.target.value}))}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Jours d'inact.</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Jours d'inact.</label>
                   <input type="number" value={newCamp.strike_days} onChange={e => setNewCamp(p => ({...p, strike_days: e.target.value}))}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Vues min payées</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Vues min payées</label>
                   <input type="number" value={newCamp.min_view_payout} onChange={e => setNewCamp(p => ({...p, min_view_payout: e.target.value}))}
                     placeholder="0"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 block mb-1">Vues max payées (cap)</label>
+                  <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Vues max payées (cap)</label>
                   <input type="number" value={newCamp.max_view_payout} onChange={e => setNewCamp(p => ({...p, max_view_payout: e.target.value}))}
                     placeholder="Sans plafond"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
+                    className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                 </div>
               </div>
             </section>
 
             {/* ── Section : Tracking ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Tracking</p>
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Tracking</p>
               <div>
-                <label className="text-xs text-white/50 block mb-1">Date de début du tracking</label>
+                <label className="text-xs text-[#F5F4F1]/55 block mb-1.5 font-medium">Date de début du tracking</label>
                 <input type="date" value={newCamp.tracking_start_date} onChange={e => setNewCamp(p => ({...p, tracking_start_date: e.target.value}))}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white/30" />
-                <p className="text-[10px] text-white/30 mt-1">Toutes les vidéos publiées depuis cette date seront trackées + rémunérées. Vide = aujourd'hui.</p>
+                  className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2.5 text-[#F5F4F1] text-sm focus:outline-none focus:border-[#F5F4F1]/22" />
+                <p className="text-[10px] text-[#F5F4F1]/40 mt-1.5 leading-relaxed">Toutes les vidéos publiées depuis cette date seront trackées + rémunérées. Vide = aujourd'hui.</p>
               </div>
             </section>
 
             {/* ── Section : Candidature ── */}
             <section className="space-y-3">
-              <p className="text-[11px] text-white/40 uppercase tracking-wider font-medium">Candidature</p>
-              <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer">
+              <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-widest font-medium">Candidature</p>
+              <label className="flex items-center gap-2 text-sm text-[#F5F4F1]/70 cursor-pointer">
                 <input type="checkbox" checked={newCamp.application_form_enabled}
                   onChange={e => setNewCamp(p => ({...p, application_form_enabled: e.target.checked}))}
                   className="w-4 h-4 accent-[#FF007F]" />
@@ -1560,21 +1678,24 @@ function ProspectsTab() {
               </label>
               {newCamp.application_form_enabled && (
                 <div className="space-y-2">
-                  <p className="text-xs text-white/50">Questions à poser aux candidats :</p>
+                  <p className="text-xs text-[#F5F4F1]/55">Questions à poser aux candidats :</p>
                   {(newCamp.application_questions || []).map((q, idx) => (
                     <div key={idx} className="flex gap-2">
                       <input value={q}
                         onChange={e => setNewCamp(prev => ({ ...prev, application_questions: prev.application_questions.map((qq, i) => i === idx ? e.target.value : qq) }))}
-                        placeholder="Question..."
-                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/30" />
+                        placeholder="Question…"
+                        className="flex-1 bg-[#0E0D0B] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                       {newCamp.application_questions.length > 1 && (
                         <button onClick={() => setNewCamp(prev => ({ ...prev, application_questions: prev.application_questions.filter((_, i) => i !== idx) }))}
-                          className="w-8 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">✕</button>
+                          title="Supprimer cette question"
+                          className="w-9 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 transition-all duration-150">
+                          <X className="w-3.5 h-3.5 mx-auto" />
+                        </button>
                       )}
                     </div>
                   ))}
                   <button onClick={() => setNewCamp(prev => ({ ...prev, application_questions: [...(prev.application_questions || []), ""] }))}
-                    className="w-full py-2 rounded-lg bg-white/3 hover:bg-white/8 text-white/50 hover:text-white text-xs border border-dashed border-white/10 transition">
+                    className="w-full py-2 rounded-lg bg-[#0E0D0B] hover:bg-[#262320] text-[#F5F4F1]/55 hover:text-[#F5F4F1] text-xs border border-dashed border-warm transition-all duration-150">
                     + Ajouter une question
                   </button>
                 </div>
@@ -1583,21 +1704,25 @@ function ProspectsTab() {
           </div>
 
           {/* Footer fixe */}
-          <div className="px-5 py-4 border-t border-white/8 flex gap-2 bg-[#0a0a0a]">
+          <div className="px-5 py-4 border-t border-warm flex gap-2 bg-[#0E0D0B]">
             <button onClick={() => setShowCreate(false)}
-              className="px-5 py-2.5 rounded-lg border border-white/10 text-white/60 hover:text-white text-sm transition">Annuler</button>
+              className="px-5 py-2.5 rounded-lg border border-warm bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1]/70 hover:text-[#F5F4F1] text-sm transition-all duration-150">Annuler</button>
             <button onClick={createCampaign}
-              className="flex-1 py-2.5 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/90 text-white text-sm font-semibold transition">
+              className="flex-1 py-2.5 rounded-lg bg-[#FF007F] hover:bg-[#E50073] text-white text-sm font-semibold transition-all duration-150">
               Créer la campagne prospect
             </button>
           </div>
         </div>
       )}
 
-      {loading && <div className="text-white/40 text-sm">Chargement...</div>}
+      {loading && <div className="flex items-center justify-center py-8"><div className="w-5 h-5 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" /></div>}
       {!loading && prospects.length === 0 && (
-        <div className="text-center py-10 bg-[#121212] border border-white/10 rounded-xl">
-          <p className="text-white/40">Aucun prospect créé pour l'instant</p>
+        <div className="text-center py-16 bg-[#1C1A17]/85 border border-warm rounded-xl">
+          <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mx-auto mb-3">
+            <Building2 className="w-4 h-4 text-[#F5F4F1]/30" />
+          </div>
+          <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun prospect créé</p>
+          <p className="text-[#F5F4F1]/35 text-xs mt-1">Crée une campagne prospect pour démarcher une agence.</p>
         </div>
       )}
 
@@ -1606,14 +1731,14 @@ function ProspectsTab() {
           const agencyLink = `${baseUrl}/claim/agency/${p.prospect_agency_token}`;
           const clipperLink = `${baseUrl}/claim/clipper/${p.prospect_clipper_token}`;
           return (
-            <div key={p.campaign_id} className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-              <div className="flex items-start justify-between gap-3">
+            <div key={p.campaign_id} className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex-1 min-w-0">
-                  <p className="text-white font-semibold">{p.name}</p>
-                  <p className="text-white/40 text-xs">Agence cible : {p.agency_name} · {p.payment_model === "clicks" ? `${p.rate_per_click}€/1K clics` : `${p.rpm}€/1K vues`}</p>
+                  <p className="text-[#F5F4F1] font-display font-semibold tracking-tight">{p.name}</p>
+                  <p className="text-[#F5F4F1]/45 text-xs mt-0.5">Agence cible <span className="text-[#F5F4F1]/70 ml-1">{p.agency_name}</span> <span className="mx-1.5 text-[#F5F4F1]/25">·</span> {p.payment_model === "clicks" ? `${p.rate_per_click}€/1K clics` : `${p.rpm}€/1K vues`}</p>
                 </div>
-                <div className="flex gap-3 text-xs flex-shrink-0">
-                  <span className="text-white/60">{p.prospect_accounts_count} comptes</span>
+                <div className="flex gap-3 text-xs flex-shrink-0 tabular-nums">
+                  <span className="text-[#F5F4F1]/65">{p.prospect_accounts_count} comptes</span>
                   <span className="text-[#00E5FF]">{p.tracked_videos_count} vidéos</span>
                   <span className="text-[#39FF14]">{(p.total_views || 0).toLocaleString("fr-FR")} vues</span>
                 </div>
@@ -1621,15 +1746,15 @@ function ProspectsTab() {
 
               {/* Liens magiques + Apercu */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <div className="bg-white/5 rounded-lg p-2 flex items-center gap-2">
-                  <span className="text-[10px] text-white/40 uppercase font-bold w-14">Agence</span>
-                  <code className="flex-1 text-xs text-white/70 truncate">{agencyLink}</code>
-                  <button onClick={() => copyToClipboard(agencyLink)} className="text-[#00E5FF] hover:text-white text-xs px-2 py-1 rounded bg-[#00E5FF]/10">Copier</button>
+                <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2 flex items-center gap-2">
+                  <span className="text-[10px] text-[#F5F4F1]/55 uppercase font-semibold tracking-wider w-14">Agence</span>
+                  <code className="flex-1 text-xs text-[#F5F4F1]/70 truncate">{agencyLink}</code>
+                  <button onClick={() => copyToClipboard(agencyLink)} title="Copier le lien" className="text-[#00E5FF] hover:bg-[#00E5FF]/20 text-xs px-2 py-1 rounded-md bg-[#00E5FF]/10 border border-[#00E5FF]/25 transition-all duration-150">Copier</button>
                 </div>
-                <div className="bg-white/5 rounded-lg p-2 flex items-center gap-2">
-                  <span className="text-[10px] text-white/40 uppercase font-bold w-14">Clipper</span>
-                  <code className="flex-1 text-xs text-white/70 truncate">{clipperLink}</code>
-                  <button onClick={() => copyToClipboard(clipperLink)} className="text-[#FF007F] hover:text-white text-xs px-2 py-1 rounded bg-[#FF007F]/10">Copier</button>
+                <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2 flex items-center gap-2">
+                  <span className="text-[10px] text-[#F5F4F1]/55 uppercase font-semibold tracking-wider w-14">Clipper</span>
+                  <code className="flex-1 text-xs text-[#F5F4F1]/70 truncate">{clipperLink}</code>
+                  <button onClick={() => copyToClipboard(clipperLink)} title="Copier le lien" className="text-[#FF007F] hover:bg-[#FF007F]/20 text-xs px-2 py-1 rounded-md bg-[#FF007F]/10 border border-[#FF007F]/25 transition-all duration-150">Copier</button>
                 </div>
               </div>
 
@@ -1645,28 +1770,31 @@ function ProspectsTab() {
                     if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
                     const d = await res.json();
                     window.open(`/agency/campaign/${p.campaign_id}`, "_blank");
-                    toast.success(`✓ Aperçu (2h) - tu vas devoir te reconnecter en admin apres`);
+                    toast.success("Aperçu (2 h) — relog admin requis après");
                   } catch (e) { toast.error(e.message); }
                 }}
-                className="w-full py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 text-[#00E5FF] text-xs font-medium border border-[#00E5FF]/30 transition flex items-center justify-center gap-2">
-                👁 Aperçu — voir comme l'agence verra cette campagne
+                title="Ouvrir la campagne comme la verra l'agence"
+                className="w-full py-2 rounded-lg bg-[#00E5FF]/10 hover:bg-[#00E5FF]/20 text-[#00E5FF] text-xs font-medium border border-[#00E5FF]/25 transition-all duration-150 flex items-center justify-center gap-2">
+                <Eye className="w-3.5 h-3.5" />
+                Aperçu — voir comme l'agence verra cette campagne
               </button>
 
               {/* Bouton ajouter clippeur */}
               {/* Liste des comptes deja pre-enregistres */}
               {accountsMap[p.campaign_id]?.total > 0 && (
-                <div className="bg-white/3 border border-white/5 rounded-lg p-3 space-y-2">
-                  <p className="text-xs text-white/50 font-medium">Clippeurs pré-enregistrés ({accountsMap[p.campaign_id].total} comptes) :</p>
+                <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 space-y-2">
+                  <p className="text-[11px] text-[#F5F4F1]/55 font-medium uppercase tracking-wider">Clippeurs pré-enregistrés ({accountsMap[p.campaign_id].total} comptes)</p>
                   <div className="space-y-1.5">
                     {Object.entries(accountsMap[p.campaign_id].by_discord || {}).map(([discord, accs]) => (
-                      <div key={discord} className="flex items-center gap-2 flex-wrap py-1 px-2 bg-white/5 rounded">
+                      <div key={discord} className="flex items-center gap-2 flex-wrap py-1 px-2 bg-[#1C1A17] border border-warm rounded-md">
                         <span className="text-xs text-[#39FF14] font-medium">@{discord}</span>
-                        <span className="text-white/30 text-xs">→</span>
+                        <span className="text-[#F5F4F1]/30 text-xs">→</span>
                         {accs.map(a => (
-                          <span key={a.account_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/5 text-[11px]">
-                            <span className="text-white/40">{a.platform === "tiktok" ? "🎵" : a.platform === "instagram" ? "📸" : "▶️"}</span>
-                            <span className="text-white/80">@{a.username}</span>
+                          <span key={a.account_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#0E0D0B] border border-warm text-[11px]">
+                            <span className="text-[#F5F4F1]/45">{a.platform === "tiktok" ? "🎵" : a.platform === "instagram" ? "📸" : "▶️"}</span>
+                            <span className="text-[#F5F4F1]/80">@{a.username}</span>
                             <button onClick={() => deleteProspectAccount(a.account_id, p.campaign_id)}
+                              title="Supprimer ce compte"
                               className="text-red-400/50 hover:text-red-400 ml-1">✕</button>
                           </span>
                         ))}
@@ -1677,17 +1805,17 @@ function ProspectsTab() {
               )}
 
               {addingClipper === p.campaign_id ? (
-                <div className="bg-white/3 rounded-lg p-3 space-y-2 border border-[#39FF14]/30">
-                  <p className="text-xs text-white/60">Saisis le pseudo Discord puis ajoute autant de comptes sociaux que voulu pour ce clippeur :</p>
+                <div className="bg-[#0E0D0B] border border-[#39FF14]/30 rounded-lg p-3 space-y-2">
+                  <p className="text-xs text-[#F5F4F1]/60">Saisis le pseudo Discord puis ajoute autant de comptes sociaux que voulu pour ce clippeur :</p>
                   <input value={bulkClipper.discord_username} onChange={e => setBulkClipper(prev => ({...prev, discord_username: e.target.value}))}
                     placeholder="Pseudo Discord du clippeur (ex: paul_clipper)"
-                    className="w-full bg-white/5 border border-[#39FF14]/40 rounded-lg px-3 py-2 text-white text-sm focus:outline-none" />
+                    className="w-full bg-[#1C1A17] border border-[#39FF14]/30 rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#39FF14]/50" />
                   <div className="space-y-1.5">
                     {bulkClipper.accounts.map((acc, idx) => (
                       <div key={idx} className="flex gap-2 items-center">
                         <select value={acc.platform}
                           onChange={e => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.map((a, i) => i === idx ? { ...a, platform: e.target.value } : a) }))}
-                          className="bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-white text-sm w-32">
+                          className="bg-[#1C1A17] border border-warm rounded-lg px-2 py-2 text-[#F5F4F1] text-sm w-32 focus:outline-none focus:border-[#F5F4F1]/22">
                           <option value="tiktok">🎵 TikTok</option>
                           <option value="instagram">📸 Instagram</option>
                           <option value="youtube">▶️ YouTube</option>
@@ -1695,27 +1823,30 @@ function ProspectsTab() {
                         <input value={acc.username}
                           onChange={e => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.map((a, i) => i === idx ? { ...a, username: e.target.value } : a) }))}
                           placeholder="username (sans @)"
-                          className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm" />
+                          className="flex-1 bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22" />
                         {bulkClipper.accounts.length > 1 && (
                           <button onClick={() => setBulkClipper(prev => ({ ...prev, accounts: prev.accounts.filter((_, i) => i !== idx) }))}
-                            className="w-8 h-8 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 text-sm">✕</button>
+                            title="Retirer ce compte"
+                            className="w-9 h-9 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 transition-all duration-150">
+                            <X className="w-3.5 h-3.5 mx-auto" />
+                          </button>
                         )}
                       </div>
                     ))}
                     <button onClick={() => setBulkClipper(prev => ({ ...prev, accounts: [...prev.accounts, { platform: prev.accounts[prev.accounts.length-1]?.platform === "tiktok" ? "instagram" : "tiktok", username: "" }] }))}
-                      className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white text-xs transition border border-dashed border-white/10">
+                      className="w-full py-1.5 rounded-lg bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1]/55 hover:text-[#F5F4F1] text-xs transition-all duration-150 border border-dashed border-warm">
                       + Ajouter un autre compte pour ce clippeur
                     </button>
                   </div>
                   <div className="flex gap-2 pt-1">
-                    <button onClick={() => submitBulkClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/20 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30">
+                    <button onClick={() => submitBulkClipper(p.campaign_id)} className="flex-1 py-2 rounded-lg bg-[#39FF14]/15 hover:bg-[#39FF14]/25 text-[#39FF14] text-sm font-medium border border-[#39FF14]/30 transition-all duration-150">
                       Ajouter tous les comptes
                     </button>
-                    <button onClick={() => { setAddingClipper(null); setBulkClipper({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] }); }} className="px-4 py-2 rounded-lg border border-white/10 text-white/60 text-sm">Fermer</button>
+                    <button onClick={() => { setAddingClipper(null); setBulkClipper({ discord_username: "", accounts: [{ platform: "tiktok", username: "" }] }); }} className="px-4 py-2 rounded-lg border border-warm bg-[#1C1A17] hover:bg-[#262320] text-[#F5F4F1]/65 hover:text-[#F5F4F1] text-sm transition-all duration-150">Fermer</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-xs transition">+ Ajouter un clippeur (Discord + ses comptes)</button>
+                <button onClick={() => setAddingClipper(p.campaign_id)} className="w-full py-1.5 rounded-lg bg-[#0E0D0B] hover:bg-[#262320] border border-warm text-[#F5F4F1]/60 hover:text-[#F5F4F1] text-xs transition-all duration-150">+ Ajouter un clippeur (Discord + ses comptes)</button>
               )}
             </div>
           );
@@ -1740,17 +1871,20 @@ function ApifyAlarmBanner() {
 
   // Pas d'estimation : juste les compteurs reels
   return (
-    <div className="rounded-xl border-2 p-4 bg-amber-500/15 border-amber-500/40">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+    <div className="rounded-xl border p-4 bg-[#FFB300]/10 border-[#FFB300]/30">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="w-9 h-9 rounded-lg bg-[#FFB300]/10 border border-[#FFB300]/30 flex items-center justify-center flex-shrink-0">
+          <AlertTriangle className="w-4.5 h-4.5 text-[#FFB300]" />
+        </div>
         <div className="flex-1 min-w-0">
-          <p className="text-amber-400 font-bold text-base">⚠️ Apify utilisé aujourd'hui</p>
-          <p className="text-white/70 text-xs mt-1">
+          <p className="text-[#FFB300] font-display font-semibold text-sm tracking-tight">Apify utilisé aujourd'hui</p>
+          <p className="text-[#F5F4F1]/70 text-xs mt-1 leading-relaxed">
             Apify ne devrait être utilisé qu'en dernier recours. Si le compteur monte, le scraping gratuit est à investiguer.
           </p>
-          <p className="text-white/50 text-[10px] mt-1.5">
-            Aujourd'hui : <span className="font-mono text-white">{data.apify_total_today || 0}</span> calls Apify
+          <p className="text-[#F5F4F1]/55 text-[11px] mt-1.5 tabular-nums">
+            Aujourd'hui <span className="font-mono text-[#F5F4F1] mx-1">{data.apify_total_today || 0}</span> calls Apify
             (Insta {data.apify_instagram_today || 0} + TikTok {data.apify_tiktok_today || 0})
-            sur <span className="font-mono text-white">{data.total_scrapes_today || 0}</span> scrapes total.
+            sur <span className="font-mono text-[#F5F4F1] mx-1">{data.total_scrapes_today || 0}</span> scrapes total.
           </p>
         </div>
       </div>
@@ -1784,13 +1918,13 @@ function MetaBusinessTestSection() {
     : "text-red-400 border-red-500/40 bg-red-500/5";
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🌟 Meta Business Discovery — Test des comptes Insta
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Vérifie quels comptes Insta sont Business/Creator (= 99% fiabilité) vs Personnel (= tombe sur fallback).
           </p>
         </div>
@@ -1803,7 +1937,7 @@ function MetaBusinessTestSection() {
         </button>
       </div>
 
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+      {error && <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-3 text-red-400 text-xs">{error}</div>}
 
       {data && (
         <>
@@ -1812,12 +1946,12 @@ function MetaBusinessTestSection() {
           </div>
 
           {/* Config Meta */}
-          <div className="bg-white/3 rounded-lg p-2 text-xs grid grid-cols-2 gap-2">
-            <p className="text-white/60">IG_BUSINESS_ACCOUNT_ID : <span className={data.config?.ig_business_account_id_set ? "text-emerald-400" : "text-red-400"}>{data.config?.ig_business_account_id_set ? "✓ Set" : "✗ Manquant"}</span></p>
-            <p className="text-white/60">IG_LONG_LIVED_TOKEN : <span className={data.config?.ig_long_lived_token_set ? "text-emerald-400" : "text-red-400"}>{data.config?.ig_long_lived_token_set ? "✓ Set" : "✗ Manquant"}</span></p>
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 text-xs grid grid-cols-2 gap-2">
+            <p className="text-[#F5F4F1]/60">IG_BUSINESS_ACCOUNT_ID <span className={`ml-1 ${data.config?.ig_business_account_id_set ? "text-[#39FF14]" : "text-red-400"}`}>{data.config?.ig_business_account_id_set ? "Set" : "Manquant"}</span></p>
+            <p className="text-[#F5F4F1]/60">IG_LONG_LIVED_TOKEN <span className={`ml-1 ${data.config?.ig_long_lived_token_set ? "text-[#39FF14]" : "text-red-400"}`}>{data.config?.ig_long_lived_token_set ? "Set" : "Manquant"}</span></p>
             {data.token_valid !== undefined && (
-              <p className="text-white/60 col-span-2">Token valide : <span className={data.token_valid ? "text-emerald-400" : "text-red-400"}>{data.token_valid ? "✓ OUI" : "✗ EXPIRE / INVALIDE"}</span>
-              {data.business_account_username && <span className="text-white/40 ml-2">(@{data.business_account_username})</span>}</p>
+              <p className="text-[#F5F4F1]/60 col-span-2">Token valide <span className={`ml-1 ${data.token_valid ? "text-[#39FF14]" : "text-red-400"}`}>{data.token_valid ? "OUI" : "EXPIRÉ / INVALIDE"}</span>
+              {data.business_account_username && <span className="text-[#F5F4F1]/45 ml-2">(@{data.business_account_username})</span>}</p>
             )}
           </div>
 
@@ -1825,47 +1959,47 @@ function MetaBusinessTestSection() {
           {data.account_count !== undefined && (
             <>
               <div className="grid grid-cols-4 gap-2">
-                <div className="bg-white/5 rounded-lg p-2 text-center">
-                  <p className="text-white/50 text-[10px]">Total</p>
-                  <p className="text-white font-mono font-bold text-lg">{data.tested_count}</p>
+                <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2.5 text-center">
+                  <p className="text-[#F5F4F1]/55 text-[10px] uppercase tracking-wider">Total</p>
+                  <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-lg">{data.tested_count}</p>
                 </div>
-                <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
-                  <p className="text-emerald-400/70 text-[10px]">Business</p>
-                  <p className="text-emerald-400 font-mono font-bold text-lg">{data.business_ready_count}</p>
+                <div className="bg-[#39FF14]/10 border border-[#39FF14]/25 rounded-lg p-2.5 text-center">
+                  <p className="text-[#39FF14]/80 text-[10px] uppercase tracking-wider">Business</p>
+                  <p className="text-[#39FF14] font-display font-semibold tabular-nums text-lg">{data.business_ready_count}</p>
                 </div>
-                <div className="bg-amber-500/10 rounded-lg p-2 text-center">
-                  <p className="text-amber-400/70 text-[10px]">Personnel</p>
-                  <p className="text-amber-400 font-mono font-bold text-lg">{data.not_business_count}</p>
+                <div className="bg-[#FFB300]/10 border border-[#FFB300]/25 rounded-lg p-2.5 text-center">
+                  <p className="text-[#FFB300]/80 text-[10px] uppercase tracking-wider">Personnel</p>
+                  <p className="text-[#FFB300] font-display font-semibold tabular-nums text-lg">{data.not_business_count}</p>
                 </div>
-                <div className="bg-cyan-500/10 rounded-lg p-2 text-center">
-                  <p className="text-cyan-400/70 text-[10px]">% Business</p>
-                  <p className="text-cyan-400 font-mono font-bold text-lg">{data.business_ready_pct}%</p>
+                <div className="bg-[#00E5FF]/10 border border-[#00E5FF]/25 rounded-lg p-2.5 text-center">
+                  <p className="text-[#00E5FF]/80 text-[10px] uppercase tracking-wider">% Business</p>
+                  <p className="text-[#00E5FF] font-display font-semibold tabular-nums text-lg">{data.business_ready_pct}%</p>
                 </div>
               </div>
 
               {/* Action à faire */}
               {data.action_to_take && (
-                <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
-                  <p className="text-white/60 text-xs font-semibold">📋 Message à envoyer aux clippeurs perso :</p>
-                  <p className="text-white text-[11px] leading-relaxed italic">{data.action_to_take}</p>
+                <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 space-y-1.5">
+                  <p className="text-[#F5F4F1]/60 text-xs font-display font-semibold tracking-tight">Message à envoyer aux clippeurs perso</p>
+                  <p className="text-[#F5F4F1] text-[11px] leading-relaxed italic">{data.action_to_take}</p>
                 </div>
               )}
 
               {/* Listes */}
               <div className="grid grid-cols-2 gap-3">
-                <details className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-2">
-                  <summary className="text-emerald-400 text-xs cursor-pointer font-semibold">✅ Business/Creator ({data.business_ready_count})</summary>
+                <details className="bg-[#39FF14]/8 border border-[#39FF14]/20 rounded-lg p-2.5">
+                  <summary className="text-[#39FF14] text-xs cursor-pointer font-display font-semibold tracking-tight">Business/Creator ({data.business_ready_count})</summary>
                   <div className="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
                     {(data.business_ready_accounts || []).map(u => (
-                      <p key={u} className="text-white/60 text-[10px] font-mono">@{u}</p>
+                      <p key={u} className="text-[#F5F4F1]/65 text-[10px] font-mono">@{u}</p>
                     ))}
                   </div>
                 </details>
-                <details className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-2">
-                  <summary className="text-amber-400 text-xs cursor-pointer font-semibold">⚠️ Comptes perso ({data.not_business_count})</summary>
+                <details className="bg-[#FFB300]/8 border border-[#FFB300]/20 rounded-lg p-2.5">
+                  <summary className="text-[#FFB300] text-xs cursor-pointer font-display font-semibold tracking-tight">Comptes perso ({data.not_business_count})</summary>
                   <div className="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
                     {(data.not_business_accounts || []).map(u => (
-                      <p key={u} className="text-white/60 text-[10px] font-mono">@{u}</p>
+                      <p key={u} className="text-[#F5F4F1]/65 text-[10px] font-mono">@{u}</p>
                     ))}
                   </div>
                 </details>
@@ -1876,7 +2010,7 @@ function MetaBusinessTestSection() {
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-4 text-white/30 text-xs">
+        <div className="text-center py-4 text-[#F5F4F1]/40 text-xs">
           Clique pour tester Meta Business Discovery sur tous tes comptes Insta.
           <br />
           Résultat : quels comptes sont à 99% fiabilité vs ceux à demander de switcher en Creator.
@@ -1915,49 +2049,49 @@ function MultiPlatformStressTestSection() {
   const renderPlatformPanel = (platformData, platformName, icon, color) => {
     if (!platformData) return null;
     return (
-      <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-2">
+      <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 space-y-2">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-lg">{icon}</span>
-          <h4 className="text-white font-semibold text-sm">{platformName}</h4>
+          <h4 className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">{platformName}</h4>
         </div>
-        <div className={`border rounded p-2 text-xs font-bold ${verdictColor(platformData.verdict)}`}>
+        <div className={`border rounded-md p-2 text-xs font-display font-semibold tracking-tight ${verdictColor(platformData.verdict)}`}>
           {platformData.verdict}
         </div>
         <div className="grid grid-cols-4 gap-1.5 text-center">
-          <div className="bg-white/5 rounded p-1">
-            <p className="text-white/40 text-[9px]">Total</p>
-            <p className="text-white font-mono font-bold text-sm">{platformData.n_iterations}</p>
+          <div className="bg-[#1C1A17] border border-warm rounded-md p-1.5">
+            <p className="text-[#F5F4F1]/45 text-[9px] uppercase tracking-wider">Total</p>
+            <p className="text-[#F5F4F1] font-mono font-semibold tabular-nums text-sm">{platformData.n_iterations}</p>
           </div>
-          <div className="bg-emerald-500/10 rounded p-1">
-            <p className="text-emerald-400/60 text-[9px]">OK</p>
-            <p className="text-emerald-400 font-mono font-bold text-sm">{platformData.success_count}</p>
+          <div className="bg-[#39FF14]/10 border border-[#39FF14]/25 rounded-md p-1.5">
+            <p className="text-[#39FF14]/70 text-[9px] uppercase tracking-wider">OK</p>
+            <p className="text-[#39FF14] font-mono font-semibold tabular-nums text-sm">{platformData.success_count}</p>
           </div>
-          <div className="bg-red-500/10 rounded p-1">
-            <p className="text-red-400/60 text-[9px]">KO</p>
-            <p className="text-red-400 font-mono font-bold text-sm">{platformData.fail_count}</p>
+          <div className="bg-red-500/10 border border-red-500/25 rounded-md p-1.5">
+            <p className="text-red-400/70 text-[9px] uppercase tracking-wider">KO</p>
+            <p className="text-red-400 font-mono font-semibold tabular-nums text-sm">{platformData.fail_count}</p>
           </div>
-          <div className="bg-cyan-500/10 rounded p-1">
-            <p className="text-cyan-400/60 text-[9px]">%</p>
-            <p className="text-cyan-400 font-mono font-bold text-sm">{platformData.success_rate_pct}%</p>
+          <div className="bg-[#00E5FF]/10 border border-[#00E5FF]/25 rounded-md p-1.5">
+            <p className="text-[#00E5FF]/70 text-[9px] uppercase tracking-wider">%</p>
+            <p className="text-[#00E5FF] font-mono font-semibold tabular-nums text-sm">{platformData.success_rate_pct}%</p>
           </div>
         </div>
         <div className="text-[10px] space-y-0.5">
           {Object.entries(platformData.by_account || {}).map(([acc, s]) => (
             <div key={acc} className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${s.success_rate >= 80 ? "bg-emerald-400" : s.success_rate >= 50 ? "bg-amber-400" : "bg-red-400"}`} />
-              <span className="text-white/60 font-mono truncate">{acc}</span>
-              <span className={s.success_rate >= 80 ? "text-emerald-400" : "text-red-400"}>{s.success_rate}%</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${s.success_rate >= 80 ? "bg-[#39FF14]" : s.success_rate >= 50 ? "bg-[#FFB300]" : "bg-red-400"}`} />
+              <span className="text-[#F5F4F1]/65 font-mono truncate">{acc}</span>
+              <span className={`tabular-nums ${s.success_rate >= 80 ? "text-[#39FF14]" : "text-red-400"}`}>{s.success_rate}%</span>
             </div>
           ))}
         </div>
-        <details className="bg-white/3 rounded p-1">
-          <summary className="text-white/40 text-[10px] cursor-pointer">📜 {platformData.n_iterations} itérations</summary>
+        <details className="bg-[#1C1A17] border border-warm rounded-md p-1.5">
+          <summary className="text-[#F5F4F1]/55 text-[10px] cursor-pointer">{platformData.n_iterations} itérations</summary>
           <div className="mt-1 max-h-40 overflow-y-auto space-y-0.5">
             {platformData.results.map((r) => (
               <div key={r.iteration} className="flex gap-1.5 text-[9px] font-mono">
-                <span className="text-white/30 w-6">#{r.iteration}</span>
-                <span className={r.ok ? "text-emerald-400" : "text-red-400"}>{r.ok ? "✓" : "✗"}</span>
-                <span className="text-white/60 truncate flex-1">@{r.username} · {r.video_count || 0}vid · {r.duration_ms}ms</span>
+                <span className="text-[#F5F4F1]/40 w-6 tabular-nums">#{r.iteration}</span>
+                <span className={r.ok ? "text-[#39FF14]" : "text-red-400"}>{r.ok ? "OK" : "KO"}</span>
+                <span className="text-[#F5F4F1]/65 truncate flex-1">@{r.username} <span className="text-[#F5F4F1]/30">·</span> {r.video_count || 0} vid <span className="text-[#F5F4F1]/30">·</span> {r.duration_ms}ms</span>
               </div>
             ))}
           </div>
@@ -1967,13 +2101,13 @@ function MultiPlatformStressTestSection() {
   };
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🔥 STRESS TEST 3 PLATEFORMES (40 scrapes chacune)
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Lance 40 scrapes consécutifs sur Instagram + TikTok + YouTube (120 tests total). Mesure la fiabilité réelle. Durée : 5-15 min.
           </p>
         </div>
@@ -1988,7 +2122,7 @@ function MultiPlatformStressTestSection() {
         </button>
       </div>
 
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+      {error && <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-3 text-red-400 text-xs">{error}</div>}
 
       {data && (
         <>
@@ -1996,11 +2130,11 @@ function MultiPlatformStressTestSection() {
             {data.global_verdict}
           </div>
 
-          <div className="bg-white/3 rounded-lg p-2 grid grid-cols-2 gap-2 text-[11px]">
-            <p className="text-white/60">Moyenne : <span className="text-white font-mono font-bold">{data.avg_success_rate_pct}%</span></p>
-            <p className="text-white/60">Pire plateforme : <span className="text-white font-mono font-bold">{data.min_success_rate_pct}%</span></p>
-            <p className="text-white/60">Durée totale : <span className="text-white font-mono">{data.total_duration_sec}s</span></p>
-            <p className="text-white/60">Iterations/plateforme : <span className="text-white font-mono">{data.n_iterations_per_platform}</span></p>
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 grid grid-cols-2 gap-2 text-[11px]">
+            <p className="text-[#F5F4F1]/60">Moyenne <span className="text-[#F5F4F1] font-mono font-semibold tabular-nums ml-1">{data.avg_success_rate_pct}%</span></p>
+            <p className="text-[#F5F4F1]/60">Pire plateforme <span className="text-[#F5F4F1] font-mono font-semibold tabular-nums ml-1">{data.min_success_rate_pct}%</span></p>
+            <p className="text-[#F5F4F1]/60">Durée totale <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.total_duration_sec}s</span></p>
+            <p className="text-[#F5F4F1]/60">Iterations/plateforme <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.n_iterations_per_platform}</span></p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -2009,19 +2143,19 @@ function MultiPlatformStressTestSection() {
             {renderPlatformPanel(data.youtube, "YouTube", "▶️", "red")}
           </div>
 
-          <div className="bg-white/3 rounded-lg p-2 text-[11px] grid grid-cols-3 gap-2">
-            <p className="text-white/60">Proxies : <span className="text-white font-mono">{data.config.proxy_pool_size}</span></p>
-            <p className="text-white/60">Cookies Insta : <span className="text-white font-mono">{data.config.instagram_sessions_count}</span></p>
-            <p className="text-white/60">VPS : <span className={data.config.vps_configured ? "text-emerald-400" : "text-red-400"}>{data.config.vps_configured ? "✓" : "✗"}</span></p>
-            <p className="text-white/60">YT API : <span className={data.config.youtube_api_configured ? "text-emerald-400" : "text-red-400"}>{data.config.youtube_api_configured ? "✓" : "✗"}</span></p>
-            <p className="text-white/60">TikWm : <span className={data.config.tikwm_api_configured ? "text-emerald-400" : "text-red-400"}>{data.config.tikwm_api_configured ? "✓" : "✗"}</span></p>
-            <p className="text-white/60">Meta Business : <span className={data.config.ig_business_configured ? "text-emerald-400" : "text-amber-400"}>{data.config.ig_business_configured ? "✓" : "✗"}</span></p>
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 text-[11px] grid grid-cols-3 gap-2">
+            <p className="text-[#F5F4F1]/60">Proxies <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.config.proxy_pool_size}</span></p>
+            <p className="text-[#F5F4F1]/60">Cookies Insta <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.config.instagram_sessions_count}</span></p>
+            <p className="text-[#F5F4F1]/60">VPS <span className={`ml-1 ${data.config.vps_configured ? "text-[#39FF14]" : "text-red-400"}`}>{data.config.vps_configured ? "OK" : "KO"}</span></p>
+            <p className="text-[#F5F4F1]/60">YT API <span className={`ml-1 ${data.config.youtube_api_configured ? "text-[#39FF14]" : "text-red-400"}`}>{data.config.youtube_api_configured ? "OK" : "KO"}</span></p>
+            <p className="text-[#F5F4F1]/60">TikWm <span className={`ml-1 ${data.config.tikwm_api_configured ? "text-[#39FF14]" : "text-red-400"}`}>{data.config.tikwm_api_configured ? "OK" : "KO"}</span></p>
+            <p className="text-[#F5F4F1]/60">Meta Business <span className={`ml-1 ${data.config.ig_business_configured ? "text-[#39FF14]" : "text-[#FFB300]"}`}>{data.config.ig_business_configured ? "OK" : "KO"}</span></p>
           </div>
         </>
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-4 text-white/30 text-xs">
+        <div className="text-center py-4 text-[#F5F4F1]/40 text-xs">
           Clique pour lancer 40 scrapes consécutifs sur chaque plateforme.
           <br />
           Résultat : taux de fiabilité réel + recommandations.
@@ -2056,13 +2190,13 @@ function InstaStressTestSection() {
     : "text-red-400 border-red-500/40 bg-red-500/5";
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🔥 Stress Test Instagram (30 scrapes consécutifs)
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Lance 30 scrapes Insta sur 5 comptes Business publics différents. Donne un taux de succès réel sur production.
           </p>
         </div>
@@ -2077,7 +2211,7 @@ function InstaStressTestSection() {
         </button>
       </div>
 
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+      {error && <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-3 text-red-400 text-xs">{error}</div>}
 
       {data && (
         <>
@@ -2086,62 +2220,62 @@ function InstaStressTestSection() {
           </div>
 
           <div className="grid grid-cols-5 gap-2">
-            <div className="bg-white/5 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[10px]">Total</p>
-              <p className="text-white font-mono font-bold text-lg">{data.n_iterations}</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2.5 text-center">
+              <p className="text-[#F5F4F1]/55 text-[10px] uppercase tracking-wider">Total</p>
+              <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-lg">{data.n_iterations}</p>
             </div>
-            <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
-              <p className="text-emerald-400/70 text-[10px]">Succès</p>
-              <p className="text-emerald-400 font-mono font-bold text-lg">{data.success_count}</p>
+            <div className="bg-[#39FF14]/10 border border-[#39FF14]/25 rounded-lg p-2.5 text-center">
+              <p className="text-[#39FF14]/80 text-[10px] uppercase tracking-wider">Succès</p>
+              <p className="text-[#39FF14] font-display font-semibold tabular-nums text-lg">{data.success_count}</p>
             </div>
-            <div className="bg-red-500/10 rounded-lg p-2 text-center">
-              <p className="text-red-400/70 text-[10px]">Échecs</p>
-              <p className="text-red-400 font-mono font-bold text-lg">{data.fail_count}</p>
+            <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2.5 text-center">
+              <p className="text-red-400/80 text-[10px] uppercase tracking-wider">Échecs</p>
+              <p className="text-red-400 font-display font-semibold tabular-nums text-lg">{data.fail_count}</p>
             </div>
-            <div className="bg-cyan-500/10 rounded-lg p-2 text-center">
-              <p className="text-cyan-400/70 text-[10px]">Taux</p>
-              <p className="text-cyan-400 font-mono font-bold text-lg">{data.success_rate_pct}%</p>
+            <div className="bg-[#00E5FF]/10 border border-[#00E5FF]/25 rounded-lg p-2.5 text-center">
+              <p className="text-[#00E5FF]/80 text-[10px] uppercase tracking-wider">Taux</p>
+              <p className="text-[#00E5FF] font-display font-semibold tabular-nums text-lg">{data.success_rate_pct}%</p>
             </div>
-            <div className="bg-white/5 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[10px]">Durée</p>
-              <p className="text-white font-mono font-bold text-lg">{data.total_duration_sec}s</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2.5 text-center">
+              <p className="text-[#F5F4F1]/55 text-[10px] uppercase tracking-wider">Durée</p>
+              <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-lg">{data.total_duration_sec}s</p>
             </div>
           </div>
 
           {/* Par compte */}
-          <div className="bg-white/3 rounded-lg p-2">
-            <p className="text-white/60 text-xs font-semibold mb-2">Détail par compte :</p>
-            <div className="space-y-1">
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+            <p className="text-[#F5F4F1] text-xs font-display font-semibold tracking-tight mb-2">Détail par compte</p>
+            <div className="space-y-1.5">
               {Object.entries(data.by_account || {}).map(([acc, stats]) => (
                 <div key={acc} className="flex items-center gap-2 text-[11px]">
-                  <span className={`w-2 h-2 rounded-full ${stats.success_rate >= 80 ? "bg-emerald-400" : stats.success_rate >= 50 ? "bg-amber-400" : "bg-red-400"}`} />
-                  <span className="text-white/80 font-mono w-32">@{acc}</span>
-                  <span className="text-white/50 w-16">{stats.success_rate}%</span>
-                  <span className="text-white/40">{stats.ok}/{stats.tries} OK · ~{stats.avg_videos} vidéos/réussite</span>
+                  <span className={`w-2 h-2 rounded-full ${stats.success_rate >= 80 ? "bg-[#39FF14]" : stats.success_rate >= 50 ? "bg-[#FFB300]" : "bg-red-400"}`} />
+                  <span className="text-[#F5F4F1]/80 font-mono w-32 truncate">@{acc}</span>
+                  <span className="text-[#F5F4F1]/55 w-16 tabular-nums">{stats.success_rate}%</span>
+                  <span className="text-[#F5F4F1]/45 tabular-nums">{stats.ok}/{stats.tries} OK · {stats.avg_videos} vidéos/réussite</span>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Config détectée */}
-          <div className="bg-white/3 rounded-lg p-2 text-[11px] grid grid-cols-2 gap-2">
-            <p className="text-white/60">Proxies : <span className="text-white font-mono">{data.config.proxy_pool_size}</span></p>
-            <p className="text-white/60">Sémaphore : <span className="text-white font-mono">{data.config.insta_sem_size} parallèles · {data.config.insta_delay_sec}s delay</span></p>
-            <p className="text-white/60">Cookies Insta : <span className="text-white font-mono">{data.config.instagram_sessions_count}</span></p>
-            <p className="text-white/60">Meta Business : <span className={data.config.ig_business_configured ? "text-emerald-400" : "text-amber-400"}>{data.config.ig_business_configured ? "✓ configuré" : "✗ pas configuré"}</span></p>
+          <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 text-[11px] grid grid-cols-2 gap-2">
+            <p className="text-[#F5F4F1]/60">Proxies <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.config.proxy_pool_size}</span></p>
+            <p className="text-[#F5F4F1]/60">Sémaphore <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.config.insta_sem_size} parallèles · {data.config.insta_delay_sec}s</span></p>
+            <p className="text-[#F5F4F1]/60">Cookies Insta <span className="text-[#F5F4F1] font-mono tabular-nums ml-1">{data.config.instagram_sessions_count}</span></p>
+            <p className="text-[#F5F4F1]/60">Meta Business <span className={`ml-1 ${data.config.ig_business_configured ? "text-[#39FF14]" : "text-[#FFB300]"}`}>{data.config.ig_business_configured ? "configuré" : "pas configuré"}</span></p>
           </div>
 
           {/* Détail itérations (collapse) */}
-          <details className="bg-white/3 rounded-lg p-2">
-            <summary className="text-white/60 text-xs cursor-pointer">📜 Détail des {data.n_iterations} itérations</summary>
+          <details className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+            <summary className="text-[#F5F4F1]/60 text-xs cursor-pointer">Détail des {data.n_iterations} itérations</summary>
             <div className="mt-2 max-h-64 overflow-y-auto space-y-0.5">
               {data.results.map((r) => (
                 <div key={r.iteration} className="flex items-center gap-2 text-[10px] font-mono">
-                  <span className="text-white/30 w-8">#{r.iteration}</span>
-                  <span className="text-white/60 w-24">@{r.username}</span>
-                  <span className={r.ok ? "text-emerald-400 w-8" : "text-red-400 w-8"}>{r.ok ? "✓" : "✗"}</span>
-                  <span className="text-white/40 w-24">{r.video_count || 0} vidéos</span>
-                  <span className="text-white/40">{r.duration_ms}ms</span>
+                  <span className="text-[#F5F4F1]/35 w-8 tabular-nums">#{r.iteration}</span>
+                  <span className="text-[#F5F4F1]/60 w-24 truncate">@{r.username}</span>
+                  <span className={r.ok ? "text-[#39FF14] w-8" : "text-red-400 w-8"}>{r.ok ? "OK" : "KO"}</span>
+                  <span className="text-[#F5F4F1]/45 w-24 tabular-nums">{r.video_count || 0} vidéos</span>
+                  <span className="text-[#F5F4F1]/45 tabular-nums">{r.duration_ms}ms</span>
                   {r.error && <span className="text-red-400/70 truncate flex-1">{r.error.slice(0, 50)}</span>}
                 </div>
               ))}
@@ -2151,7 +2285,7 @@ function InstaStressTestSection() {
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-4 text-white/30 text-xs">
+        <div className="text-center py-4 text-[#F5F4F1]/40 text-xs">
           Clique sur "Lancer stress test 30x" pour mesurer la fiabilité réelle d'Instagram.
           <br />
           Si taux ≥ 90% → production-ready. Sinon je te dis quoi ajouter.
@@ -2185,13 +2319,13 @@ function ProxyVpsDeepTestSection() {
     : "text-amber-400 border-amber-500/40 bg-amber-500/5";
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🔬 Test proxy Webshare + VPS Hostinger — DIAGNOSTIC ROOT CAUSE
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Test chaque composant en isolation : IP cloud, IP via proxy, VPS /health, VPS scrape, Insta via proxy, TikWm via proxy.
           </p>
         </div>
@@ -2204,28 +2338,28 @@ function ProxyVpsDeepTestSection() {
         </button>
       </div>
 
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-xs">❌ {error}</div>}
+      {error && <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-3 text-red-400 text-xs">{error}</div>}
 
       {data && (
         <>
           <div className={`border rounded-lg p-3 text-sm font-bold ${verdictColor}`}>{data.verdict}</div>
 
           {data.actions && data.actions.length > 0 && (
-            <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
-              <p className="text-white/60 text-xs font-semibold">📋 Actions à faire :</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 space-y-1.5">
+              <p className="text-[#F5F4F1]/65 text-xs font-display font-semibold tracking-tight">Actions à faire</p>
               {data.actions.map((a, i) => (
-                <p key={i} className="text-white text-xs leading-relaxed">{a}</p>
+                <p key={i} className="text-[#F5F4F1] text-xs leading-relaxed">{a}</p>
               ))}
             </div>
           )}
 
           <div className="space-y-1.5">
             {Object.entries(data.tests || {}).map(([name, t]) => (
-              <div key={name} className={`p-2 rounded-lg border flex items-center gap-3 ${t.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
-                <span className={`w-2 h-2 rounded-full ${t.ok ? "bg-emerald-400" : "bg-red-400"} flex-shrink-0`} />
+              <div key={name} className={`p-2.5 rounded-lg border flex items-center gap-3 ${t.ok ? "bg-[#39FF14]/8 border-[#39FF14]/20" : "bg-red-500/8 border-red-500/25"}`}>
+                <span className={`w-2 h-2 rounded-full ${t.ok ? "bg-[#39FF14]" : "bg-red-400"} flex-shrink-0`} />
                 <div className="flex-1 min-w-0">
-                  <p className={`text-xs font-semibold ${t.ok ? "text-emerald-400" : "text-red-400"}`}>{name}</p>
-                  <p className="text-white/50 text-[11px] truncate">{t.info || t.reason}</p>
+                  <p className={`text-xs font-display font-semibold tracking-tight ${t.ok ? "text-[#39FF14]" : "text-red-400"}`}>{name}</p>
+                  <p className="text-[#F5F4F1]/55 text-[11px] truncate">{t.info || t.reason}</p>
                 </div>
               </div>
             ))}
@@ -2234,7 +2368,7 @@ function ProxyVpsDeepTestSection() {
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-4 text-white/30 text-xs">Clique sur "Test approfondi" pour savoir EXACTEMENT pourquoi le scraping marche pas</div>
+        <div className="text-center py-4 text-[#F5F4F1]/40 text-xs">Lance le test approfondi pour identifier la cause exacte du blocage.</div>
       )}
     </div>
   );
@@ -2264,13 +2398,13 @@ function MegaDiagnosticSection() {
     : "text-amber-400 border-amber-500/40 bg-amber-500/5";
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🚨 MEGA DIAGNOSTIC — pourquoi le scraping marche pas ?
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Test TOUT en 30 sec : env vars + sources + scrape réel + analyse historique. Donne actions concrètes.
           </p>
         </div>
@@ -2298,8 +2432,8 @@ function MegaDiagnosticSection() {
 
           {/* Actions à faire */}
           {data.actions_a_faire && data.actions_a_faire.length > 0 && (
-            <div className="bg-[#0a0a0a] border border-white/10 rounded-lg p-3 space-y-1.5">
-              <p className="text-white/60 text-xs font-semibold">📋 Actions à faire :</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3 space-y-1.5">
+              <p className="text-[#F5F4F1]/65 text-xs font-display font-semibold tracking-tight">Actions à faire</p>
               {data.actions_a_faire.map((a, i) => (
                 <p key={i} className="text-white text-xs leading-relaxed">{a}</p>
               ))}
@@ -2309,11 +2443,11 @@ function MegaDiagnosticSection() {
           {/* Sources test */}
           <div className="grid grid-cols-2 gap-2">
             {Object.entries(data.sources || {}).map(([name, src]) => (
-              <div key={name} className={`p-2 rounded-lg border ${src.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
-                <p className={`text-xs font-semibold ${src.ok ? "text-emerald-400" : "text-red-400"}`}>
-                  {src.ok ? "✅" : "🔴"} {name}
+              <div key={name} className={`p-2.5 rounded-lg border ${src.ok ? "bg-[#39FF14]/8 border-[#39FF14]/20" : "bg-red-500/8 border-red-500/25"}`}>
+                <p className={`text-xs font-display font-semibold tracking-tight ${src.ok ? "text-[#39FF14]" : "text-red-400"}`}>
+                  {src.ok ? "OK" : "KO"} <span className="ml-1">{name}</span>
                 </p>
-                <p className="text-white/50 text-[10px] truncate">{src.info || src.reason}</p>
+                <p className="text-[#F5F4F1]/55 text-[10px] truncate mt-0.5">{src.info || src.reason}</p>
               </div>
             ))}
           </div>
@@ -2321,11 +2455,11 @@ function MegaDiagnosticSection() {
           {/* Live scrape test */}
           <div className="grid grid-cols-2 gap-2">
             {Object.entries(data.live_scrape_test || {}).map(([platform, res]) => (
-              <div key={platform} className={`p-2 rounded-lg border ${res.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
-                <p className={`text-xs font-semibold ${res.ok ? "text-emerald-400" : "text-red-400"}`}>
-                  {res.ok ? "✅" : "🔴"} Test {platform} {res.account_tested}
+              <div key={platform} className={`p-2.5 rounded-lg border ${res.ok ? "bg-[#39FF14]/8 border-[#39FF14]/20" : "bg-red-500/8 border-red-500/25"}`}>
+                <p className={`text-xs font-display font-semibold tracking-tight ${res.ok ? "text-[#39FF14]" : "text-red-400"}`}>
+                  {res.ok ? "OK" : "KO"} Test {platform} {res.account_tested}
                 </p>
-                <p className="text-white/50 text-[10px]">
+                <p className="text-[#F5F4F1]/55 text-[10px] mt-0.5">
                   {res.ok ? `${res.videos_found} vidéos trouvées` : (res.error || "échec")}
                 </p>
               </div>
@@ -2333,17 +2467,17 @@ function MegaDiagnosticSection() {
           </div>
 
           {/* Env vars */}
-          <details className="bg-white/3 rounded-lg p-2">
-            <summary className="text-white/60 text-xs cursor-pointer">📦 Env vars Railway (cliquer pour ouvrir)</summary>
+          <details className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+            <summary className="text-[#F5F4F1]/65 text-xs cursor-pointer">Env vars Railway</summary>
             <div className="mt-2 space-y-1">
               {Object.entries(data.env_vars || {}).map(([name, info]) => (
                 <div key={name} className="flex items-center gap-2 text-[11px]">
-                  <span className={`w-2 h-2 rounded-full ${info.configured ? "bg-emerald-400" : "bg-red-400"}`} />
-                  <span className="text-white/70 font-mono w-48">{name}</span>
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] ${info.criticite === "CRITIQUE" ? "bg-red-500/15 text-red-400" : info.criticite === "IMPORTANT" ? "bg-amber-500/15 text-amber-400" : "bg-white/10 text-white/50"}`}>
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${info.configured ? "bg-[#39FF14]" : "bg-red-400"}`} />
+                  <span className="text-[#F5F4F1]/70 font-mono w-48 truncate">{name}</span>
+                  <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-medium ${info.criticite === "CRITIQUE" ? "bg-red-500/15 text-red-400 border border-red-500/25" : info.criticite === "IMPORTANT" ? "bg-[#FFB300]/15 text-[#FFB300] border border-[#FFB300]/25" : "bg-[#1C1A17] text-[#F5F4F1]/55 border border-warm"}`}>
                     {info.criticite}
                   </span>
-                  <span className="text-white/40 truncate flex-1">{info.note}</span>
+                  <span className="text-[#F5F4F1]/45 truncate flex-1">{info.note}</span>
                 </div>
               ))}
             </div>
@@ -2351,31 +2485,31 @@ function MegaDiagnosticSection() {
 
           {/* Analyse 50 derniers scrapes */}
           {data.recent_scrapes_analysis?.by_source && (
-            <details className="bg-white/3 rounded-lg p-2">
-              <summary className="text-white/60 text-xs cursor-pointer">
-                📊 Analyse {data.recent_scrapes_analysis.total_recent} derniers scrapes
+            <details className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+              <summary className="text-[#F5F4F1]/65 text-xs cursor-pointer">
+                Analyse {data.recent_scrapes_analysis.total_recent} derniers scrapes
               </summary>
               <div className="mt-2 space-y-1">
                 {Object.entries(data.recent_scrapes_analysis.by_source).map(([src, stats]) => (
                   <div key={src} className="flex items-center gap-2 text-[11px]">
-                    <span className="text-white/70 font-mono w-40">{src}</span>
-                    <span className="text-emerald-400">✅ {stats.ok}</span>
-                    <span className="text-red-400">🔴 {stats.ko}</span>
+                    <span className="text-[#F5F4F1]/70 font-mono w-40 truncate">{src}</span>
+                    <span className="text-[#39FF14] tabular-nums">{stats.ok} OK</span>
+                    <span className="text-red-400 tabular-nums">{stats.ko} KO</span>
                   </div>
                 ))}
               </div>
             </details>
           )}
 
-          <p className="text-[10px] text-white/30 italic">
+          <p className="text-[10px] text-[#F5F4F1]/30 italic tabular-nums">
             Testé le {new Date(data.tested_at).toLocaleString("fr-FR")}
           </p>
         </>
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-6 text-white/30 text-sm">
-          Clique sur "Lancer le mega-diagnostic" pour savoir EXACTEMENT pourquoi le scraping marche pas.
+        <div className="text-center py-6 text-[#F5F4F1]/40 text-sm">
+          Lance le mega-diagnostic pour identifier exactement pourquoi le scraping ne fonctionne pas.
         </div>
       )}
     </div>
@@ -2406,13 +2540,13 @@ function ScrapingHealthCheckSection() {
     : "text-amber-400 border-amber-500/40 bg-amber-500/5";
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-white font-semibold text-base flex items-center gap-2">
+          <h3 className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight flex items-center gap-2">
             🏥 Scraping Health Check
           </h3>
-          <p className="text-white/40 text-xs mt-0.5">
+          <p className="text-[#F5F4F1]/45 text-xs mt-1 leading-relaxed">
             Test toutes les sources (VPS, proxy, Meta API, YouTube API, TikWm, RapidAPI, sessions Insta) en parallèle
           </p>
         </div>
@@ -2442,21 +2576,21 @@ function ScrapingHealthCheckSection() {
 
           {/* Summary counters */}
           <div className="grid grid-cols-4 gap-2">
-            <div className="bg-white/5 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[10px]">Total</p>
-              <p className="text-white font-mono font-bold text-lg">{data.summary?.total || 0}</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2.5 text-center">
+              <p className="text-[#F5F4F1]/55 text-[10px] uppercase tracking-wider">Total</p>
+              <p className="text-[#F5F4F1] font-display font-semibold tabular-nums text-lg">{data.summary?.total || 0}</p>
             </div>
-            <div className="bg-emerald-500/10 rounded-lg p-2 text-center">
-              <p className="text-emerald-400/70 text-[10px]">OK</p>
-              <p className="text-emerald-400 font-mono font-bold text-lg">{data.summary?.ok || 0}</p>
+            <div className="bg-[#39FF14]/10 border border-[#39FF14]/25 rounded-lg p-2.5 text-center">
+              <p className="text-[#39FF14]/80 text-[10px] uppercase tracking-wider">OK</p>
+              <p className="text-[#39FF14] font-display font-semibold tabular-nums text-lg">{data.summary?.ok || 0}</p>
             </div>
-            <div className="bg-red-500/10 rounded-lg p-2 text-center">
-              <p className="text-red-400/70 text-[10px]">KO</p>
-              <p className="text-red-400 font-mono font-bold text-lg">{data.summary?.ko || 0}</p>
+            <div className="bg-red-500/10 border border-red-500/25 rounded-lg p-2.5 text-center">
+              <p className="text-red-400/80 text-[10px] uppercase tracking-wider">KO</p>
+              <p className="text-red-400 font-display font-semibold tabular-nums text-lg">{data.summary?.ko || 0}</p>
             </div>
-            <div className="bg-white/5 rounded-lg p-2 text-center">
-              <p className="text-white/50 text-[10px]">Skipped</p>
-              <p className="text-white/60 font-mono font-bold text-lg">{data.summary?.skipped || 0}</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-2.5 text-center">
+              <p className="text-[#F5F4F1]/55 text-[10px] uppercase tracking-wider">Skipped</p>
+              <p className="text-[#F5F4F1]/65 font-display font-semibold tabular-nums text-lg">{data.summary?.skipped || 0}</p>
             </div>
           </div>
 
@@ -2464,37 +2598,37 @@ function ScrapingHealthCheckSection() {
           <div className="space-y-1.5 mt-3">
             {Object.entries(data.sources || {}).map(([name, src]) => {
               const statusColors = {
-                ok: { dot: "bg-emerald-400", text: "text-emerald-400", border: "border-emerald-500/20" },
-                ko: { dot: "bg-red-400", text: "text-red-400", border: "border-red-500/30" },
-                skipped: { dot: "bg-white/30", text: "text-white/40", border: "border-white/10" },
+                ok: { dot: "bg-[#39FF14]", text: "text-[#39FF14]", border: "border-[#39FF14]/20" },
+                ko: { dot: "bg-red-400", text: "text-red-400", border: "border-red-500/25" },
+                skipped: { dot: "bg-[#F5F4F1]/30", text: "text-[#F5F4F1]/45", border: "border-warm" },
               };
               const c = statusColors[src.status] || statusColors.skipped;
               return (
-                <div key={name} className={`flex items-center gap-3 py-2 px-3 bg-white/3 border ${c.border} rounded-lg`}>
+                <div key={name} className={`flex items-center gap-3 py-2 px-3 bg-[#0E0D0B] border ${c.border} rounded-lg`}>
                   <div className={`w-2 h-2 rounded-full ${c.dot} flex-shrink-0`} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-white text-xs font-medium truncate">{name}</p>
+                    <p className="text-[#F5F4F1] text-xs font-medium truncate">{name}</p>
                     <p className={`text-[11px] truncate ${c.text}`}>
                       {src.message || src.reason || (src.status === "ok" ? "OK" : src.status === "ko" ? "Erreur" : "Non testé")}
                     </p>
                   </div>
                   {typeof src.duration_ms === "number" && (
-                    <span className="text-white/30 text-[10px] font-mono flex-shrink-0">{src.duration_ms}ms</span>
+                    <span className="text-[#F5F4F1]/35 text-[10px] font-mono flex-shrink-0 tabular-nums">{src.duration_ms}ms</span>
                   )}
                 </div>
               );
             })}
           </div>
 
-          <p className="text-[10px] text-white/30 italic mt-2">
+          <p className="text-[10px] text-[#F5F4F1]/30 italic mt-2 tabular-nums">
             Testé le {new Date(data.checked_at).toLocaleString("fr-FR")}
           </p>
         </>
       )}
 
       {!data && !loading && !error && (
-        <div className="text-center py-6 text-white/30 text-sm">
-          Clique sur "Lancer le test" pour vérifier l'état de toutes les sources de scraping
+        <div className="text-center py-6 text-[#F5F4F1]/40 text-sm">
+          Lance le test pour vérifier l'état de toutes les sources de scraping.
         </div>
       )}
     </div>
@@ -2519,13 +2653,13 @@ function SiteHealthSection() {
   }, [refresh]);
 
   if (loading && !data) {
-    return <div className="bg-[#121212] border border-white/10 rounded-xl p-5 text-white/40 text-sm">Chargement surveillance...</div>;
+    return <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 flex items-center justify-center"><div className="w-5 h-5 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" /></div>;
   }
   if (!data || data.error) {
     return (
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
-        <p className="text-white/60 text-sm">Surveillance indisponible : {data?.error || "erreur"}</p>
-        <button onClick={refresh} className="mt-2 text-[#00E5FF] text-xs underline">Reessayer</button>
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+        <p className="text-[#F5F4F1]/65 text-sm">Surveillance indisponible : {data?.error || "erreur"}</p>
+        <button onClick={refresh} className="mt-2 text-[#00E5FF] text-xs hover:underline">Réessayer</button>
       </div>
     );
   }
@@ -2544,45 +2678,46 @@ function SiteHealthSection() {
       <ApifyAlarmBanner />
 
       {/* Header simple : compteurs reels */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <p className="text-white font-semibold text-base">État du site (données réelles)</p>
-            <p className="text-xs text-white/50 mt-1">
-              {summary.total_clippers?.toLocaleString("fr-FR")} clippeurs · {summary.active_campaigns} campagnes actives · {summary.total_tracked_accounts?.toLocaleString("fr-FR")} comptes trackés
+            <p className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">État du site (données réelles)</p>
+            <p className="text-xs text-[#F5F4F1]/55 mt-1 tabular-nums">
+              {summary.total_clippers?.toLocaleString("fr-FR")} clippeurs <span className="text-[#F5F4F1]/25">·</span> {summary.active_campaigns} campagnes actives <span className="text-[#F5F4F1]/25">·</span> {summary.total_tracked_accounts?.toLocaleString("fr-FR")} comptes trackés
             </p>
           </div>
           <button onClick={refresh} disabled={loading}
-            className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm">
-            {loading ? "..." : "↻ Actualiser"}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0E0D0B] hover:bg-[#262320] border border-warm text-[#F5F4F1] text-sm transition-all duration-150 disabled:opacity-50">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            {loading ? "…" : "Actualiser"}
           </button>
         </div>
       </div>
 
       {/* Compteurs scrapes par plateforme (REEL, sans % vs capacite estimee) */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-        <p className="text-white font-semibold text-base">📊 Scrapes réels par plateforme</p>
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
+        <p className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">Scrapes réels par plateforme</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {Object.entries(scrapes_by_platform || {}).map(([plat, p]) => {
             const meta = PLATFORM_META[plat] || { label: plat, icon: "" };
             return (
-              <div key={plat} className="rounded-lg border border-white/10 bg-white/3 p-4">
+              <div key={plat} className="rounded-lg border border-warm bg-[#0E0D0B] p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <span className="text-xl">{meta.icon}</span>
-                  <span className="text-white font-semibold">{meta.label}</span>
+                  <span className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">{meta.label}</span>
                 </div>
-                <div className="space-y-1 text-xs text-white/60">
+                <div className="space-y-1.5 text-xs text-[#F5F4F1]/60">
                   <div className="flex justify-between">
                     <span>Scrapes ce mois</span>
-                    <span className="font-mono text-white">{(p.month_calls || 0).toLocaleString("fr-FR")}</span>
+                    <span className="font-mono text-[#F5F4F1] tabular-nums">{(p.month_calls || 0).toLocaleString("fr-FR")}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Aujourd'hui</span>
-                    <span className="font-mono text-white">{(p.today_calls || 0).toLocaleString("fr-FR")}</span>
+                    <span className="font-mono text-[#F5F4F1] tabular-nums">{(p.today_calls || 0).toLocaleString("fr-FR")}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Comptes trackés</span>
-                    <span className="font-mono text-white">{(p.accounts_tracked || 0).toLocaleString("fr-FR")}</span>
+                    <span className="font-mono text-[#F5F4F1] tabular-nums">{(p.accounts_tracked || 0).toLocaleString("fr-FR")}</span>
                   </div>
                 </div>
               </div>
@@ -2592,12 +2727,12 @@ function SiteHealthSection() {
       </div>
 
       {/* Watchdog : derniers tests reels (pas de verdict couleur arbitraire) */}
-      <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
+      <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-white font-semibold text-base">🐕 Derniers tests Watchdog</p>
+          <p className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">Derniers tests Watchdog</p>
           <button
             onClick={() => adminFetch("/admin/run-watchdog-now", { method: "POST" }).then(refresh).catch(() => {})}
-            className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white/70">
+            className="text-xs px-2.5 py-1.5 rounded-md bg-[#0E0D0B] hover:bg-[#262320] border border-warm text-[#F5F4F1]/70 hover:text-[#F5F4F1] transition-all duration-150">
             Tester maintenant
           </button>
         </div>
@@ -2608,28 +2743,28 @@ function SiteHealthSection() {
             const hasResult = w.success !== undefined;
             return (
               <div key={plat} className={`rounded-lg border p-3 ${
-                hasResult && isOk ? "bg-green-500/10 border-green-500/30" :
-                hasResult && !isOk ? "bg-red-500/10 border-red-500/30" :
-                "bg-white/5 border-white/10"
+                hasResult && isOk ? "bg-[#39FF14]/8 border-[#39FF14]/25" :
+                hasResult && !isOk ? "bg-red-500/8 border-red-500/25" :
+                "bg-[#0E0D0B] border-warm"
               }`}>
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-white font-medium text-sm">{meta.icon} {meta.label}</span>
+                  <span className="text-[#F5F4F1] font-medium text-sm">{meta.icon} {meta.label}</span>
                   {hasResult && (
-                    <span className={`text-xs font-bold ${isOk ? "text-green-400" : "text-red-400"}`}>
-                      {isOk ? "✓ Test OK" : "✗ Test échec"}
+                    <span className={`text-[11px] font-medium ${isOk ? "text-[#39FF14]" : "text-red-400"}`}>
+                      {isOk ? "Test OK" : "Test échec"}
                     </span>
                   )}
                 </div>
                 {w.timestamp && (
-                  <p className="text-[10px] text-white/40">
+                  <p className="text-[10px] text-[#F5F4F1]/45 tabular-nums">
                     Dernier test : {new Date(w.timestamp).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
                   </p>
                 )}
                 {w.video_count !== undefined && (
-                  <p className="text-[10px] text-white/40">{w.video_count} vidéos · {w.duration_ms || 0}ms</p>
+                  <p className="text-[10px] text-[#F5F4F1]/45 tabular-nums">{w.video_count} vidéos · {w.duration_ms || 0}ms</p>
                 )}
                 {w.error && <p className="text-[10px] text-red-400 truncate" title={w.error}>{w.error}</p>}
-                {!hasResult && <p className="text-[10px] text-white/30">{w.message || "pas encore testé"}</p>}
+                {!hasResult && <p className="text-[10px] text-[#F5F4F1]/35">{w.message || "pas encore testé"}</p>}
               </div>
             );
           })}
@@ -2638,11 +2773,11 @@ function SiteHealthSection() {
 
       {/* Scheduling : juste les compteurs, pas de qualité spread arbitraire */}
       {scheduling && (
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-3">
-          <p className="text-white font-semibold text-base">⏱️ Planning scraping</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-3">
+          <p className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">Planning scraping</p>
           <div className="flex justify-between text-xs">
-            <span className="text-white/60">Campagnes en retard</span>
-            <span className={`font-mono font-bold ${(scheduling.overdue_campaigns || 0) > 5 ? "text-red-400" : "text-white"}`}>
+            <span className="text-[#F5F4F1]/60">Campagnes en retard</span>
+            <span className={`font-mono font-semibold tabular-nums ${(scheduling.overdue_campaigns || 0) > 5 ? "text-red-400" : "text-[#F5F4F1]"}`}>
               {scheduling.overdue_campaigns || 0}
             </span>
           </div>
@@ -2669,32 +2804,32 @@ function SiteHealthSection() {
 
       {/* Compteurs reels (Apify, alertes, circuit breakers) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className={`bg-[#121212] border rounded-xl p-4 ${summary.apify_used_today > 0 ? "border-amber-500/40" : "border-white/10"}`}>
-          <p className="text-xs text-white/40">Apify utilisé ajd</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.apify_used_today > 0 ? "text-amber-400" : "text-white"}`}>
+        <div className={`bg-[#1C1A17]/85 border rounded-xl p-4 ${summary.apify_used_today > 0 ? "border-[#FFB300]/30" : "border-warm"}`}>
+          <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-wider">Apify utilisé ajd</p>
+          <p className={`text-2xl font-display font-semibold tabular-nums tracking-tight mt-1 ${summary.apify_used_today > 0 ? "text-[#FFB300]" : "text-[#F5F4F1]"}`}>
             {summary.apify_used_today || 0}
           </p>
         </div>
-        <div className={`bg-[#121212] border rounded-xl p-4 ${summary.open_alerts_critical > 0 ? "border-red-500/40" : "border-white/10"}`}>
-          <p className="text-xs text-white/40">Alertes ouvertes</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.open_alerts_critical > 0 ? "text-red-400" : "text-white"}`}>
+        <div className={`bg-[#1C1A17]/85 border rounded-xl p-4 ${summary.open_alerts_critical > 0 ? "border-red-500/30" : "border-warm"}`}>
+          <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-wider">Alertes ouvertes</p>
+          <p className={`text-2xl font-display font-semibold tabular-nums tracking-tight mt-1 ${summary.open_alerts_critical > 0 ? "text-red-400" : "text-[#F5F4F1]"}`}>
             {summary.open_alerts_critical || 0}
           </p>
         </div>
-        <div className={`bg-[#121212] border rounded-xl p-4 ${summary.circuit_breakers_active > 0 ? "border-amber-500/40" : "border-white/10"}`}>
-          <p className="text-xs text-white/40">Circuit breakers</p>
-          <p className={`text-2xl font-mono font-bold mt-1 ${summary.circuit_breakers_active > 0 ? "text-amber-400" : "text-white"}`}>
+        <div className={`bg-[#1C1A17]/85 border rounded-xl p-4 ${summary.circuit_breakers_active > 0 ? "border-[#FFB300]/30" : "border-warm"}`}>
+          <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-wider">Circuit breakers</p>
+          <p className={`text-2xl font-display font-semibold tabular-nums tracking-tight mt-1 ${summary.circuit_breakers_active > 0 ? "text-[#FFB300]" : "text-[#F5F4F1]"}`}>
             {summary.circuit_breakers_active || 0}
           </p>
         </div>
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
-          <p className="text-xs text-white/40">Clippeurs actifs 30j</p>
-          <p className="text-2xl font-mono font-bold mt-1 text-white">{summary.active_clippers_30d?.toLocaleString("fr-FR") || 0}</p>
-          <p className="text-[10px] text-white/40">/ {summary.total_clippers?.toLocaleString("fr-FR") || 0} total</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4">
+          <p className="text-[11px] text-[#F5F4F1]/55 uppercase tracking-wider">Clippeurs actifs 30 j</p>
+          <p className="text-2xl font-display font-semibold tabular-nums tracking-tight mt-1 text-[#F5F4F1]">{summary.active_clippers_30d?.toLocaleString("fr-FR") || 0}</p>
+          <p className="text-[10px] text-[#F5F4F1]/45 tabular-nums">/ {summary.total_clippers?.toLocaleString("fr-FR") || 0} total</p>
         </div>
       </div>
 
-      <p className="text-[10px] text-white/30 italic text-center pt-2">
+      <p className="text-[10px] text-[#F5F4F1]/30 italic text-center pt-2">
         Toutes les données ci-dessus sont des compteurs réels en base, sans estimation ni seuil arbitraire.
       </p>
     </div>
@@ -2780,51 +2915,55 @@ function InstaHealthSection() {
   }, [runTest]);
 
   return (
-    <div className="bg-[#121212] border border-white/10 rounded-xl p-5 space-y-4">
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <p className="text-white font-semibold text-base">🩺 Diagnostic Scraping (Insta + TikTok + YouTube)</p>
-          <p className="text-xs text-white/50 mt-1">
-            Teste chaque source en live. Identifie ce qui pète exactement et propose le fix.
+          <p className="text-[#F5F4F1] font-display font-semibold text-base tracking-tight">Diagnostic scraping (Insta + TikTok + YouTube)</p>
+          <p className="text-xs text-[#F5F4F1]/55 mt-1 leading-relaxed">
+            Teste chaque source en live. Identifie ce qui casse et propose le fix.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={runGlobalTest}
             disabled={globalLoading}
-            className="px-3 py-2 rounded-lg bg-[#00E5FF] hover:bg-[#00E5FF]/80 text-black text-sm font-semibold disabled:opacity-50"
+            title="Tester les 3 plateformes (Insta + TikTok + YouTube) en parallèle"
+            className="px-3 py-2 rounded-lg bg-[#00E5FF]/15 hover:bg-[#00E5FF]/25 text-[#00E5FF] border border-[#00E5FF]/30 text-sm font-medium transition-all duration-150 disabled:opacity-50"
           >
-            {globalLoading ? "Test 3 plateformes..." : "🌐 Test 3 plateformes"}
+            {globalLoading ? "Test 3 plateformes…" : "Test 3 plateformes"}
           </button>
           <button
             onClick={runVpsTest}
             disabled={vpsLoading}
-            className="px-3 py-2 rounded-lg bg-purple-500 hover:bg-purple-500/80 text-white text-sm font-semibold disabled:opacity-50"
+            title="Tester la santé du VPS"
+            className="px-3 py-2 rounded-lg bg-[#FF007F]/15 hover:bg-[#FF007F]/25 text-[#FF007F] border border-[#FF007F]/30 text-sm font-medium transition-all duration-150 disabled:opacity-50"
           >
-            {vpsLoading ? "Test VPS..." : "🖥️ Tester VPS"}
+            {vpsLoading ? "Test VPS…" : "Tester VPS"}
           </button>
           <button
             onClick={handleResetAllCampaigns}
             disabled={resetAllLoading}
-            title="🚨 PURGE TOTALE de toutes les campagnes : efface toutes les stats DB et relance un scrape complet"
-            className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-semibold disabled:opacity-50 border-2 border-red-500/50"
+            title="Purge totale : efface toutes les stats de toutes les campagnes et relance un scrape complet"
+            className="px-3 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-semibold disabled:opacity-50 border border-red-400/40 transition-all duration-150"
           >
-            {resetAllLoading ? "🚨 Purge..." : "🚨 Reset toutes campagnes"}
+            {resetAllLoading ? "Purge…" : "Reset toutes campagnes"}
           </button>
           <button
             onClick={runTest}
             disabled={loading}
-            className="px-3 py-2 rounded-lg bg-[#FF007F] hover:bg-[#FF007F]/80 text-white text-sm font-semibold disabled:opacity-50"
+            title="Lancer un diagnostic Insta détaillé"
+            className="px-3 py-2 rounded-lg bg-[#FF007F] hover:bg-[#E50073] text-white text-sm font-medium disabled:opacity-50 transition-all duration-150"
           >
-            {loading ? "Test Insta..." : "🩺 Test Insta détaillé"}
+            {loading ? "Test Insta…" : "Test Insta détaillé"}
           </button>
           {data?.failed_accounts_count > 0 && (
             <button
               onClick={retryFailed}
               disabled={retrying}
-              className="px-3 py-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 text-sm border border-amber-500/30 disabled:opacity-50"
+              title="Re-tenter le scraping des comptes en erreur"
+              className="px-3 py-2 rounded-lg bg-[#FFB300]/15 hover:bg-[#FFB300]/25 text-[#FFB300] text-sm border border-[#FFB300]/25 disabled:opacity-50 transition-all duration-150"
             >
-              {retrying ? "Retry..." : `↻ Retry ${data.failed_accounts_count} comptes Insta`}
+              {retrying ? "Retry…" : `Retry ${data.failed_accounts_count} comptes Insta`}
             </button>
           )}
         </div>
@@ -2833,33 +2972,33 @@ function InstaHealthSection() {
       {/* Resultat test VPS */}
       {vpsData && (
         <div className={`rounded-lg border p-4 ${
-          vpsData.verdict?.includes("✅") ? "bg-green-500/10 border-green-500/40" :
-          vpsData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
-          "bg-amber-500/10 border-amber-500/40"
+          vpsData.verdict?.includes("✅") ? "bg-[#39FF14]/10 border-[#39FF14]/30" :
+          vpsData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/30" :
+          "bg-[#FFB300]/10 border-[#FFB300]/30"
         }`}>
-          <p className={`font-bold text-sm mb-2 ${
-            vpsData.verdict?.includes("✅") ? "text-green-400" :
-            vpsData.verdict?.includes("🚨") ? "text-red-400" : "text-amber-400"
+          <p className={`font-display font-semibold text-sm tracking-tight mb-2 ${
+            vpsData.verdict?.includes("✅") ? "text-[#39FF14]" :
+            vpsData.verdict?.includes("🚨") ? "text-red-400" : "text-[#FFB300]"
           }`}>{vpsData.verdict}</p>
           {vpsData.fix && (
-            <p className="text-white/70 text-xs mb-2">🔧 {vpsData.fix}</p>
+            <p className="text-[#F5F4F1]/70 text-xs mb-2">Fix : {vpsData.fix}</p>
           )}
           {vpsData.vps_url && (
-            <p className="text-[10px] text-white/40 mb-2 font-mono">URL : {vpsData.vps_url}</p>
+            <p className="text-[10px] text-[#F5F4F1]/45 mb-2 font-mono">URL : {vpsData.vps_url}</p>
           )}
           <div className="space-y-1">
             {(vpsData.tests || []).map((t, i) => (
-              <div key={i} className={`text-xs px-2 py-1.5 rounded ${
-                t.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"
+              <div key={i} className={`text-xs px-2 py-1.5 rounded-md border ${
+                t.ok ? "bg-[#39FF14]/8 text-[#39FF14] border-[#39FF14]/20" : "bg-red-500/8 text-red-400 border-red-500/25"
               }`}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{t.ok ? "✅" : "❌"} {t.name}</span>
-                  {t.duration_ms !== undefined && <span className="text-[10px] opacity-60">{t.duration_ms}ms</span>}
+                  <span className="font-semibold">{t.ok ? "OK" : "KO"} <span className="ml-1">{t.name}</span></span>
+                  {t.duration_ms !== undefined && <span className="text-[10px] opacity-60 tabular-nums">{t.duration_ms}ms</span>}
                 </div>
-                {t.result && <p className="text-[10px] opacity-80 mt-0.5">→ {t.result}</p>}
+                {t.result && <p className="text-[10px] opacity-80 mt-0.5">{t.result}</p>}
                 {t.error && <p className="text-[10px] opacity-80 mt-0.5">err: {t.error.substring(0, 200)}</p>}
                 {!t.ok && t.fix_if_failed && (
-                  <p className="text-[10px] text-amber-300 mt-1">🔧 {t.fix_if_failed}</p>
+                  <p className="text-[10px] text-[#FFB300] mt-1">Fix : {t.fix_if_failed}</p>
                 )}
               </div>
             ))}
@@ -2872,29 +3011,29 @@ function InstaHealthSection() {
         <div className="space-y-3">
           {/* Verdict */}
           <div className={`p-3 rounded-lg border ${
-            globalData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
-            globalData.verdict?.includes("⚠️") ? "bg-amber-500/10 border-amber-500/40" :
-            "bg-green-500/10 border-green-500/40"
+            globalData.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/30" :
+            globalData.verdict?.includes("⚠️") ? "bg-[#FFB300]/10 border-[#FFB300]/30" :
+            "bg-[#39FF14]/10 border-[#39FF14]/30"
           }`}>
-            <p className={`font-bold ${
+            <p className={`font-display font-semibold tracking-tight ${
               globalData.verdict?.includes("🚨") ? "text-red-400" :
-              globalData.verdict?.includes("⚠️") ? "text-amber-400" : "text-green-400"
+              globalData.verdict?.includes("⚠️") ? "text-[#FFB300]" : "text-[#39FF14]"
             }`}>{globalData.verdict}</p>
             {globalData.recommendation && (
-              <p className="text-white/70 text-xs mt-2">💡 {globalData.recommendation}</p>
+              <p className="text-[#F5F4F1]/70 text-xs mt-2">{globalData.recommendation}</p>
             )}
           </div>
 
           {/* Config globale */}
           {globalData.config_global && (
-            <div className="bg-white/3 rounded-lg p-3">
-              <p className="text-[11px] text-white/50 font-semibold uppercase mb-2">Config env Railway</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+              <p className="text-[11px] text-[#F5F4F1]/55 font-display font-semibold tracking-tight uppercase tracking-wider mb-2">Config env Railway</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
                 {Object.entries(globalData.config_global).map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-2">
-                    <span className="text-white/50 truncate">{k}</span>
-                    <span className={`font-mono ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-green-400" : "text-white"}`}>
-                      {typeof v === "boolean" ? (v ? "✅ true" : "❌ false") : String(v)}
+                    <span className="text-[#F5F4F1]/55 truncate">{k}</span>
+                    <span className={`font-mono tabular-nums ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-[#39FF14]" : "text-[#F5F4F1]"}`}>
+                      {typeof v === "boolean" ? (v ? "true" : "false") : String(v)}
                     </span>
                   </div>
                 ))}
@@ -2907,42 +3046,42 @@ function InstaHealthSection() {
             {Object.entries(globalData.platforms || {}).map(([plat, info]) => {
               const platMeta = { instagram: { icon: "📸", label: "Instagram" }, tiktok: { icon: "🎵", label: "TikTok" }, youtube: { icon: "▶️", label: "YouTube" } }[plat] || { icon: "?", label: plat };
               return (
-                <div key={plat} className={`rounded-lg border p-3 ${info.any_working ? "bg-green-500/5 border-green-500/30" : "bg-red-500/5 border-red-500/30"}`}>
+                <div key={plat} className={`rounded-lg border p-3 ${info.any_working ? "bg-[#39FF14]/8 border-[#39FF14]/25" : "bg-red-500/8 border-red-500/25"}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-white font-bold text-sm">{platMeta.icon} {platMeta.label}</p>
-                    <span className={`text-xs font-bold ${info.any_working ? "text-green-400" : "text-red-400"}`}>
-                      {info.any_working ? "✅ OK" : "❌ HS"}
+                    <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">{platMeta.icon} {platMeta.label}</p>
+                    <span className={`text-[11px] font-semibold ${info.any_working ? "text-[#39FF14]" : "text-red-400"}`}>
+                      {info.any_working ? "OK" : "HS"}
                     </span>
                   </div>
-                  <p className="text-[10px] text-white/40 mb-2">Test : @{info.test_account}</p>
+                  <p className="text-[10px] text-[#F5F4F1]/45 mb-2">Test : @{info.test_account}</p>
                   <div className="space-y-1">
                     {(info.sources || []).map((s, i) => (
-                      <div key={i} className={`text-xs px-2 py-1 rounded ${
-                        s.skipped ? "bg-white/5 text-white/40" :
-                        s.ok ? "bg-green-500/10 text-green-300" : "bg-red-500/10 text-red-300"
+                      <div key={i} className={`text-xs px-2 py-1 rounded-md border ${
+                        s.skipped ? "bg-[#0E0D0B] text-[#F5F4F1]/45 border-warm" :
+                        s.ok ? "bg-[#39FF14]/8 text-[#39FF14] border-[#39FF14]/20" : "bg-red-500/8 text-red-400 border-red-500/25"
                       }`}>
                         <div className="flex items-center justify-between gap-1">
-                          <span className="truncate">{s.skipped ? "⏭️" : s.ok ? "✅" : "❌"} {s.name}</span>
-                          {s.duration_ms !== undefined && <span className="text-[9px] opacity-60">{s.duration_ms}ms</span>}
+                          <span className="truncate">{s.skipped ? "—" : s.ok ? "OK" : "KO"} <span className="ml-1">{s.name}</span></span>
+                          {s.duration_ms !== undefined && <span className="text-[9px] opacity-60 tabular-nums">{s.duration_ms}ms</span>}
                         </div>
-                        {s.result && <p className="text-[10px] opacity-80 mt-0.5">→ {s.result}</p>}
+                        {s.result && <p className="text-[10px] opacity-80 mt-0.5">{s.result}</p>}
                         {s.error && <p className="text-[10px] opacity-80 mt-0.5">err: {s.error.substring(0, 80)}</p>}
                         {!s.ok && s.fix_if_failed && (
-                          <p className="text-[10px] text-amber-300 mt-0.5">🔧 {s.fix_if_failed}</p>
+                          <p className="text-[10px] text-[#FFB300] mt-0.5">Fix : {s.fix_if_failed}</p>
                         )}
                       </div>
                     ))}
                   </div>
                   {(globalData.failed_accounts_by_platform?.[plat] || []).length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-white/10">
+                    <div className="mt-2 pt-2 border-t border-warm">
                       <p className="text-[10px] text-red-400 font-semibold mb-1">
-                        {globalData.failed_accounts_by_platform[plat].length} compte{globalData.failed_accounts_by_platform[plat].length > 1 ? "s" : ""} en erreur :
+                        {globalData.failed_accounts_by_platform[plat].length} compte{globalData.failed_accounts_by_platform[plat].length > 1 ? "s" : ""} en erreur
                       </p>
                       <div className="max-h-32 overflow-y-auto space-y-0.5">
                         {globalData.failed_accounts_by_platform[plat].slice(0, 5).map((a, i) => (
-                          <div key={i} className="text-[10px] bg-white/3 rounded p-1">
-                            <p className="text-white truncate">@{a.username}</p>
-                            <p className="text-red-300/70 truncate">{a.error}</p>
+                          <div key={i} className="text-[10px] bg-[#0E0D0B] border border-warm rounded p-1.5">
+                            <p className="text-[#F5F4F1] truncate">@{a.username}</p>
+                            <p className="text-red-400/70 truncate">{a.error}</p>
                           </div>
                         ))}
                       </div>
@@ -2956,36 +3095,36 @@ function InstaHealthSection() {
       )}
 
       {!data && !loading && (
-        <p className="text-xs text-white/40 text-center py-3">Clique "Lancer test complet" pour voir l'état des sources.</p>
+        <p className="text-xs text-[#F5F4F1]/45 text-center py-3">Lance un test complet pour voir l'état des sources.</p>
       )}
 
       {data && (
         <>
           {/* Verdict global */}
           <div className={`p-3 rounded-lg border ${
-            data.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/40" :
-            data.verdict?.includes("⚠️") ? "bg-amber-500/10 border-amber-500/40" :
-            "bg-green-500/10 border-green-500/40"
+            data.verdict?.includes("🚨") ? "bg-red-500/10 border-red-500/30" :
+            data.verdict?.includes("⚠️") ? "bg-[#FFB300]/10 border-[#FFB300]/30" :
+            "bg-[#39FF14]/10 border-[#39FF14]/30"
           }`}>
-            <p className={`font-bold ${
+            <p className={`font-display font-semibold tracking-tight ${
               data.verdict?.includes("🚨") ? "text-red-400" :
-              data.verdict?.includes("⚠️") ? "text-amber-400" : "text-green-400"
+              data.verdict?.includes("⚠️") ? "text-[#FFB300]" : "text-[#39FF14]"
             }`}>{data.verdict}</p>
             {data.recommendation && (
-              <p className="text-white/70 text-xs mt-2">💡 {data.recommendation}</p>
+              <p className="text-[#F5F4F1]/70 text-xs mt-2">{data.recommendation}</p>
             )}
           </div>
 
           {/* Config */}
           {data.config && (
-            <div className="bg-white/3 rounded-lg p-3">
-              <p className="text-[11px] text-white/50 font-semibold uppercase mb-2">Configuration env</p>
+            <div className="bg-[#0E0D0B] border border-warm rounded-lg p-3">
+              <p className="text-[11px] text-[#F5F4F1]/55 font-display font-semibold uppercase tracking-wider mb-2">Configuration env</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
                 {Object.entries(data.config).map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-2">
-                    <span className="text-white/50 truncate">{k}</span>
-                    <span className={`font-mono ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-green-400" : "text-white"}`}>
-                      {typeof v === "boolean" ? (v ? "✅ true" : "❌ false") : String(v)}
+                    <span className="text-[#F5F4F1]/55 truncate">{k}</span>
+                    <span className={`font-mono tabular-nums ${typeof v === "string" && v.includes("❌") ? "text-red-400" : typeof v === "string" && v.includes("✅") ? "text-[#39FF14]" : "text-[#F5F4F1]"}`}>
+                      {typeof v === "boolean" ? (v ? "true" : "false") : String(v)}
                     </span>
                   </div>
                 ))}
@@ -2995,25 +3134,25 @@ function InstaHealthSection() {
 
           {/* Sources testees */}
           <div className="space-y-2">
-            <p className="text-[11px] text-white/50 font-semibold uppercase">Sources testées sur @{data.test_username}</p>
+            <p className="text-[11px] text-[#F5F4F1]/55 font-display font-semibold uppercase tracking-wider">Sources testées sur @{data.test_username}</p>
             {(data.sources || []).map((s, i) => (
               <div key={i} className={`p-3 rounded-lg border text-sm ${
-                s.skipped ? "bg-white/3 border-white/10" :
-                s.ok ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"
+                s.skipped ? "bg-[#0E0D0B] border-warm" :
+                s.ok ? "bg-[#39FF14]/8 border-[#39FF14]/25" : "bg-red-500/8 border-red-500/25"
               }`}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className={`font-semibold ${s.skipped ? "text-white/40" : s.ok ? "text-green-400" : "text-red-400"}`}>
-                    {s.skipped ? "⏭️" : s.ok ? "✅" : "❌"} {s.name}
+                  <span className={`font-display font-semibold tracking-tight ${s.skipped ? "text-[#F5F4F1]/45" : s.ok ? "text-[#39FF14]" : "text-red-400"}`}>
+                    {s.skipped ? "—" : s.ok ? "OK" : "KO"} <span className="ml-1">{s.name}</span>
                   </span>
                   {s.duration_ms !== undefined && (
-                    <span className="text-[10px] text-white/40 font-mono">{s.duration_ms}ms</span>
+                    <span className="text-[10px] text-[#F5F4F1]/45 font-mono tabular-nums">{s.duration_ms}ms</span>
                   )}
                 </div>
-                {s.result && <p className="text-xs text-white/70 mt-1">→ {s.result}</p>}
-                {s.error && <p className="text-xs text-red-300 mt-1">Erreur : {s.error}</p>}
-                {s.reason && <p className="text-xs text-white/50 mt-1 italic">{s.reason}</p>}
+                {s.result && <p className="text-xs text-[#F5F4F1]/70 mt-1">{s.result}</p>}
+                {s.error && <p className="text-xs text-red-400 mt-1">Erreur : {s.error}</p>}
+                {s.reason && <p className="text-xs text-[#F5F4F1]/55 mt-1 italic">{s.reason}</p>}
                 {!s.ok && s.fix_if_failed && (
-                  <p className="text-[11px] text-amber-300 mt-1.5">🔧 Fix : {s.fix_if_failed}</p>
+                  <p className="text-[11px] text-[#FFB300] mt-1.5">Fix : {s.fix_if_failed}</p>
                 )}
               </div>
             ))}
@@ -3021,15 +3160,15 @@ function InstaHealthSection() {
 
           {/* Comptes en erreur dans la DB */}
           {data.failed_accounts_count > 0 && (
-            <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-3">
-              <p className="text-red-400 font-semibold text-sm mb-2">
-                🚨 {data.failed_accounts_count} compte{data.failed_accounts_count > 1 ? "s" : ""} Insta en erreur dans la DB
+            <div className="bg-red-500/8 border border-red-500/25 rounded-lg p-3">
+              <p className="text-red-400 font-display font-semibold text-sm tracking-tight mb-2">
+                {data.failed_accounts_count} compte{data.failed_accounts_count > 1 ? "s" : ""} Insta en erreur dans la DB
               </p>
               <div className="space-y-1 max-h-60 overflow-y-auto">
                 {(data.failed_accounts_in_db || []).map((acc, i) => (
-                  <div key={i} className="text-xs bg-white/3 rounded p-2">
-                    <p className="text-white">@{acc.username} <span className="text-white/40 ml-2">({acc.status})</span></p>
-                    <p className="text-red-300 text-[10px] mt-0.5 truncate" title={acc.last_scrape_error}>
+                  <div key={i} className="text-xs bg-[#0E0D0B] border border-warm rounded p-2">
+                    <p className="text-[#F5F4F1]">@{acc.username} <span className="text-[#F5F4F1]/45 ml-2">({acc.status})</span></p>
+                    <p className="text-red-400/80 text-[10px] mt-0.5 truncate" title={acc.last_scrape_error}>
                       {acc.last_scrape_error || "?"}
                     </p>
                   </div>
@@ -3039,10 +3178,10 @@ function InstaHealthSection() {
           )}
 
           {retryResult && (
-            <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-xs">
-              <p className="text-blue-300 font-semibold">Résultat retry</p>
-              <p className="text-white/70">
-                Re-scrapé : {retryResult.retried || 0} · ✓ OK : {retryResult.ok || 0} · ❌ Échec : {retryResult.failed || 0}
+            <div className="bg-[#00E5FF]/10 border border-[#00E5FF]/25 rounded-lg p-3 text-xs">
+              <p className="text-[#00E5FF] font-display font-semibold tracking-tight">Résultat retry</p>
+              <p className="text-[#F5F4F1]/70 tabular-nums">
+                Re-scrapé : {retryResult.retried || 0} <span className="text-[#F5F4F1]/25 mx-1">·</span> OK : {retryResult.ok || 0} <span className="text-[#F5F4F1]/25 mx-1">·</span> Échec : {retryResult.failed || 0}
               </p>
             </div>
           )}
@@ -3070,28 +3209,39 @@ function UsageMonitorTab() {
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
 
-  const barColor = (pct) => pct < 60 ? "#39FF14" : pct < 80 ? "#FFB300" : "#FF2A2A";
+  const barColor = (pct) => pct < 60 ? "#39FF14" : pct < 80 ? "#FFB300" : "#FF4757";
   const Bar = ({ pct, color }) => (
-    <div className="w-full h-2.5 bg-white/5 rounded-full overflow-hidden">
-      <div className="h-full transition-all" style={{ width: `${Math.min(100, pct || 0)}%`, background: color || barColor(pct) }} />
+    <div className="w-full h-2 bg-[#0E0D0B] border border-warm rounded-full overflow-hidden">
+      <div className="h-full transition-all duration-500" style={{ width: `${Math.min(100, pct || 0)}%`, background: color || barColor(pct) }} />
     </div>
   );
 
   if (loading && !data) {
-    return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-2 border-[#00E5FF] border-t-transparent rounded-full animate-spin" /></div>;
+    return <div className="flex items-center justify-center h-64"><div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" /></div>;
   }
-  if (!data) return <div className="text-white/40 p-8">Aucune donnée. <button onClick={refresh} className="text-[#00E5FF] underline">Réessayer</button></div>;
+  if (!data) return (
+    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-8 text-center">
+      <p className="text-[#F5F4F1]/55 text-sm">Aucune donnée disponible.</p>
+      <button onClick={refresh} className="mt-3 px-4 py-2 rounded-lg bg-[#FF007F] hover:bg-[#E50073] text-white text-sm font-medium transition-all duration-150">Réessayer</button>
+    </div>
+  );
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-2xl font-bold text-white">Capacité & Coûts</h2>
-          <p className="text-sm text-white/50 mt-1">Utilisation actuelle des APIs et recommandations d'upgrade</p>
+          <div className="flex items-center gap-2.5 mb-2">
+            <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+              <TrendingUp className="w-4.5 h-4.5 text-[#FF007F]" />
+            </div>
+            <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Capacité & Coûts</h2>
+          </div>
+          <p className="text-[#F5F4F1]/55 text-sm">Utilisation actuelle des APIs et recommandations d'upgrade.</p>
         </div>
         <button onClick={refresh} disabled={loading}
-          className="px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition disabled:opacity-50">
-          {loading ? "..." : "Actualiser"}
+          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1] text-sm transition-all duration-150 disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+          {loading ? "Chargement…" : "Actualiser"}
         </button>
       </div>
 
@@ -3100,31 +3250,31 @@ function UsageMonitorTab() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
-          <p className="text-xs text-white/40 mb-1">Clippeurs actifs</p>
-          <p className="text-2xl font-mono font-bold text-white">{data.clippers_active}</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200">
+          <p className="text-[11px] text-[#F5F4F1]/55 mb-1.5 uppercase tracking-wider">Clippeurs actifs</p>
+          <p className="text-2xl font-display font-semibold text-[#F5F4F1] tabular-nums tracking-tight">{data.clippers_active}</p>
         </div>
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
-          <p className="text-xs text-white/40 mb-1">Campagnes actives</p>
-          <p className="text-2xl font-mono font-bold text-[#FF007F]">{data.campaigns_active}</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200">
+          <p className="text-[11px] text-[#F5F4F1]/55 mb-1.5 uppercase tracking-wider">Campagnes actives</p>
+          <p className="text-2xl font-display font-semibold text-[#FF007F] tabular-nums tracking-tight">{data.campaigns_active}</p>
         </div>
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
-          <p className="text-xs text-white/40 mb-1">Vidéos trackées (total)</p>
-          <p className="text-2xl font-mono font-bold text-[#00E5FF]">{(data.total_videos_tracked || 0).toLocaleString("fr-FR")}</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200">
+          <p className="text-[11px] text-[#F5F4F1]/55 mb-1.5 uppercase tracking-wider">Vidéos trackées</p>
+          <p className="text-2xl font-display font-semibold text-[#00E5FF] tabular-nums tracking-tight">{(data.total_videos_tracked || 0).toLocaleString("fr-FR")}</p>
         </div>
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-4">
-          <p className="text-xs text-white/40 mb-1">Coût total/mois (estim.)</p>
-          <p className="text-2xl font-mono font-bold text-[#39FF14]">{data.total_monthly_cost_eur || 0}€</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 hover:border-[#F5F4F1]/14 hover:-translate-y-0.5 transition-all duration-200">
+          <p className="text-[11px] text-[#F5F4F1]/55 mb-1.5 uppercase tracking-wider">Coût mensuel (estim.)</p>
+          <p className="text-2xl font-display font-semibold text-[#39FF14] tabular-nums tracking-tight">{data.total_monthly_cost_eur || 0} €</p>
         </div>
       </div>
 
       {/* Recommendations */}
       {data.recommendations && data.recommendations.length > 0 && (
-        <div className="bg-[#121212] border border-white/10 rounded-xl p-5">
-          <p className="text-sm font-medium text-white mb-3">Recommandations</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+          <p className="text-sm font-display font-semibold tracking-tight text-[#F5F4F1] mb-3">Recommandations</p>
           <div className="space-y-2">
             {data.recommendations.map((r, i) => (
-              <div key={i} className={`px-3 py-2 rounded-lg text-sm ${r.startsWith("✅") ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-amber-500/10 text-amber-400 border border-amber-500/20"}`}>
+              <div key={i} className={`px-3 py-2.5 rounded-lg text-sm leading-relaxed ${r.startsWith("✅") ? "bg-[#39FF14]/10 text-[#39FF14] border border-[#39FF14]/25" : "bg-[#FFB300]/10 text-[#FFB300] border border-[#FFB300]/25"}`}>
                 {r}
               </div>
             ))}
@@ -3139,19 +3289,19 @@ function UsageMonitorTab() {
           const isError = svc.status === "error";
           const isNotConfig = svc.status === "not_configured";
           return (
-            <div key={key} className="bg-[#121212] border border-white/10 rounded-xl p-5">
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <p className="text-white font-medium">{svc.name}</p>
-                  <div className="flex items-center gap-3 mt-1">
-                    <span className="text-xs text-white/40">{svc.cost_per_month_eur || 0}€/mois</span>
-                    {isError && <span className="text-xs text-red-400">⚠ erreur</span>}
-                    {isNotConfig && <span className="text-xs text-amber-400">non configuré</span>}
-                    {!isError && !isNotConfig && <span className="text-xs text-green-400">✓ OK</span>}
+            <div key={key} className="bg-[#1C1A17]/85 border border-warm rounded-xl p-5">
+              <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">{svc.name}</p>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <span className="text-[11px] text-[#F5F4F1]/55 tabular-nums">{svc.cost_per_month_eur || 0} €/mois</span>
+                    {isError && <span className="text-[10px] px-2 py-0.5 rounded-md bg-red-500/10 text-red-400 border border-red-500/25 font-medium">Erreur</span>}
+                    {isNotConfig && <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#FFB300]/10 text-[#FFB300] border border-[#FFB300]/25 font-medium">Non configuré</span>}
+                    {!isError && !isNotConfig && <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#39FF14]/10 text-[#39FF14] border border-[#39FF14]/25 font-medium">OK</span>}
                   </div>
                 </div>
                 {typeof svc.percent_used === "number" && (
-                  <span className="text-xl font-mono font-bold" style={{ color: barColor(pct) }}>{pct}%</span>
+                  <span className="text-xl font-display font-semibold tabular-nums tracking-tight" style={{ color: barColor(pct) }}>{pct}%</span>
                 )}
               </div>
               {typeof svc.percent_used === "number" && <Bar pct={pct} />}
@@ -3159,28 +3309,28 @@ function UsageMonitorTab() {
               {/* Détails par service */}
               <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                 {svc.capacity_clippers && (
-                  <div><span className="text-white/40">Capacité max :</span> <span className="text-white font-mono">{svc.capacity_clippers} clippeurs</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Capacité max </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.capacity_clippers} clippeurs</span></div>
                 )}
                 {svc.bandwidth_estimated_gb !== undefined && (
-                  <div><span className="text-white/40">Bandwidth utilisée :</span> <span className="text-white font-mono">{svc.bandwidth_estimated_gb} / {svc.bandwidth_total_gb} GB</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Bandwidth </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.bandwidth_estimated_gb} / {svc.bandwidth_total_gb} GB</span></div>
                 )}
                 {svc.monthly_usage_usd !== undefined && (
-                  <div><span className="text-white/40">Utilisation Apify :</span> <span className="text-white font-mono">${svc.monthly_usage_usd} / ${svc.monthly_credit_usd}</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Apify </span><span className="text-[#F5F4F1] font-mono tabular-nums">${svc.monthly_usage_usd} / ${svc.monthly_credit_usd}</span></div>
                 )}
                 {svc.quota_used_estimated !== undefined && (
-                  <div><span className="text-white/40">Quota utilisé/jour :</span> <span className="text-white font-mono">{svc.quota_used_estimated} / {svc.quota_per_day}</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Quota/jour </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.quota_used_estimated} / {svc.quota_per_day}</span></div>
                 )}
                 {svc.uptime_hours !== undefined && (
-                  <div><span className="text-white/40">Uptime :</span> <span className="text-white font-mono">{svc.uptime_hours}h</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Uptime </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.uptime_hours}h</span></div>
                 )}
                 {svc.concurrent_now !== undefined && (
-                  <div><span className="text-white/40">Concurrent :</span> <span className="text-white font-mono">{svc.concurrent_now} / {svc.concurrent_max}</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Concurrent </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.concurrent_now} / {svc.concurrent_max}</span></div>
                 )}
                 {svc.proxy && (
-                  <div><span className="text-white/40">Proxy :</span> <span className="text-white font-mono">{svc.proxy}</span></div>
+                  <div><span className="text-[#F5F4F1]/45">Proxy </span><span className="text-[#F5F4F1] font-mono">{svc.proxy}</span></div>
                 )}
                 {svc.ip_count && (
-                  <div><span className="text-white/40">IPs :</span> <span className="text-white font-mono">{svc.ip_count}</span></div>
+                  <div><span className="text-[#F5F4F1]/45">IPs </span><span className="text-[#F5F4F1] font-mono tabular-nums">{svc.ip_count}</span></div>
                 )}
                 {svc.error && (
                   <div className="col-span-full"><span className="text-red-400 text-xs">{svc.error}</span></div>
@@ -3191,7 +3341,7 @@ function UsageMonitorTab() {
         })}
       </div>
 
-      <p className="text-xs text-white/30 text-center">Mise à jour : {new Date(data.timestamp).toLocaleString("fr-FR")}</p>
+      <p className="text-[11px] text-[#F5F4F1]/35 text-center tabular-nums pt-2">Mise à jour : {new Date(data.timestamp).toLocaleString("fr-FR")}</p>
     </div>
   );
 }
@@ -3237,25 +3387,25 @@ function ApiStatusTab() {
   ];
 
   function StatusBadge({ s }) {
-    if (!s) return <span className="text-white/30 text-xs">Non testé</span>;
+    if (!s) return <span className="text-[#F5F4F1]/35 text-xs">Non testé</span>;
     if (s.status === "ok") return (
-      <span className="flex items-center gap-1 text-green-400 text-xs font-medium">
-        <CheckCircle2 className="w-3.5 h-3.5" /> OK {s.latency_ms && `· ${s.latency_ms}ms`}
+      <span className="inline-flex items-center gap-1.5 text-[#39FF14] text-xs font-medium bg-[#39FF14]/10 border border-[#39FF14]/25 px-2 py-0.5 rounded-md">
+        <CheckCircle2 className="w-3 h-3" /> OK {s.latency_ms && <span className="text-[#39FF14]/70 tabular-nums">· {s.latency_ms} ms</span>}
       </span>
     );
     if (s.status === "not_configured") return (
-      <span className="flex items-center gap-1 text-amber-400 text-xs font-medium">
-        <AlertCircle className="w-3.5 h-3.5" /> Non configuré
+      <span className="inline-flex items-center gap-1.5 text-[#FFB300] text-xs font-medium bg-[#FFB300]/10 border border-[#FFB300]/25 px-2 py-0.5 rounded-md">
+        <AlertCircle className="w-3 h-3" /> Non configuré
       </span>
     );
     if (s.status === "not_installed") return (
-      <span className="flex items-center gap-1 text-amber-400 text-xs font-medium">
-        <AlertCircle className="w-3.5 h-3.5" /> Non installé
+      <span className="inline-flex items-center gap-1.5 text-[#FFB300] text-xs font-medium bg-[#FFB300]/10 border border-[#FFB300]/25 px-2 py-0.5 rounded-md">
+        <AlertCircle className="w-3 h-3" /> Non installé
       </span>
     );
     return (
-      <span className="flex items-center gap-1 text-red-400 text-xs font-medium">
-        <XCircle className="w-3.5 h-3.5" /> Erreur
+      <span className="inline-flex items-center gap-1.5 text-red-400 text-xs font-medium bg-red-500/10 border border-red-500/25 px-2 py-0.5 rounded-md">
+        <XCircle className="w-3 h-3" /> Erreur
       </span>
     );
   }
@@ -3264,10 +3414,10 @@ function ApiStatusTab() {
     const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
     const danger = pct > 80;
     return (
-      <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+      <div className="w-full h-1.5 bg-[#0E0D0B] border border-warm rounded-full overflow-hidden">
         <div
-          className="h-full rounded-full transition-all"
-          style={{ width: `${pct}%`, backgroundColor: danger ? "#ef4444" : color }}
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, backgroundColor: danger ? "#FF4757" : color }}
         />
       </div>
     );
@@ -3275,57 +3425,68 @@ function ApiStatusTab() {
 
   return (
     <div className="space-y-8">
+      {/* ── Header ── */}
+      <div>
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#00E5FF]/10 border border-[#00E5FF]/30 flex items-center justify-center">
+            <Plug className="w-4.5 h-4.5 text-[#00E5FF]" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Connexions API</h2>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">État des services externes et utilisation par période.</p>
+      </div>
+
       {/* ── Connexions ── */}
       <div>
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xl font-semibold text-white">Connexions API</h2>
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <h3 className="text-base font-display font-semibold tracking-tight text-[#F5F4F1]">Services connectés</h3>
           <button
             onClick={testAll}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white text-sm transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-3.5 py-2 bg-[#1C1A17] hover:bg-[#262320] border border-warm rounded-lg text-[#F5F4F1] text-sm transition-all duration-150 disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
             Tout tester
           </button>
         </div>
         {status?.checked_at && (
-          <p className="text-white/30 text-xs mb-4 flex items-center gap-1">
+          <p className="text-[#F5F4F1]/35 text-[11px] mb-4 flex items-center gap-1 tabular-nums">
             <Clock className="w-3 h-3" /> Dernier test : {formatDate(status.checked_at)}
           </p>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {apis.map(({ key, label, icon: Icon, desc }) => {
             const s = status?.[key];
             return (
-              <div key={key} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-5">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-white/5 rounded-lg flex items-center justify-center">
-                      <Icon className="w-5 h-5 text-white/60" />
+              <div key={key} className="bg-[#1C1A17]/85 border border-warm hover:border-[#F5F4F1]/14 rounded-xl p-4 transition-all duration-150">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 bg-[#0E0D0B] border border-warm rounded-lg flex items-center justify-center flex-shrink-0">
+                      <Icon className="w-4 h-4 text-[#F5F4F1]/70" />
                     </div>
-                    <div>
-                      <p className="text-white font-medium text-sm">{label}</p>
-                      <p className="text-white/40 text-xs">{desc}</p>
+                    <div className="min-w-0">
+                      <p className="text-[#F5F4F1] font-medium text-sm truncate">{label}</p>
+                      <p className="text-[#F5F4F1]/45 text-[11px] mt-0.5 leading-relaxed">{desc}</p>
                     </div>
                   </div>
-                  <StatusBadge s={s} />
+                  <div className="flex-shrink-0"><StatusBadge s={s} /></div>
                 </div>
                 {s?.error && (
-                  <p className="mt-3 text-xs text-red-400/70 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                  <p className="mt-3 text-[11px] text-red-400 bg-red-500/10 border border-red-500/25 rounded-md px-3 py-2 leading-relaxed">
                     {s.error}
                   </p>
                 )}
                 {/* Apify: show plan + compute units */}
                 {key === "apify" && s?.status === "ok" && (
-                  <div className="mt-3 flex flex-wrap gap-3">
+                  <div className="mt-3 flex flex-wrap gap-2">
                     {s.plan && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20 font-mono">
-                        Plan: {s.plan}
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/25 font-mono">
+                        Plan {s.plan}
                       </span>
                     )}
                     {s.limit_usd > 0 && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-white/50 border border-white/10 font-mono">
-                        CU ce mois: {s.usage_usd} / {s.limit_usd}
+                      <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#1C1A17] text-[#F5F4F1]/70 border border-warm font-mono tabular-nums">
+                        CU ce mois {s.usage_usd} / {s.limit_usd}
                       </span>
                     )}
                   </div>
@@ -3338,82 +3499,89 @@ function ApiStatusTab() {
 
       {/* ── Utilisation API ── */}
       <div>
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
-            <h2 className="text-xl font-semibold text-white">Utilisation des APIs</h2>
-            <p className="text-white/40 text-xs mt-0.5">Nombre d'appels réels par période — mis à jour en temps réel</p>
+            <h3 className="text-base font-display font-semibold tracking-tight text-[#F5F4F1]">Utilisation des APIs</h3>
+            <p className="text-[#F5F4F1]/45 text-xs mt-1">Nombre d'appels réels par période — temps réel.</p>
           </div>
           <button
             onClick={fetchUsage}
             disabled={usageLoading}
-            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white text-sm transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-3.5 py-2 bg-[#1C1A17] hover:bg-[#262320] border border-warm rounded-lg text-[#F5F4F1] text-sm transition-all duration-150 disabled:opacity-50"
           >
-            <RefreshCw className={`w-4 h-4 ${usageLoading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${usageLoading ? "animate-spin" : ""}`} />
             Actualiser
           </button>
         </div>
 
         {/* Tableau principal */}
-        <div className="bg-[#1a1a1a] border border-white/10 rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/8">
-                <th className="text-left px-5 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Service</th>
-                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Cette heure</th>
-                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Aujourd'hui</th>
-                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">7 jours</th>
-                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">30 jours</th>
-                <th className="text-center px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Taux succès</th>
-                <th className="text-left px-4 py-3 text-white/40 text-xs font-semibold uppercase tracking-wider">Limite gratuite</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usageLoading && !usage ? (
-                <tr><td colSpan={7} className="py-10 text-center text-white/30 text-xs">Chargement...</td></tr>
-              ) : usageServices.map(({ key, label, color, icon }) => {
-                const d = usage?.services?.[key];
-                const successRate = d?.success_rate ?? 100;
-                const errColor = successRate < 90 ? "text-red-400" : successRate < 99 ? "text-amber-400" : "text-green-400";
-                return (
-                  <tr key={key} className="border-b border-white/5 hover:bg-white/2 transition-colors">
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-base" style={{ color }}>{icon}</span>
-                        <div>
-                          <p className="text-white text-xs font-medium">{label}</p>
-                          <p className="text-white/30 text-[10px]">{d?.free_limit || "—"}</p>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-warm">
+                  <th className="text-left px-5 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">Service</th>
+                  <th className="text-center px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">Cette heure</th>
+                  <th className="text-center px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">Aujourd'hui</th>
+                  <th className="text-center px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">7 j</th>
+                  <th className="text-center px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">30 j</th>
+                  <th className="text-center px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">Succès</th>
+                  <th className="text-left px-4 py-3 text-[#F5F4F1]/55 text-[11px] font-medium uppercase tracking-wider">Limite gratuite</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usageLoading && !usage ? (
+                  <tr><td colSpan={7} className="py-10 text-center text-[#F5F4F1]/45 text-xs">
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-3 h-3 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+                      Chargement…
+                    </div>
+                  </td></tr>
+                ) : usageServices.map(({ key, label, color, icon }) => {
+                  const d = usage?.services?.[key];
+                  const successRate = d?.success_rate ?? 100;
+                  const errColor = successRate < 90 ? "text-red-400" : successRate < 99 ? "text-[#FFB300]" : "text-[#39FF14]";
+                  return (
+                    <tr key={key} className="border-b border-warm last:border-b-0 transition-colors">
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-base" style={{ color }}>{icon}</span>
+                          <div>
+                            <p className="text-[#F5F4F1] text-xs font-medium">{label}</p>
+                            <p className="text-[#F5F4F1]/45 text-[10px]">{d?.free_limit || "—"}</p>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <span className="text-white font-mono text-sm">{(d?.this_hour ?? 0).toLocaleString()}</span>
-                      {d?.errors_hour > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_hour} err)</span>}
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <span className="text-white font-mono text-sm font-semibold">{(d?.today ?? 0).toLocaleString()}</span>
-                      {d?.errors_today > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_today} err)</span>}
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <span className="text-white/70 font-mono text-sm">{(d?.week ?? 0).toLocaleString()}</span>
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <span className="text-white/60 font-mono text-sm">{(d?.month ?? 0).toLocaleString()}</span>
-                    </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <span className={`font-mono text-sm font-semibold ${errColor}`}>{successRate}%</span>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      {/* Mini progress bar — YouTube 10k/jour, Apify $5/mois, Resend 3000/mois */}
-                      {key === "youtube" && <MiniBar value={d?.today ?? 0} max={10000} color={color} />}
-                      {key === "apify"   && <MiniBar value={d?.today ?? 0} max={100}   color={color} />}
-                      {key === "resend"  && <MiniBar value={d?.month ?? 0} max={3000}  color={color} />}
-                      <p className="text-white/30 text-[10px] mt-1">{d?.free_limit}</p>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="text-[#F5F4F1] font-mono text-sm tabular-nums">{(d?.this_hour ?? 0).toLocaleString()}</span>
+                        {d?.errors_hour > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_hour} err)</span>}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="text-[#F5F4F1] font-mono text-sm font-semibold tabular-nums">{(d?.today ?? 0).toLocaleString()}</span>
+                        {d?.errors_today > 0 && <span className="text-red-400 text-[10px] ml-1">({d.errors_today} err)</span>}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="text-[#F5F4F1]/70 font-mono text-sm tabular-nums">{(d?.week ?? 0).toLocaleString()}</span>
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="text-[#F5F4F1]/60 font-mono text-sm tabular-nums">{(d?.month ?? 0).toLocaleString()}</span>
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <span className={`font-mono text-sm font-semibold tabular-nums ${errColor}`}>{successRate}%</span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        {/* Mini progress bar — YouTube 10k/jour, Apify $5/mois, Resend 3000/mois */}
+                        {key === "youtube" && <MiniBar value={d?.today ?? 0} max={10000} color={color} />}
+                        {key === "apify"   && <MiniBar value={d?.today ?? 0} max={100}   color={color} />}
+                        {key === "resend"  && <MiniBar value={d?.month ?? 0} max={3000}  color={color} />}
+                        <p className="text-[#F5F4F1]/35 text-[10px] mt-1">{d?.free_limit}</p>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Mini-graphes 24h */}
@@ -3423,10 +3591,10 @@ function ApiStatusTab() {
               const hourly = usage?.services?.[key]?.hourly || [];
               const maxVal = Math.max(...hourly.map(h => h.calls), 1);
               return (
-                <div key={key} className="bg-[#1a1a1a] border border-white/8 rounded-xl p-4">
-                  <p className="text-white/60 text-xs font-medium mb-3">{label} — 24h</p>
+                <div key={key} className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4">
+                  <p className="text-[#F5F4F1] text-xs font-medium mb-3">{label} <span className="text-[#F5F4F1]/40">· 24 h</span></p>
                   {hourly.length === 0 ? (
-                    <p className="text-white/20 text-[10px] text-center py-4">Aucun appel</p>
+                    <p className="text-[#F5F4F1]/25 text-[10px] text-center py-4">Aucun appel</p>
                   ) : (
                     <div className="flex items-end gap-0.5 h-12">
                       {hourly.map((h, i) => (
@@ -3435,7 +3603,7 @@ function ApiStatusTab() {
                           className="flex-1 rounded-sm min-w-[2px]"
                           style={{
                             height: `${Math.max((h.calls / maxVal) * 100, 4)}%`,
-                            backgroundColor: h.errors > 0 ? "#ef4444" : color,
+                            backgroundColor: h.errors > 0 ? "#FF4757" : color,
                             opacity: 0.7,
                           }}
                           title={`${h.date} ${h.hour}h : ${h.calls} appels${h.errors > 0 ? `, ${h.errors} erreurs` : ""}`}
@@ -3443,8 +3611,8 @@ function ApiStatusTab() {
                       ))}
                     </div>
                   )}
-                  <p className="text-white/30 text-[10px] mt-2 text-right">
-                    Total : {(usage?.services?.[key]?.today ?? 0).toLocaleString()} aujourd'hui
+                  <p className="text-[#F5F4F1]/45 text-[10px] mt-2 text-right tabular-nums">
+                    {(usage?.services?.[key]?.today ?? 0).toLocaleString()} aujourd'hui
                   </p>
                 </div>
               );
@@ -3453,7 +3621,7 @@ function ApiStatusTab() {
         )}
 
         {usage?.fetched_at && (
-          <p className="text-white/20 text-[10px] mt-3 flex items-center gap-1">
+          <p className="text-[#F5F4F1]/30 text-[10px] mt-3 flex items-center gap-1 tabular-nums">
             <Clock className="w-2.5 h-2.5" /> Données au {formatDate(usage.fetched_at)}
           </p>
         )}
@@ -3498,38 +3666,60 @@ function PostsTab() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-        <h2 className="text-xl font-semibold text-white">Tous les posts ({filtered.length}/{posts.length})</h2>
-        <div className="flex gap-3">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Rechercher..."
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-56"
-          />
-          <button onClick={fetchPosts} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
-            <RefreshCw className="w-4 h-4" />
-          </button>
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+            <Eye className="w-4.5 h-4.5 text-[#FF007F]" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Tous les posts</h2>
+          <span className="text-[#F5F4F1]/40 text-sm tabular-nums ml-1">({filtered.length}/{posts.length})</span>
         </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Posts publiés par les agences dans leurs campagnes — modération globale.</p>
       </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher titre, contenu, agence…"
+          className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22 flex-1 max-w-md"
+        />
+        <button onClick={fetchPosts} title="Recharger" className="p-2 bg-[#1C1A17] hover:bg-[#262320] border border-warm rounded-lg text-[#F5F4F1]/70 hover:text-[#F5F4F1] transition-all duration-150">
+          <RefreshCw className="w-4 h-4" />
+        </button>
+      </div>
+
       {loading ? (
-        <div className="text-white/40 text-sm">Chargement...</div>
+        <div className="flex items-center justify-center h-40">
+          <div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+        </div>
       ) : (
-        <div className="space-y-3">
-          {filtered.length === 0 && <p className="text-white/30 text-sm text-center py-12">Aucun post</p>}
+        <div className="space-y-2.5">
+          {filtered.length === 0 && (
+            <div className="bg-[#1C1A17]/85 border border-warm rounded-xl py-16 text-center">
+              <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mx-auto mb-3">
+                <Eye className="w-4 h-4 text-[#F5F4F1]/30" />
+              </div>
+              <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun post</p>
+              <p className="text-[#F5F4F1]/35 text-xs mt-1">Aucun post publié par les agences.</p>
+            </div>
+          )}
           {filtered.map((post) => (
-            <div key={post.announcement_id} className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4 flex items-start gap-4">
+            <div key={post.announcement_id} className="bg-[#1C1A17]/85 border border-warm hover:border-[#F5F4F1]/14 rounded-xl p-4 flex items-start gap-4 transition-all duration-150">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs text-white/40 bg-white/5 px-2 py-0.5 rounded">{post.agency_name}</span>
-                  <span className="text-xs text-white/30">{formatDate(post.created_at)}</span>
+                <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                  <span className="text-[11px] text-[#FF007F] bg-[#FF007F]/10 border border-[#FF007F]/20 px-2 py-0.5 rounded-md font-medium">{post.agency_name}</span>
+                  <span className="text-[11px] text-[#F5F4F1]/45 tabular-nums">{formatDate(post.created_at)}</span>
                 </div>
-                <p className="text-white font-semibold text-sm truncate">{post.title || "(sans titre)"}</p>
-                <p className="text-white/50 text-xs mt-1 line-clamp-2">{post.content}</p>
+                <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight truncate">{post.title || "(sans titre)"}</p>
+                <p className="text-[#F5F4F1]/60 text-xs mt-1 line-clamp-2 leading-relaxed">{post.content}</p>
               </div>
               <button
                 onClick={() => setConfirmDelete(post)}
-                className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all flex-shrink-0"
+                title="Supprimer ce post"
+                className="p-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all duration-150 flex-shrink-0"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -3594,55 +3784,70 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
   const cs = data?.click_stats || {};
   const vs = data?.view_stats || {};
 
-  const statusColors = { active: "bg-green-500/20 text-green-400 border-green-500/30", paused: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30", ended: "bg-red-500/20 text-red-400 border-red-500/30", draft: "bg-white/5 text-white/40 border-white/10" };
-  const roleColors = { clipper: "text-blue-300", agency: "text-purple-300", manager: "text-amber-300", client: "text-green-300" };
+  const statusColors = {
+    active: "bg-[#39FF14]/10 text-[#39FF14] border-[#39FF14]/25",
+    paused: "bg-[#FFB300]/10 text-[#FFB300] border-[#FFB300]/25",
+    ended: "bg-red-500/10 text-red-400 border-red-500/25",
+    draft: "bg-[#0E0D0B] text-[#F5F4F1]/55 border-warm",
+  };
+  const roleColors = {
+    clipper: "text-[#00E5FF]",
+    agency: "text-[#FF007F]",
+    manager: "text-[#39FF14]",
+    client: "text-[#FFB300]",
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex">
       {/* Backdrop */}
-      <div className="flex-1 bg-black/60" onClick={onClose} />
+      <div className="flex-1 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       {/* Panel */}
-      <div className="w-full max-w-2xl bg-[#0d0d0d] border-l border-white/10 flex flex-col h-full overflow-hidden">
+      <div className="w-full max-w-2xl bg-[#0A0907] border-l border-warm flex flex-col h-full overflow-hidden">
         {/* Header */}
-        <div className="flex items-start justify-between p-5 border-b border-white/10 flex-shrink-0">
+        <div className="flex items-start justify-between p-5 border-b border-warm flex-shrink-0">
           {loading ? (
-            <div className="text-white/40 text-sm">Chargement...</div>
+            <div className="flex items-center gap-2 text-[#F5F4F1]/55 text-sm">
+              <div className="w-3 h-3 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+              Chargement…
+            </div>
           ) : (
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="text-white font-semibold truncate">{data?.name || "—"}</h3>
-                <span className={`text-[10px] font-medium px-2 py-0.5 rounded border ${statusColors[data?.status] || statusColors.draft}`}>{data?.status}</span>
-                <span className={`text-[10px] font-medium px-2 py-0.5 rounded border ${isClick ? "bg-yellow-400/15 text-yellow-300 border-yellow-400/30" : "bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/30"}`}>
+                <h3 className="text-[#F5F4F1] font-display font-semibold tracking-tight truncate">{data?.name || "—"}</h3>
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md border ${statusColors[data?.status] || statusColors.draft}`}>{data?.status}</span>
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md border ${isClick ? "bg-[#FFB300]/10 text-[#FFB300] border-[#FFB300]/25" : "bg-[#00E5FF]/10 text-[#00E5FF] border-[#00E5FF]/25"}`}>
                   {isClick ? "Au clic" : "Aux vues"}
                 </span>
               </div>
-              <p className="text-white/40 text-xs mt-1">Agence : {data?.agency_name} · {data?.agency_email}</p>
+              <p className="text-[#F5F4F1]/45 text-xs mt-1.5">Agence <span className="text-[#F5F4F1]/70 ml-1">{data?.agency_name}</span> <span className="mx-1.5 text-[#F5F4F1]/25">·</span> {data?.agency_email}</p>
             </div>
           )}
-          <button onClick={onClose} className="ml-4 p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white transition-all flex-shrink-0">
+          <button onClick={onClose} title="Fermer" className="ml-4 p-2 rounded-lg bg-[#1C1A17] hover:bg-[#262320] border border-warm text-[#F5F4F1]/55 hover:text-[#F5F4F1] transition-all duration-150 flex-shrink-0">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-white/10 flex-shrink-0 overflow-x-auto">
+        <div className="flex border-b border-warm flex-shrink-0 overflow-x-auto bg-[#0E0D0B]">
           {[
-            { id: "stats", label: isClick ? "Clics & Stats" : "Vues & Stats" },
+            { id: "stats", label: isClick ? "Clics & stats" : "Vues & stats" },
             { id: "videos", label: `Vidéos (${data?.tracked_videos?.length || 0})` },
             { id: "chat", label: `Chat (${data?.messages?.length || 0})` },
             { id: "membres", label: `Membres (${data?.members?.length || 0})` },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-5 py-3 text-sm font-medium transition-all border-b-2 ${tab === t.id ? "border-[#00E5FF] text-[#00E5FF]" : "border-transparent text-white/40 hover:text-white"}`}>
+              className={`px-5 py-3 text-[13px] font-medium transition-all duration-150 border-b-2 whitespace-nowrap ${tab === t.id ? "border-[#FF007F] text-[#F5F4F1]" : "border-transparent text-[#F5F4F1]/45 hover:text-[#F5F4F1]"}`}>
               {t.label}
             </button>
           ))}
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto bg-[#0E0D0B]">
           {loading ? (
-            <div className="p-8 text-white/40 text-sm text-center">Chargement des données...</div>
+            <div className="p-8 flex items-center justify-center">
+              <div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+            </div>
           ) : !data ? null : (
 
             // ── STATS TAB ──
@@ -3650,40 +3855,41 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
               <div className="p-5 space-y-4">
                 {isClick ? (
                   <>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[
-                        { label: "Clics totaux", value: (cs.total_clicks || 0).toLocaleString("fr-FR"), color: "text-[#f0c040]", bg: "bg-yellow-400/10" },
-                        { label: "Clics uniques", value: (cs.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-green-400", bg: "bg-green-400/10" },
-                        { label: "Gains générés", value: `€${(cs.earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
+                        { label: "Clics totaux", value: (cs.total_clicks || 0).toLocaleString("fr-FR"), color: "text-[#FFB300]", bg: "bg-[#FFB300]/8", border: "border-[#FFB300]/15" },
+                        { label: "Clics uniques", value: (cs.unique_clicks || 0).toLocaleString("fr-FR"), color: "text-[#39FF14]", bg: "bg-[#39FF14]/8", border: "border-[#39FF14]/15" },
+                        { label: "Gains générés", value: `€${(cs.earnings || 0).toFixed(2)}`, color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/8", border: "border-[#00E5FF]/15" },
                       ].map(c => (
-                        <div key={c.label} className={`${c.bg} rounded-xl p-4`}>
-                          <div className={`text-xl font-bold ${c.color}`}>{c.value}</div>
-                          <div className="text-white/40 text-xs mt-1">{c.label}</div>
+                        <div key={c.label} className={`${c.bg} border ${c.border} rounded-xl p-3.5`}>
+                          <div className={`text-lg md:text-xl font-display font-semibold tabular-nums tracking-tight ${c.color}`}>{c.value}</div>
+                          <div className="text-[#F5F4F1]/55 text-[11px] mt-1">{c.label}</div>
                         </div>
                       ))}
                     </div>
-                    <div className="bg-white/5 rounded-xl p-4 text-xs text-white/50">
-                      <span className="text-white/70 font-medium">Tarif : </span>€{cs.rate_per_click || 0}/clic ·
-                      <span className="text-white/70 font-medium ml-2">Mode : </span>
+                    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 text-xs text-[#F5F4F1]/60">
+                      <span className="text-[#F5F4F1] font-medium">Tarif </span>€{cs.rate_per_click || 0}/clic
+                      <span className="mx-2 text-[#F5F4F1]/25">·</span>
+                      <span className="text-[#F5F4F1] font-medium">Mode </span>
                       {cs.unique_clicks_only ? "Clics uniques uniquement (anti-spam)" : "Tous les clics"}
                     </div>
                     {/* Liens de tracking */}
                     {cs.links?.length > 0 && (
                       <div>
-                        <p className="text-white/50 text-xs uppercase tracking-wider font-medium mb-3">Liens des clippeurs</p>
+                        <p className="text-[#F5F4F1]/55 text-[11px] uppercase tracking-widest font-medium mb-2.5">Liens des clippeurs</p>
                         <div className="space-y-2">
                           {cs.links.map(lnk => (
-                            <div key={lnk.link_id} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
-                              <div className="w-7 h-7 rounded-full bg-[#f0c040]/20 flex items-center justify-center text-xs font-bold text-[#f0c040] flex-shrink-0">
+                            <div key={lnk.link_id} className="bg-[#1C1A17]/85 border border-warm rounded-lg p-3 flex items-center gap-3">
+                              <div className="w-7 h-7 rounded-full bg-[#FFB300]/15 border border-[#FFB300]/25 flex items-center justify-center text-xs font-display font-semibold text-[#FFB300] flex-shrink-0">
                                 {(lnk.clipper_display_name || "?")[0]?.toUpperCase()}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-white text-xs font-medium truncate">{lnk.clipper_display_name}</p>
-                                <p className="text-white/30 text-[10px] font-mono truncate">{lnk.tracking_url}</p>
+                                <p className="text-[#F5F4F1] text-xs font-medium truncate">{lnk.clipper_display_name}</p>
+                                <p className="text-[#F5F4F1]/40 text-[10px] font-mono truncate">{lnk.tracking_url}</p>
                               </div>
                               <div className="text-right flex-shrink-0">
-                                <p className="text-[#f0c040] font-mono text-xs">{(lnk.click_count || 0).toLocaleString("fr-FR")} clics</p>
-                                <p className="text-[#39FF14] font-mono text-[10px]">{(lnk.unique_click_count || 0).toLocaleString("fr-FR")} uniques</p>
+                                <p className="text-[#FFB300] font-mono text-xs tabular-nums">{(lnk.click_count || 0).toLocaleString("fr-FR")} clics</p>
+                                <p className="text-[#39FF14] font-mono text-[10px] tabular-nums">{(lnk.unique_click_count || 0).toLocaleString("fr-FR")} uniques</p>
                               </div>
                             </div>
                           ))}
@@ -3693,39 +3899,40 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
                   </>
                 ) : (
                   <>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-3 gap-2.5">
                       {[
-                        { label: "Vues totales", value: fmtNum(vs.total_views || 0), color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/10" },
-                        { label: "Vidéos", value: vs.video_count || 0, color: "text-indigo-400", bg: "bg-indigo-400/10" },
-                        { label: "Budget consommé", value: `€${(vs.budget_used || 0).toFixed(2)}`, color: "text-green-400", bg: "bg-green-400/10" },
+                        { label: "Vues totales", value: fmtNum(vs.total_views || 0), color: "text-[#00E5FF]", bg: "bg-[#00E5FF]/8", border: "border-[#00E5FF]/15" },
+                        { label: "Vidéos", value: vs.video_count || 0, color: "text-[#F5F4F1]", bg: "bg-[#1C1A17]", border: "border-warm" },
+                        { label: "Budget consommé", value: `€${(vs.budget_used || 0).toFixed(2)}`, color: "text-[#39FF14]", bg: "bg-[#39FF14]/8", border: "border-[#39FF14]/15" },
                       ].map(c => (
-                        <div key={c.label} className={`${c.bg} rounded-xl p-4`}>
-                          <div className={`text-xl font-bold ${c.color}`}>{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
-                          <div className="text-white/40 text-xs mt-1">{c.label}</div>
+                        <div key={c.label} className={`${c.bg} border ${c.border} rounded-xl p-3.5`}>
+                          <div className={`text-lg md:text-xl font-display font-semibold tabular-nums tracking-tight ${c.color}`}>{typeof c.value === "number" ? c.value.toLocaleString("fr-FR") : c.value}</div>
+                          <div className="text-[#F5F4F1]/55 text-[11px] mt-1">{c.label}</div>
                         </div>
                       ))}
                     </div>
-                    <div className="bg-white/5 rounded-xl p-4 text-xs text-white/50">
-                      <span className="text-white/70 font-medium">RPM : </span>€{data.rpm || 0}/1K vues ·
-                      <span className="text-white/70 font-medium ml-2">Budget total : </span>
+                    <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4 text-xs text-[#F5F4F1]/60">
+                      <span className="text-[#F5F4F1] font-medium">RPM </span>€{data.rpm || 0}/1K vues
+                      <span className="mx-2 text-[#F5F4F1]/25">·</span>
+                      <span className="text-[#F5F4F1] font-medium">Budget total </span>
                       {data.budget_unlimited ? "Illimité" : `€${data.budget_total || 0}`}
                     </div>
                   </>
                 )}
                 {/* Budget bar */}
                 {!data.budget_unlimited && data.budget_total > 0 && (
-                  <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-4">
-                    <div className="flex justify-between text-xs text-white/50 mb-2">
+                  <div className="bg-[#1C1A17]/85 border border-warm rounded-xl p-4">
+                    <div className="flex justify-between text-xs text-[#F5F4F1]/55 mb-2">
                       <span>Budget consommé</span>
-                      <span className="font-mono">{Math.round(((isClick ? cs.earnings : vs.budget_used) / data.budget_total) * 100)}%</span>
+                      <span className="font-mono tabular-nums text-[#F5F4F1]">{Math.round(((isClick ? cs.earnings : vs.budget_used) / data.budget_total) * 100)}%</span>
                     </div>
-                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-[#0E0D0B] border border-warm rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-gradient-to-r from-[#00E5FF] to-[#f0c040] rounded-full transition-all"
+                        className="h-full bg-gradient-to-r from-[#00E5FF] to-[#FF007F] rounded-full transition-all duration-500"
                         style={{ width: `${Math.min(100, ((isClick ? cs.earnings : vs.budget_used) / data.budget_total) * 100)}%` }}
                       />
                     </div>
-                    <div className="flex justify-between text-xs text-white/30 mt-1.5">
+                    <div className="flex justify-between text-xs text-[#F5F4F1]/45 mt-2 tabular-nums">
                       <span>€{(isClick ? cs.earnings : vs.budget_used || 0).toFixed(2)}</span>
                       <span>€{data.budget_total}</span>
                     </div>
@@ -3738,19 +3945,25 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
             : tab === "videos" ? (
               <div className="p-5">
                 {(!data.tracked_videos || data.tracked_videos.length === 0) ? (
-                  <p className="text-white/30 text-sm text-center py-12">Aucune vidéo trackée pour cette campagne</p>
+                  <div className="text-center py-16">
+                    <div className="w-10 h-10 rounded-lg bg-[#1C1A17] border border-warm flex items-center justify-center mx-auto mb-3">
+                      <Play className="w-4 h-4 text-[#F5F4F1]/30" />
+                    </div>
+                    <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucune vidéo trackée</p>
+                    <p className="text-[#F5F4F1]/35 text-xs mt-1">Les clippers n'ont pas encore publié de vidéo sur cette campagne.</p>
+                  </div>
                 ) : (
                   <>
-                    <p className="text-white/40 text-xs mb-3 uppercase tracking-wider">{data.tracked_videos.length} vidéos — triées par vues</p>
+                    <p className="text-[#F5F4F1]/55 text-[11px] mb-3 uppercase tracking-widest font-medium">{data.tracked_videos.length} vidéos · triées par vues</p>
                     <div className="space-y-2">
                       {data.tracked_videos.map(v => (
-                        <div key={v.video_id || v.url} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
+                        <div key={v.video_id || v.url} className="bg-[#1C1A17]/85 border border-warm hover:border-[#F5F4F1]/14 rounded-lg p-3 flex items-center gap-3 transition-all duration-150">
                           {/* Thumbnail */}
-                          <div className="w-10 h-14 rounded-md bg-white/5 overflow-hidden flex-shrink-0">
+                          <div className="w-10 h-14 rounded-md bg-[#0E0D0B] border border-warm overflow-hidden flex-shrink-0">
                             {v.thumbnail_url ? (
                               <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center text-white/20">
+                              <div className="w-full h-full flex items-center justify-center text-[#F5F4F1]/25">
                                 <Play className="w-3 h-3" />
                               </div>
                             )}
@@ -3758,28 +3971,28 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
                           {/* Info */}
                           <div className="flex-1 min-w-0">
                             <a href={v.url} target="_blank" rel="noopener noreferrer"
-                              className="text-white text-xs font-medium line-clamp-1 hover:text-[#00E5FF] transition-colors">
+                              className="text-[#F5F4F1] text-xs font-medium line-clamp-1 hover:text-[#00E5FF] transition-colors">
                               {v.title || v.url || "—"}
                             </a>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-white/30 text-[10px]">{v.clipper_name || "?"}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <span className="text-[#F5F4F1]/45 text-[10px]">{v.clipper_name || "?"}</span>
                               {v.platform && (
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${
-                                  v.platform === "tiktok" ? "bg-pink-500/20 text-pink-300" :
-                                  v.platform === "instagram" ? "bg-purple-500/20 text-purple-300" :
-                                  "bg-red-500/20 text-red-300"
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium border ${
+                                  v.platform === "tiktok" ? "bg-[#FF007F]/10 text-[#FF007F] border-[#FF007F]/25" :
+                                  v.platform === "instagram" ? "bg-[#FF007F]/10 text-[#FF007F] border-[#FF007F]/25" :
+                                  "bg-red-500/10 text-red-400 border-red-500/25"
                                 }`}>{v.platform}</span>
                               )}
                               {v.manually_added && (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400 border border-yellow-500/20">manuel</span>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-[#FFB300]/10 text-[#FFB300] border border-[#FFB300]/25 font-medium">manuel</span>
                               )}
                             </div>
                           </div>
                           {/* Stats */}
                           <div className="text-right flex-shrink-0">
-                            <p className="text-[#00E5FF] font-mono text-xs font-semibold">{fmtNum(v.views || 0)}</p>
-                            <p className="text-green-400 font-mono text-[10px]">€{(v.earnings || 0).toFixed(2)}</p>
-                            <p className="text-white/25 text-[10px]">❤️ {fmtNum(v.likes || 0)}</p>
+                            <p className="text-[#00E5FF] font-mono text-xs font-semibold tabular-nums">{fmtNum(v.views || 0)}</p>
+                            <p className="text-[#39FF14] font-mono text-[10px] tabular-nums">€{(v.earnings || 0).toFixed(2)}</p>
+                            <p className="text-[#F5F4F1]/35 text-[10px] tabular-nums">{fmtNum(v.likes || 0)} likes</p>
                           </div>
                         </div>
                       ))}
@@ -3794,20 +4007,26 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
               <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
                   {data.messages?.length === 0 && (
-                    <p className="text-white/20 text-sm text-center py-12">Aucun message dans ce chat</p>
+                    <div className="text-center py-16">
+                      <div className="w-10 h-10 rounded-lg bg-[#1C1A17] border border-warm flex items-center justify-center mx-auto mb-3">
+                        <MessageCircle className="w-4 h-4 text-[#F5F4F1]/30" />
+                      </div>
+                      <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun message</p>
+                      <p className="text-[#F5F4F1]/35 text-xs mt-1">Le chat de cette campagne est vide.</p>
+                    </div>
                   )}
                   {data.messages?.map(msg => (
                     <div key={msg.message_id} className={`flex ${msg.sender_id === "admin" || msg.is_admin ? "justify-end" : "justify-start"}`}>
-                      <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed ${
-                        msg.is_admin ? "bg-[#00E5FF] text-black rounded-br-sm" :
-                        msg.sender_role_resolved === "agency" || msg.sender_role === "agency" ? "bg-purple-500/20 text-white rounded-bl-sm" :
-                        "bg-white/10 text-white rounded-bl-sm"
+                      <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed border ${
+                        msg.is_admin ? "bg-[#FF007F] text-white rounded-br-sm border-[#FF007F]" :
+                        msg.sender_role_resolved === "agency" || msg.sender_role === "agency" ? "bg-[#FF007F]/10 text-[#F5F4F1] rounded-bl-sm border-[#FF007F]/25" :
+                        "bg-[#1C1A17] text-[#F5F4F1] rounded-bl-sm border-warm"
                       }`}>
-                        <p className={`text-[10px] font-medium mb-1 ${msg.is_admin ? "text-black/60" : roleColors[msg.sender_role_resolved || msg.sender_role] || "text-white/50"}`}>
+                        <p className={`text-[10px] font-display font-medium mb-1 ${msg.is_admin ? "text-white/70" : roleColors[msg.sender_role_resolved || msg.sender_role] || "text-[#F5F4F1]/55"}`}>
                           {msg.is_admin ? "Admin" : msg.sender_display_name || msg.sender_name || "?"}
                         </p>
                         <p>{msg.content}</p>
-                        <p className={`text-[9px] mt-1 ${msg.is_admin ? "text-black/40" : "text-white/30"}`}>
+                        <p className={`text-[9px] mt-1 tabular-nums ${msg.is_admin ? "text-white/55" : "text-[#F5F4F1]/35"}`}>
                           {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
                         </p>
                       </div>
@@ -3816,18 +4035,19 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
                   <div ref={messagesEndRef} />
                 </div>
                 {/* Admin send */}
-                <div className="p-4 border-t border-white/10 flex gap-2 flex-shrink-0">
+                <div className="p-4 border-t border-warm bg-[#0A0907] flex gap-2 flex-shrink-0">
                   <input
                     value={newMsg}
                     onChange={e => setNewMsg(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMsg(); } }}
-                    placeholder="Envoyer un message admin dans le chat..."
-                    className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+                    placeholder="Envoyer un message admin dans le chat…"
+                    className="flex-1 bg-[#1C1A17] border border-warm rounded-lg px-4 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/25 focus:outline-none focus:border-[#F5F4F1]/22"
                   />
                   <button
                     onClick={handleSendMsg}
                     disabled={sending || !newMsg.trim()}
-                    className="px-4 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black rounded-xl transition-all"
+                    title="Envoyer (Entrée)"
+                    className="px-4 py-2.5 bg-[#FF007F] hover:bg-[#E50073] disabled:opacity-40 text-white rounded-lg transition-all duration-150"
                   >
                     <Send className="w-4 h-4" />
                   </button>
@@ -3839,35 +4059,41 @@ function AdminCampaignDetailPanel({ campaignId, onClose }) {
             : (
               <div className="p-5">
                 {data.members?.length === 0 && (
-                  <p className="text-white/30 text-sm text-center py-12">Aucun membre</p>
+                  <div className="text-center py-16">
+                    <div className="w-10 h-10 rounded-lg bg-[#1C1A17] border border-warm flex items-center justify-center mx-auto mb-3">
+                      <Users className="w-4 h-4 text-[#F5F4F1]/30" />
+                    </div>
+                    <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun membre</p>
+                    <p className="text-[#F5F4F1]/35 text-xs mt-1">Personne n'a rejoint cette campagne.</p>
+                  </div>
                 )}
                 <div className="space-y-2">
                   {data.members?.map(m => (
-                    <div key={m.member_id} className="bg-[#1a1a1a] border border-white/10 rounded-lg p-3 flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden flex-shrink-0">
+                    <div key={m.member_id} className="bg-[#1C1A17]/85 border border-warm hover:border-[#F5F4F1]/14 rounded-lg p-3 flex items-center gap-3 transition-all duration-150">
+                      <div className="w-8 h-8 rounded-full bg-[#0E0D0B] border border-warm overflow-hidden flex-shrink-0">
                         {m.user_info?.picture ? (
                           <img src={m.user_info.picture} alt="" className="w-full h-full object-cover" />
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center text-xs font-bold text-white/50">
+                          <div className="w-full h-full flex items-center justify-center text-xs font-display font-semibold text-[#F5F4F1]/55">
                             {(m.user_info?.display_name || m.user_info?.name || "?")[0]?.toUpperCase()}
                           </div>
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm font-medium truncate">
+                        <p className="text-[#F5F4F1] text-sm font-medium truncate">
                           {m.user_info?.display_name || m.user_info?.name || m.user_id}
                         </p>
-                        <p className="text-white/30 text-xs truncate">{m.user_info?.email}</p>
+                        <p className="text-[#F5F4F1]/45 text-xs truncate">{m.user_info?.email}</p>
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        <span className={`text-xs font-medium ${roleColors[m.role] || "text-white/50"}`}>{m.role}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${
-                          m.status === "active" ? "bg-green-500/15 text-green-400 border-green-500/25" :
-                          m.status === "pending" ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/25" :
-                          "bg-white/5 text-white/30 border-white/10"
+                        <span className={`text-[11px] font-medium ${roleColors[m.role] || "text-[#F5F4F1]/55"}`}>{m.role}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-md border font-medium ${
+                          m.status === "active" ? "bg-[#39FF14]/10 text-[#39FF14] border-[#39FF14]/25" :
+                          m.status === "pending" ? "bg-[#FFB300]/10 text-[#FFB300] border-[#FFB300]/25" :
+                          "bg-[#0E0D0B] text-[#F5F4F1]/55 border-warm"
                         }`}>{m.status}</span>
                         {m.strikes > 0 && (
-                          <span className="text-[10px] bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded font-mono">
+                          <span className="text-[10px] bg-red-500/15 text-red-400 border border-red-500/25 px-1.5 py-0.5 rounded-md font-mono tabular-nums">
                             {m.strikes} strike{m.strikes > 1 ? "s" : ""}
                           </span>
                         )}
@@ -3928,7 +4154,12 @@ function AdminCampaignsTab() {
     }
   };
 
-  const statusColors = { active: "text-green-400", paused: "text-yellow-400", ended: "text-red-400", draft: "text-white/40" };
+  const statusColors = {
+    active: "bg-[#39FF14]/10 text-[#39FF14] border-[#39FF14]/25",
+    paused: "bg-[#FFB300]/10 text-[#FFB300] border-[#FFB300]/25",
+    ended: "bg-red-500/10 text-red-400 border-red-500/25",
+    draft: "bg-[#0E0D0B] text-[#F5F4F1]/55 border-warm",
+  };
 
   const filtered = campaigns.filter(c =>
     !search ||
@@ -3938,116 +4169,141 @@ function AdminCampaignsTab() {
 
   return (
     <div className="relative">
-      <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-        <h2 className="text-xl font-semibold text-white">Campagnes ({filtered.length}/{campaigns.length})</h2>
-        <div className="flex gap-3">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Rechercher..."
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 w-56"
-          />
-          <button onClick={fetchCampaigns} className="p-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-white/60 hover:text-white transition-all">
-            <RefreshCw className="w-4 h-4" />
-          </button>
+      {/* Header */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+            <Play className="w-4.5 h-4.5 text-[#FF007F]" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Campagnes</h2>
+          <span className="text-[#F5F4F1]/40 text-sm tabular-nums ml-1">({filtered.length}/{campaigns.length})</span>
         </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Toutes les campagnes — clique sur une ligne pour ouvrir le détail.</p>
       </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher nom de campagne, agence…"
+          className="bg-[#1C1A17] border border-warm rounded-lg px-3 py-2 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/30 focus:outline-none focus:border-[#F5F4F1]/22 flex-1 max-w-md"
+        />
+        <button onClick={fetchCampaigns} title="Recharger" className="p-2 bg-[#1C1A17] hover:bg-[#262320] border border-warm rounded-lg text-[#F5F4F1]/70 hover:text-[#F5F4F1] transition-all duration-150">
+          <RefreshCw className="w-4 h-4" />
+        </button>
+      </div>
+
       {loading ? (
-        <div className="text-white/40 text-sm">Chargement...</div>
+        <div className="flex items-center justify-center h-40">
+          <div className="w-6 h-6 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+        </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-white/10 text-white/40 text-xs uppercase">
-                <th className="text-left py-3 px-4">Campagne</th>
-                <th className="text-left py-3 px-4">Agence</th>
-                <th className="text-left py-3 px-4">Type</th>
-                <th className="text-left py-3 px-4">Statut</th>
-                <th className="text-left py-3 px-4">Membres</th>
-                <th className="text-left py-3 px-4">Tarif</th>
-                <th className="text-left py-3 px-4">Créée le</th>
-                <th className="text-right py-3 px-4">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((c) => (
-                <tr key={c.campaign_id} className={`border-b border-white/5 hover:bg-white/3 transition-colors cursor-pointer ${detailId === c.campaign_id ? "bg-[#00E5FF]/5" : ""}`}
-                  onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}>
-                  <td className="py-3 px-4 text-white font-medium">{c.name}</td>
-                  <td className="py-3 px-4 text-white/60">{c.agency_name}</td>
-                  <td className="py-3 px-4">
-                    {c.payment_model === "clicks" ? (
-                      <span className="flex items-center gap-1 text-[#f0c040] text-xs font-medium">
-                        <MousePointerClick className="w-3 h-3" /> Clic
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-[#00E5FF] text-xs font-medium">
-                        <Eye className="w-3 h-3" /> Vue
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">
-                    <span className={`text-xs font-medium ${statusColors[c.status] || "text-white/40"}`}>
-                      {c.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-white/60">{c.member_count || 0}</td>
-                  <td className="py-3 px-4 text-[#39FF14] font-mono text-xs">
-                    {c.payment_model === "clicks" ? `€${c.rate_per_click || 0}/clic` : `€${c.rpm || 0}/1K`}
-                  </td>
-                  <td className="py-3 px-4 text-white/40">{formatDate(c.created_at)}</td>
-                  <td className="py-3 px-4" onClick={e => e.stopPropagation()}>
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        onClick={async () => {
-                          if (!c.agency_id) { toast.error("Pas d'agence assignée"); return; }
-                          try {
-                            const res = await fetch(`${API}/admin/preview-as/${c.agency_id}`, {
-                              method: "POST", credentials: "include",
-                              headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
-                            });
-                            if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
-                            const d = await res.json();
-                            window.open(`/agency/campaign/${c.campaign_id}`, "_blank");
-                            toast.success(`✓ Connecté comme ${d.user.display_name || d.user.email} (2h) - relog admin requis apres`);
-                          } catch (e) { toast.error(e.message); }
-                        }}
-                        className="p-1.5 rounded bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] transition-all"
-                        title="Voir comme l'agence (impersonate 2h)"
-                      >
-                        <Building2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleForceScrape(c.campaign_id, c.name)}
-                        disabled={scrapingId === c.campaign_id}
-                        className={`p-1.5 rounded transition-all ${scrapingId === c.campaign_id ? "bg-[#39FF14]/20 text-[#39FF14] cursor-wait" : "bg-[#39FF14]/10 hover:bg-[#39FF14]/20 text-[#39FF14]"}`}
-                        title={scrapingId === c.campaign_id ? "Scraping en cours..." : "Lancer un scraping de cette campagne (admin)"}
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${scrapingId === c.campaign_id ? "animate-spin" : ""}`} />
-                      </button>
-                      <button
-                        onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}
-                        className={`p-1.5 rounded transition-all ${detailId === c.campaign_id ? "bg-[#00E5FF]/20 text-[#00E5FF]" : "bg-white/5 hover:bg-white/10 text-white/50 hover:text-white"}`}
-                        title="Voir détail (panneau)"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(c)}
-                        className="p-1.5 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-all"
-                        title="Supprimer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </td>
+        <div className="bg-[#1C1A17]/85 border border-warm rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-warm text-[#F5F4F1]/55 text-[11px] uppercase tracking-wider">
+                  <th className="text-left py-3 px-4 font-medium">Campagne</th>
+                  <th className="text-left py-3 px-4 font-medium">Agence</th>
+                  <th className="text-left py-3 px-4 font-medium">Type</th>
+                  <th className="text-left py-3 px-4 font-medium">Statut</th>
+                  <th className="text-left py-3 px-4 font-medium">Membres</th>
+                  <th className="text-left py-3 px-4 font-medium">Tarif</th>
+                  <th className="text-left py-3 px-4 font-medium">Créée le</th>
+                  <th className="text-right py-3 px-4 font-medium">Actions</th>
                 </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr><td colSpan={8} className="py-12 text-center text-white/30 text-sm">Aucune campagne</td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c.campaign_id} className={`border-b border-warm last:border-b-0 transition-colors cursor-pointer ${detailId === c.campaign_id ? "bg-[#FF007F]/5" : ""}`}
+                    onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}>
+                    <td className="py-3 px-4 text-[#F5F4F1] font-medium">{c.name}</td>
+                    <td className="py-3 px-4 text-[#F5F4F1]/65 text-xs">{c.agency_name}</td>
+                    <td className="py-3 px-4">
+                      {c.payment_model === "clicks" ? (
+                        <span className="inline-flex items-center gap-1 text-[#FFB300] text-[11px] font-medium bg-[#FFB300]/10 border border-[#FFB300]/25 px-2 py-0.5 rounded-md">
+                          <MousePointerClick className="w-3 h-3" /> Clic
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[#00E5FF] text-[11px] font-medium bg-[#00E5FF]/10 border border-[#00E5FF]/25 px-2 py-0.5 rounded-md">
+                          <Eye className="w-3 h-3" /> Vue
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium border ${statusColors[c.status] || statusColors.draft}`}>
+                        {c.status}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-[#F5F4F1]/70 text-xs tabular-nums">{c.member_count || 0}</td>
+                    <td className="py-3 px-4 text-[#39FF14] font-mono text-xs tabular-nums">
+                      {c.payment_model === "clicks" ? `€${c.rate_per_click || 0}/clic` : `€${c.rpm || 0}/1K`}
+                    </td>
+                    <td className="py-3 px-4 text-[#F5F4F1]/45 text-xs tabular-nums">{formatDate(c.created_at)}</td>
+                    <td className="py-3 px-4" onClick={e => e.stopPropagation()}>
+                      <div className="flex gap-1.5 justify-end">
+                        <button
+                          onClick={async () => {
+                            if (!c.agency_id) { toast.error("Pas d'agence assignée"); return; }
+                            try {
+                              const res = await fetch(`${API}/admin/preview-as/${c.agency_id}`, {
+                                method: "POST", credentials: "include",
+                                headers: { "X-Admin-Code": localStorage.getItem(ADMIN_CODE_KEY) || "" },
+                              });
+                              if (!res.ok) { const e = await res.json(); toast.error(e.detail || "Erreur"); return; }
+                              const d = await res.json();
+                              window.open(`/agency/campaign/${c.campaign_id}`, "_blank");
+                              toast.success(`Connecté comme ${d.user.display_name || d.user.email} (2h) - relog admin requis après`);
+                            } catch (e) { toast.error(e.message); }
+                          }}
+                          className="p-1.5 rounded-md bg-[#FF007F]/10 hover:bg-[#FF007F]/20 text-[#FF007F] border border-[#FF007F]/25 transition-all duration-150"
+                          title="Voir comme l'agence (impersonate 2 h)"
+                        >
+                          <Building2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleForceScrape(c.campaign_id, c.name)}
+                          disabled={scrapingId === c.campaign_id}
+                          className={`p-1.5 rounded-md transition-all duration-150 border ${scrapingId === c.campaign_id ? "bg-[#39FF14]/20 text-[#39FF14] border-[#39FF14]/30 cursor-wait" : "bg-[#39FF14]/10 hover:bg-[#39FF14]/20 text-[#39FF14] border-[#39FF14]/25"}`}
+                          title={scrapingId === c.campaign_id ? "Scraping en cours…" : "Forcer un scraping de cette campagne"}
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${scrapingId === c.campaign_id ? "animate-spin" : ""}`} />
+                        </button>
+                        <button
+                          onClick={() => setDetailId(c.campaign_id === detailId ? null : c.campaign_id)}
+                          className={`p-1.5 rounded-md transition-all duration-150 border ${detailId === c.campaign_id ? "bg-[#00E5FF]/20 text-[#00E5FF] border-[#00E5FF]/30" : "bg-[#0E0D0B] hover:bg-[#262320] text-[#F5F4F1]/55 hover:text-[#F5F4F1] border-warm"}`}
+                          title="Voir détail (panneau latéral)"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDelete(c)}
+                          className="p-1.5 rounded-md bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/25 transition-all duration-150"
+                          title="Supprimer cette campagne"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="py-16 text-center">
+                      <div className="flex flex-col items-center">
+                        <div className="w-10 h-10 rounded-lg bg-[#0E0D0B] border border-warm flex items-center justify-center mb-3">
+                          <Play className="w-4 h-4 text-[#F5F4F1]/30" />
+                        </div>
+                        <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucune campagne</p>
+                        <p className="text-[#F5F4F1]/35 text-xs mt-1">Aucun résultat avec la recherche actuelle.</p>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       {confirmDelete && (
@@ -4125,26 +4381,35 @@ function SettingsTab() {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-white mb-2">Paramètres</h2>
-      <p className="text-white/40 text-sm mb-8">Actions d'administration — certaines sont irréversibles.</p>
+      {/* Header */}
+      <div className="mb-7">
+        <div className="flex items-center gap-2.5 mb-2">
+          <div className="w-9 h-9 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+            <Settings className="w-4.5 h-4.5 text-red-400" />
+          </div>
+          <h2 className="text-xl md:text-2xl font-display font-semibold tracking-tight text-[#F5F4F1]">Paramètres</h2>
+        </div>
+        <p className="text-[#F5F4F1]/55 text-sm">Actions d'administration — certaines sont irréversibles.</p>
+      </div>
 
-      <div className="space-y-4 max-w-2xl">
-        <p className="text-xs uppercase tracking-wider text-red-400/70 font-medium mb-3 flex items-center gap-2">
-          <AlertTriangle className="w-3.5 h-3.5" /> Zone dangereuse
-        </p>
+      <div className="space-y-3 max-w-2xl">
+        <div className="flex items-center gap-2 mb-3">
+          <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+          <p className="text-[11px] uppercase tracking-widest text-red-400 font-display font-semibold">Zone dangereuse</p>
+        </div>
         {actions.map((action) => (
           <div
             key={action.id}
-            className={`border rounded-xl p-5 ${action.extreme ? "border-red-500/40 bg-red-500/5" : "border-white/10 bg-[#1a1a1a]"}`}
+            className={`border rounded-xl p-5 transition-all duration-150 ${action.extreme ? "border-red-500/40 bg-red-500/5" : "border-warm bg-[#1C1A17]/85 hover:border-[#F5F4F1]/14"}`}
           >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-white font-medium text-sm">{action.label}</p>
-                <p className="text-white/40 text-xs mt-1">{action.desc}</p>
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex-1 min-w-0">
+                <p className="text-[#F5F4F1] font-display font-semibold text-sm tracking-tight">{action.label}</p>
+                <p className="text-[#F5F4F1]/55 text-xs mt-1 leading-relaxed">{action.desc}</p>
               </div>
               <button
                 onClick={() => { setConfirmAction(action); setInputValue(""); }}
-                className="ml-4 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-sm rounded-lg transition-all whitespace-nowrap"
+                className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-sm rounded-lg transition-all duration-150 whitespace-nowrap font-medium"
               >
                 Exécuter
               </button>
@@ -4155,33 +4420,40 @@ function SettingsTab() {
 
       {/* Confirm Modal */}
       {confirmAction && (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-          <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 max-w-md w-full">
-            <h3 className="text-white font-semibold mb-2">{confirmAction.label}</h3>
-            <p className="text-white/50 text-sm mb-5">{confirmAction.desc}</p>
-            <p className="text-sm text-white/60 mb-2">
-              Tapez <strong className="text-red-400">{confirmAction.confirmWord}</strong> pour confirmer :
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#1C1A17] border border-warm rounded-2xl p-6 max-w-md w-full shadow-2xl">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-9 h-9 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-4.5 h-4.5 text-red-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-[#F5F4F1] font-display font-semibold tracking-tight text-base">{confirmAction.label}</h3>
+                <p className="text-[#F5F4F1]/60 text-sm mt-1.5 leading-relaxed">{confirmAction.desc}</p>
+              </div>
+            </div>
+            <p className="text-sm text-[#F5F4F1]/65 mb-2">
+              Tape <strong className="text-red-400 font-mono">{confirmAction.confirmWord}</strong> pour confirmer :
             </p>
             <input
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-white text-sm focus:outline-none focus:border-red-500/50 mb-4"
+              className="w-full bg-[#0E0D0B] border border-warm rounded-lg px-4 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/25 focus:outline-none focus:border-red-500/50 mb-4 font-mono"
               placeholder={confirmAction.confirmWord}
               autoFocus
             />
-            <div className="flex gap-3">
+            <div className="flex gap-2.5">
+              <button
+                onClick={() => { setConfirmAction(null); setInputValue(""); }}
+                className="flex-1 bg-[#0E0D0B] hover:bg-[#262320] border border-warm text-[#F5F4F1] font-medium py-2.5 rounded-lg text-sm transition-all duration-150"
+              >
+                Annuler
+              </button>
               <button
                 onClick={() => executeAction(confirmAction)}
                 disabled={inputValue !== confirmAction.confirmWord}
-                className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white font-medium py-2.5 rounded-lg text-sm transition-all"
+                className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white font-semibold py-2.5 rounded-lg text-sm transition-all duration-150"
               >
                 Confirmer
-              </button>
-              <button
-                onClick={() => { setConfirmAction(null); setInputValue(""); }}
-                className="flex-1 bg-white/5 hover:bg-white/10 text-white/70 font-medium py-2.5 rounded-lg text-sm transition-all"
-              >
-                Annuler
               </button>
             </div>
           </div>
@@ -4254,48 +4526,57 @@ function SupportTab() {
   const selectedConv = conversations.find((c) => c.user_id === selectedUserId);
 
   return (
-    <div className="flex gap-0 h-[calc(100vh-130px)] min-h-[500px]">
+    <div className="flex gap-0 h-[calc(100vh-130px)] min-h-[500px] bg-[#1C1A17]/85 border border-warm rounded-xl overflow-hidden">
       {/* Left: conversations list */}
-      <div className="w-72 flex-shrink-0 border-r border-white/10 flex flex-col">
-        <div className="p-4 border-b border-white/10 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-white">Support</h2>
-          <button onClick={fetchConversations} className="p-1.5 rounded hover:bg-white/5 text-white/40 hover:text-white transition-all">
+      <div className="w-72 flex-shrink-0 border-r border-warm flex flex-col bg-[#0E0D0B]">
+        <div className="p-4 border-b border-warm flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+              <MessageCircle className="w-3.5 h-3.5 text-[#FF007F]" />
+            </div>
+            <h2 className="text-sm font-display font-semibold tracking-tight text-[#F5F4F1]">Support</h2>
+          </div>
+          <button onClick={fetchConversations} title="Rafraîchir" className="p-1.5 rounded-md hover:bg-[#1C1A17] text-[#F5F4F1]/55 hover:text-[#F5F4F1] transition-all duration-150">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {loadingConvs ? (
-            <p className="text-white/30 text-sm text-center py-8">Chargement...</p>
+            <div className="flex items-center justify-center py-8">
+              <div className="w-5 h-5 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+            </div>
           ) : conversations.length === 0 ? (
             <div className="text-center py-12 px-4">
-              <MessageCircle className="w-8 h-8 text-white/20 mx-auto mb-3" />
-              <p className="text-white/30 text-sm">Aucune conversation</p>
-              <p className="text-white/20 text-xs mt-1">Les messages des utilisateurs apparaîtront ici</p>
+              <div className="w-10 h-10 rounded-lg bg-[#1C1A17] border border-warm flex items-center justify-center mx-auto mb-3">
+                <MessageCircle className="w-4 h-4 text-[#F5F4F1]/30" />
+              </div>
+              <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucune conversation</p>
+              <p className="text-[#F5F4F1]/35 text-xs mt-1">Les messages des utilisateurs apparaîtront ici.</p>
             </div>
           ) : (
             conversations.map((conv) => (
               <button
                 key={conv.user_id}
                 onClick={() => openConversation(conv.user_id)}
-                className={`w-full text-left px-4 py-3.5 border-b border-white/5 hover:bg-white/5 transition-all ${selectedUserId === conv.user_id ? "bg-[#00E5FF]/10 border-l-2 border-l-[#00E5FF]" : ""}`}
+                className={`w-full text-left px-4 py-3.5 border-b border-warm hover:bg-[#1C1A17] transition-all duration-150 ${selectedUserId === conv.user_id ? "bg-[#FF007F]/10 border-l-2 border-l-[#FF007F]" : ""}`}
               >
                 <div className="flex items-center gap-2 mb-1">
-                  <div className="w-7 h-7 rounded-full bg-[#00E5FF]/20 flex items-center justify-center text-xs font-bold text-[#00E5FF] flex-shrink-0">
+                  <div className="w-7 h-7 rounded-full bg-[#00E5FF]/15 border border-[#00E5FF]/25 flex items-center justify-center text-xs font-display font-semibold text-[#00E5FF] flex-shrink-0">
                     {(conv.user_info?.display_name || conv.user_name || "?")[0]?.toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-white text-xs font-medium truncate">
+                    <p className="text-[#F5F4F1] text-xs font-medium truncate">
                       {conv.user_info?.display_name || conv.user_name || conv.user_id}
                     </p>
-                    <p className="text-white/30 text-[10px]">{conv.user_role}</p>
+                    <p className="text-[#F5F4F1]/40 text-[10px]">{conv.user_role}</p>
                   </div>
                   {conv.unread_count > 0 && (
-                    <span className="bg-[#00E5FF] text-black text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center flex-shrink-0">
+                    <span className="bg-[#FF007F] text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center flex-shrink-0 tabular-nums">
                       {conv.unread_count}
                     </span>
                   )}
                 </div>
-                <p className="text-white/40 text-[11px] truncate pl-9">
+                <p className="text-[#F5F4F1]/45 text-[11px] truncate pl-9">
                   {conv.last_from_admin ? "Vous : " : ""}{conv.last_message}
                 </p>
               </button>
@@ -4309,41 +4590,52 @@ function SupportTab() {
         {!selectedUserId ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <MessageCircle className="w-12 h-12 text-white/10 mx-auto mb-4" />
-              <p className="text-white/30 text-sm">Sélectionnez une conversation</p>
+              <div className="w-12 h-12 rounded-xl bg-[#0E0D0B] border border-warm flex items-center justify-center mx-auto mb-4">
+                <MessageCircle className="w-5 h-5 text-[#F5F4F1]/30" />
+              </div>
+              <p className="text-[#F5F4F1]/55 text-sm font-medium">Sélectionne une conversation</p>
+              <p className="text-[#F5F4F1]/35 text-xs mt-1">Choisis un utilisateur dans la liste pour démarrer.</p>
             </div>
           </div>
         ) : (
           <>
             {/* Header */}
-            <div className="px-5 py-3.5 border-b border-white/10 flex items-center gap-3 flex-shrink-0">
-              <div className="w-8 h-8 rounded-full bg-[#00E5FF]/20 flex items-center justify-center text-xs font-bold text-[#00E5FF]">
+            <div className="px-5 py-3.5 border-b border-warm flex items-center gap-3 flex-shrink-0 bg-[#0E0D0B]">
+              <div className="w-8 h-8 rounded-full bg-[#00E5FF]/15 border border-[#00E5FF]/25 flex items-center justify-center text-xs font-display font-semibold text-[#00E5FF]">
                 {(selectedConv?.user_info?.display_name || "?")[0]?.toUpperCase()}
               </div>
               <div>
-                <p className="text-white text-sm font-medium">
+                <p className="text-[#F5F4F1] text-sm font-display font-semibold tracking-tight">
                   {selectedConv?.user_info?.display_name || selectedConv?.user_name || selectedUserId}
                 </p>
-                <p className="text-white/30 text-xs">{selectedConv?.user_info?.email || selectedConv?.user_role}</p>
+                <p className="text-[#F5F4F1]/45 text-xs">{selectedConv?.user_info?.email || selectedConv?.user_role}</p>
               </div>
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0E0D0B]">
               {loadingMsgs ? (
-                <p className="text-white/30 text-sm text-center py-8">Chargement...</p>
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-5 h-5 border-2 border-[#F5F4F1]/20 border-t-[#FF007F] rounded-full animate-spin" />
+                </div>
               ) : messages.length === 0 ? (
-                <p className="text-white/20 text-sm text-center py-8">Aucun message — démarrez la conversation</p>
+                <div className="text-center py-12">
+                  <div className="w-10 h-10 rounded-lg bg-[#1C1A17] border border-warm flex items-center justify-center mx-auto mb-3">
+                    <MessageCircle className="w-4 h-4 text-[#F5F4F1]/30" />
+                  </div>
+                  <p className="text-[#F5F4F1]/55 text-sm font-medium">Aucun message</p>
+                  <p className="text-[#F5F4F1]/35 text-xs mt-1">Démarre la conversation ci-dessous.</p>
+                </div>
               ) : (
                 messages.map((msg) => (
                   <div key={msg.message_id} className={`flex ${msg.from_admin ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed ${
+                    <div className={`max-w-[75%] px-3.5 py-2.5 rounded-xl text-sm leading-relaxed border ${
                       msg.from_admin
-                        ? "bg-[#00E5FF] text-black rounded-br-sm"
-                        : "bg-white/10 text-white rounded-bl-sm"
+                        ? "bg-[#FF007F] text-white rounded-br-sm border-[#FF007F]"
+                        : "bg-[#1C1A17] text-[#F5F4F1] rounded-bl-sm border-warm"
                     }`}>
                       <p>{msg.content}</p>
-                      <p className={`text-[10px] mt-1 ${msg.from_admin ? "text-black/50" : "text-white/30"}`}>
+                      <p className={`text-[10px] mt-1 tabular-nums ${msg.from_admin ? "text-white/55" : "text-[#F5F4F1]/35"}`}>
                         {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
                       </p>
                     </div>
@@ -4354,18 +4646,19 @@ function SupportTab() {
             </div>
 
             {/* Input */}
-            <div className="px-4 py-3 border-t border-white/10 flex gap-2 flex-shrink-0">
+            <div className="px-4 py-3 border-t border-warm flex gap-2 flex-shrink-0 bg-[#0E0D0B]">
               <input
                 value={newMessage}
                 onChange={handleMsgChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Répondre au support..."
-                className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm placeholder-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+                placeholder="Répondre au support…"
+                className="flex-1 bg-[#1C1A17] border border-warm rounded-lg px-4 py-2.5 text-[#F5F4F1] text-sm placeholder-[#F5F4F1]/25 focus:outline-none focus:border-[#F5F4F1]/22"
               />
               <button
                 onClick={handleSend}
                 disabled={sending || !newMessage.trim()}
-                className="px-4 py-2.5 bg-[#00E5FF] hover:bg-[#00E5FF]/90 disabled:opacity-40 text-black rounded-xl transition-all"
+                title="Envoyer (Entrée)"
+                className="px-4 py-2.5 bg-[#FF007F] hover:bg-[#E50073] disabled:opacity-40 text-white rounded-lg transition-all duration-150"
               >
                 <Send className="w-4 h-4" />
               </button>
@@ -4381,22 +4674,31 @@ function SupportTab() {
 
 function ConfirmModal({ title, message, confirmLabel, danger, onConfirm, onCancel }) {
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-[#1a1a1a] border border-white/10 rounded-2xl p-6 max-w-sm w-full">
-        <h3 className="text-white font-semibold mb-2">{title}</h3>
-        <p className="text-white/50 text-sm mb-6">{message}</p>
-        <div className="flex gap-3">
-          <button
-            onClick={onConfirm}
-            className={`flex-1 ${danger ? "bg-red-500 hover:bg-red-600" : "bg-[#00E5FF] hover:bg-[#00E5FF]/90 text-black"} text-white font-medium py-2.5 rounded-lg text-sm transition-all`}
-          >
-            {confirmLabel}
-          </button>
+    <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-[#1C1A17] border border-warm rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <div className="flex items-start gap-3 mb-4">
+          {danger && (
+            <div className="w-9 h-9 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+              <AlertTriangle className="w-4.5 h-4.5 text-red-400" />
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <h3 className="text-[#F5F4F1] font-display font-semibold tracking-tight text-base">{title}</h3>
+            <p className="text-[#F5F4F1]/60 text-sm mt-1.5 leading-relaxed">{message}</p>
+          </div>
+        </div>
+        <div className="flex gap-2.5">
           <button
             onClick={onCancel}
-            className="flex-1 bg-white/5 hover:bg-white/10 text-white/70 font-medium py-2.5 rounded-lg text-sm transition-all"
+            className="flex-1 bg-[#0E0D0B] hover:bg-[#262320] text-[#F5F4F1] font-medium py-2.5 rounded-lg text-sm border border-warm transition-all duration-150"
           >
             Annuler
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`flex-1 ${danger ? "bg-red-500 hover:bg-red-600 text-white" : "bg-[#F5F4F1] hover:bg-white text-[#0E0D0B]"} font-semibold py-2.5 rounded-lg text-sm transition-all duration-150`}
+          >
+            {confirmLabel}
           </button>
         </div>
       </div>
@@ -4439,10 +4741,15 @@ function AdminSidebar({ active, setActive, onLogout }) {
 
   const sidebarBody = (
     <>
-      <div className="p-5 border-b border-white/10 flex items-center gap-2">
-        <Shield className="w-5 h-5 text-[#00E5FF]" />
-        <span className="text-sm font-bold text-white flex-1">Admin Panel</span>
-        <button onClick={() => setMobileOpen(false)} className="md:hidden p-1.5 rounded-lg hover:bg-white/5 text-white/50" aria-label="Fermer">
+      <div className="px-5 py-4 border-b border-warm flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-lg bg-[#FF007F]/10 border border-[#FF007F]/30 flex items-center justify-center">
+          <Shield className="w-4 h-4 text-[#FF007F]" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] font-display font-semibold tracking-tight text-[#F5F4F1] truncate">Admin Panel</p>
+          <p className="text-[10px] text-[#F5F4F1]/40 uppercase tracking-widest">The Clip Deal</p>
+        </div>
+        <button onClick={() => setMobileOpen(false)} className="md:hidden p-1.5 rounded-lg hover:bg-[#1C1A17] text-[#F5F4F1]/55" aria-label="Fermer">
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -4454,24 +4761,26 @@ function AdminSidebar({ active, setActive, onLogout }) {
             <button
               key={item.id}
               onClick={() => handleSelect(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-all ${
+              title={item.label}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-all duration-150 ${
                 isActive
-                  ? "bg-[#00E5FF]/15 text-[#00E5FF]"
-                  : "text-white/55 hover:text-white hover:bg-white/5"
-              } ${item.preview && !isActive ? "opacity-80" : ""}`}
+                  ? "bg-[#FF007F]/12 text-[#F5F4F1] border border-[#FF007F]/30"
+                  : "text-[#F5F4F1]/55 hover:text-[#F5F4F1] hover:bg-[#1C1A17] border border-transparent"
+              } ${item.preview && !isActive ? "opacity-90" : ""}`}
             >
-              <item.icon className="w-4 h-4 flex-shrink-0" />
-              {item.label}
+              <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-[#FF007F]" : ""}`} />
+              <span className="truncate">{item.label}</span>
               {item.preview && <ExternalLink className="w-3 h-3 ml-auto opacity-40" />}
             </button>
           );
         })}
       </nav>
 
-      <div className="p-3 border-t border-white/10">
+      <div className="p-3 border-t border-warm">
         <button
           onClick={onLogout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] text-white/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
+          title="Se déconnecter de l'admin"
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] text-[#F5F4F1]/55 hover:text-red-400 hover:bg-red-500/10 transition-all duration-150"
         >
           <LogOut className="w-4 h-4" />
           Déconnexion admin
@@ -4485,14 +4794,14 @@ function AdminSidebar({ active, setActive, onLogout }) {
       {/* Hamburger mobile */}
       <button
         onClick={() => setMobileOpen(true)}
-        className="md:hidden fixed top-3 left-3 z-40 w-10 h-10 rounded-xl bg-[#1a1a1a]/95 backdrop-blur border border-white/10 flex items-center justify-center text-white/80 shadow-lg"
+        className="md:hidden fixed top-3 left-3 z-40 w-10 h-10 rounded-xl bg-[#1C1A17]/95 backdrop-blur border border-warm flex items-center justify-center text-[#F5F4F1] shadow-lg"
         aria-label="Ouvrir le menu admin"
       >
         <Menu className="w-5 h-5" />
       </button>
 
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex w-60 min-h-screen bg-[#0d0d0d] border-r border-white/10 flex-col">
+      <aside className="hidden md:flex w-60 min-h-screen bg-[#0A0907] border-r border-warm flex-col flex-shrink-0">
         {sidebarBody}
       </aside>
 
@@ -4502,13 +4811,13 @@ function AdminSidebar({ active, setActive, onLogout }) {
           <>
             <motion.div
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-              className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+              className="md:hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
               onClick={() => setMobileOpen(false)}
             />
             <motion.aside
               initial={{ x: "-100%" }} animate={{ x: 0 }} exit={{ x: "-100%" }}
               transition={{ type: "tween", duration: 0.25, ease: "easeOut" }}
-              className="md:hidden fixed left-0 top-0 bottom-0 w-[85vw] max-w-[300px] bg-[#0d0d0d] border-r border-white/10 flex flex-col z-[60] shadow-2xl"
+              className="md:hidden fixed left-0 top-0 bottom-0 w-[85vw] max-w-[300px] bg-[#0A0907] border-r border-warm flex flex-col z-[60] shadow-2xl"
             >
               {sidebarBody}
             </motion.aside>
@@ -4576,12 +4885,15 @@ export default function AdminDashboard() {
 
   return (
     <div
-      className="min-h-screen bg-[#0a0a0a] flex select-none"
+      className="min-h-screen bg-[#0E0D0B] text-[#F5F4F1] flex select-none"
       onContextMenu={e => e.preventDefault()}
     >
       <AdminSidebar active={active} setActive={setActive} onLogout={handleLogout} />
-      <main className="flex-1 p-4 pt-16 md:p-8 overflow-auto">
-        {renderContent()}
+      <main className="flex-1 p-4 pt-16 md:p-8 overflow-auto relative">
+        <div className="bg-warm-radial absolute inset-0 pointer-events-none" />
+        <div className="relative">
+          {renderContent()}
+        </div>
       </main>
     </div>
   );
